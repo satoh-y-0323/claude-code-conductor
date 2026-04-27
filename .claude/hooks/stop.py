@@ -8,7 +8,7 @@ import json
 import sys
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
@@ -21,19 +21,17 @@ COOLING_DAYS = 3
 SESSION_JSON_MARKER = 'C3:SESSION:JSON'
 
 
+def is_worktree(cwd: str) -> bool:
+    git_path = os.path.join(cwd, '.git')
+    return os.path.exists(git_path) and os.path.isfile(git_path)
+
+
 def get_session_path(yyyymmdd: str) -> str:
-    return os.path.join(SESSIONS_DIR, f"{yyyymmdd}.tmp")
+    return os.path.join(SESSIONS_DIR, f'{yyyymmdd}.tmp')
 
 
-def create_session_template(yyyymmdd: str) -> None:
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
-    path = get_session_path(yyyymmdd)
-    if os.path.exists(path):
-        _update_facts_timestamp(path)
-        return
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    template = (
+def create_session_template(yyyymmdd: str) -> str:
+    return (
         f"SESSION: {yyyymmdd}\n"
         f"AGENT: \n"
         f"DURATION: \n"
@@ -45,7 +43,7 @@ def create_session_template(yyyymmdd: str) -> None:
         f"## 残タスク\n"
         f"\n"
         f"## 事実ログ（自動生成 / stop.py）\n"
-        f"- 記録時刻: {now}\n"
+        f"- 記録時刻: \n"
         f"\n"
         f"<!-- {SESSION_JSON_MARKER}\n"
         f"{{\n"
@@ -57,14 +55,24 @@ def create_session_template(yyyymmdd: str) -> None:
         f"}}\n"
         f"-->\n"
     )
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(template)
+
+
+def ensure_session_file(yyyymmdd: str) -> None:
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    path = get_session_path(yyyymmdd)
+    # wx フラグ相当: ファイルが存在しない場合のみ作成（TOCTOU安全）
+    try:
+        with open(path, 'x', encoding='utf-8') as f:
+            f.write(create_session_template(yyyymmdd))
+        print(f'[Stop] セッションファイルを作成しました: {path}', file=sys.stderr)
+    except FileExistsError:
+        _update_facts_timestamp(path)
 
 
 def _update_facts_timestamp(path: str) -> None:
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S')
     updated = re.sub(r'(- 記録時刻: ).*', rf'\g<1>{now}', content)
     if updated != content:
         with open(path, 'w', encoding='utf-8') as f:
@@ -146,7 +154,6 @@ def update_patterns(yyyymmdd: str) -> None:
 
     active = []
     for pattern in data['patterns']:
-        # Promoted patterns are kept as-is without recalculation or expiry
         if pattern.get('promoted', False):
             active.append(pattern)
             continue
@@ -170,6 +177,8 @@ def update_patterns(yyyymmdd: str) -> None:
     data['patterns'] = active
     save_patterns(data)
 
+    print(f'[Stop] セッション終了処理が完了しました', file=sys.stderr)
+
 
 def main():
     try:
@@ -177,8 +186,12 @@ def main():
     except (json.JSONDecodeError, ValueError):
         pass
 
+    cwd = os.getcwd()
+    if is_worktree(cwd):
+        sys.exit(0)
+
     today_str = date.today().strftime('%Y%m%d')
-    create_session_template(today_str)
+    ensure_session_file(today_str)
     update_patterns(today_str)
 
 

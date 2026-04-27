@@ -1,15 +1,42 @@
 #!/usr/bin/env python3
-"""PreCompact hook: mark compact event in today's session file."""
+"""PreCompact hook: append checkpoint marker to today's session file."""
 
 import json
-import sys
 import os
-import re
-from datetime import date, datetime
+import sys
+from datetime import datetime, timezone
 
-_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
-_CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
-SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
+
+def is_worktree(cwd: str) -> bool:
+    git_path = os.path.join(cwd, '.git')
+    return os.path.exists(git_path) and os.path.isfile(git_path)
+
+
+def create_session_template(date_str: str) -> str:
+    return (
+        f"SESSION: {date_str}\n"
+        f"AGENT: \n"
+        f"DURATION: \n"
+        f"\n"
+        f"## うまくいったアプローチ\n"
+        f"\n"
+        f"## 試みたが失敗したアプローチ\n"
+        f"\n"
+        f"## 残タスク\n"
+        f"\n"
+        f"## 事実ログ（自動生成 / stop.py）\n"
+        f"- 記録時刻: \n"
+        f"\n"
+        f"<!-- C3:SESSION:JSON\n"
+        f"{{\n"
+        f'  "session": "{date_str}",\n'
+        f'  "patterns": [],\n'
+        f'  "successes": [],\n'
+        f'  "failures": [],\n'
+        f'  "todos": []\n'
+        f"}}\n"
+        f"-->\n"
+    )
 
 
 def main():
@@ -18,31 +45,34 @@ def main():
     except (json.JSONDecodeError, ValueError):
         pass
 
-    today_str = date.today().strftime('%Y%m%d')
-    session_path = os.path.join(SESSIONS_DIR, f'{today_str}.tmp')
+    cwd = os.getcwd()
 
-    if not os.path.exists(session_path):
+    if is_worktree(cwd):
         sys.exit(0)
 
-    with open(session_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    session_dir = os.path.join(cwd, '.claude', 'memory', 'sessions')
+    os.makedirs(session_dir, exist_ok=True)
 
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    compact_line = f'- コンパクト発生: {now}\n'
+    now = datetime.now(timezone.utc)
+    date_str = now.strftime('%Y%m%d')
+    session_file = os.path.join(session_dir, f'{date_str}.tmp')
 
-    # Insert compact marker after the "記録時刻" line
-    updated = re.sub(
-        r'(- 記録時刻: [^\n]*\n)',
-        rf'\1{compact_line}',
-        content,
-        count=1,
+    if not os.path.exists(session_file):
+        with open(session_file, 'w', encoding='utf-8') as f:
+            f.write(create_session_template(date_str))
+
+    ts = now.isoformat()
+    checkpoint = (
+        f'\n'
+        f'## [PreCompact checkpoint: {ts}]\n'
+        f'コンテキストウィンドウ圧縮が発生しました。\n'
+        f'このポイント以前の詳細な文脈は失われています。\n'
     )
 
-    if updated != content:
-        with open(session_path, 'w', encoding='utf-8') as f:
-            f.write(updated)
+    with open(session_file, 'a', encoding='utf-8') as f:
+        f.write(checkpoint)
 
-    sys.exit(0)
+    print(f'[PreCompact] セッション状態を {session_file} に保存しました', file=sys.stderr)
 
 
 if __name__ == '__main__':

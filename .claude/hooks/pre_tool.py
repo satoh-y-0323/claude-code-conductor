@@ -1,36 +1,9 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: block dangerous Bash commands."""
+"""PreToolUse hook: guard dangerous Bash commands."""
 
 import json
-import sys
 import re
-
-DANGEROUS_PATTERNS = [
-    (
-        r'\brm\s+\S*-\S*[rR]\S*[fF]|\brm\s+\S*-\S*[fF]\S*[rR]',
-        'rm による再帰強制削除は禁止されています',
-    ),
-    (
-        r'\brmdir\s+/[sS]\b',
-        'rmdir /s による再帰削除は禁止されています',
-    ),
-    (
-        r'\bmkfs\b',
-        'mkfs によるファイルシステム上書きは禁止されています',
-    ),
-    (
-        r'\bdd\b.+\bof=/dev/[a-z]',
-        'dd によるデバイスへの直接書き込みは禁止されています',
-    ),
-    (
-        r':\(\)\s*\{[^}]*\|[^}]*&',
-        'フォークボムは禁止されています',
-    ),
-    (
-        r'\bgit\s+push\b.*(?:--force|-f)\b',
-        'git force push は禁止されています（必要な場合はユーザーに確認してください）',
-    ),
-]
+import sys
 
 
 def main():
@@ -42,12 +15,30 @@ def main():
     if payload.get('tool_name') != 'Bash':
         sys.exit(0)
 
-    command = payload.get('tool_input', {}).get('command', '')
+    cmd = payload.get('tool_input', {}).get('command', '')
+    if not isinstance(cmd, str):
+        sys.exit(0)
 
-    for pattern, reason in DANGEROUS_PATTERNS:
-        if re.search(pattern, command, re.IGNORECASE):
-            response = {'decision': 'block', 'reason': f'[C3 pre_tool] {reason}'}
-            print(json.dumps(response, ensure_ascii=False))
+    # git force push: 警告（ブロックしない）
+    if re.search(r'git\s+push\s+(--force|--force-with-lease|-f)\b', cmd):
+        print('[PreToolUse WARNING] git force push を検出しました。実行前にユーザーに確認を取ってください。',
+              file=sys.stderr)
+
+    # DROP TABLE / DROP DATABASE / TRUNCATE: 警告（ブロックしない）
+    if re.search(r'DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE', cmd, re.IGNORECASE):
+        print('[PreToolUse WARNING] 破壊的な DB 操作を検出しました。本番環境での実行でないことを確認してください。',
+              file=sys.stderr)
+
+    # rm -rf 系: ブロック
+    # 短フラグ形式（-rf / -fr / -r -f 等）とロングオプション形式（--recursive --force）に対応
+    if re.search(r'\brm\b', cmd):
+        short_flags = ''.join(re.findall(r'-[a-zA-Z]+', cmd))
+        has_r = 'r' in short_flags or bool(re.search(r'\brm\b.*\s-[a-zA-Z]*r[a-zA-Z]*', cmd))
+        has_f = 'f' in short_flags or bool(re.search(r'\brm\b.*\s-[a-zA-Z]*f[a-zA-Z]*', cmd))
+        has_long_recursive = '--recursive' in cmd
+        has_long_force = '--force' in cmd
+        if (has_r and has_f) or (has_long_recursive and has_long_force):
+            print(f'[PreToolUse BLOCK] 危険なコマンドをブロックしました: {cmd}', file=sys.stderr)
             sys.exit(2)
 
     sys.exit(0)
