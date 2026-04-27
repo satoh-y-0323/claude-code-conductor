@@ -1,5 +1,6 @@
 # Generated reports (personal working files)
-.claude/reports/*.md
+.claude/reports/*
+!.claude/reports/.gitkeep
 
 # Session memory (personal)
 .claude/memory/sessions/
