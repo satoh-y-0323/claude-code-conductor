@@ -110,7 +110,20 @@ AskUserQuestion ツール:
 ### A-5: requirements-report の生成と承認
 
 収集した内容（コンテキスト内にある）をもとに `.claude/reports/requirements-report-YYYYMMDD-HHMMSS.md` に Write する。
-内容を提示してユーザーに承認を求める。
+内容を提示した後、Approval Flow（CLAUDE.md）に従い AskUserQuestion で確認する:
+
+```json
+{
+  "questions": [{
+    "question": "requirements-report の内容を確認してください。どうしますか？",
+    "options": [
+      { "label": "承認", "description": "設計フェーズへ進む" },
+      { "label": "否認・修正を依頼する", "description": "フィードバックを入力してヒアリングをやり直す" },
+      { "label": "否認・自分でファイルを編集する", "description": "reports/ のファイルを直接編集してから続ける" }
+    ]
+  }]
+}
+```
 
 承認後 → フェーズ B（設計）へ。
 
@@ -146,7 +159,20 @@ AskUserQuestion ツール:
 ### B-3: architecture-report の生成と承認
 
 `.claude/reports/architecture-report-YYYYMMDD-HHMMSS.md` に Write する。
-内容を提示してユーザーに承認を求める。
+内容を提示した後、AskUserQuestion で確認する:
+
+```json
+{
+  "questions": [{
+    "question": "architecture-report の内容を確認してください。どうしますか？",
+    "options": [
+      { "label": "承認", "description": "計画フェーズへ進む" },
+      { "label": "否認・修正を依頼する", "description": "フィードバックを入力して設計をやり直す" },
+      { "label": "否認・自分でファイルを編集する", "description": "reports/ のファイルを直接編集してから続ける" }
+    ]
+  }]
+}
+```
 
 承認後 → フェーズ C（計画）へ。
 
@@ -177,7 +203,20 @@ AskUserQuestion ツール:
 ### C-2: plan-report の生成と承認
 
 `.claude/reports/plan-report-YYYYMMDD-HHMMSS.md` に Write する。
-内容を提示してユーザーに承認を求める。
+内容を提示した後、AskUserQuestion で確認する:
+
+```json
+{
+  "questions": [{
+    "question": "plan-report の内容を確認してください。どうしますか？",
+    "options": [
+      { "label": "承認", "description": "/develop で実装フェーズへ進む" },
+      { "label": "否認・修正を依頼する", "description": "フィードバックを入力して計画をやり直す" },
+      { "label": "否認・自分でファイルを編集する", "description": "reports/ のファイルを直接編集してから続ける" }
+    ]
+  }]
+}
+```
 
 承認後 → `/develop` を案内する。
 
