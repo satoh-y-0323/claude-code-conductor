@@ -1,0 +1,15 @@
+# Generated reports (personal working files)
+.claude/reports/*.md
+
+# Session memory (personal)
+.claude/memory/sessions/
+.claude/memory/patterns.json
+.claude/memory/agent-audit.log
+
+# Temporary files
+.claude/tmp/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo

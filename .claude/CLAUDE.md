@@ -1,0 +1,132 @@
+# Claude Code Conductor (C3)
+
+複数エージェントのオーケストレーションを中心に据えた Claude Code フレームワーク。
+
+## Startup Protocol
+
+セッション開始時に必ず `/init-session` を実行する。
+
+## Language
+
+ユーザーとの応答は日本語で行うこと。コード・コマンド・ファイルパスは除く。
+
+## Session Update Rules
+
+session ファイルはタスク完了のたびに更新する。まとめて最後に書かない。
+
+| タイミング | 更新内容 |
+|---|---|
+| タスク完了時 | 残タスクの該当行を `[x]` にする |
+| 良いアプローチを発見したとき | `## うまくいったアプローチ` に追記 |
+| 失敗・ハマったとき | `## 試みたが失敗したアプローチ` に追記 |
+| パターンを発見したとき | JSON ブロックの `patterns` 配列に追記 |
+| 新しいタスクが発生したとき | `## 残タスク` に追記 |
+
+## Pattern Recording
+
+session ファイルの JSON ブロックにパターンを記録する:
+
+```json
+"patterns": [
+  {
+    "id": "一意なID（英数字・アンダースコア）",
+    "description": "どんな状況でどう対処するかを1文で"
+  }
+]
+```
+
+`stop.py` がセッション終了時に `patterns.json` を自動更新する。
+信用度が 0.8 以上・登録から3日以上経過したパターンは `/promote-pattern` で昇格できる。
+
+## User Interaction Rules
+
+ユーザーと対話するコマンド（`/agent-interviewer`・`/agent-architect`・`/agent-planner` 等）を実行する際に守ること。
+
+### 書く前に考える
+
+長い出力・実装・設計を始める前に、1〜3行で計画を提示してユーザーの確認を取る。
+確認なしに一気に書き始めない。
+
+### 質問の仕方
+
+**OK（推奨）:**
+- 1回に1つの質問に絞る
+- 選択肢を提示してユーザーが選びやすい形にする
+  ```
+  ○○について教えてください:
+    [A] ...
+    [B] ...
+    [C] その他（自由記述）
+  ```
+- 表面的な要望の背景まで掘り下げる（「なぜそれが必要か」）
+
+**NG（禁止）:**
+- 複数の質問を一度に投げる
+  ```
+  ❌ 「目的・制約・スケジュールを教えてください」
+  ✅ 「まず目的を教えてください」→ 回答後に次の質問へ
+  ```
+- 推測で進めて後から修正する
+  ```
+  ❌ 「おそらく○○だと思うので進めます」
+  ✅ 「○○という理解で合っていますか？」
+  ```
+
+### 承認を求めるタイミング
+
+各エージェントのレポート完成後は必ずユーザーに内容を提示し承認を求める。
+承認なしに次フェーズへ進まない。
+否認された場合はフィードバックを確認してからエージェントを再起動する。
+
+## Compact Instructions
+
+### KEEP（保持する）
+- **設計判断（Architectural Decisions）** — なぜその技術を選んだか、トレードオフの記録
+- **決定事項（Key Conclusions）** — 議論の末に確定した仕様、ディレクトリ構造、命名規則
+- **解決済みのハマりどころ（Caveats）** — 修正に苦労したバグの原因と恒久的な対策
+- **進行中のステータス（TODO/Status）** — 現在取り組んでいるタスクと次のステップ、残タスク
+
+### DISCARD（捨てる）
+- **雑談・挨拶（Chit-chat）** — 「ありがとうございます」「お疲れ様です」等の社交辞令
+- **解決済みのエラーログ（Logs）** — 一時的なエラーログ・デバッグ出力（原因と対策は Caveats で保持）
+- **冗長なコード断片（Snippets）** — git 管理されているソースコード本体の重複コピー
+- **期限切れのタスク（Old Tasks）** — 既に完了し、今後の開発に影響を与えない古い作業記録
+
+## Available Commands
+
+| コマンド | 目的 |
+|---|---|
+| `/init-session` | セッション初期化・前回状態の復元 |
+| `/promote-pattern` | 昇格候補パターンを rules/ または skills/ に昇格 |
+| `/agent-interviewer` | 要件ヒアリング → requirements-report |
+| `/agent-architect` | システム設計 → architecture-report |
+| `/agent-planner` | 計画立案 → plan-report |
+| `/agent-developer` | 実装・デバッグ |
+| `/agent-tester` | テスト設計・実行 → test-report |
+| `/agent-code-reviewer` | コード品質レビュー → code-review-report |
+| `/agent-security-reviewer` | セキュリティ診断 → security-review-report |
+
+## Directory Structure
+
+```
+.claude/
+├── agents/          # エージェント定義（誰か・何ができるか・何ができないか）
+├── commands/        # ユーザーが呼び出すエントリーポイント
+├── docs/            # 人間向けリファレンス（エージェントは読まなくてよい）
+├── hooks/           # イベントドリブンで自動実行される Python スクリプト
+├── rules/           # エージェントに注入される背景知識・制約
+│   └── promoted/    # /promote-pattern で昇格したルール
+├── skills/          # 複数エージェントをまたぐオーケストレーション手順
+│   └── promoted/    # /promote-pattern で昇格したスキル
+└── memory/          # セッション記憶・パターン信用度データ
+```
+
+詳細は `.claude/docs/taxonomy.md` を参照。
+
+---
+
+## C3 Managed
+<!-- このセクションは C3 のコマンドが自動で更新する。手動で編集しないこと。 -->
+
+@rules/promoted/index.md
+@skills/promoted/index.md
