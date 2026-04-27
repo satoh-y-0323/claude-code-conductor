@@ -6,6 +6,9 @@ import os
 import sys
 from datetime import datetime, timezone
 
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 
 def is_worktree(cwd: str) -> bool:
     git_path = os.path.join(cwd, '.git')

@@ -5,6 +5,9 @@ import json
 import sys
 import os
 
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 
 def main():
     try:

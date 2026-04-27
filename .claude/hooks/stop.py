@@ -7,6 +7,9 @@ Triggered at the end of each Claude Code session.
 import json
 import sys
 import os
+
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 import re
 from datetime import date, datetime, timezone
 

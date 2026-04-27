@@ -3,6 +3,10 @@
 
 import os
 import shutil
+import sys
+
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 FILE_HISTORY_DIR = os.path.join(os.path.expanduser('~'), '.claude', 'file-history')
 
