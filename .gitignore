@@ -7,6 +7,9 @@
 .claude/memory/patterns.json
 .claude/memory/agent-audit.log
 
+# Workflow test sandbox (not for distribution)
+examples/
+
 # Temporary files
 .claude/tmp/
 
