@@ -13,7 +13,8 @@ examples/
 # Temporary files
 .claude/tmp/
 
-# Python bytecode
+# Python bytecode / cache
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
