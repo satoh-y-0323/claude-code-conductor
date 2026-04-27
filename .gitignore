@@ -2,6 +2,9 @@
 .claude/reports/*
 !.claude/reports/.gitkeep
 
+# Local settings (personal)
+.claude/settings.local.json
+
 # Session memory (personal)
 .claude/memory/sessions/
 .claude/memory/patterns.json
