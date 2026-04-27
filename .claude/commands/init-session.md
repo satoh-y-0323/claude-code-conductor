@@ -5,6 +5,14 @@
 
 ---
 
+## Step 0: 初期化スクリプトを実行する
+
+Bash ツールで以下を **2回に分けて** 実行する（`&&` で結合しないこと）:
+- 1回目: `python .claude/hooks/clear_file_history.py`
+- 2回目: `python .claude/hooks/enable_sandbox.py`
+
+---
+
 ## Step 1: 前回セッションを読み込む
 
 Glob で `.claude/memory/sessions/*.tmp` を検索し、ファイル名（YYYYMMDD）が最大のものを Read する。

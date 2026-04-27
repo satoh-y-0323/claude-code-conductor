@@ -1,4 +1,47 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(python .claude/hooks/clear_file_history.py*)",
+      "Bash(python .claude/hooks/enable_sandbox.py*)",
+      "Bash(python .claude/hooks/stop.py*)",
+      "Bash(python .claude/hooks/pre_tool.py*)",
+      "Bash(python .claude/hooks/pre_compact.py*)",
+      "Bash(python .claude/hooks/log_agent.py*)",
+      "Bash(python .claude/hooks/validate_skill_change.py*)",
+      "Read(**)",
+      "Glob(**)",
+      "Grep(**)",
+      "Write(.claude/reports/**)",
+      "Write(.claude/tmp/**)",
+      "Write(.claude/memory/**)",
+      "Write(.claude/rules/promoted/**)",
+      "Write(.claude/skills/promoted/**)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git rev-parse*)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(**/.env)",
+      "Read(**.env.*)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [],
+    "network": {
+      "allowUnixSockets": [],
+      "allowAllUnixSockets": false,
+      "allowLocalBinding": false,
+      "allowedDomains": []
+    },
+    "enableWeakerNestedSandbox": true
+  },
   "hooks": {
     "PreToolUse": [
       {
