@@ -98,13 +98,10 @@ session ファイルの JSON ブロックにパターンを記録する:
 |---|---|
 | `/init-session` | セッション初期化・前回状態の復元 |
 | `/promote-pattern` | 昇格候補パターンを rules/ または skills/ に昇格 |
-| `/agent-interviewer` | 要件ヒアリング → requirements-report |
-| `/agent-architect` | システム設計 → architecture-report |
-| `/agent-planner` | 計画立案 → plan-report |
-| `/agent-developer` | 実装・デバッグ |
-| `/agent-tester` | テスト設計・実行 → test-report |
-| `/agent-code-reviewer` | コード品質レビュー → code-review-report |
-| `/agent-security-reviewer` | セキュリティ診断 → security-review-report |
+| `/setup` | コーディング規約の設定（標準規約 + 独自規約） |
+| `/start` | 開発ワークフローの入口（ヒアリング→設計→計画）|
+| `/develop` | 実装フェーズ（TDD: tester→developer→tester） |
+| `/review` | レビューフェーズ（code-reviewer→security-reviewer） |
 
 ## Directory Structure
 

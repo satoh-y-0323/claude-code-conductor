@@ -159,3 +159,32 @@ frontmatter: model / description / tools
 doc-writer / mcp-setup / workflow-builder は第2弾で追加予定。
 
 ---
+
+## D-009: コマンド設計とエージェント起動方式
+
+**決定:** インタラクティブ系は親 Claude がペルソナ採用、実行系は Agent ツールで起動
+
+**コマンド体系:**
+
+| コマンド | 方式 | 担当 |
+|---|---|---|
+| `/start` | 親 Claude がペルソナ採用 | ヒアリング→設計→計画 |
+| `/develop` | Agent ツール起動 | TDD サイクル（tester→developer→tester） |
+| `/review` | Agent ツール起動 | code-reviewer→security-reviewer |
+| `/setup` | 親 Claude Q&A → Agent ツール起動 | 規約設定 |
+
+**旧コマンド（`/agent-xxx`）を廃止した理由:**
+- 「エージェントを起動する」印象を与え、実際の動作と乖離していた
+- インタラクティブ系は親 Claude が直接動くため「エージェント起動」ではない
+
+**AskUserQuestion ツールの採用:**
+- Game Studios の「Explain → Capture パターン」を採用
+- 選択肢提示 + 自由入力の組み合わせ
+- タイポ防止・操作性向上
+
+**developer の不明点処理:**
+- 「止まってユーザーに確認 → 再起動」はコンテキスト圧迫・トークン増大を招くため採用しない
+- developer は合理的な判断をコメントに残して実装を続行する
+- 根本的な設計欠落のみ作業停止・報告。その場合は設計フェーズに差し戻す
+
+---
