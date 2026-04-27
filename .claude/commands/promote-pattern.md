@@ -2,44 +2,64 @@
 
 `patterns.json` の昇格候補を `rules/promoted/` または `skills/promoted/` に昇格させる。
 
-## 実行手順
+---
 
-### Step 1: 昇格候補を読み込む
+## Step 1: 昇格候補を読み込む
 
 `.claude/memory/patterns.json` を Read する。
-`promotion_candidate: true` かつ `promoted: true` でないパターンを抽出して一覧表示する。
+`promotion_candidate: true` かつ `promoted: true` でないパターンを抽出する。
 
 候補がない場合は以下を表示して終了する:
 > 現在、昇格候補はありません。
 > （信用度 0.8 以上・登録から3日以上・未昇格が対象です）
 
-### Step 2: 昇格するパターンを選ぶ
+---
 
-番号付きで候補を表示し、どれを昇格するかユーザーに選んでもらう。
+## Step 2: 昇格するパターンを選ぶ
 
+AskUserQuestion ツールで候補を複数選択式で提示する:
+
+```json
+{
+  "questions": [{
+    "question": "昇格するパターンを選んでください（複数選択可）",
+    "options": [
+      { "label": "[trust: {スコア}] {id}", "description": "{description}" },
+      ...候補の数だけ追加...,
+      { "label": "今回は昇格しない", "description": "すべてスキップして終了する" }
+    ],
+    "multiSelect": true
+  }]
+}
 ```
-昇格候補:
-  1. [trust: 0.92] {description}
-  2. [trust: 0.85] {description}
 
-番号を選択してください:
+「今回は昇格しない」のみ選択された場合、または何も選択されなかった場合 → 終了する。
+
+---
+
+## Step 3: 各パターンの昇格先を選ぶ
+
+選択されたパターンごとに AskUserQuestion ツールで昇格先を確認する:
+
+```json
+{
+  "questions": [{
+    "question": "「{description}」をどちらに昇格しますか？",
+    "options": [
+      { "label": "rule", "description": "rules/promoted/ — 背景知識・制約として登録（「こうしろ / これを知っておけ」系）" },
+      { "label": "skill", "description": "skills/promoted/ — オーケストレーション手順として登録（「この順番で動かせ」系）" }
+    ]
+  }]
+}
 ```
 
-### Step 3: ルールかスキルかを選ぶ
+複数パターンを選んだ場合は1つずつ順番に確認する。
 
-```
-このパターンをどちらに昇格しますか？
-  [rule]   rules/promoted/ — 背景知識・制約として登録
-  [skill]  skills/promoted/ — オーケストレーション手順として登録
-```
+---
 
-判断の目安:
-- 「こうしろ / これを知っておけ」→ rule
-- 「この順番で複数エージェントを動かせ」→ skill
+## Step 4: ファイルを生成して保存する
 
-### Step 4: ファイルを生成して保存する
-
-パターンの `description` をもとに内容を生成し、Write ツールで保存する。
+パターンの `description` をもとに内容を生成し Write ツールで保存する。
 
 **rule の保存先:** `.claude/rules/promoted/YYYYMMDD-{id}.md`
 
@@ -73,9 +93,9 @@ trust_score: {スコア}
 {エージェント間のオーケストレーション手順をステップで記述する}
 ```
 
-### Step 5: index.md に追記する
+---
 
-昇格先に応じたファイルを Read し、マーカー間に1行追記する。
+## Step 5: index.md に追記する
 
 **rule の場合** — `.claude/rules/promoted/index.md` の `<!-- C3:PROMOTED_RULES:BEGIN -->` と `<!-- C3:PROMOTED_RULES:END -->` の間に追記:
 ```
@@ -87,9 +107,11 @@ trust_score: {スコア}
 - **{タイトル}** (`skills/promoted/YYYYMMDD-{id}.md`) — {description を1行で}
 ```
 
-### Step 6: patterns.json を更新する
+---
 
-Edit ツールで昇格したパターンの entry に以下を追加する:
+## Step 6: patterns.json を更新する
+
+昇格したパターンの entry に以下を追加する:
 
 ```json
 "promoted": true,
@@ -97,16 +119,17 @@ Edit ツールで昇格したパターンの entry に以下を追加する:
 "promoted_to": ".claude/rules/promoted/YYYYMMDD-{id}.md"
 ```
 
-### Step 7: 完了を報告する
+複数昇格した場合は Step 4〜6 を全パターン分まとめて処理してから Step 7 へ進む。
+
+---
+
+## Step 7: 完了を報告する
 
 ```
-昇格完了:
-  パターン : {description}
-  保存先   : .claude/rules/promoted/YYYYMMDD-{id}.md
-  信用度   : {trust_score}
+昇格完了（{N}件）:
+  ✅ {description} → rules/promoted/YYYYMMDD-{id}.md  [trust: {スコア}]
+  ✅ {description} → skills/promoted/YYYYMMDD-{id}.md [trust: {スコア}]
 
-rules/promoted/index.md または skills/promoted/index.md にも追記しました。
-他に昇格するパターンがあれば続けて選択してください。
+index.md にも追記しました。
+次回セッションからこれらのルール・スキルが自動で読み込まれます。
 ```
-
-候補が残っている場合は Step 2 に戻る。
