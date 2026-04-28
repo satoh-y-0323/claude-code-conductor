@@ -8,6 +8,7 @@
       "Bash(python .claude/hooks/pre_compact.py*)",
       "Bash(python .claude/hooks/log_agent.py*)",
       "Bash(python .claude/hooks/validate_skill_change.py*)",
+      "Bash(python .claude/hooks/statusline.py*)",
       "Read(**)",
       "Glob(**)",
       "Grep(**)",
@@ -41,6 +42,10 @@
       "allowedDomains": []
     },
     "enableWeakerNestedSandbox": true
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python .claude/hooks/statusline.py"
   },
   "hooks": {
     "PreToolUse": [
@@ -101,6 +106,17 @@
           {
             "type": "command",
             "command": "python .claude/hooks/stop.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/statusline.py"
           }
         ]
       }

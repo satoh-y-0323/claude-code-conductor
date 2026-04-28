@@ -153,6 +153,8 @@ session ファイルの JSON ブロックにパターンを記録する:
 | `/start` | 開発ワークフローの入口（ヒアリング→設計→計画）|
 | `/develop` | 実装フェーズ（TDD: tester→developer→tester） |
 | `/review` | レビューフェーズ（code-reviewer→security-reviewer） |
+| `/mcp` | MCP サーバーの追加・一覧・削除 |
+| `/extract-lib` | 複数プロジェクトの共通コードを抽出してライブラリ設計・生成 |
 
 ## Directory Structure
 

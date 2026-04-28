@@ -21,3 +21,7 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# C3 founding documents (kept locally, not for distribution)
+.claude/docs/taxonomy.md
+.claude/docs/decisions.md

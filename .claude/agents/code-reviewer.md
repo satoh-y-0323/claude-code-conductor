@@ -31,6 +31,7 @@ tools:
 **Before:**
 - `git diff` または変更ファイル一覧を Bash で確認する
 - 関連するテストコードも合わせて Read する
+- `.claude/rules/code-review-checklist.md` を Read してチェック観点を確認する
 
 **During:**
 - 指摘は重大度（High / Medium / Low）で分類する
