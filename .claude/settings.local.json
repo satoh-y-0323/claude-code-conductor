@@ -9,46 +9,32 @@
       "Bash(python .claude/hooks/log_agent.py*)",
       "Bash(python .claude/hooks/validate_skill_change.py*)",
       "Bash(python .claude/hooks/statusline.py*)",
-      "Read(**)",
-      "Glob(**)",
-      "Grep(**)",
-      "Edit(.claude/reports/**)",
-      "Write(.claude/reports/**)",
-      "Write(.claude/tmp/**)",
-      "Write(.claude/memory/**)",
-      "Edit(.claude/memory/sessions/**)",
-      "Write(.claude/memory/sessions/**)",
-      "Write(.claude/rules/promoted/**)",
-      "Write(.claude/skills/promoted/**)",
+      "Bash(python -m pytest tests/test_task_manager.py -v)",
+      "Bash(python *)",
+      "Bash(pytest *)",
+      "Bash(xargs wc *)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
       "Bash(git status*)",
       "Bash(git diff*)",
       "Bash(git log*)",
-      "Bash(git add*)",
-      "Bash(git commit*)",
-      "Bash(git rev-parse*)"
-    ],
-    "deny": [
-      "Read(.env)",
-      "Read(**/.env)",
-      "Read(**.env.*)"
+      "Bash(pytest*)",
+      "Bash(python -m pytest*)",
+      "Bash(mkdir*)",
+      "Edit(**)",
+      "Edit(.claude/reports/**)",
+      "Edit(.claude/memory/sessions/**)",
+      "Glob(**)",
+      "Grep(**)",
+      "Read(**)",
+      "Write(**)",
+      "Write(.claude/tmp/**)",
+      "Write(.claude/memory/**)",
+      "Write(.claude/reports/**)",
+      "Write(.claude/memory/sessions/**)",
+      "Write(.claude/rules/promoted/**)",
+      "Write(.claude/skills/promoted/**)"
     ]
-  },
-  "sandbox": {
-    "enabled": true,
-    "autoAllowBashIfSandboxed": true,
-    "allowUnsandboxedCommands": false,
-    "excludedCommands": [],
-    "network": {
-      "allowUnixSockets": [],
-      "allowAllUnixSockets": false,
-      "allowLocalBinding": false,
-      "allowedDomains": []
-    },
-    "enableWeakerNestedSandbox": true
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "python .claude/hooks/statusline.py"
   },
   "hooks": {
     "PreToolUse": [

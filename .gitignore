@@ -2,9 +2,6 @@
 .claude/reports/*
 !.claude/reports/.gitkeep
 
-# Local settings (personal)
-.claude/settings.local.json
-
 # Session memory (personal)
 .claude/memory/sessions/
 .claude/memory/patterns.json
@@ -25,3 +22,4 @@ __pycache__/
 # C3 founding documents (kept locally, not for distribution)
 .claude/docs/taxonomy.md
 .claude/docs/decisions.md
+.claude/docs/game-studios-research.md
