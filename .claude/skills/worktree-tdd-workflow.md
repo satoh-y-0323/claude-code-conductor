@@ -22,9 +22,10 @@
    - tester.md の内容（ペルソナ・制約・手順）
    - plan-report の内容（テスト対象・受け入れ条件）
    - 「テストが存在しない場合は Red フェーズとして失敗するテストを先に作成してから実行すること」
-   - タイムスタンプ取得コマンド:
-     `python -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`
-   - 「`.claude/reports/test-report-{タイムスタンプ}.md` に合格/不合格/スキップ件数・不合格テストのエラーを Write すること」
+   - 以下の手順を必ず守ること:
+     1. Bash ツールでタイムスタンプを取得する:
+        `python -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`
+     2. **Write ツールを呼び出して** `.claude/reports/test-report-{タイムスタンプ}.md` を作成する。テキストで返すだけでは不十分。合格/不合格/スキップ件数・不合格テストのエラーを記載すること
 
 完了後: Glob で `.claude/reports/test-report-*.md` の最新ファイルパスを取得する。
 
@@ -61,9 +62,10 @@
    - tester.md の内容（ペルソナ・制約・手順）
    - plan-report の内容
    - 「developer の実装後のテストを全件実行すること」
-   - タイムスタンプ取得コマンド:
-     `python -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`
-   - 「`.claude/reports/test-report-{タイムスタンプ}.md` に合格/不合格/スキップ件数・不合格テストのエラーを Write すること」
+   - 以下の手順を必ず守ること:
+     1. Bash ツールでタイムスタンプを取得する:
+        `python -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d-%H%M%S'))"`
+     2. **Write ツールを呼び出して** `.claude/reports/test-report-{タイムスタンプ}.md` を作成する。テキストで返すだけでは不十分。合格/不合格/スキップ件数・不合格テストのエラーを記載すること
 
 完了後: Glob で最新 test-report を取得し、合否を確認する。
 呼び出し元（tdd-develop）に結果（`PASS` または `FAIL`）と test-report パスを返してワークフローを終了する。
