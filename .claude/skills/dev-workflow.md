@@ -8,7 +8,7 @@
 
 ## フェーズ A: ヒアリング
 
-`agents/interviewer.md` を Read してペルソナを採用する。
+`.claude/agents/interviewer.md` を Read してペルソナを採用する。
 
 今日のセッションファイル（`.claude/memory/sessions/YYYYMMDD.tmp`）に以下を追記する（未登録の場合のみ）:
 - `- [ ] ヒアリング` / `- [ ] 設計` / `- [ ] 計画`
@@ -113,7 +113,7 @@ AskUserQuestion ツール:
 
 ## フェーズ B: 設計
 
-`agents/architect.md` を Read してペルソナを採用する。
+`.claude/agents/architect.md` を Read してペルソナを採用する。
 
 **フェーズ A から続いている場合:** 要件はコンテキスト内にあるため読み直し不要。
 **直接開始の場合:** Glob で `.claude/reports/requirements-report-*.md` の最新を Read する。
@@ -169,7 +169,7 @@ AskUserQuestion ツール:
 
 ## フェーズ C: 計画
 
-`agents/planner.md` を Read してペルソナを採用する。
+`.claude/agents/planner.md` を Read してペルソナを採用する。
 
 **上流フェーズから続いている場合:** 要件・設計はコンテキスト内にあるため読み直し不要。
 **直接開始またはレビューから戻った場合:** Glob で `.claude/reports/` 内の全レポートを Read する（`[対応予定]` マーク付きの指摘を修正計画に反映する）。

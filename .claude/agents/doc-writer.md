@@ -27,7 +27,7 @@ tools:
 
 ❌ 担当しないこと:
 - ソースコードの編集・修正
-- ドキュメント要件のヒアリング（commands/doc.md で完了済み）
+- ドキュメント要件のヒアリング（.claude/commands/doc.md で完了済み）
 - セキュリティ診断・コードレビュー
 
 ## Workflow
@@ -59,4 +59,4 @@ tools:
 制限: ソースファイルの編集・書き込みは行わない
 
 ## Related Agents
-- 起動元: commands/doc.md（親 Claude のインタビュー結果をプロンプトで受け取る）
+- 起動元: .claude/commands/doc.md（親 Claude のインタビュー結果をプロンプトで受け取る）

@@ -99,12 +99,12 @@ trust_score: {スコア}
 
 **rule の場合** — `.claude/rules/promoted/index.md` の `<!-- C3:PROMOTED_RULES:BEGIN -->` と `<!-- C3:PROMOTED_RULES:END -->` の間に追記:
 ```
-- **{タイトル}** (`rules/promoted/YYYYMMDD-{id}.md`) — {description を1行で}
+- **{タイトル}** (`.claude/rules/promoted/YYYYMMDD-{id}.md`) — {description を1行で}
 ```
 
 **skill の場合** — `.claude/skills/promoted/index.md` の `<!-- C3:PROMOTED_SKILLS:BEGIN -->` と `<!-- C3:PROMOTED_SKILLS:END -->` の間に追記:
 ```
-- **{タイトル}** (`skills/promoted/YYYYMMDD-{id}.md`) — {description を1行で}
+- **{タイトル}** (`.claude/skills/promoted/YYYYMMDD-{id}.md`) — {description を1行で}
 ```
 
 ---
@@ -127,8 +127,8 @@ trust_score: {スコア}
 
 ```
 昇格完了（{N}件）:
-  ✅ {description} → rules/promoted/YYYYMMDD-{id}.md  [trust: {スコア}]
-  ✅ {description} → skills/promoted/YYYYMMDD-{id}.md [trust: {スコア}]
+  ✅ {description} → .claude/rules/promoted/YYYYMMDD-{id}.md  [trust: {スコア}]
+  ✅ {description} → .claude/skills/promoted/YYYYMMDD-{id}.md [trust: {スコア}]
 
 index.md にも追記しました。
 次回セッションからこれらのルール・スキルが自動で読み込まれます。

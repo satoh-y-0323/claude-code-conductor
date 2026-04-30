@@ -76,9 +76,11 @@ AskUserQuestion ツールで以下を提示する:
 
 ---
 
-## Step 2: dev-workflow の実行
+## Step 2: dev-workflow.md を Read してフェーズを実行する
 
-`.claude/skills/dev-workflow.md` を Read して、選択した開始地点に対応するフェーズから実行する:
+**最初に必ず** `.claude/skills/dev-workflow.md` を Read する。記憶・推測で進めず、dev-workflow.md の AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
+
+選択した開始地点に対応するフェーズから実行する:
 
 - **ヒアリング** → フェーズ A から実行
 - **設計** → フェーズ B から実行

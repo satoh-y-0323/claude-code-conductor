@@ -198,8 +198,8 @@ AskUserQuestion ツール:
 
 ```
 セットアップ完了:
-  rules/coding-standards.md    — 標準コーディング規約
-  rules/project-conventions.md — プロジェクト固有の規約
+  .claude/rules/coding-standards.md    — 標準コーディング規約
+  .claude/rules/project-conventions.md — プロジェクト固有の規約
 
 次回から architect・developer・tester・code-reviewer・security-reviewer
 がこれらのルールを参照して作業します。
