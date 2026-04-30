@@ -8,22 +8,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from c3._excludes import should_skip
 from c3.paths import templates_dir
-
-# Files that the user is expected to edit locally; never overwrite them.
-# These match the .gitignore entries used in the C3 source repo.
-_LOCAL_FILES: tuple[str, ...] = (
-    "docs/decisions.md",
-    "docs/taxonomy.md",
-    "docs/game-studios-research.md",
-    "memory/patterns.json",
-    "memory/agent-audit.log",
-)
-_LOCAL_DIRS: tuple[str, ...] = (
-    "memory/sessions",
-    "reports",
-    "tmp",
-)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -90,10 +76,12 @@ def _walk_diff(template: Path, dest: Path):
     """Yield (action, absolute_dest_path) tuples for files that differ.
 
     Only ``add`` and ``update`` are emitted; we never delete files in dest.
+    Personal/working files (per ``c3._excludes``) are skipped both as bundle
+    sources and as overwrite targets.
     """
     for src_file in _iter_files(template):
         rel = src_file.relative_to(template)
-        if _is_local(rel):
+        if should_skip(rel.as_posix()):
             continue
         target = dest / rel
         if not target.exists():
@@ -108,10 +96,3 @@ def _iter_files(root: Path):
             yield from _iter_files(entry)
         elif entry.is_file():
             yield entry
-
-
-def _is_local(rel: Path) -> bool:
-    rel_posix = rel.as_posix()
-    if rel_posix in _LOCAL_FILES:
-        return True
-    return any(rel_posix == d or rel_posix.startswith(d + "/") for d in _LOCAL_DIRS)

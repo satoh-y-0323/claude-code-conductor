@@ -17,25 +17,25 @@ from pathlib import Path
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
-# Files / directories that must NOT be redistributed (matched against paths
-# relative to the project root). Globs use fnmatch semantics.
+# Patterns matched against paths relative to ``.claude/``.
+# IMPORTANT: keep these in sync with ``src/c3/_excludes.py``. The build hook
+# runs before the package is importable, so we duplicate rather than import.
 EXCLUDE_PATTERNS: tuple[str, ...] = (
-    ".claude/reports/*",
-    ".claude/memory/sessions/*",
-    ".claude/memory/patterns.json",
-    ".claude/memory/agent-audit.log",
-    ".claude/tmp/*",
-    ".claude/docs/decisions.md",
-    ".claude/docs/taxonomy.md",
-    ".claude/docs/game-studios-research.md",
+    "reports/*",
+    "memory/sessions/*",
+    "memory/patterns.json",
+    "memory/agent-audit.log",
+    "tmp/*",
+    "docs/decisions.md",
+    "docs/taxonomy.md",
+    "docs/game-studios-research.md",
 )
 
-# Patterns that should always survive even if their parent matches an exclude.
 KEEP_PATTERNS: tuple[str, ...] = (
-    ".claude/reports/.gitkeep",
-    ".claude/memory/.gitkeep",
-    ".claude/memory/sessions/.gitkeep",
-    ".claude/tmp/.gitkeep",
+    "reports/.gitkeep",
+    "memory/.gitkeep",
+    "memory/sessions/.gitkeep",
+    "tmp/.gitkeep",
 )
 
 
@@ -53,17 +53,16 @@ class StageTemplateHook(BuildHookInterface):
         if dest.exists():
             shutil.rmtree(dest)
         dest.mkdir(parents=True, exist_ok=True)
-        _copy_filtered(source, dest, root)
+        _copy_filtered(source, dest, source)
 
 
-def _copy_filtered(src: Path, dst: Path, project_root: Path) -> None:
+def _copy_filtered(src: Path, dst: Path, claude_root: Path) -> None:
     for entry in src.iterdir():
-        rel = entry.relative_to(project_root).as_posix()
+        rel = entry.relative_to(claude_root).as_posix()
         if entry.is_dir():
             sub_dst = dst / entry.name
             sub_dst.mkdir(exist_ok=True)
-            _copy_filtered(entry, sub_dst, project_root)
-            # Drop any empty dirs that ended up with nothing to keep.
+            _copy_filtered(entry, sub_dst, claude_root)
             if not any(sub_dst.iterdir()):
                 sub_dst.rmdir()
         elif entry.is_file():
@@ -73,6 +72,6 @@ def _copy_filtered(src: Path, dst: Path, project_root: Path) -> None:
 
 
 def _should_skip(rel: str) -> bool:
-    if any(fnmatch.fnmatch(rel, p) for p in KEEP_PATTERNS):
+    if any(fnmatch.fnmatchcase(rel, p) for p in KEEP_PATTERNS):
         return False
-    return any(fnmatch.fnmatch(rel, p) for p in EXCLUDE_PATTERNS)
+    return any(fnmatch.fnmatchcase(rel, p) for p in EXCLUDE_PATTERNS)

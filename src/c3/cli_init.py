@@ -7,6 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from c3._excludes import should_skip
 from c3.paths import templates_dir
 
 
@@ -56,15 +57,28 @@ def handle(args: argparse.Namespace) -> int:
     return 0
 
 
-def _copytree(src: Path, dst: Path) -> int:
-    """Copy src -> dst recursively; return number of regular files written."""
+def _copytree(src: Path, dst: Path, *, root: Path | None = None) -> int:
+    """Copy ``src`` -> ``dst`` recursively, skipping personal/working files.
+
+    ``root`` defaults to ``src`` and represents the ``.claude/`` directory; the
+    relative path from ``root`` is what ``should_skip`` matches against.
+    Returns the number of regular files written.
+    """
+    if root is None:
+        root = src
     dst.mkdir(parents=True, exist_ok=True)
     count = 0
     for entry in src.iterdir():
+        rel = entry.relative_to(root).as_posix()
         target = dst / entry.name
         if entry.is_dir():
-            count += _copytree(entry, target)
+            count += _copytree(entry, target, root=root)
+            # Drop directories that ended up empty (everything inside was skipped).
+            if not any(target.iterdir()):
+                target.rmdir()
         elif entry.is_file():
+            if should_skip(rel):
+                continue
             shutil.copy2(entry, target)
             count += 1
     return count

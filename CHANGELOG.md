@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.1] - 2026-05-01
+
+### Fixed
+- `c3 init` no longer copies personal/working files when run against the live
+  development tree. Two regressions in 0.2.0 caused this:
+  1. `templates_dir()` walked up from `__file__` looking for any ancestor with
+     `.claude/` + `pyproject.toml`. A wheel install in a venv that happened to
+     live inside the C3 source tree (e.g. `claude-code-conductor/.venv/...`)
+     therefore resolved to the dirty live `.claude/` instead of the bundled
+     `_template/`. The dev fallback is now anchored to `<root>/src/c3/` ancestry
+     so site-packages-loaded copies always use `importlib.resources`.
+  2. `_copytree` did not apply the same exclusion rules as the build hook,
+     so even legitimate editable installs (which intentionally serve the live
+     `.claude/`) could leak personal files. `cli_init` and `cli_update` now
+     share `c3._excludes` with `hatch_build.py`.
+
+### Added
+- `src/c3/_excludes.py` — single source of truth for excluded paths
+  (reports/, memory/sessions/, memory/patterns.json, docs/decisions.md, etc.).
+- Regression tests:
+  - `tests/test_paths.py` — `_resolve_dev_template` rejects site-packages paths.
+  - `tests/test_excludes.py` — KEEP_PATTERNS override EXCLUDE_PATTERNS.
+  - `tests/test_cli_init.py::test_init_excludes_personal_files` — init does not
+    leak personal files even when given a "dirty" template tree.
+
 ## [0.2.0] - 2026-05-01
 
 ### Added
