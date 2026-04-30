@@ -71,6 +71,8 @@ def run_manifest(
             argv,
             shell=False,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=None,
             stderr=subprocess.PIPE,
             bufsize=1,

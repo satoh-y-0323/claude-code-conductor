@@ -134,3 +134,27 @@ def test_run_manifest_argv_assembly(tmp_path: Path):
     assert "--dry-run" in argv
     assert "--claude-exe" in argv and "/opt/claude" in argv
     assert factory.last_kwargs["shell"] is False
+
+
+def test_run_manifest_decodes_stderr_as_utf8(tmp_path: Path):
+    """Regression: on Windows the default locale (cp932) cannot decode PO's
+    UTF-8 stderr, causing UnicodeDecodeError. The wrapper must pin the
+    decoding to UTF-8 with a permissive error handler.
+    """
+    manifest = tmp_path / "plan-report.md"
+    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+
+    factory = _make_popen(0)
+    with patch("c3.po.run.subprocess.Popen", side_effect=factory):
+        run_manifest(manifest)
+
+    kwargs = factory.last_kwargs
+    assert kwargs.get("encoding") == "utf-8", (
+        "Popen must pin encoding='utf-8' so PO's UTF-8 stderr decodes "
+        "regardless of the platform's locale (Windows cp932)."
+    )
+    assert kwargs.get("errors") == "replace", (
+        "Popen must use errors='replace' so a stray byte does not crash "
+        "the wrapper mid-stream."
+    )
+    assert kwargs.get("text") is True

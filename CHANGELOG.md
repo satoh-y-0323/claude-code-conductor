@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.2] - 2026-05-01
+
+### Fixed
+- `c3 po run` no longer crashes on Windows when parallel-orchestra emits UTF-8
+  characters on stderr. The `subprocess.Popen` call previously paired
+  `text=True` with no explicit `encoding`, so Python decoded the pipe with the
+  platform's locale (cp932 on JP Windows) and raised `UnicodeDecodeError` on
+  the first non-ASCII byte. The Popen now passes `encoding="utf-8",
+  errors="replace"` so PO's output decodes regardless of locale and a stray
+  byte cannot tear down the stream mid-run.
+
+### Added
+- `tests/test_po_run.py::test_run_manifest_decodes_stderr_as_utf8` —
+  regression test that asserts the Popen kwargs include `encoding="utf-8"`
+  and `errors="replace"`.
+
 ## [0.2.1] - 2026-05-01
 
 ### Fixed
