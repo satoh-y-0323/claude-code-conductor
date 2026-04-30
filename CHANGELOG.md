@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.0] - 2026-05-01
+
+### Added
+- PyPI distribution as `claude-code-conductor` (`pip install claude-code-conductor`)
+- `c3` command-line interface with subcommands:
+  - `c3 init` — scaffold `.claude/` into a project (refuses to overwrite without `--force`)
+  - `c3 update` — refresh framework files; preserves user-managed files (reports/, memory/sessions/, founding docs)
+  - `c3 list-agents` / `list-skills` / `list-commands` — inspect installed assets
+  - `c3 doctor` — diagnose `.claude/`, `settings.json`, claude binary, parallel-orchestra availability
+  - `c3 po dry-run <plan-report>` / `c3 po run <plan-report>` — invoke parallel-orchestra via subprocess
+- Optional `parallel-orchestra` integration (loose coupling; PO is *not* in dependencies):
+  - Runtime detection via `shutil.which` + `importlib.metadata`
+  - `.claude/skills/parallel-execution.md` skill orchestrates D-0 → preflight → user approval → run → report
+  - `planner` agent now emits required YAML frontmatter on plan-reports per `.claude/docs/parallel-orchestra-manifest.md`
+  - `/develop` Phase D adds **D-0: 実行モード選択** (TDD 逐次 vs PO 並列)
+
+### Changed
+- Recommended install path is now `pip install claude-code-conductor` + `c3 init`. Manual `cp -r .claude/` still documented as an alternative.
+- `worktree_guard.py` docstring: `C3_WORKTREE_GUARD` → `PO_WORKTREE_GUARD` (matches the implementation).
+
+### Internal
+- `src/c3/` package layout (hatchling build backend)
+- Hatch custom build hook stages distributable subset of `.claude/` into `src/c3/_template/.claude/`
+- Test suite under `tests/` (28 tests including loose-coupling guards and an opt-in `parallel-orchestra --dry-run` smoke)
+
 ## [0.1.0] - 2026-04-29
 
 ### Added

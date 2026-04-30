@@ -1,0 +1,117 @@
+"""``c3 update`` - bring the project's ``.claude/`` up to date with the package template."""
+
+from __future__ import annotations
+
+import argparse
+import filecmp
+import shutil
+import sys
+from pathlib import Path
+
+from c3.paths import templates_dir
+
+# Files that the user is expected to edit locally; never overwrite them.
+# These match the .gitignore entries used in the C3 source repo.
+_LOCAL_FILES: tuple[str, ...] = (
+    "docs/decisions.md",
+    "docs/taxonomy.md",
+    "docs/game-studios-research.md",
+    "memory/patterns.json",
+    "memory/agent-audit.log",
+)
+_LOCAL_DIRS: tuple[str, ...] = (
+    "memory/sessions",
+    "reports",
+    "tmp",
+)
+
+
+def register(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "update",
+        help="Refresh .claude/ from the bundled template (skips local files)",
+        description=(
+            "Compare the project's .claude/ to the bundled template and "
+            "overwrite framework files that differ. User-managed files "
+            "(reports/, memory/sessions/, docs/decisions.md, etc.) are "
+            "always skipped."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would change without writing anything",
+    )
+    parser.add_argument(
+        "--target",
+        type=Path,
+        default=None,
+        help="Destination directory (defaults to the current working directory)",
+    )
+    parser.set_defaults(handler=handle)
+
+
+def handle(args: argparse.Namespace) -> int:
+    target_root: Path = (args.target or Path.cwd()).resolve()
+    dest = target_root / ".claude"
+    if not dest.is_dir():
+        print(
+            f"no .claude/ directory found in {target_root}. "
+            "Run `c3 init` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    template = templates_dir()
+    actions = list(_walk_diff(template, dest))
+    if not actions:
+        print("up to date")
+        return 0
+
+    if args.dry_run:
+        print(f"{len(actions)} file(s) would change:")
+        for action, path in actions:
+            print(f"  {action}: {path.relative_to(dest)}")
+        return 0
+
+    for action, abs_path in actions:
+        rel = abs_path.relative_to(dest)
+        src = template / rel
+        if action == "add" or action == "update":
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, abs_path)
+            print(f"  {action}: {rel}")
+
+    print(f"{len(actions)} file(s) updated")
+    return 0
+
+
+def _walk_diff(template: Path, dest: Path):
+    """Yield (action, absolute_dest_path) tuples for files that differ.
+
+    Only ``add`` and ``update`` are emitted; we never delete files in dest.
+    """
+    for src_file in _iter_files(template):
+        rel = src_file.relative_to(template)
+        if _is_local(rel):
+            continue
+        target = dest / rel
+        if not target.exists():
+            yield "add", target
+        elif not filecmp.cmp(src_file, target, shallow=False):
+            yield "update", target
+
+
+def _iter_files(root: Path):
+    for entry in root.iterdir():
+        if entry.is_dir():
+            yield from _iter_files(entry)
+        elif entry.is_file():
+            yield entry
+
+
+def _is_local(rel: Path) -> bool:
+    rel_posix = rel.as_posix()
+    if rel_posix in _LOCAL_FILES:
+        return True
+    return any(rel_posix == d or rel_posix.startswith(d + "/") for d in _LOCAL_DIRS)

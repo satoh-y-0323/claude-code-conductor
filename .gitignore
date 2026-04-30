@@ -19,6 +19,12 @@ __pycache__/
 *.pyo
 .pytest_cache/
 
+# PyPI build artifacts
+build/
+dist/
+*.egg-info/
+src/c3/_template/
+
 # C3 founding documents (kept locally, not for distribution)
 .claude/docs/taxonomy.md
 .claude/docs/decisions.md

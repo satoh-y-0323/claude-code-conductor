@@ -228,6 +228,29 @@ AskUserQuestion ツール:
 - `- [ ] developer: Refactor フェーズ`
 - `- [ ] tester: 最終確認`
 
+### D-0: 実行モード選択
+
+AskUserQuestion ツール:
+```json
+{
+  "questions": [{
+    "question": "TDD サイクルの実行モードを選んでください",
+    "options": [
+      { "label": "TDD 逐次実行", "description": "従来の D-1〜D-5（tester→developer→tester）で1タスクずつ進める" },
+      { "label": "PO 並列実行", "description": "parallel-orchestra で plan-report の独立タスクを git worktree 並列実行する（PO のインストールが必要）" }
+    ]
+  }]
+}
+```
+
+**「TDD 逐次実行」の場合:** D-1 へ進む。
+
+**「PO 並列実行」の場合:**
+1. **最初に必ず** `.claude/skills/parallel-execution.md` を Read する（記憶・推測で進めない）
+2. セッションファイルに `- [ ] PO 並列実行` を追記する
+3. `parallel-execution.md` の手順を完全に守る
+4. 完了後はフェーズ E（レビュー）へ進む
+
 ### D-1: tester（Red フェーズ）
 
 Agent ツールで `tester` エージェントを起動する。→ 失敗するテストを先に作成する。

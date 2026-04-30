@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse hook: worktree boundary guardrail.
 
-C3_WORKTREE_GUARD=1 が設定されている場合のみ動作する。
+PO_WORKTREE_GUARD=1 が設定されている場合のみ動作する。
+parallel-orchestra が read_only:false タスクを起動するときに自動セットする。
 Write / Edit ツールの対象パスが CWD（worktree ルート）外であればブロックする。
 """
 

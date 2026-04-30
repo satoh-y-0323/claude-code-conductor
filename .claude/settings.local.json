@@ -32,7 +32,11 @@
       "Write(.claude/reports/**)",
       "Write(.claude/memory/sessions/**)",
       "Write(.claude/rules/promoted/**)",
-      "Write(.claude/skills/promoted/**)"
+      "Write(.claude/skills/promoted/**)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(grep \"\\\\.py$\")",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   },
   "hooks": {

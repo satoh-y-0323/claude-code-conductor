@@ -40,9 +40,18 @@ requirements-report・architecture-report・各種レビューレポートを統
 
 **After:**
 - `.claude/reports/plan-report-YYYYMMDD-HHMMSS.md` に Write して出力する
+- plan-report の**先頭に YAML フロントマターを必ず付与する**。フォーマットは `.claude/docs/parallel-orchestra-manifest.md` の仕様に従う。最低限以下を出力すること:
+  - `po_plan_version: "0.1"`
+  - `name`（プランの表示名・文字列）
+  - `cwd: "../.."`（plan-report からプロジェクトルートへの相対パス）
+  - `tasks: [...]`（各タスクは `id` / `agent` / `read_only` / `prompt` を必須とする。書き込みあり = `read_only: false`、読み取り専用レビューのみ = `read_only: true`）
+- `tasks[].id` は英数字・ハイフン・アンダースコアのみで一意にする。Markdown 本文の依存関係セクションと `tasks[].depends_on` を一致させる
+- フロントマターは YAML パーサで再パース可能でなければならない（インデントずれ・タブ混入禁止）
 
 ## Tools & Constraints
-制限: ソースファイルの編集・書き込みは行わない
+制限:
+- ソースファイルの編集・書き込みは行わない
+- plan-report の YAML フロントマター内で `tasks[].id` の重複・未定義の `depends_on` 参照・エージェント名の typo を出力しない（`c3 po dry-run` で検証可能）
 
 ## Related Agents
 - 上流: architect（architecture-report を受け取る）
