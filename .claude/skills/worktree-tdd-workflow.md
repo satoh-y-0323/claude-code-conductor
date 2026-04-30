@@ -1,7 +1,7 @@
 # Worktree TDD Workflow
 
 ヘッドレス専用の TDD 1サイクル定義。AskUserQuestion を含まない。
-`agents/tdd-develop.md` から呼び出されることを前提とする。
+`.claude/agents/tdd-develop.md` から呼び出されることを前提とする。
 
 ---
 
