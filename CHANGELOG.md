@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.4] - 2026-05-01
+
+### Changed
+- `planner` agent now produces plan-reports designed for actual parallel
+  execution. Previously the agent only knew "emit YAML frontmatter"; without
+  rules for how to design the dependency graph it tended to write conservative
+  serial chains where every task depended on the previous one, defeating the
+  point of parallel-orchestra. Added a "並列実行のための設計指針" section
+  with eight concrete rules:
+  - depends_on only for true dependencies (not "just to be safe")
+  - serialization self-check: chain length ≦ tasks/2
+  - reviews go to the end via depends_on covering all dev tasks
+  - decompose at file/module boundaries, not function-level or module-level
+  - 1 TDD task = test + production + correction loop (do not split)
+  - default granularity: file / feature
+  - `writes` field is mandatory for collision detection
+  - duplicate writes must be merged, sequenced via depends_on, or grouped
+- `.claude/docs/parallel-orchestra-manifest.md`: example expanded to three
+  dev tasks + a depends-on-all reviewer (showing real parallelism), plus
+  inline comments and an "アンチパターン" section that calls out
+  serialized chains, splitting TDD into separate tester/developer tasks,
+  and empty/duplicate `writes` fields.
+
 ## [0.2.3] - 2026-05-01
 
 ### Added
