@@ -24,6 +24,152 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
+# Topological wave decomposition
+# ---------------------------------------------------------------------------
+
+
+def compute_waves(frontmatter: dict) -> list[list[dict]]:
+    """Group ``frontmatter['tasks']`` into topological waves.
+
+    Wave 0 contains tasks with no ``depends_on`` references that are still
+    pending. Wave N contains tasks whose ``depends_on`` are all in waves
+    < N. Within each wave, tasks are independent and may execute in
+    parallel.
+
+    Wave order is deterministic: tasks within a wave are sorted by ``id``.
+
+    Raises:
+        ValueError: a cycle exists or a ``depends_on`` references an
+            unknown task id.
+    """
+    tasks = frontmatter.get("tasks") or []
+    if not isinstance(tasks, list) or not tasks:
+        return []
+
+    by_id: dict[str, dict] = {}
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise ValueError("each task must be a mapping")
+        task_id = task.get("id")
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("each task must have a string `id`")
+        if task_id in by_id:
+            raise ValueError(f"duplicate task id: {task_id!r}")
+        by_id[task_id] = task
+
+    for task in by_id.values():
+        for dep in task.get("depends_on", []) or []:
+            if dep not in by_id:
+                raise ValueError(
+                    f"task {task['id']!r} depends_on unknown id {dep!r}"
+                )
+
+    remaining = dict(by_id)
+    waves: list[list[dict]] = []
+    while remaining:
+        ready = [
+            t for t in remaining.values()
+            if all(d not in remaining for d in t.get("depends_on", []) or [])
+        ]
+        if not ready:
+            raise ValueError(
+                f"cycle detected among tasks: {sorted(remaining)}"
+            )
+        waves.append(sorted(ready, key=lambda t: t["id"]))
+        for t in ready:
+            del remaining[t["id"]]
+    return waves
+
+
+def build_wave_manifest_text(
+    frontmatter: dict, wave_index: int, *, body: str = ""
+) -> str:
+    """Render an ephemeral PO manifest containing only the wave's tasks.
+
+    All ``depends_on`` references are dropped (tasks within a single wave are
+    independent by construction). Top-level fields ``po_plan_version`` /
+    ``name`` / ``cwd`` / ``defaults`` / ``concurrency_limits`` are preserved;
+    ``on_complete`` / ``on_failure`` webhooks are dropped because they are
+    plan-level (not per-wave) lifecycle hooks.
+
+    Raises:
+        IndexError: ``wave_index`` is out of range.
+    """
+    waves = compute_waves(frontmatter)
+    if wave_index < 0 or wave_index >= len(waves):
+        raise IndexError(
+            f"wave_index {wave_index} out of range (have {len(waves)} waves)"
+        )
+    wave_tasks = waves[wave_index]
+
+    lines: list[str] = ["---"]
+    lines.append(f'po_plan_version: "{frontmatter.get("po_plan_version", "0.1")}"')
+    base_name = frontmatter.get("name", "wave")
+    lines.append(f"name: {_yaml_quote(f'{base_name} - wave {wave_index}')}")
+    lines.append(f"cwd: {_yaml_quote(frontmatter['cwd'])}")
+    defaults = frontmatter.get("defaults")
+    if isinstance(defaults, dict) and defaults:
+        lines.append("defaults:")
+        for k, v in defaults.items():
+            lines.append(f"  {k}: {_yaml_scalar(v)}")
+    cgroups = frontmatter.get("concurrency_limits")
+    if isinstance(cgroups, dict) and cgroups:
+        lines.append("concurrency_limits:")
+        for k, v in cgroups.items():
+            lines.append(f"  {k}: {_yaml_scalar(v)}")
+    lines.append("")
+    lines.append("tasks:")
+    for task in wave_tasks:
+        lines.append(f"  - id: {task['id']}")
+        lines.append(f"    agent: {task['agent']}")
+        lines.append(f"    read_only: {'true' if task['read_only'] else 'false'}")
+        prompt = task.get("prompt", "")
+        if "\n" in prompt or len(prompt) > 80:
+            lines.append("    prompt: |")
+            for pline in prompt.rstrip("\n").splitlines():
+                lines.append(f"      {pline}")
+        else:
+            lines.append(f"    prompt: {_yaml_quote(prompt)}")
+        writes = task.get("writes")
+        if isinstance(writes, list) and writes:
+            lines.append("    writes:")
+            for w in writes:
+                lines.append(f"      - {w}")
+        max_retries = task.get("max_retries")
+        if isinstance(max_retries, int):
+            lines.append(f"    max_retries: {max_retries}")
+        cgroup = task.get("concurrency_group")
+        if isinstance(cgroup, str) and cgroup:
+            lines.append(f"    concurrency_group: {cgroup}")
+        # Intentionally no depends_on: wave is internally independent.
+    lines.append("---")
+    lines.append("")
+    if body:
+        lines.append(body.rstrip("\n"))
+    else:
+        lines.append(f"# Wave {wave_index} manifest (generated by c3 po run-wave)")
+    return "\n".join(lines) + "\n"
+
+
+def _yaml_quote(s: str) -> str:
+    if s == "":
+        return '""'
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _yaml_scalar(v: Any) -> str:
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, str):
+        return _yaml_quote(v)
+    raise TypeError(f"unsupported scalar type: {type(v)}")
+
+
+# ---------------------------------------------------------------------------
 # Frontmatter extraction
 # ---------------------------------------------------------------------------
 

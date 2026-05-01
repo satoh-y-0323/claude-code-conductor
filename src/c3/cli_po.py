@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from c3.paths import claude_root_for
 from c3.po.detect import detect_po
-from c3.po.manifest import validate_manifest
+from c3.po.manifest import (
+    build_wave_manifest_text,
+    compute_waves,
+    extract_frontmatter,
+    validate_manifest,
+)
 from c3.po.run import run_manifest
 
 
@@ -36,7 +43,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
     run = inner.add_parser(
         "run",
-        help="Execute the manifest",
+        help="Execute the full manifest in one PO invocation",
     )
     run.add_argument("manifest", type=Path)
     run.add_argument("--max-workers", type=int, default=None)
@@ -44,6 +51,25 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     run.add_argument("--quiet", action="store_true")
     run.add_argument("--claude-exe", default=None)
     run.set_defaults(handler=_handle_run)
+
+    waves = inner.add_parser(
+        "waves",
+        help="Print the topological-wave decomposition of the manifest as JSON",
+    )
+    waves.add_argument("manifest", type=Path)
+    waves.set_defaults(handler=_handle_waves)
+
+    run_wave = inner.add_parser(
+        "run-wave",
+        help="Execute only the wave at the given index via PO",
+    )
+    run_wave.add_argument("manifest", type=Path)
+    run_wave.add_argument("--wave-index", type=int, required=True)
+    run_wave.add_argument("--max-workers", type=int, default=None)
+    run_wave.add_argument("--report", type=Path, default=None)
+    run_wave.add_argument("--quiet", action="store_true")
+    run_wave.add_argument("--claude-exe", default=None)
+    run_wave.set_defaults(handler=_handle_run_wave)
 
 
 def _ensure_po_available() -> int:
@@ -91,6 +117,86 @@ def _handle_run(args: argparse.Namespace) -> int:
         return rc
     result = run_manifest(
         args.manifest,
+        max_workers=args.max_workers,
+        report=args.report,
+        quiet=args.quiet,
+        claude_exe=args.claude_exe,
+    )
+    if result.status == "not_installed":
+        print(_NOT_INSTALLED_MSG, file=sys.stderr)
+        return 1
+    return result.exit_code if result.exit_code >= 0 else 1
+
+
+def _handle_waves(args: argparse.Namespace) -> int:
+    rc = _preflight(args.manifest)
+    if rc != 0:
+        return rc
+    fm = extract_frontmatter(args.manifest)
+    if fm is None:
+        # Should not happen after _preflight passed, but be defensive.
+        print("could not parse frontmatter", file=sys.stderr)
+        return 2
+    try:
+        waves = compute_waves(fm)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    output = {
+        "waves": [
+            {
+                "index": index,
+                "tasks": [
+                    {
+                        "id": task["id"],
+                        "agent": task.get("agent"),
+                        "read_only": task.get("read_only"),
+                        "writes": task.get("writes") or [],
+                        "prompt": task.get("prompt", ""),
+                    }
+                    for task in wave_tasks
+                ],
+            }
+            for index, wave_tasks in enumerate(waves)
+        ]
+    }
+    json.dump(output, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
+def _handle_run_wave(args: argparse.Namespace) -> int:
+    rc = _preflight(args.manifest)
+    if rc != 0:
+        return rc
+    if (rc := _ensure_po_available()) != 0:
+        return rc
+
+    fm = extract_frontmatter(args.manifest)
+    if fm is None:
+        print("could not parse frontmatter", file=sys.stderr)
+        return 2
+    try:
+        wave_text = build_wave_manifest_text(fm, args.wave_index)
+    except (IndexError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    root = claude_root_for(args.manifest.parent) or claude_root_for(Path.cwd())
+    if root is None:
+        print(
+            "could not locate .claude/ directory to materialise the wave manifest",
+            file=sys.stderr,
+        )
+        return 2
+    tmp_dir = root / ".claude" / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    wave_path = tmp_dir / f"po-manifest-wave-{args.wave_index}-{timestamp}.md"
+    wave_path.write_text(wave_text, encoding="utf-8")
+
+    result = run_manifest(
+        wave_path,
         max_workers=args.max_workers,
         report=args.report,
         quiet=args.quiet,

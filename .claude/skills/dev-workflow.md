@@ -217,10 +217,21 @@ AskUserQuestion ツール:
 
 ---
 
-## フェーズ D: TDD
+## フェーズ D: 実装
 
 **フェーズ C から続いている場合:** plan-report はコンテキスト内にあるため読み直し不要。
 **直接開始の場合:** Glob で `.claude/reports/plan-report-*.md` の最新を Read する。存在しない場合はフェーズ C から始めるよう案内して終了する。
+
+### D-0: 実行モード自動判別
+
+plan-report の冒頭を Read し、YAML フロントマター（`---` で始まり `po_plan_version: "0.1"` を含む）の有無を確認する。
+
+**フロントマターありの場合:**
+1. **最初に必ず** `.claude/skills/wave-execution.md` を Read する（記憶・推測で進めない）
+2. `wave-execution.md` の手順に完全に従って wave 単位で実装を進める
+3. 全 wave 完了後はフェーズ E（レビュー）へ進む（wave に reviewer タスクが含まれていれば E をスキップ可能と案内する）
+
+**フロントマターなしの場合（legacy フォールバック）:**
 
 今日のセッションファイルに以下を追記する（未登録の場合のみ）:
 - `- [ ] tester: Red フェーズ`
@@ -228,28 +239,7 @@ AskUserQuestion ツール:
 - `- [ ] developer: Refactor フェーズ`
 - `- [ ] tester: 最終確認`
 
-### D-0: 実行モード選択
-
-AskUserQuestion ツール:
-```json
-{
-  "questions": [{
-    "question": "TDD サイクルの実行モードを選んでください",
-    "options": [
-      { "label": "TDD 逐次実行", "description": "従来の D-1〜D-5（tester→developer→tester）で1タスクずつ進める" },
-      { "label": "PO 並列実行", "description": "parallel-orchestra で plan-report の独立タスクを git worktree 並列実行する（PO のインストールが必要）" }
-    ]
-  }]
-}
-```
-
-**「TDD 逐次実行」の場合:** D-1 へ進む。
-
-**「PO 並列実行」の場合:**
-1. **最初に必ず** `.claude/skills/parallel-execution.md` を Read する（記憶・推測で進めない）
-2. セッションファイルに `- [ ] PO 並列実行` を追記する
-3. `parallel-execution.md` の手順を完全に守る
-4. 完了後はフェーズ E（レビュー）へ進む
+D-1 へ進む。
 
 ### D-1: tester（Red フェーズ）
 

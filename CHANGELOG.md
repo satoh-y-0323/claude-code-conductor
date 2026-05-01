@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.3.0] - 2026-04-30
+
+### Changed (breaking)
+- `/develop` now auto-detects YAML frontmatter on the latest plan-report and
+  switches between two modes:
+  - **frontmatter present** → new "C3 main + PO spot" workflow. C3 walks the
+    DAG wave-by-wave, asks for user approval before each wave, and dispatches
+    each wave to the right runner: solo waves run on the C3 host (Agent-tool
+    spawn for `code-reviewer` / `developer` / `tester`, parent-Claude persona
+    adoption for `tdd-develop` to avoid the depth-1 nested-spawn limit), and
+    multi-task waves are delegated to parallel-orchestra via an ephemeral
+    wave-only manifest under `.claude/tmp/`.
+  - **no frontmatter** → legacy D-1〜D-5 sequential TDD ceremony, unchanged.
+- The previous "PO 全委譲" model (D-0 two-choice prompt) and
+  `.claude/skills/parallel-execution.md` are removed. The new flow is
+  documented in `.claude/skills/wave-execution.md`.
+
+### Added
+- `c3 po waves <plan-report>` — prints the topological wave decomposition of
+  a manifest as JSON. Used by `wave-execution.md` to drive the per-wave loop.
+- `c3 po run-wave <plan-report> --wave-index N` — generates a wave-only
+  ephemeral manifest under `.claude/tmp/po-manifest-wave-{N}-{ts}.md` and
+  hands it to parallel-orchestra.
+- `c3.po.manifest.compute_waves(frontmatter)` — Kahn's-algorithm topological
+  wave decomposition. Detects cycles, unknown dependency ids, and duplicate
+  task ids.
+- `c3.po.manifest.build_wave_manifest_text(frontmatter, wave_index)` —
+  emits a parseable plan-report Markdown for one wave, dropping `depends_on`
+  and webhook fields and decorating the manifest name with ` - wave N`.
+- `tests/test_po_waves.py` (16 tests) and `tests/test_cli_po.py` (5 tests)
+  covering wave decomposition, ephemeral-manifest generation, CLI exit
+  codes, and frontmatter round-trip.
+
+### Notes
+- The persona-adoption pattern for `tdd-develop` in solo waves is the direct
+  consequence of Claude Code's depth-1 nested-spawn limit (a sub-agent
+  spawned via the Agent tool cannot itself spawn another sub-agent). For
+  agents that internally spawn sub-agents (today: `tdd-develop`), the parent
+  Claude reads the agent definition and adopts its persona instead. Other
+  agents (`code-reviewer`, `security-reviewer`, `developer`, `tester`) keep
+  using the standard Agent-tool spawn path.
+
 ## [0.2.4] - 2026-05-01
 
 ### Changed
