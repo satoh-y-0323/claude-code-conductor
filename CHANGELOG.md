@@ -42,6 +42,34 @@
   agents (`code-reviewer`, `security-reviewer`, `developer`, `tester`) keep
   using the standard Agent-tool spawn path.
 
+### Docs
+- Operational rules captured from a 17-tasks / 7-stages verification run in
+  `c3_pip_test`:
+  - `.claude/skills/wave-execution.md`: new **Step 0-pre** that requires a
+    clean working tree before invoking PO (PO's auto-merge re-creates
+    same-named files in worktrees and conflicts on dirty main — most
+    commonly via `.claude/settings.local.json`, which Claude Code auto-edits
+    when granting permissions). Adds an explicit **"do not git
+    add/commit/push"** rule to case A-2 Agent-tool prompts (a developer
+    sub-agent was committing implementation files while leaving Red tests
+    and test-reports untracked). Adds an **auto-merge conflict (exit code
+    3) recovery** sub-section under case B with a selective-checkout
+    procedure that rescues only declared `writes` and discards worktree-
+    side edits to surrounding files. Adds a per-wave commit reminder under
+    Step 2-F.
+  - `.claude/agents/planner.md`: documents the `depends_on: []` pitfall
+    (`c3 po dry-run` rejects empty arrays — omit the field instead) and
+    the `writes` collision detection. Adds a **"alternating
+    parallel/serial pattern"** section that authorises ordering
+    `depends_on` between stages when the user explicitly wants
+    intermediate review/sync points, while preserving in-stage
+    parallelism ≥ 2.
+  - `.claude/docs/parallel-orchestra-manifest.md`: adds an "alternating
+    parallel/serial pattern" section describing the structure with a
+    pointer to the planner rule.
+  - Memory: `feedback_claude_code_subagent_spec.md` gains section 6
+    documenting that PO's auto-merge requires a clean main.
+
 ## [0.2.4] - 2026-05-01
 
 ### Changed

@@ -17,6 +17,41 @@ C3 の親 Claude が plan-report の DAG を **wave 単位**で歩く。
 
 ---
 
+## Step 0-pre: ワーキングツリーの事前確認
+
+PO は worktree からの auto-merge で main に成果物を取り込む仕様で、**main 側に未コミット変更や untracked ファイルがあると、worktree が同名ファイルを再生成して必ず衝突する**。実行前に `git status` でクリーンであることを確認する。
+
+1. Bash で `git status --short` を実行する
+2. stdout が空（クリーン）→ Step 0 へ
+3. クリーンでない場合:
+   - 検出された変更ファイルをユーザーに提示する
+   - AskUserQuestion で次を確認する:
+
+     ```json
+     {
+       "questions": [{
+         "question": "PO 実行前に main がクリーンである必要があります。どうしますか？",
+         "options": [
+           { "label": "コミットしてから続行", "description": "親 Claude が変更内容を確認してコミットしてから wave 実行に進む" },
+           { "label": "stash してから続行", "description": "git stash で退避してから wave 実行に進む。完了後に stash pop するかは別途判断" },
+           { "label": "キャンセル", "description": "wave 実行を中止し、ユーザーが自分で整理してから /develop を再実行する" }
+         ]
+       }]
+     }
+     ```
+
+   - 「コミットしてから続行」→ 親 Claude が `git status` / `git diff` を見て妥当な単位でコミットしてから Step 0 へ
+   - 「stash してから続行」→ Bash で `git stash push -u -m "wave-execution pre-clean"` を実行してから Step 0 へ
+   - 「キャンセル」→ スキル終了
+
+**特に注意すべきファイル:**
+
+- `.claude/settings.local.json` — Claude Code が permission 自動追加で勝手に更新する。気付かないうちに dirty になっているケースが多い
+- `package.json` / `vitest.config.js` 等の事前準備（W0）ファイル — 未コミットで PO に入ると worktree でも同ファイルが書き換わって必ず衝突する
+- `.claude/reports/` 配下の中間生成物
+
+---
+
 ## Step 0: 妥当性チェック
 
 1. Glob で `.claude/reports/plan-report-*.md` の最新ファイルパスを取得する
@@ -131,7 +166,10 @@ AskUserQuestion ツール:
 1. Agent ツールで `subagent_type` は指定せず（カスタム agent は subagent_type 不可）、プロンプトに以下を含める:
    - 「`.claude/agents/{agent_name}.md` を Read してペルソナを採用すること」
    - タスクの `prompt` 本文
+   - **「git add / git commit / git push を実行しないこと。コミットは親 Claude がユーザー承認後に行う」を明示**
 2. Agent の返答を 2-D の集約に渡す
+
+**git 禁止ルールの根拠:** 動作確認で developer が独断コミットして Red テストや test-report が untracked のまま実装ファイルだけが main に入る事故が起きた。コミット粒度・承認タイミング・成果物の取りこぼしは親 Claude が一元管理する責務。
 
 ##### 将来 agent を追加する場合
 
@@ -158,9 +196,25 @@ c3 po run-wave <plan-report-path> --wave-index {N} --report .claude/reports/po-r
 | `0` | wave 内全タスク成功 | 2-D へ |
 | `1` | 1件以上のタスクが失敗 | 2-D へ（失敗一覧を含めて提示） |
 | `2` | マニフェストエラー（Step 0 をすり抜けた）| エラー内容を提示しスキル終了 |
-| `3` | runner エラー（claude バイナリ不在等）| `c3 doctor` の結果を提示してスキル終了 |
+| `3` | auto-merge 衝突（worktree → main の取り込みに失敗）| 下記「auto-merge が衝突した場合」のリカバリ手順へ |
 
 実行完了後、生成された `po-run-report-wave-{N}-{ts}.json` を Read してタスクごとのステータスを取得する。
+
+##### auto-merge が衝突した場合（exit code 3）
+
+PO は worktree でタスクを実行したあと main に auto-merge する。Step 0-pre をすり抜けて main にダーティな状態が残っていたり、複数 worktree が同じ周辺ファイル（CLAUDE.md / settings.local.json 等）を触っていると衝突する。selective checkout でコア成果物だけ救う:
+
+1. 残っている PO ブランチを列挙する: `git branch --list "parallel-orchestra/*"`
+2. 各ブランチを個別に確認する: `git log --stat parallel-orchestra/<task>-<hash>`
+3. **コア成果物のみ**を抽出する: `git checkout parallel-orchestra/<task>-<hash> -- <files>`
+   - 取り込むのはタスクの `writes` フィールドに列挙されたファイルのみ
+   - **取り込まない**: worktree が touch したが本タスクの責務でない周辺ファイル
+     - `CLAUDE.md` / `package.json` / `vitest.config.js` 等の事前準備系ファイル
+     - `.claude/settings.local.json`（permission 自動追加で worktree 側でも更新されている）
+     - `.claude/reports/` 配下の中間生成物
+4. PO ブランチを削除する: `git branch -D parallel-orchestra/<task>-<hash>` を全ブランチに対して実行
+5. 抽出した成果物 + 既存の main 変更分を親 Claude が確認のうえコミットする
+6. `git status --short` で main がクリーンになったことを確認してから次の wave に進む
 
 ### 2-D: 結果を集約してユーザーに提示する
 
@@ -202,6 +256,8 @@ case A で TDD ループが不合格のまま終わった、または case B で
 ### 2-F: wave 完了をセッションに記録する
 
 全タスク成功した wave のみ、セッションファイルの `- [ ] Wave {N} (M tasks)` を `- [x] Wave {N} (M tasks)` に Edit する。
+
+**次の wave に進む前に main をコミットしてクリーンに保つ。** wave 成果物を未コミットのまま次の wave で PO に入ると、worktree が同名ファイルを再生成して必ず auto-merge 衝突が起きる（Step 0-pre と同じ理由）。親 Claude が wave の成果物を確認のうえ「Wave {N}: {要約}」のメッセージでコミットしてから 2-A の次のループに戻る。
 
 ---
 
