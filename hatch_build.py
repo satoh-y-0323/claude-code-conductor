@@ -73,6 +73,9 @@ def _copy_filtered(src: Path, dst: Path, claude_root: Path) -> None:
 
 
 def _should_skip(rel: str) -> bool:
+    parts = rel.split("/")
+    if "__pycache__" in parts or rel.endswith((".pyc", ".pyo")):
+        return True
     if any(fnmatch.fnmatchcase(rel, p) for p in KEEP_PATTERNS):
         return False
     return any(fnmatch.fnmatchcase(rel, p) for p in EXCLUDE_PATTERNS)

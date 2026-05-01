@@ -30,6 +30,23 @@ def test_excludes_personal_files():
     assert should_skip("settings.local.json")
 
 
+def test_excludes_pycache_at_any_depth():
+    """``__pycache__/*.pyc`` artefacts must never ship in the wheel or be
+    copied by ``c3 init`` / ``c3 update``. They appear when the dev or
+    user runs hooks locally; the build hook reads from the filesystem
+    so without an explicit rule they sneak into the bundle.
+    """
+    assert should_skip("hooks/__pycache__/pre_tool.cpython-311.pyc")
+    assert should_skip("__pycache__/foo.pyc")
+    assert should_skip("hooks/__pycache__/stop.cpython-311.pyo")
+    assert should_skip("agents/sub/__pycache__/x.pyc")
+    # bare .pyc/.pyo (legacy layout) are also filtered defensively
+    assert should_skip("hooks/legacy.pyc")
+    assert should_skip("hooks/legacy.pyo")
+    # but .py source files are framework files and stay
+    assert not should_skip("hooks/pre_tool.py")
+
+
 def test_keep_overrides_exclude_for_gitkeep():
     assert not should_skip("reports/.gitkeep")
     assert not should_skip("memory/.gitkeep")

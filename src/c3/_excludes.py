@@ -39,6 +39,9 @@ KEEP_PATTERNS: tuple[str, ...] = (
 
 def should_skip(rel_posix: str) -> bool:
     """Return True if the path (relative to ``.claude/``) is personal state."""
+    parts = rel_posix.split("/")
+    if "__pycache__" in parts or rel_posix.endswith((".pyc", ".pyo")):
+        return True
     if any(fnmatch.fnmatchcase(rel_posix, p) for p in KEEP_PATTERNS):
         return False
     return any(fnmatch.fnmatchcase(rel_posix, p) for p in EXCLUDE_PATTERNS)

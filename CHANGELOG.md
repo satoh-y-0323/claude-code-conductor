@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.3] - 2026-05-01
+
+### Fixed
+- `__pycache__/` and `.pyc`/`.pyo` artefacts no longer ship in the
+  wheel and no longer leak into user projects via `c3 init` /
+  `c3 update`. Previous releases shipped Python bytecode caches at
+  any path under `.claude/` whenever the dev had run hooks before
+  the build (notably `.claude/hooks/__pycache__/*.pyc`). The
+  `should_skip` predicate in both `c3._excludes` and `hatch_build.py`
+  now short-circuits on any path component named `__pycache__` or
+  any `.pyc` / `.pyo` suffix.
+- `tests/test_excludes.py`: regression test
+  `test_excludes_pycache_at_any_depth` asserts the new behaviour at
+  multiple directory depths and confirms `.py` source files remain
+  framework files.
+
 ## [0.3.2] - 2026-05-01
 
 ### Fixed
