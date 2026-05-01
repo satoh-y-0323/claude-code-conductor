@@ -29,6 +29,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "docs/decisions.md",
     "docs/taxonomy.md",
     "docs/game-studios-research.md",
+    "settings.local.json",
 )
 
 KEEP_PATTERNS: tuple[str, ...] = (

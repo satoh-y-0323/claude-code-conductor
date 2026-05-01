@@ -27,6 +27,7 @@ def test_excludes_personal_files():
     assert should_skip("docs/decisions.md")
     assert should_skip("docs/taxonomy.md")
     assert should_skip("docs/game-studios-research.md")
+    assert should_skip("settings.local.json")
 
 
 def test_keep_overrides_exclude_for_gitkeep():

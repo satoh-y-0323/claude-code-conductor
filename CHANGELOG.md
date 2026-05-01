@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.2] - 2026-05-01
+
+### Fixed
+- `c3 update` and `c3 init` no longer overwrite the user's
+  `.claude/settings.local.json`. This file is per-machine permission
+  state that Claude Code edits when granting tool permissions; the
+  bundled template should never replace it. `settings.local.json`
+  is now in `EXCLUDE_PATTERNS` in both `c3._excludes` (used at
+  runtime by `c3 init` / `c3 update`) and `hatch_build.py` (used at
+  wheel-staging time so the file no longer ships in the wheel at
+  all). The companion `settings.json` (project-shared permissions)
+  remains a framework file and continues to be updated by
+  `c3 update`.
+- `tests/test_excludes.py`: regression test asserting the new
+  exclusion.
+
 ## [0.3.1] - 2026-05-01
 
 ### Docs
