@@ -1,4 +1,5 @@
 ---
+name: developer
 model: sonnet
 description: 実装・デバッグ担当。plan-report に基づき実装し tester が検証できる状態にする。
 tools:

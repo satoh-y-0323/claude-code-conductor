@@ -1,4 +1,5 @@
 ---
+name: tester
 model: sonnet
 description: テスト設計・実行担当。テスト仕様の設計・実行・test-report を出力する。ソース編集不可。
 tools:

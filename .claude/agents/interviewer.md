@@ -1,4 +1,5 @@
 ---
+name: interviewer
 model: sonnet
 description: 要件ヒアリング担当。ユーザーの要望・目的・背景を整理し requirements-report を出力する。
 tools:

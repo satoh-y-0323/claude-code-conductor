@@ -1,4 +1,5 @@
 ---
+name: project-setup
 model: opus
 description: プロジェクト初期設定担当。収集済みのスタック情報と規約情報を受け取り rules/ に配置する。
 tools:

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.3] - 2026-05-01
+
+### Added
+- `name` field on every agent definition under `.claude/agents/*.md`. The
+  `description` field was already present on all agents, so this fills the
+  remaining frontmatter gap. Values match the file stem (e.g. `architect`,
+  `tdd-develop`).
+
 ## [0.2.2] - 2026-05-01
 
 ### Fixed

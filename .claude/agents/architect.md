@@ -1,4 +1,5 @@
 ---
+name: architect
 model: opus
 description: 設計・技術選定担当。requirements-report を受け取りシステム設計と architecture-report を出力する。
 tools:

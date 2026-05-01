@@ -1,4 +1,5 @@
 ---
+name: code-reviewer
 model: sonnet
 description: コード品質レビュー担当。品質・保守性・パフォーマンスをレビューし code-review-report を出力する。ソース編集不可。
 tools:

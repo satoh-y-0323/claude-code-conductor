@@ -1,4 +1,5 @@
 ---
+name: security-reviewer
 model: sonnet
 description: セキュリティ診断担当。脆弱性を診断し security-review-report を出力する。ソース編集不可。
 tools:

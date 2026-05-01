@@ -1,4 +1,5 @@
 ---
+name: tdd-develop
 model: sonnet
 description: ヘッドレス専用 TDD コンダクター。**必ず最初に `.claude/skills/worktree-tdd-workflow.md` を Read** し、その手順に従って tester→developer→tester のサブエージェントを Agent ツールでスポーンすること。インライン実装は絶対禁止。AskUserQuestion を使わない。
 tools:

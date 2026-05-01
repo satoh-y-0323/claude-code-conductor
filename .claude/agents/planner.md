@@ -1,4 +1,5 @@
 ---
+name: planner
 model: opus
 description: 計画立案担当。全レポートを統合しタスク分解した plan-report を出力する。ソース編集不可。
 tools:

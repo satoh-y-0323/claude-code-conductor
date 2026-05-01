@@ -1,4 +1,5 @@
 ---
+name: doc-writer
 model: opus
 description: ドキュメント作成担当。コードベースを読み込み、種類・読み手・目的・粒度に応じたドキュメントを生成する。ソース編集不可。
 tools:
