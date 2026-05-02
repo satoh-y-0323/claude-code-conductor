@@ -37,7 +37,8 @@
       "WebFetch(domain:pypi.org)",
       "Bash(grep \"\\\\.py$\")",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(pip-audit)"
+      "Bash(pip-audit)",
+      "Bash(c3 po *)"
     ]
   },
   "hooks": {
