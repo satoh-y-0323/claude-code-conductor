@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.3.4] - 2026-05-02
+
+### Security
+- `pre_tool.py`: Hardened `rm -rf` detection — flags are now collected
+  only from tokens immediately following the `rm` command, preventing
+  false-negatives when earlier commands in a pipeline carry `-r`/`-f`
+  flags (e.g. `grep -rf … && rm file`). Also added detection of
+  `--recursive --force` long-option combinations.
+- `pre_tool.py`: Extended `cd` block to cover subshell `$()`, backtick,
+  newline, and `eval "cd …"` bypass paths that the previous regex missed.
+- `stop.py`: Field whitelist on `patterns.json` writes — only
+  allow-listed keys are written and `promoted` can never be injected
+  via a session JSON block. Added `MAX_ID_LENGTH = 64` and
+  `MAX_DESCRIPTION_LENGTH = 500` guards.
+- `manifest.py`: `writes`, `agent`, and `concurrency_group` values in
+  generated wave manifests are now passed through `_yaml_quote` to
+  prevent newline injection into the ephemeral YAML.
+
+### Fixed
+- `run.py`: Replaced `assert process.stderr is not None` (silently
+  removed by `-O` optimised bytecode) with an explicit
+  `if … is None: raise RuntimeError(…)` guard.
+- `pre_compact.py`: Replaced `os.path.exists()` + `open('w')` TOCTOU
+  with `open('x')` + `except FileExistsError` — matches the pattern
+  already used in `stop.py`.
+- `stop.py`: `update_patterns` called `os.listdir` inside the pattern
+  loop, causing O(N×M) file-system reads. A single `_build_sessions_by_date`
+  call outside the loop reduces this to O(N+M).
+- `manifest.py`: Removed dead branch `rest is None` (always `False`
+  for `str.partition` return values). Double-quoted YAML scalars now
+  handle `\\`, `\"`, `\n`, `\t`, and `\r` escape sequences.
+- `cli_po.py`: `run-wave` temp manifest now uses `tempfile.NamedTemporaryFile`
+  (unpredictable name) and is deleted in a `try/finally` block regardless
+  of outcome.
+- `cli_list.py`: `OSError` when reading a file in `_summary` is caught
+  and returns `"(unreadable)"` instead of propagating and breaking the
+  entire listing.
+- `run.py`: Replaced `__import__("sys").stderr` idiom with `sys.stderr`.
+- `manifest.py`: `validate_manifest` local `version` renamed to
+  `plan_version` to avoid shadowing a potential future import.
+  `build_wave_manifest_text` accepts an optional `waves` argument to
+  avoid recomputing the wave graph when the caller already has it.
+
+### Changed
+- `pre_compact.py` / `stop.py`: `SESSION_JSON_MARKER = 'C3:SESSION:JSON'`
+  constant is now defined in both files — eliminates the hard-coded
+  string in `pre_compact.py` and makes the two files consistent.
+- `stop.py`: Import block reordered to comply with PEP 8 (all imports
+  before module-level statements).
+- `validate_skill_change.py`: Early-exit paths changed from
+  `sys.exit(0)` to `return`; `__main__` block uses
+  `sys.exit(main() or 0)` pattern, consistent with `pre_tool.py`.
+- `clear_file_history.py`: Added `os.path.islink` pre-check so
+  symbolic links are removed with `os.unlink` rather than
+  `shutil.rmtree`, preventing accidental recursive deletion of a
+  symlink target on some platforms.
+- `worktree_guard.py`: Removed noisy `stderr` log on every tool call
+  when `PO_WORKTREE_GUARD` is unset; the hook now exits silently when
+  the guard is disabled.
+- Template sync: all seven files under `src/c3/_template/.claude/hooks/`
+  are now identical to their counterparts under `.claude/hooks/`, so
+  `c3 init` / `c3 update` distribute the corrected implementations.
+
 ## [0.3.3] - 2026-05-01
 
 ### Fixed
