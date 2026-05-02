@@ -62,9 +62,11 @@ def main():
     date_str = now.strftime('%Y%m%d')
     session_file = os.path.join(session_dir, f'{date_str}.tmp')
 
-    if not os.path.exists(session_file):
-        with open(session_file, 'w', encoding='utf-8') as f:
+    try:
+        with open(session_file, 'x', encoding='utf-8') as f:
             f.write(create_session_template(date_str))
+    except FileExistsError:
+        pass  # already created by stop.py or another process
 
     ts = now.isoformat()
     checkpoint = (
