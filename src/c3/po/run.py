@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -85,10 +86,11 @@ def run_manifest(
             stderr_tail=None,
         )
 
-    assert process.stderr is not None
+    if process.stderr is None:
+        raise RuntimeError("subprocess.stderr is None unexpectedly")
     try:
         for line in process.stderr:
-            print(line, end="", flush=True, file=__import__("sys").stderr)
+            print(line, end="", flush=True, file=sys.stderr)
             stderr_tail.append(line.rstrip("\n"))
     finally:
         process.stderr.close()
