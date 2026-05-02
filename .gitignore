@@ -12,6 +12,10 @@ examples/
 
 # Temporary files
 .claude/tmp/
+.claude/logs/
+
+# Parallel Orchestra worktrees (created during PO execution)
+.po-worktrees/
 
 # Python bytecode / cache
 __pycache__/
