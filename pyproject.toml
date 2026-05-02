@@ -32,6 +32,9 @@ c3 = "c3.cli:main"
 Homepage = "https://github.com/satoh-y-0323/claude-code-conductor"
 Repository = "https://github.com/satoh-y-0323/claude-code-conductor"
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
 [tool.hatch.version]
 path = "src/c3/__init__.py"
 
