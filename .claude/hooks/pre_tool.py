@@ -35,7 +35,9 @@ def main():
     # cd コマンド: CWD 固定バグを防ぐためブロック
     # Bash ツールで cd を実行すると以降の全コマンドの CWD が変わり、
     # フックが相対パスで .claude/hooks/ を参照できなくなる。
-    if re.search(r'(?:^|[;&|])\s*cd(?:\s|$)', cmd):
+    # サブシェル $( )・バックティック・eval・改行セパレータ経由のバイパスも検出する。
+    if re.search(r'(?:^|[;&|\n`]|\$\()\s*cd(?:\s|$)', cmd) or \
+       re.search(r'\beval\b.*\bcd\b', cmd):
         print(
             '[PreToolUse BLOCK] cd コマンドをブロックしました。\n'
             'Bash ツールで cd を実行すると CWD が変わり、以降のフックが失敗します。\n'
@@ -46,11 +48,12 @@ def main():
         sys.exit(2)
 
     # rm -rf 系: ブロック
-    # 短フラグ形式（-rf / -fr / -r -f 等）とロングオプション形式（--recursive --force）に対応
+    # rm の直後のフラグのみを収集することで、前のコマンドのフラグを誤検出しない
     if re.search(r'\brm\b', cmd):
-        short_flags = ''.join(re.findall(r'-[a-zA-Z]+', cmd))
-        has_r = 'r' in short_flags or bool(re.search(r'\brm\b.*\s-[a-zA-Z]*r[a-zA-Z]*', cmd))
-        has_f = 'f' in short_flags or bool(re.search(r'\brm\b.*\s-[a-zA-Z]*f[a-zA-Z]*', cmd))
+        rm_flags_match = re.findall(r'\brm\b((?:\s+-[a-zA-Z]+)*)', cmd)
+        flags_str = ''.join(rm_flags_match)
+        has_r = bool(re.search(r'-[a-zA-Z]*r', flags_str)) or '--recursive' in cmd
+        has_f = bool(re.search(r'-[a-zA-Z]*f', flags_str)) or '--force' in cmd
         has_long_recursive = '--recursive' in cmd
         has_long_force = '--force' in cmd
         if (has_r and has_f) or (has_long_recursive and has_long_force):
