@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
+SESSION_JSON_MARKER = 'C3:SESSION:JSON'
+
 
 def is_worktree(cwd: str) -> bool:
     git_path = os.path.join(cwd, '.git')
@@ -30,7 +32,7 @@ def create_session_template(date_str: str) -> str:
         f"## 事実ログ（自動生成 / stop.py）\n"
         f"- 記録時刻: \n"
         f"\n"
-        f"<!-- C3:SESSION:JSON\n"
+        f"<!-- {SESSION_JSON_MARKER}\n"
         f"{{\n"
         f'  "session": "{date_str}",\n'
         f'  "patterns": [],\n'
