@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime
+import tempfile
 from pathlib import Path
 
 from c3.paths import claude_root_for
@@ -103,6 +103,7 @@ def _handle_dry_run(args: argparse.Namespace) -> int:
     if (rc := _ensure_po_available()) != 0:
         return rc
     result = run_manifest(args.manifest, dry_run=True)
+    # defensive guard: _ensure_po_available() already verified PO is installed
     if result.status == "not_installed":
         print(_NOT_INSTALLED_MSG, file=sys.stderr)
         return 1
@@ -122,6 +123,7 @@ def _handle_run(args: argparse.Namespace) -> int:
         quiet=args.quiet,
         claude_exe=args.claude_exe,
     )
+    # defensive guard: _ensure_po_available() already verified PO is installed
     if result.status == "not_installed":
         print(_NOT_INSTALLED_MSG, file=sys.stderr)
         return 1
@@ -191,17 +193,25 @@ def _handle_run_wave(args: argparse.Namespace) -> int:
         return 2
     tmp_dir = root / ".claude" / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    wave_path = tmp_dir / f"po-manifest-wave-{args.wave_index}-{timestamp}.md"
+    with tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".md",
+        dir=tmp_dir,
+    ) as tmp_file:
+        wave_path = Path(tmp_file.name)
     wave_path.write_text(wave_text, encoding="utf-8")
 
-    result = run_manifest(
-        wave_path,
-        max_workers=args.max_workers,
-        report=args.report,
-        quiet=args.quiet,
-        claude_exe=args.claude_exe,
-    )
+    try:
+        result = run_manifest(
+            wave_path,
+            max_workers=args.max_workers,
+            report=args.report,
+            quiet=args.quiet,
+            claude_exe=args.claude_exe,
+        )
+    finally:
+        wave_path.unlink(missing_ok=True)
+    # defensive guard: _ensure_po_available() already verified PO is installed
     if result.status == "not_installed":
         print(_NOT_INSTALLED_MSG, file=sys.stderr)
         return 1
