@@ -158,6 +158,8 @@ def main() -> None:
             chunks.append(line)
             total_size += len(line)
             if total_size > MAX_INPUT:
+                overflow = total_size - MAX_INPUT
+                chunks[-1] = chunks[-1][: len(chunks[-1]) - overflow]
                 break
     except Exception:
         pass
