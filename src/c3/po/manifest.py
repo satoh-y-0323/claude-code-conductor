@@ -143,7 +143,7 @@ def build_wave_manifest_text(
         if isinstance(writes, list) and writes:
             lines.append("    writes:")
             for w in writes:
-                lines.append(f"      - {w}")
+                lines.append(f"      - {_yaml_quote(str(w))}")
         max_retries = task.get("max_retries")
         if isinstance(max_retries, int):
             lines.append(f"    max_retries: {max_retries}")
