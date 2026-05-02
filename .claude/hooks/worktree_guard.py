@@ -16,7 +16,6 @@ sys.stderr.reconfigure(encoding='utf-8')
 
 def main():
     if os.environ.get('PO_WORKTREE_GUARD') != '1':
-        print('[WorktreeGuard] PO_WORKTREE_GUARD is not set; guard disabled.', file=sys.stderr)
         sys.exit(0)
 
     try:
