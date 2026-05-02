@@ -57,7 +57,10 @@ def handle(args: argparse.Namespace) -> int:
 
 
 def _summary(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return "(unreadable)"
     fm_match = _FRONTMATTER_RE.match(text)
     if fm_match:
         desc_match = _DESCRIPTION_RE.search(fm_match.group(1))
