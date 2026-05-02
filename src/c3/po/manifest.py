@@ -82,7 +82,7 @@ def compute_waves(frontmatter: dict) -> list[list[dict]]:
 
 
 def build_wave_manifest_text(
-    frontmatter: dict, wave_index: int, *, body: str = ""
+    frontmatter: dict, wave_index: int, waves=None, *, body: str = ""
 ) -> str:
     """Render an ephemeral PO manifest containing only the wave's tasks.
 
@@ -92,10 +92,19 @@ def build_wave_manifest_text(
     ``on_complete`` / ``on_failure`` webhooks are dropped because they are
     plan-level (not per-wave) lifecycle hooks.
 
+    Args:
+        frontmatter: Parsed frontmatter dict from the plan-report.
+        wave_index: Zero-based index of the wave to render.
+        waves: Pre-computed waves list. If ``None``, ``compute_waves`` is
+            called automatically. Pass this to avoid redundant computation
+            when the caller already has the waves available.
+        body: Optional body text to append after the closing ``---``.
+
     Raises:
         IndexError: ``wave_index`` is out of range.
     """
-    waves = compute_waves(frontmatter)
+    if waves is None:
+        waves = compute_waves(frontmatter)
     if wave_index < 0 or wave_index >= len(waves):
         raise IndexError(
             f"wave_index {wave_index} out of range (have {len(waves)} waves)"
@@ -209,10 +218,10 @@ def validate_manifest(plan_report_path: Path, claude_root: Path) -> list[str]:
             "Re-run /start Phase C to regenerate the plan-report."
         ]
 
-    version = fm.get("po_plan_version")
-    if version != "0.1":
+    plan_version = fm.get("po_plan_version")
+    if plan_version != "0.1":
         errors.append(
-            f"unsupported po_plan_version: {version!r} (expected '0.1')"
+            f"unsupported po_plan_version: {plan_version!r} (expected '0.1')"
         )
 
     if not isinstance(fm.get("name"), str) or not fm["name"]:
@@ -336,7 +345,7 @@ def _parse_mapping(
         key = key.strip()
         rest = rest.lstrip()
         idx += 1
-        if rest == "" or rest is None:
+        if rest == "":
             value, idx = _parse_block(lines, idx, indent + 1)
             result[key] = value
         elif rest == "|":
@@ -425,10 +434,19 @@ def _parse_literal(
     return "\n".join(body), idx
 
 
+_ESCAPE_RE = re.compile(r'\\([\\n"])')
+_ESCAPE_MAP = {"\\": "\\", "n": "\n", '"': '"'}
+
+
+def _expand_double_quote_escapes(s: str) -> str:
+    """Expand YAML double-quoted scalar escape sequences: \\, \n, \"."""
+    return _ESCAPE_RE.sub(lambda m: _ESCAPE_MAP[m.group(1)], s)
+
+
 def _scalar(text: str) -> Any:
     text = text.strip()
     if text.startswith('"') and text.endswith('"') and len(text) >= 2:
-        return text[1:-1]
+        return _expand_double_quote_escapes(text[1:-1])
     if text.startswith("'") and text.endswith("'") and len(text) >= 2:
         return text[1:-1]
     lower = text.lower()
