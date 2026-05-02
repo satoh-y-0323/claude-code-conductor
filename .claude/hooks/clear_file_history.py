@@ -22,13 +22,15 @@ def main():
     for name in entries:
         full_path = os.path.join(FILE_HISTORY_DIR, name)
         try:
-            if os.path.isdir(full_path):
+            if os.path.islink(full_path):
+                os.unlink(full_path)
+            elif os.path.isdir(full_path):
                 shutil.rmtree(full_path)
             else:
                 os.unlink(full_path)
             deleted += 1
         except FileNotFoundError:
-            pass
+            pass  # already deleted by another process between listdir and unlink/rmtree
         except Exception as e:
             print(f'[clear-file-history] 削除に失敗: {name} ({e})')
 
