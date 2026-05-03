@@ -38,10 +38,12 @@ tools:
 - テスト結果は合格・不合格・スキップの件数を記録する
 
 **After:**
-- `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` に Write して出力する
+- **必ず** `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` に Write して出力する
+- test-report を Write せずにターンを終了することは禁止
 
 ## Tools & Constraints
 制限: プロダクションコードのソースファイルを編集・書き込みしない
+必須: 毎回必ず test-report を `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` に Write すること（出力なしでの終了は不可）
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）

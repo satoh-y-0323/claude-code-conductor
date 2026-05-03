@@ -249,7 +249,7 @@ D-1 へ進む。
 
 ### D-1: tester（Red フェーズ）
 
-Agent ツールで `tester` エージェントを起動する。→ 失敗するテストを先に作成する。
+Agent ツールで `tester` エージェントを起動する。→ 失敗するテストを先に作成する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**
 
 完了後 → セッションファイルの `- [ ] tester: Red フェーズ` を `- [x]` に Edit する。
 
@@ -278,7 +278,7 @@ AskUserQuestion で確認する:
 
 ### D-3: tester（確認）
 
-Agent ツールで `tester` エージェントを起動する。→ 全テストの合否を確認する。
+Agent ツールで `tester` エージェントを起動する。→ 全テストの合否を確認する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**
 
 AskUserQuestion で確認する:
 ```json
@@ -304,7 +304,7 @@ Agent ツールで `developer` エージェントを起動する。→ テスト
 
 ### D-5: tester（最終確認）
 
-Agent ツールで `tester` エージェントを起動する。
+Agent ツールで `tester` エージェントを起動する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**
 
 AskUserQuestion で確認する:
 ```json

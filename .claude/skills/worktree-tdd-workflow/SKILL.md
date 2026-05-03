@@ -56,6 +56,7 @@ user-invocable: false
    - plan-report の内容
    - test-report の内容（不合格テストの詳細）
    - 「test-report の不合格テストをすべて通過させるよう実装すること。テストコードは編集しないこと」
+   - 「**git commit は絶対に実行しないこと**。コミットは PO が行う」
 
 ---
 

@@ -10,6 +10,7 @@ import os
 import re
 from datetime import date, datetime, timezone
 
+sys.stdin.reconfigure(encoding='utf-8')
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
@@ -40,7 +41,13 @@ def ensure_session_file(date_str: str) -> None:
             f.write(create_session_template(date_str))
         print(f'[Stop] セッションファイルを作成しました: {path}', file=sys.stderr)
     except FileExistsError:
-        _update_facts_timestamp(path)
+        # /exit による中断等でファイルが空の場合はテンプレートを書き直す
+        if os.path.getsize(path) == 0:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(create_session_template(date_str))
+            print(f'[Stop] 空セッションファイルを再初期化しました: {path}', file=sys.stderr)
+        else:
+            _update_facts_timestamp(path)
 
 
 def _append_last_message(path: str, message: str) -> None:
