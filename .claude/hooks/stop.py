@@ -18,48 +18,17 @@ _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
 PATTERNS_FILE = os.path.join(_CLAUDE_DIR, 'memory', 'patterns.json')
 
+from session_utils import SESSION_JSON_MARKER, is_worktree, create_session_template
+
 EXPIRY_DAYS = 30
 PROMOTION_THRESHOLD = 0.8
 COOLING_DAYS = 3
-SESSION_JSON_MARKER = 'C3:SESSION:JSON'
 MAX_ID_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 500
 
 
-def is_worktree(cwd: str) -> bool:
-    git_path = os.path.join(cwd, '.git')
-    return os.path.exists(git_path) and os.path.isfile(git_path)
-
-
 def get_session_path(date_str: str) -> str:
     return os.path.join(SESSIONS_DIR, f'{date_str}.tmp')
-
-
-def create_session_template(date_str: str) -> str:
-    return (
-        f"SESSION: {date_str}\n"
-        f"AGENT: \n"
-        f"DURATION: \n"
-        f"\n"
-        f"## うまくいったアプローチ\n"
-        f"\n"
-        f"## 試みたが失敗したアプローチ\n"
-        f"\n"
-        f"## 残タスク\n"
-        f"\n"
-        f"## 事実ログ（自動生成 / stop.py）\n"
-        f"- 記録時刻: \n"
-        f"\n"
-        f"<!-- {SESSION_JSON_MARKER}\n"
-        f"{{\n"
-        f'  "session": "{date_str}",\n'
-        f'  "patterns": [],\n'
-        f'  "successes": [],\n'
-        f'  "failures": [],\n'
-        f'  "todos": []\n'
-        f"}}\n"
-        f"-->\n"
-    )
 
 
 def ensure_session_file(date_str: str) -> None:
@@ -209,9 +178,14 @@ def update_patterns(date_str: str) -> None:
 
 def main():
     try:
-        json.loads(sys.stdin.read())
+        payload = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, ValueError):
-        pass
+        payload = {}
+
+    # stop_hook_active=true は Stop hook が decision:block を返した後の 2 回目呼び出し。
+    # セッション処理は初回のみ実行する。
+    if payload.get('stop_hook_active'):
+        sys.exit(0)
 
     cwd = os.getcwd()
     if is_worktree(cwd):

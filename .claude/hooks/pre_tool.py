@@ -32,21 +32,6 @@ def main():
         print('[PreToolUse WARNING] 破壊的な DB 操作を検出しました。本番環境での実行でないことを確認してください。',
               file=sys.stderr)
 
-    # cd コマンド: CWD 固定バグを防ぐためブロック
-    # Bash ツールで cd を実行すると以降の全コマンドの CWD が変わり、
-    # フックが相対パスで .claude/hooks/ を参照できなくなる。
-    # サブシェル $( )・バックティック・eval・改行セパレータ経由のバイパスも検出する。
-    if re.search(r'(?:^|[;&|\n`]|\$\()\s*cd(?:\s|$)', cmd) or \
-       re.search(r'\beval\b.*\bcd\b', cmd):
-        print(
-            '[PreToolUse BLOCK] cd コマンドをブロックしました。\n'
-            'Bash ツールで cd を実行すると CWD が変わり、以降のフックが失敗します。\n'
-            'cd を使わず、プロジェクトルートからの相対パスで実行してください。\n'
-            '例: python -m pytest test1/tests -v  （cd test1 && python -m pytest の代わり）',
-            file=sys.stderr
-        )
-        sys.exit(2)
-
     # rm -rf 系: ブロック
     # rm の直後のフラグのみを収集することで、前のコマンドのフラグを誤検出しない
     if re.search(r'\brm\b', cmd):

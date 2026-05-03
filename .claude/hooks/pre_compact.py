@@ -9,58 +9,31 @@ from datetime import datetime, timezone
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
-SESSION_JSON_MARKER = 'C3:SESSION:JSON'
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+_CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
+SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
 
-
-def is_worktree(cwd: str) -> bool:
-    git_path = os.path.join(cwd, '.git')
-    return os.path.exists(git_path) and os.path.isfile(git_path)
-
-
-def create_session_template(date_str: str) -> str:
-    return (
-        f"SESSION: {date_str}\n"
-        f"AGENT: \n"
-        f"DURATION: \n"
-        f"\n"
-        f"## うまくいったアプローチ\n"
-        f"\n"
-        f"## 試みたが失敗したアプローチ\n"
-        f"\n"
-        f"## 残タスク\n"
-        f"\n"
-        f"## 事実ログ（自動生成 / stop.py）\n"
-        f"- 記録時刻: \n"
-        f"\n"
-        f"<!-- {SESSION_JSON_MARKER}\n"
-        f"{{\n"
-        f'  "session": "{date_str}",\n'
-        f'  "patterns": [],\n'
-        f'  "successes": [],\n'
-        f'  "failures": [],\n'
-        f'  "todos": []\n'
-        f"}}\n"
-        f"-->\n"
-    )
+from session_utils import is_worktree, create_session_template
 
 
 def main():
     try:
-        json.loads(sys.stdin.read())
+        payload = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, ValueError):
-        pass
+        payload = {}
 
     cwd = os.getcwd()
-
     if is_worktree(cwd):
         sys.exit(0)
 
-    session_dir = os.path.join(cwd, '.claude', 'memory', 'sessions')
-    os.makedirs(session_dir, exist_ok=True)
+    trigger = payload.get('trigger', 'unknown')
+    context_items_before = payload.get('context_items_before', 0)
+
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
 
     now = datetime.now(timezone.utc)
     date_str = now.strftime('%Y%m%d')
-    session_file = os.path.join(session_dir, f'{date_str}.tmp')
+    session_file = os.path.join(SESSIONS_DIR, f'{date_str}.tmp')
 
     try:
         with open(session_file, 'x', encoding='utf-8') as f:
@@ -71,8 +44,8 @@ def main():
     ts = now.isoformat()
     checkpoint = (
         f'\n'
-        f'## [PreCompact checkpoint: {ts}]\n'
-        f'コンテキストウィンドウ圧縮が発生しました。\n'
+        f'## [PreCompact checkpoint: {trigger} - {ts}]\n'
+        f'コンテキスト圧縮 ({trigger}) が発生しました。圧縮前: {context_items_before} アイテム。\n'
         f'このポイント以前の詳細な文脈は失われています。\n'
     )
 
