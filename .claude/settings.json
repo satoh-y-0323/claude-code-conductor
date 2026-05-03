@@ -15,8 +15,6 @@
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_compact.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate_skill_change.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/statusline.py\"*)",
-      "Bash(python .claude/hooks/task_session_sync.py*)",
-      "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/task_session_sync.py\"*)",
       "Read(**)",
       "Glob(**)",
       "Grep(**)",
@@ -134,17 +132,6 @@
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop.py\""
-          }
-        ]
-      }
-    ],
-    "TaskCompleted": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/task_session_sync.py\""
           }
         ]
       }
