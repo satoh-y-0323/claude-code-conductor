@@ -1,6 +1,11 @@
-# /promote-pattern コマンド
+---
+description: patterns.json の昇格候補を rules/promoted/ または skills/promoted-YYYYMMDD-{id}/ に昇格させる。信用度が高いパターンをルール・スキルとして永続化する。
+disable-model-invocation: true
+---
 
-`patterns.json` の昇格候補を `rules/promoted/` または `skills/promoted/` に昇格させる。
+# promote-pattern
+
+`patterns.json` の昇格候補を `rules/promoted/` または `skills/promoted-YYYYMMDD-{id}/` に昇格させる。
 
 ---
 
@@ -47,7 +52,7 @@ AskUserQuestion ツールで候補を複数選択式で提示する:
     "question": "「{description}」をどちらに昇格しますか？",
     "options": [
       { "label": "rule", "description": "rules/promoted/ — 背景知識・制約として登録（「こうしろ / これを知っておけ」系）" },
-      { "label": "skill", "description": "skills/promoted/ — オーケストレーション手順として登録（「この順番で動かせ」系）" }
+      { "label": "skill", "description": "skills/promoted-YYYYMMDD-{id}/ — オーケストレーション手順として登録（「この順番で動かせ」系）。Claude が自動的に使用する" }
     ]
   }]
 }
@@ -75,10 +80,12 @@ trust_score: {スコア}
 {ルール本文。「何をすべきか / 何を知っておくべきか」を簡潔に記述する}
 ```
 
-**skill の保存先:** `.claude/skills/promoted/YYYYMMDD-{id}.md`
+**skill の保存先:** `.claude/skills/promoted-YYYYMMDD-{id}/SKILL.md`
 
 ```markdown
 ---
+name: promoted-YYYYMMDD-{id}
+description: {昇格理由と期待効果を1文で。例: "wave 実行でのペルソナ採用パターン。tdd-develop を単独 wave で実行する際に自動適用される"}
 promoted_from: {pattern id}
 promoted_date: YYYY-MM-DD
 trust_score: {スコア}
@@ -87,7 +94,7 @@ trust_score: {スコア}
 # {タイトル}
 
 ## 使うタイミング
-{どんな状況でこのスキルを使うか}
+{どんな状況でこのスキルを使うか — description の詳細版}
 
 ## 手順
 {エージェント間のオーケストレーション手順をステップで記述する}
@@ -97,15 +104,12 @@ trust_score: {スコア}
 
 ## Step 5: index.md に追記する
 
-**rule の場合** — `.claude/rules/promoted/index.md` の `<!-- C3:PROMOTED_RULES:BEGIN -->` と `<!-- C3:PROMOTED_RULES:END -->` の間に追記:
+**rule の場合のみ** — `.claude/rules/promoted/index.md` の `<!-- C3:PROMOTED_RULES:BEGIN -->` と `<!-- C3:PROMOTED_RULES:END -->` の間に追記:
 ```
 - **{タイトル}** (`.claude/rules/promoted/YYYYMMDD-{id}.md`) — {description を1行で}
 ```
 
-**skill の場合** — `.claude/skills/promoted/index.md` の `<!-- C3:PROMOTED_SKILLS:BEGIN -->` と `<!-- C3:PROMOTED_SKILLS:END -->` の間に追記:
-```
-- **{タイトル}** (`.claude/skills/promoted/YYYYMMDD-{id}.md`) — {description を1行で}
-```
+**skill の場合** — index.md への追記は不要。Claude Code がスキルを自動検出する。
 
 ---
 
@@ -113,10 +117,18 @@ trust_score: {スコア}
 
 昇格したパターンの entry に以下を追加する:
 
+rule の場合:
 ```json
 "promoted": true,
 "promoted_date": "YYYYMMDD",
 "promoted_to": ".claude/rules/promoted/YYYYMMDD-{id}.md"
+```
+
+skill の場合:
+```json
+"promoted": true,
+"promoted_date": "YYYYMMDD",
+"promoted_to": ".claude/skills/promoted-YYYYMMDD-{id}/SKILL.md"
 ```
 
 複数昇格した場合は Step 4〜6 を全パターン分まとめて処理してから Step 7 へ進む。
@@ -127,9 +139,8 @@ trust_score: {スコア}
 
 ```
 昇格完了（{N}件）:
-  ✅ {description} → .claude/rules/promoted/YYYYMMDD-{id}.md  [trust: {スコア}]
-  ✅ {description} → .claude/skills/promoted/YYYYMMDD-{id}.md [trust: {スコア}]
+  ✅ {description} → .claude/rules/promoted/YYYYMMDD-{id}.md        [trust: {スコア}]
+  ✅ {description} → .claude/skills/promoted-YYYYMMDD-{id}/SKILL.md [trust: {スコア}]
 
-index.md にも追記しました。
-次回セッションからこれらのルール・スキルが自動で読み込まれます。
+スキルは Claude が関連する場面で自動的に使用します。
 ```

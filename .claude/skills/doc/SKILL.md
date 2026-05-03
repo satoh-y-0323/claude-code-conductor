@@ -1,4 +1,9 @@
-# /doc コマンド
+---
+description: ドキュメント種類・対象・読み手・目的・粒度をヒアリングして doc-writer エージェントにドキュメントを生成させる。
+disable-model-invocation: true
+---
+
+# doc
 
 ドキュメントを対話形式でヒアリングして生成する。
 対話部分は親 Claude が担当し、生成は doc-writer エージェントが行う。

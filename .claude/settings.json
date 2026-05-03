@@ -18,7 +18,7 @@
       "Edit(.claude/memory/sessions/**)",
       "Write(.claude/memory/sessions/**)",
       "Write(.claude/rules/promoted/**)",
-      "Write(.claude/skills/promoted/**)",
+      "Write(.claude/skills/**)",
       "Bash(git status*)",
       "Bash(git diff*)",
       "Bash(git log*)",

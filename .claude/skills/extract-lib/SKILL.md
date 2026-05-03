@@ -1,4 +1,9 @@
-# /extract-lib コマンド
+---
+description: 複数プロジェクトから共通コードを解析・抽出してライブラリ設計案とスケルトンコードを生成する。
+disable-model-invocation: true
+---
+
+# extract-lib
 
 複数プロジェクトのコードを横断解析し、共通要素を抽出してライブラリ設計・スケルトン生成を行う。
 

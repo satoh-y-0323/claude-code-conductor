@@ -1,4 +1,9 @@
-# /start コマンド
+---
+description: 開発ワークフローの入口。既存レポートの整理後、ヒアリング・設計・計画・実装のどこから始めるかを選んで dev-workflow を実行する。
+disable-model-invocation: true
+---
+
+# start
 
 開発ワークフローの入口。
 
@@ -76,9 +81,9 @@ AskUserQuestion ツールで以下を提示する:
 
 ---
 
-## Step 2: dev-workflow.md を Read してフェーズを実行する
+## Step 2: dev-workflow/SKILL.md を Read してフェーズを実行する
 
-**最初に必ず** `.claude/skills/dev-workflow.md` を Read する。記憶・推測で進めず、dev-workflow.md の AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
+**最初に必ず** `.claude/skills/dev-workflow/SKILL.md` を Read する。記憶・推測で進めず、dev-workflow/SKILL.md の AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
 
 選択した開始地点に対応するフェーズから実行する:
 

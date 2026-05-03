@@ -1,3 +1,9 @@
+---
+description: ヘッドレス TDD 1 サイクル（Red→Green）の実行手順。tdd-develop エージェントが内部参照する。
+disable-model-invocation: true
+user-invocable: false
+---
+
 # Worktree TDD Workflow
 
 ヘッドレス専用の TDD 1サイクル定義。AskUserQuestion を含まない。

@@ -1,4 +1,9 @@
-# /mcp コマンド
+---
+description: MCP サーバーの追加・一覧・削除を対話形式で行い .claude/settings.json を更新する。
+disable-model-invocation: true
+---
+
+# mcp
 
 MCP サーバーの追加・一覧・削除を対話形式で行う。
 全ての設定は `.claude/settings.json` のプロジェクトスコープに書き込む。

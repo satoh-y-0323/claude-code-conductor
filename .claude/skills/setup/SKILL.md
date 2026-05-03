@@ -1,4 +1,9 @@
-# /setup コマンド
+---
+description: 技術スタックと独自規約をヒアリングして project-setup エージェントに coding-standards.md と project-conventions.md を生成させる。プロジェクト開始時に使用する。
+disable-model-invocation: true
+---
+
+# setup
 
 プロジェクトのコーディング規約を設定する。
 ヒアリングは親 Claude が担当し、収集後に project-setup エージェントを起動する。

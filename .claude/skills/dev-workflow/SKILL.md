@@ -1,3 +1,9 @@
+---
+description: ヒアリング→設計→計画→実装→レビューの全フェーズワークフロー。/start・/develop・/review コマンドが内部参照する。
+disable-model-invocation: false
+user-invocable: false
+---
+
 # Dev Workflow
 
 要件定義から実装・レビューまでを複数エージェントで連携させるフルワークフロー。
@@ -227,8 +233,8 @@ AskUserQuestion ツール:
 plan-report の冒頭を Read し、YAML フロントマター（`---` で始まり `po_plan_version: "0.1"` を含む）の有無を確認する。
 
 **フロントマターありの場合:**
-1. **最初に必ず** `.claude/skills/wave-execution.md` を Read する（記憶・推測で進めない）
-2. `wave-execution.md` の手順に完全に従って wave 単位で実装を進める
+1. **最初に必ず** `.claude/skills/wave-execution/SKILL.md` を Read する（記憶・推測で進めない）
+2. `wave-execution/SKILL.md` の手順に完全に従って wave 単位で実装を進める
 3. 全 wave 完了後はフェーズ E（レビュー）へ進む（wave に reviewer タスクが含まれていれば E をスキップ可能と案内する）
 
 **フロントマターなしの場合（legacy フォールバック）:**
