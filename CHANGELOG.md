@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.4.0] - 2026-05-04
+
+### Breaking Changes
+- **Skill renamed**: `/review` → `/code-review` — avoids conflict with the
+  official Claude Code `/review [PR]` command (which reviews pull requests).
+  C3's `/code-review` runs `code-reviewer` + `security-reviewer` agents
+  as dev-workflow phase E.
+- **Skill renamed**: `/mcp` → `/mcp-config` — avoids conflict with the
+  official Claude Code `/mcp` command (which manages live MCP connections).
+  C3's `/mcp-config` manages `mcpServers` entries in `.claude/settings.json`.
+- **Skill structure**: `commands/` directory migrated to `skills/` following
+  the Claude Code 2026 skills standard. All skills are now under
+  `.claude/skills/{name}/SKILL.md` with YAML frontmatter.
+
+### Added
+- `stop.py`: Records `last_assistant_message` from Stop hook payload into the
+  session file's 事実ログ section as `- 最終応答: ...` (truncated at 500 chars).
+  The next session's init-session can now read what Claude last accomplished.
+- `session_utils.py`: New shared module exporting `SESSIONS_DIR`,
+  `SESSION_JSON_MARKER`, `is_worktree()`, and `create_session_template()`.
+  Eliminates duplicate definitions across `stop.py` and `pre_compact.py`.
+
+### Fixed
+- `settings.local.json` had a duplicate `hooks` section identical to
+  `settings.json`, causing all hooks to fire twice per event. Removed.
+- Hook commands now use `"$CLAUDE_PROJECT_DIR/.claude/hooks/…"` (absolute
+  path via env var) so hooks remain findable even after `cd` changes CWD.
+  The `cd` block in `pre_tool.py` has been removed as it is no longer needed.
+- `UserPromptSubmit` hook for `statusline.py` removed — the hook input has no
+  `context_window` field, so it always displayed `0%`. The `statusLine`
+  setting handles display correctly on its own.
+- `stop.py`: Reads and respects `stop_hook_active` flag — skips processing
+  on re-entrant Stop calls to prevent duplicate session updates.
+- `pre_compact.py`: Uses `__file__`-based paths instead of `os.getcwd()` so
+  the session file is always found regardless of working directory.
+- `pre_compact.py`: Records `trigger` (manual/auto) and `context_items_before`
+  in checkpoint output for richer context.
+- `stop.py`: Sanitizes surrogate characters (`\udc80`–`\udcff`) in
+  `last_assistant_message` before writing to avoid `UnicodeEncodeError`.
+- `settings.json`: Added missing `Write`/`Edit` permissions for
+  `.claude/reports/archive/**`, `.claude/rules/**`, `.claude/settings.json`,
+  `Edit(.claude/memory/**)`, `Edit(.claude/rules/**)`, `Edit(.claude/skills/**)`.
+- Bash permissions for hook scripts now include both relative-path and
+  `$CLAUDE_PROJECT_DIR`-prefixed forms for full coverage.
+
 ## [0.3.4] - 2026-05-02
 
 ### Security
