@@ -3,6 +3,10 @@
 
 import os
 
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+_CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
+SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
+
 SESSION_JSON_MARKER = 'C3:SESSION:JSON'
 
 
