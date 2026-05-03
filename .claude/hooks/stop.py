@@ -51,6 +51,8 @@ def _append_last_message(path: str, message: str) -> None:
         return
 
     single_line = ' '.join(message.split())
+    # サロゲート文字など UTF-8 非互換文字を除去（JSON デコード時に生成される場合がある）
+    single_line = single_line.encode('utf-8', errors='replace').decode('utf-8')
     truncated = single_line[:MAX_LAST_MSG]
     if len(single_line) > MAX_LAST_MSG:
         truncated += '…（省略）'
