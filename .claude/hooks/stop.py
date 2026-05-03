@@ -24,6 +24,7 @@ PROMOTION_THRESHOLD = 0.8
 COOLING_DAYS = 3
 MAX_ID_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 500
+MAX_LAST_MSG = 500
 
 
 def get_session_path(date_str: str) -> str:
@@ -40,6 +41,28 @@ def ensure_session_file(date_str: str) -> None:
         print(f'[Stop] セッションファイルを作成しました: {path}', file=sys.stderr)
     except FileExistsError:
         _update_facts_timestamp(path)
+
+
+def _append_last_message(path: str, message: str) -> None:
+    with open(path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    if '- 最終応答:' in content:
+        return
+
+    single_line = ' '.join(message.split())
+    truncated = single_line[:MAX_LAST_MSG]
+    if len(single_line) > MAX_LAST_MSG:
+        truncated += '…（省略）'
+
+    updated = re.sub(
+        r'(- 記録時刻: [^\n]*)',
+        lambda m: m.group(0) + f'\n- 最終応答: {truncated}',
+        content
+    )
+    if updated != content:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(updated)
 
 
 def _update_facts_timestamp(path: str) -> None:
@@ -192,6 +215,11 @@ def main():
 
     today_str = date.today().strftime('%Y%m%d')
     ensure_session_file(today_str)
+
+    last_msg = payload.get('last_assistant_message', '').strip()
+    if last_msg:
+        _append_last_message(get_session_path(today_str), last_msg)
+
     update_patterns(today_str)
 
 
