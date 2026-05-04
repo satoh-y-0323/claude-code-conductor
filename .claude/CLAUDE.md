@@ -152,23 +152,23 @@ session ファイルの JSON ブロックにパターンを記録する:
 | `/setup` | コーディング規約の設定（標準規約 + 独自規約） |
 | `/start` | 開発ワークフローの入口（ヒアリング→設計→計画）|
 | `/develop` | 実装フェーズ（TDD: tester→developer→tester） |
-| `/review` | レビューフェーズ（code-reviewer→security-reviewer） |
-| `/mcp` | MCP サーバーの追加・一覧・削除 |
+| `/code-review` | レビューフェーズ（code-reviewer→security-reviewer） |
+| `/doc` | ドキュメント生成（doc-writer エージェント） |
+| `/mcp-config` | MCP サーバーの追加・一覧・削除 |
 | `/extract-lib` | 複数プロジェクトの共通コードを抽出してライブラリ設計・生成 |
 
 ## Directory Structure
 
 ```
 .claude/
-├── agents/          # エージェント定義（誰か・何ができるか・何ができないか）
-├── commands/        # ユーザーが呼び出すエントリーポイント
-├── docs/            # 人間向けリファレンス（エージェントは読まなくてよい）
-├── hooks/           # イベントドリブンで自動実行される Python スクリプト
-├── rules/           # エージェントに注入される背景知識・制約
-│   └── promoted/    # /promote-pattern で昇格したルール
-├── skills/          # 複数エージェントをまたぐオーケストレーション手順
-│   └── promoted/    # /promote-pattern で昇格したスキル
-└── memory/          # セッション記憶・パターン信用度データ
+├── agents/                        # エージェント定義（誰か・何ができるか・何ができないか）
+├── docs/                          # 人間向けリファレンス（エージェントは読まなくてよい）
+├── hooks/                         # イベントドリブンで自動実行される Python スクリプト
+├── rules/                         # エージェントに注入される背景知識・制約
+│   └── promoted/                  # /promote-pattern で昇格したルール
+├── skills/                        # 複数エージェントをまたぐオーケストレーション手順
+│   └── promoted-YYYYMMDD-{id}/    # /promote-pattern で昇格したスキル
+└── memory/                        # セッション記憶・パターン信用度データ
 ```
 
 詳細は `.claude/docs/taxonomy.md` を参照。
@@ -179,4 +179,3 @@ session ファイルの JSON ブロックにパターンを記録する:
 <!-- このセクションは C3 のコマンドが自動で更新する。手動で編集しないこと。 -->
 
 @rules/promoted/index.md
-@skills/promoted/index.md
