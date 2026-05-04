@@ -257,6 +257,18 @@ Agent ツールで `tester` エージェントを起動する。→ 失敗する
 
 Agent ツールで `developer` エージェントを起動する。→ テストが通る実装を行う。
 
+### D-2.5: Stuck チェック
+
+Glob で `.claude/reports/debug-needed-*.md` の最新を確認する。
+
+**ファイルが存在する場合:**
+1. Agent ツールで `systematic-debugger` を起動する。プロンプトに debug-needed ファイルのパスと内容を含める
+2. 生成された `.claude/reports/debug-analysis-*.md` を Glob で取得して Read する
+3. D-2 の developer を再実行する。プロンプトに debug-analysis の内容を追加注入する
+4. debug-needed ファイルを削除する
+
+**ファイルが存在しない場合:** そのまま次へ進む
+
 AskUserQuestion で確認する:
 ```json
 {

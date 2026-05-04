@@ -60,6 +60,22 @@ user-invocable: false
 
 ---
 
+## Step 3.5: Stuck チェック
+
+Glob で `.claude/reports/debug-needed-*.md` の最新を確認する。
+
+**ファイルが存在する場合:**
+1. Agent ツールで `systematic-debugger` を起動する。プロンプトに debug-needed ファイルのパスと内容を含める
+2. 生成された `.claude/reports/debug-analysis-*.md` を Glob で取得して Read する
+3. Step 3 を再実行する。プロンプトに以下を追加注入する:
+   - debug-analysis の内容
+   - 「**git commit は絶対に実行しないこと**」の制約は引き続き適用
+4. debug-needed ファイルを削除する
+
+**ファイルが存在しない場合:** Step 4 へ進む
+
+---
+
 ## Step 4: tester（Green 確認フェーズ）
 
 以下を順番に実行する:
