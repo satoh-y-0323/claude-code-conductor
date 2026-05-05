@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
-import os
+import sys
 import types
 import unittest.mock
 from datetime import date
@@ -57,11 +57,18 @@ def _assert_file_exists() -> None:
     )
 
 
-def _load_module_from_path(path: Path, module_name: str) -> types.ModuleType:
-    """Load a standalone script as a module without executing __main__."""
+def _load_template_module(path: Path, module_name: str) -> types.ModuleType:
+    """Load template stop.py, patching sys.stdin to avoid DontReadFromInput crash.
+
+    The template stop.py calls sys.stdin.reconfigure() at module level without
+    a try/except. pytest replaces sys.stdin with DontReadFromInput which has no
+    reconfigure method, causing AttributeError. Patching sys.stdin with a
+    MagicMock during module loading avoids the crash.
+    """
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with unittest.mock.patch("sys.stdin", unittest.mock.MagicMock()):
+        spec.loader.exec_module(module)
     return module
 
 
@@ -71,6 +78,21 @@ def _read_source(path: Path) -> str:
 
 def _parse_ast(path: Path) -> ast.Module:
     return ast.parse(_read_source(path))
+
+
+def _get_module_constant(tree: ast.Module, name: str):
+    """Return the value of a module-level constant assignment, or None if not found."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    if isinstance(node.value, ast.Constant):
+                        return node.value.value
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == name:
+                if node.value and isinstance(node.value, ast.Constant):
+                    return node.value.value
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -106,25 +128,27 @@ class TestLengthLimitConstants:
     def test_max_id_length_constant_value(self):
         """MAX_ID_LENGTH must equal 64."""
         _assert_file_exists()
-        mod = _load_module_from_path(TEMPLATE_STOP_PY, "_tmpl_stop_test_const_id")
-        assert hasattr(mod, "MAX_ID_LENGTH"), (
+        tree = _parse_ast(TEMPLATE_STOP_PY)
+        value = _get_module_constant(tree, "MAX_ID_LENGTH")
+        assert value is not None, (
             "template stop.py must define MAX_ID_LENGTH at module level. "
             "Add: MAX_ID_LENGTH = 64"
         )
-        assert mod.MAX_ID_LENGTH == 64, (
-            f"Expected MAX_ID_LENGTH == 64, got {mod.MAX_ID_LENGTH!r}"
+        assert value == 64, (
+            f"Expected MAX_ID_LENGTH == 64, got {value!r}"
         )
 
     def test_max_description_length_constant_value(self):
         """MAX_DESCRIPTION_LENGTH must equal 500."""
         _assert_file_exists()
-        mod = _load_module_from_path(TEMPLATE_STOP_PY, "_tmpl_stop_test_const_desc")
-        assert hasattr(mod, "MAX_DESCRIPTION_LENGTH"), (
+        tree = _parse_ast(TEMPLATE_STOP_PY)
+        value = _get_module_constant(tree, "MAX_DESCRIPTION_LENGTH")
+        assert value is not None, (
             "template stop.py must define MAX_DESCRIPTION_LENGTH at module level. "
             "Add: MAX_DESCRIPTION_LENGTH = 500"
         )
-        assert mod.MAX_DESCRIPTION_LENGTH == 500, (
-            f"Expected MAX_DESCRIPTION_LENGTH == 500, got {mod.MAX_DESCRIPTION_LENGTH!r}"
+        assert value == 500, (
+            f"Expected MAX_DESCRIPTION_LENGTH == 500, got {value!r}"
         )
 
 
@@ -140,7 +164,7 @@ class TestUpdatePatternsLengthValidation:
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()
         patterns_file = tmp_path / "patterns.json"
-        mod = _load_module_from_path(
+        mod = _load_template_module(
             TEMPLATE_STOP_PY,
             f"_tmpl_stop_test_validation_{tmp_path.name}",
         )

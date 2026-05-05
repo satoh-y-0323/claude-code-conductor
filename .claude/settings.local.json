@@ -29,7 +29,9 @@
       "Bash(pip-audit)",
       "Bash(c3 po *)",
       "Bash(git check-ignore *)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(mkdir -p .claude/reports/archive)",
+      "Bash(mv .claude/reports/*.md .claude/reports/archive/)"
     ]
   }
 }
