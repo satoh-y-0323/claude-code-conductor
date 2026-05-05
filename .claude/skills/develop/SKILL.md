@@ -1,6 +1,5 @@
 ---
 description: plan-report に基づいて実装フェーズ（フェーズ D）を実行する。po_plan_version があれば PO 並列モード、なければ逐次 TDD を実行する。
-disable-model-invocation: true
 ---
 
 # develop

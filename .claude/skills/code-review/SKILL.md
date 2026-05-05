@@ -1,6 +1,5 @@
 ---
 description: 実装済みコードの code-reviewer・security-reviewer によるレビュー（フェーズ E）を実行する。
-disable-model-invocation: true
 ---
 
 # code-review

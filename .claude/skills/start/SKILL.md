@@ -1,6 +1,5 @@
 ---
 description: 開発ワークフローの入口。既存レポートの整理後、ヒアリング・設計・計画・実装のどこから始めるかを選んで dev-workflow を実行する。
-disable-model-invocation: true
 ---
 
 # start

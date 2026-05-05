@@ -1,6 +1,5 @@
 ---
 description: ヘッドレス TDD 1 サイクル（Red→Green）の実行手順。tdd-develop エージェントが内部参照する。
-disable-model-invocation: true
 user-invocable: false
 ---
 

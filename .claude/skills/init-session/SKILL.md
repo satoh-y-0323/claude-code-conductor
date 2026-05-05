@@ -1,6 +1,5 @@
 ---
 description: セッション開始時に前回の作業状態・残タスク・昇格候補パターンを確認し、作業の開始方法を選ぶ。セッション開始時に手動で実行する。
-disable-model-invocation: true
 ---
 
 # init-session

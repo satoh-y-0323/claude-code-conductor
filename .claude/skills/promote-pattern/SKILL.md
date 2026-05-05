@@ -1,6 +1,5 @@
 ---
 description: patterns.json の昇格候補を rules/promoted/ または skills/promoted-YYYYMMDD-{id}/ に昇格させる。信用度が高いパターンをルール・スキルとして永続化する。
-disable-model-invocation: true
 ---
 
 # promote-pattern

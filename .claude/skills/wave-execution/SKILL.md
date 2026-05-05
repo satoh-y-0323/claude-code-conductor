@@ -1,6 +1,5 @@
 ---
 description: PO（Parallel Orchestra）を用いた wave 単位の並列実装実行手順。dev-workflow がフェーズ D で条件付き参照する。
-disable-model-invocation: true
 user-invocable: false
 ---
 
