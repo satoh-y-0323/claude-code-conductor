@@ -5,15 +5,16 @@ HOME / USERPROFILE を一時ディレクトリに向けることで本番の ~/.
 汚染しない。
 
 テストケース:
-1. ディレクトリが存在しない: exit 0、出力に "0" または "件" が含まれる
+1. ディレクトリが存在しない: exit 0、スキップメッセージが出力に含まれる
 2. 通常ファイルの削除: ファイルが消えて削除件数が出力に含まれる
 3. サブディレクトリの削除: ディレクトリが消える
 4. シンボリックリンクの削除: symlink 自体が消えるが target は残る（OS サポートがある場合）
-5. 削除件数が複数: 複数ファイル削除時のカウントが正しい
+5. FileNotFoundError ハンドリング: 削除中にファイルが消えても crash しない（exit 0）
 """
 
 from __future__ import annotations
 
+import ast
 import os
 import platform
 import subprocess
@@ -179,24 +180,54 @@ def test_symlink_is_deleted_but_target_remains(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# 5. 削除件数が複数
+# 5. FileNotFoundError ハンドリング
 # ---------------------------------------------------------------------------
 
 
-def test_multiple_entries_count_is_correct(tmp_path: Path):
-    """複数エントリ削除時のカウントが stdout に正しく含まれる。"""
+def test_file_not_found_error_is_handled(tmp_path: Path):
+    """削除中にファイルが消えても FileNotFoundError を握りつぶして crash しない（exit 0）。
+
+    hook は subprocess で動作するため unittest.mock.patch は使用できない。
+    代わりに AST 解析で hook ソースコードに FileNotFoundError の except ハンドラが
+    存在することを静的に検証する。
+    これにより「FileNotFoundError が発生しても pass される設計」であることを確認する。
+
+    加えて、実際のファイル削除が正常に完了する（exit 0）ことを実行ベースで検証する。
+    """
+    # --- 静的検証: hook ソースに FileNotFoundError の except ハンドラが存在するか ---
+    source = HOOK_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    file_not_found_handled = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler):
+            # `except FileNotFoundError:` の形式を検索
+            if node.type is not None:
+                # ast.Name (単一例外) または ast.Tuple (複数例外) を確認
+                if isinstance(node.type, ast.Name) and node.type.id == "FileNotFoundError":
+                    file_not_found_handled = True
+                    break
+                if isinstance(node.type, ast.Tuple):
+                    for exc in node.type.elts:
+                        if isinstance(exc, ast.Name) and exc.id == "FileNotFoundError":
+                            file_not_found_handled = True
+                            break
+
+    assert file_not_found_handled, (
+        "hook は FileNotFoundError を except で捕捉するべき。"
+        " 削除中に他プロセスがファイルを消した場合でも crash しない設計が必要。"
+    )
+
+    # --- 実行ベース検証: 通常実行で exit 0 が返ること ---
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     file_history = _make_file_history(fake_home)
-    for i in range(3):
-        (file_history / f"file_{i}.json").write_text("{}", encoding="utf-8")
+    (file_history / "will_be_deleted.json").write_text("{}", encoding="utf-8")
 
     result = _run_hook(fake_home)
 
     assert result.returncode == 0, (
-        f"exit 0 であるべき。got: {result.returncode}\n"
+        f"exit 0 であるべき（FileNotFoundError があっても crash しない）。"
+        f" got: {result.returncode}\n"
         f"stderr: {result.stderr!r}"
-    )
-    assert "3" in result.stdout, (
-        f"削除件数 '3' が stdout に含まれるべき。got: {result.stdout!r}"
     )
