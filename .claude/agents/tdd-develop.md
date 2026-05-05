@@ -11,6 +11,7 @@ tools:
   - Grep
   - TodoWrite
   - Agent
+  - Skill
 ---
 
 # TDD-Develop

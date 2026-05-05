@@ -27,7 +27,9 @@
       "Bash(grep \"\\\\.py$\")",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(pip-audit)",
-      "Bash(c3 po *)"
+      "Bash(c3 po *)",
+      "Bash(git check-ignore *)",
+      "Bash(git stash *)"
     ]
   }
 }

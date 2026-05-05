@@ -58,14 +58,14 @@ def append_checkpoint(session_file: str, label: str, summary: str) -> None:
     """
     os.makedirs(os.path.dirname(session_file), exist_ok=True)
 
-    needs_template = (
-        not os.path.exists(session_file)
-        or os.path.getsize(session_file) == 0
-    )
-    if needs_template:
-        date_str = os.path.splitext(os.path.basename(session_file))[0]
-        with open(session_file, 'w', encoding='utf-8') as f:
+    date_str = os.path.splitext(os.path.basename(session_file))[0]
+    try:
+        with open(session_file, 'x', encoding='utf-8') as f:
             f.write(create_session_template(date_str))
+    except FileExistsError:
+        if os.path.getsize(session_file) == 0:
+            with open(session_file, 'w', encoding='utf-8') as f:
+                f.write(create_session_template(date_str))
 
     ts = datetime.now(timezone.utc).isoformat()
     body = summary.strip()

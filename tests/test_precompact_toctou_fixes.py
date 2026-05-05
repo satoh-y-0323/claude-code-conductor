@@ -32,6 +32,10 @@ MAIN_PRE_COMPACT = WORKTREE_ROOT / ".claude" / "hooks" / "pre_compact.py"
 TEMPLATE_PRE_COMPACT = (
     WORKTREE_ROOT / "src" / "c3" / "_template" / ".claude" / "hooks" / "pre_compact.py"
 )
+SESSION_UTILS_PY = WORKTREE_ROOT / ".claude" / "hooks" / "session_utils.py"
+TEMPLATE_SESSION_UTILS_PY = (
+    WORKTREE_ROOT / "src" / "c3" / "_template" / ".claude" / "hooks" / "session_utils.py"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +86,13 @@ def _get_open_mode_arg(call_node: ast.Call) -> str | None:
 def _get_main_function(tree: ast.Module) -> ast.FunctionDef | None:
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "main":
+            return node
+    return None
+
+
+def _get_append_checkpoint_function(tree: ast.Module) -> ast.FunctionDef | None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "append_checkpoint":
             return node
     return None
 
@@ -173,25 +184,25 @@ def _find_toctou_fix_in_function(fn_node: ast.FunctionDef) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# [Fix 1] TOCTOU fix in MAIN pre_compact.py
+# [Fix 1] TOCTOU fix in session_utils.py::append_checkpoint
 # ---------------------------------------------------------------------------
 
-class TestMainPreCompactToctouFix:
-    """[Fix 1] .claude/hooks/pre_compact.py must use open(..., 'x') with FileExistsError guard."""
+class TestAppendCheckpointToctouFix:
+    """[Fix 1] .claude/hooks/session_utils.py::append_checkpoint must use open(..., 'x') with FileExistsError guard."""
 
     def test_main_file_exists(self):
-        """The main pre_compact.py file must exist."""
-        assert MAIN_PRE_COMPACT.exists(), (
-            f"Main pre_compact.py not found at {MAIN_PRE_COMPACT}"
+        """The session_utils.py file must exist."""
+        assert SESSION_UTILS_PY.exists(), (
+            f"session_utils.py not found at {SESSION_UTILS_PY}"
         )
 
     def test_main_no_toctou_exists_guard(self):
-        """main() must NOT use the TOCTOU-prone `if not os.path.exists(...): open(w)` pattern."""
-        tree = _parse_ast(MAIN_PRE_COMPACT)
-        main_fn = _get_main_function(tree)
-        assert main_fn is not None, "main() function not found in pre_compact.py"
+        """append_checkpoint must NOT use the TOCTOU-prone `if not os.path.exists(...): open(w)` pattern."""
+        tree = _parse_ast(SESSION_UTILS_PY)
+        fn = _get_append_checkpoint_function(tree)
+        assert fn is not None, "append_checkpoint function not found in session_utils.py"
 
-        for node in ast.walk(main_fn):
+        for node in ast.walk(fn):
             if isinstance(node, ast.If):
                 test = node.test
                 inner = test
@@ -212,30 +223,30 @@ class TestMainPreCompactToctouFix:
                                     mode = _get_open_mode_arg(body_node)
                                     if mode is not None and "w" in mode:
                                         raise AssertionError(
-                                            "Found TOCTOU bug in main pre_compact.py: "
+                                            "Found TOCTOU bug in session_utils.py::append_checkpoint: "
                                             "`if not os.path.exists(session_file): open(..., 'w')`. "
                                             "Replace with: try: open(..., 'x') except FileExistsError: pass"
                                         )
 
     def test_main_uses_exclusive_open(self):
-        """main() must use open(session_file, 'x') for TOCTOU-safe file creation."""
-        tree = _parse_ast(MAIN_PRE_COMPACT)
-        main_fn = _get_main_function(tree)
-        assert main_fn is not None, "main() function not found in pre_compact.py"
+        """append_checkpoint must use open(session_file, 'x') for TOCTOU-safe file creation."""
+        tree = _parse_ast(SESSION_UTILS_PY)
+        fn = _get_append_checkpoint_function(tree)
+        assert fn is not None, "append_checkpoint function not found in session_utils.py"
 
-        passed, reason = _find_toctou_fix_in_function(main_fn)
+        passed, reason = _find_toctou_fix_in_function(fn)
         assert passed, (
-            f"TOCTOU fix not found in main pre_compact.py main(): {reason}"
+            f"TOCTOU fix not found in session_utils.py::append_checkpoint: {reason}"
         )
 
     def test_main_file_exists_error_caught(self):
         """The try block around open(..., 'x') must catch FileExistsError."""
-        tree = _parse_ast(MAIN_PRE_COMPACT)
-        main_fn = _get_main_function(tree)
-        assert main_fn is not None, "main() function not found in pre_compact.py"
+        tree = _parse_ast(SESSION_UTILS_PY)
+        fn = _get_append_checkpoint_function(tree)
+        assert fn is not None, "append_checkpoint function not found in session_utils.py"
 
         found_try = False
-        for node in ast.walk(main_fn):
+        for node in ast.walk(fn):
             if not isinstance(node, ast.Try):
                 continue
             has_x_open = False
@@ -250,42 +261,42 @@ class TestMainPreCompactToctouFix:
             if has_x_open:
                 found_try = True
                 assert _try_except_has_file_exists_error(node), (
-                    "The try block wrapping open(..., 'x') in main pre_compact.py "
+                    "The try block wrapping open(..., 'x') in session_utils.py::append_checkpoint "
                     "must catch FileExistsError. "
                     "Add: except FileExistsError: pass"
                 )
                 break
 
         assert found_try, (
-            "Could not find a try block containing open(..., 'x') in main pre_compact.py. "
+            "Could not find a try block containing open(..., 'x') in session_utils.py::append_checkpoint. "
             "Expected: try: open(session_file, 'x') ... except FileExistsError: pass"
         )
 
 
 # ---------------------------------------------------------------------------
-# [Fix 2] TOCTOU fix in TEMPLATE pre_compact.py
+# [Fix 2] TOCTOU fix in TEMPLATE session_utils.py::append_checkpoint
 # ---------------------------------------------------------------------------
 
 class TestTemplatePreCompactToctouFix:
-    """[Fix 2] src/c3/_template/.claude/hooks/pre_compact.py must use open(..., 'x') pattern."""
+    """[Fix 2] src/c3/_template/.claude/hooks/session_utils.py::append_checkpoint must use open(..., 'x') pattern."""
 
     def test_template_file_exists(self):
-        """The template pre_compact.py file must exist (will FAIL until developer creates it)."""
-        assert TEMPLATE_PRE_COMPACT.exists(), (
-            f"Template pre_compact.py not found at {TEMPLATE_PRE_COMPACT}. "
-            "Developer must create this file as part of fix-precompact-toctou."
+        """The template session_utils.py file must exist."""
+        assert TEMPLATE_SESSION_UTILS_PY.exists(), (
+            f"Template session_utils.py not found at {TEMPLATE_SESSION_UTILS_PY}. "
+            "Developer must ensure this file exists."
         )
 
     def test_template_no_toctou_exists_guard(self):
-        """Template main() must NOT use the TOCTOU-prone `if not os.path.exists(...): open(w)` pattern."""
-        assert TEMPLATE_PRE_COMPACT.exists(), (
-            f"Template file not found: {TEMPLATE_PRE_COMPACT}"
+        """Template append_checkpoint must NOT use the TOCTOU-prone `if not os.path.exists(...): open(w)` pattern."""
+        assert TEMPLATE_SESSION_UTILS_PY.exists(), (
+            f"Template file not found: {TEMPLATE_SESSION_UTILS_PY}"
         )
-        tree = _parse_ast(TEMPLATE_PRE_COMPACT)
-        main_fn = _get_main_function(tree)
-        assert main_fn is not None, "main() function not found in template pre_compact.py"
+        tree = _parse_ast(TEMPLATE_SESSION_UTILS_PY)
+        fn = _get_append_checkpoint_function(tree)
+        assert fn is not None, "append_checkpoint function not found in template session_utils.py"
 
-        for node in ast.walk(main_fn):
+        for node in ast.walk(fn):
             if isinstance(node, ast.If):
                 test = node.test
                 inner = test
@@ -306,36 +317,36 @@ class TestTemplatePreCompactToctouFix:
                                     mode = _get_open_mode_arg(body_node)
                                     if mode is not None and "w" in mode:
                                         raise AssertionError(
-                                            "Found TOCTOU bug in template pre_compact.py: "
+                                            "Found TOCTOU bug in template session_utils.py::append_checkpoint: "
                                             "`if not os.path.exists(session_file): open(..., 'w')`. "
                                             "Replace with: try: open(..., 'x') except FileExistsError: pass"
                                         )
 
     def test_template_uses_exclusive_open(self):
-        """Template main() must use open(session_file, 'x') for TOCTOU-safe file creation."""
-        assert TEMPLATE_PRE_COMPACT.exists(), (
-            f"Template file not found: {TEMPLATE_PRE_COMPACT}"
+        """Template append_checkpoint must use open(session_file, 'x') for TOCTOU-safe file creation."""
+        assert TEMPLATE_SESSION_UTILS_PY.exists(), (
+            f"Template file not found: {TEMPLATE_SESSION_UTILS_PY}"
         )
-        tree = _parse_ast(TEMPLATE_PRE_COMPACT)
-        main_fn = _get_main_function(tree)
-        assert main_fn is not None, "main() function not found in template pre_compact.py"
+        tree = _parse_ast(TEMPLATE_SESSION_UTILS_PY)
+        fn = _get_append_checkpoint_function(tree)
+        assert fn is not None, "append_checkpoint function not found in template session_utils.py"
 
-        passed, reason = _find_toctou_fix_in_function(main_fn)
+        passed, reason = _find_toctou_fix_in_function(fn)
         assert passed, (
-            f"TOCTOU fix not found in template pre_compact.py main(): {reason}"
+            f"TOCTOU fix not found in template session_utils.py::append_checkpoint: {reason}"
         )
 
     def test_template_file_exists_error_caught(self):
         """The try block around open(..., 'x') in template must catch FileExistsError."""
-        assert TEMPLATE_PRE_COMPACT.exists(), (
-            f"Template file not found: {TEMPLATE_PRE_COMPACT}"
+        assert TEMPLATE_SESSION_UTILS_PY.exists(), (
+            f"Template file not found: {TEMPLATE_SESSION_UTILS_PY}"
         )
-        tree = _parse_ast(TEMPLATE_PRE_COMPACT)
-        main_fn = _get_main_function(tree)
-        assert main_fn is not None, "main() function not found in template pre_compact.py"
+        tree = _parse_ast(TEMPLATE_SESSION_UTILS_PY)
+        fn = _get_append_checkpoint_function(tree)
+        assert fn is not None, "append_checkpoint function not found in template session_utils.py"
 
         found_try = False
-        for node in ast.walk(main_fn):
+        for node in ast.walk(fn):
             if not isinstance(node, ast.Try):
                 continue
             has_x_open = False
@@ -350,34 +361,34 @@ class TestTemplatePreCompactToctouFix:
             if has_x_open:
                 found_try = True
                 assert _try_except_has_file_exists_error(node), (
-                    "The try block wrapping open(..., 'x') in template pre_compact.py "
+                    "The try block wrapping open(..., 'x') in template session_utils.py::append_checkpoint "
                     "must catch FileExistsError. "
                     "Add: except FileExistsError: pass"
                 )
                 break
 
         assert found_try, (
-            "Could not find a try block containing open(..., 'x') in template pre_compact.py. "
+            "Could not find a try block containing open(..., 'x') in template session_utils.py::append_checkpoint. "
             "Expected: try: open(session_file, 'x') ... except FileExistsError: pass"
         )
 
 
 # ---------------------------------------------------------------------------
-# [Fix 3] SESSION_JSON_MARKER constant in TEMPLATE pre_compact.py
+# [Fix 3] SESSION_JSON_MARKER constant in TEMPLATE session_utils.py
 # ---------------------------------------------------------------------------
 
 class TestTemplateSessionJsonMarker:
-    """[Fix 3] Template pre_compact.py must define SESSION_JSON_MARKER at module level
+    """[Fix 3] Template session_utils.py must define SESSION_JSON_MARKER at module level
     and use it (not a raw string) inside create_session_template."""
 
     def test_template_session_json_marker_constant_defined(self):
         """Template must export SESSION_JSON_MARKER = 'C3:SESSION:JSON' at module level."""
-        assert TEMPLATE_PRE_COMPACT.exists(), (
-            f"Template file not found: {TEMPLATE_PRE_COMPACT}"
+        assert TEMPLATE_SESSION_UTILS_PY.exists(), (
+            f"Template file not found: {TEMPLATE_SESSION_UTILS_PY}"
         )
-        mod = _load_module_from_path(TEMPLATE_PRE_COMPACT, "_template_pre_compact_test_marker")
+        mod = _load_module_from_path(TEMPLATE_SESSION_UTILS_PY, "_template_session_utils_test_marker")
         assert hasattr(mod, "SESSION_JSON_MARKER"), (
-            "Template pre_compact.py must define SESSION_JSON_MARKER at module level. "
+            "Template session_utils.py must define SESSION_JSON_MARKER at module level. "
             "Add: SESSION_JSON_MARKER = 'C3:SESSION:JSON'"
         )
         assert mod.SESSION_JSON_MARKER == "C3:SESSION:JSON", (
@@ -386,10 +397,10 @@ class TestTemplateSessionJsonMarker:
 
     def test_template_no_hardcoded_marker_in_create_session_template(self):
         """Template create_session_template must NOT contain the raw 'C3:SESSION:JSON' string literal."""
-        assert TEMPLATE_PRE_COMPACT.exists(), (
-            f"Template file not found: {TEMPLATE_PRE_COMPACT}"
+        assert TEMPLATE_SESSION_UTILS_PY.exists(), (
+            f"Template file not found: {TEMPLATE_SESSION_UTILS_PY}"
         )
-        tree = _parse_ast(TEMPLATE_PRE_COMPACT)
+        tree = _parse_ast(TEMPLATE_SESSION_UTILS_PY)
 
         fn_node = None
         for node in ast.walk(tree):
@@ -398,7 +409,7 @@ class TestTemplateSessionJsonMarker:
                 break
 
         assert fn_node is not None, (
-            "create_session_template function not found in template pre_compact.py"
+            "create_session_template function not found in template session_utils.py"
         )
 
         for node in ast.walk(fn_node):
@@ -411,10 +422,10 @@ class TestTemplateSessionJsonMarker:
 
     def test_template_create_session_template_references_marker(self):
         """Template create_session_template must reference SESSION_JSON_MARKER as a variable."""
-        assert TEMPLATE_PRE_COMPACT.exists(), (
-            f"Template file not found: {TEMPLATE_PRE_COMPACT}"
+        assert TEMPLATE_SESSION_UTILS_PY.exists(), (
+            f"Template file not found: {TEMPLATE_SESSION_UTILS_PY}"
         )
-        tree = _parse_ast(TEMPLATE_PRE_COMPACT)
+        tree = _parse_ast(TEMPLATE_SESSION_UTILS_PY)
 
         fn_node = None
         for node in ast.walk(tree):
@@ -423,7 +434,7 @@ class TestTemplateSessionJsonMarker:
                 break
 
         assert fn_node is not None, (
-            "create_session_template function not found in template pre_compact.py"
+            "create_session_template function not found in template session_utils.py"
         )
 
         name_refs = [
@@ -438,10 +449,10 @@ class TestTemplateSessionJsonMarker:
 
     def test_template_marker_defined_at_module_level(self):
         """SESSION_JSON_MARKER must be a module-level assignment (not inside a function)."""
-        assert TEMPLATE_PRE_COMPACT.exists(), (
-            f"Template file not found: {TEMPLATE_PRE_COMPACT}"
+        assert TEMPLATE_SESSION_UTILS_PY.exists(), (
+            f"Template file not found: {TEMPLATE_SESSION_UTILS_PY}"
         )
-        tree = _parse_ast(TEMPLATE_PRE_COMPACT)
+        tree = _parse_ast(TEMPLATE_SESSION_UTILS_PY)
 
         # Only check top-level assignments (tree.body, not inside functions)
         found = False
@@ -455,7 +466,7 @@ class TestTemplateSessionJsonMarker:
                         break
 
         assert found, (
-            "Template pre_compact.py must have a top-level assignment: "
+            "Template session_utils.py must have a top-level assignment: "
             "SESSION_JSON_MARKER = 'C3:SESSION:JSON'. "
             "This constant must not be inside a function."
         )

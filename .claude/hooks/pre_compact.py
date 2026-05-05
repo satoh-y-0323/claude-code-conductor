@@ -13,7 +13,7 @@ _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
 
-from session_utils import append_checkpoint, is_worktree
+from session_utils import SESSION_JSON_MARKER, append_checkpoint, is_worktree
 
 
 SAVE_INSTRUCTION = (

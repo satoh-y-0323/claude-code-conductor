@@ -10,15 +10,18 @@ import os
 import re
 from datetime import date, datetime, timezone
 
-sys.stdin.reconfigure(encoding='utf-8')
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
+from session_utils import SESSION_JSON_MARKER, is_worktree, create_session_template, SESSIONS_DIR
+
+try:
+    sys.stdin.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 PATTERNS_FILE = os.path.join(_CLAUDE_DIR, 'memory', 'patterns.json')
-
-from session_utils import SESSION_JSON_MARKER, is_worktree, create_session_template, SESSIONS_DIR
 
 EXPIRY_DAYS = 30
 PROMOTION_THRESHOLD = 0.8

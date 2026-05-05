@@ -37,6 +37,7 @@ WORKTREE_ROOT = Path(__file__).parent.parent
 HOOKS_DIR = WORKTREE_ROOT / ".claude" / "hooks"
 STOP_PY = HOOKS_DIR / "stop.py"
 PRE_COMPACT_PY = HOOKS_DIR / "pre_compact.py"
+SESSION_UTILS_PY = HOOKS_DIR / "session_utils.py"
 
 TODAY_STR = date.today().strftime("%Y%m%d")
 
@@ -77,22 +78,30 @@ class TestStopPyImportOrder:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 last_import_line = max(last_import_line, node.lineno)
 
-        # Find first reconfigure call (as an Expr statement at module top level)
-        for node in body:
-            if not isinstance(node, ast.Expr):
-                continue
-            call = node.value
-            if not isinstance(call, ast.Call):
-                continue
-            func = call.func
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "reconfigure"
-                and isinstance(func.value, ast.Attribute)
-                and func.value.attr in ("stdout", "stderr")
-            ):
-                if first_reconfigure_line is None:
-                    first_reconfigure_line = node.lineno
+        # Find first reconfigure call (at module top level, possibly inside a try block)
+        def _find_reconfigure_line(stmts):
+            """Return the line number of the first stdout/stderr.reconfigure call, or None."""
+            for node in stmts:
+                # Direct Expr statement: sys.stdout.reconfigure(...)
+                if isinstance(node, ast.Expr):
+                    call = node.value
+                    if isinstance(call, ast.Call):
+                        func = call.func
+                        if (
+                            isinstance(func, ast.Attribute)
+                            and func.attr == "reconfigure"
+                            and isinstance(func.value, ast.Attribute)
+                            and func.value.attr in ("stdout", "stderr")
+                        ):
+                            return node.lineno
+                # Try block: allow reconfigure to be wrapped in try/except AttributeError
+                if isinstance(node, ast.Try):
+                    result = _find_reconfigure_line(node.body)
+                    if result is not None:
+                        return node.lineno  # report the try block's line
+            return None
+
+        first_reconfigure_line = _find_reconfigure_line(body)
 
         assert first_reconfigure_line is not None, (
             "No sys.stdout.reconfigure/sys.stderr.reconfigure call found in stop.py"
@@ -124,26 +133,26 @@ class TestPreCompactSessionJsonMarker:
         )
 
     def test_hardcoded_marker_string_not_in_create_session_template(self):
-        """create_session_template in pre_compact.py must use SESSION_JSON_MARKER, not a raw string.
+        """create_session_template in session_utils.py must use SESSION_JSON_MARKER, not a raw string.
 
         After the fix, the function body must reference the SESSION_JSON_MARKER name;
         the substring 'C3:SESSION:JSON' must NOT appear in any string literal within
         the function body.
         """
-        tree = _parse_ast(PRE_COMPACT_PY)
+        tree = _parse_ast(SESSION_UTILS_PY)
         fn_node = None
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "create_session_template":
                 fn_node = node
                 break
 
-        assert fn_node is not None, "create_session_template function not found in pre_compact.py"
+        assert fn_node is not None, "create_session_template function not found in session_utils.py"
 
         # Collect all string constants (including substrings) inside the function
         for node in ast.walk(fn_node):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 assert "C3:SESSION:JSON" not in node.value, (
-                    f"create_session_template in pre_compact.py contains the literal "
+                    f"create_session_template in session_utils.py contains the literal "
                     f"string 'C3:SESSION:JSON' embedded in a string constant. "
                     "It must use the SESSION_JSON_MARKER constant instead."
                 )
@@ -155,7 +164,7 @@ class TestPreCompactSessionJsonMarker:
             if isinstance(node, ast.Name)
         ]
         assert "SESSION_JSON_MARKER" in name_refs, (
-            "create_session_template in pre_compact.py must reference SESSION_JSON_MARKER "
+            "create_session_template in session_utils.py must reference SESSION_JSON_MARKER "
             "as a variable (not embed the literal string)."
         )
 
@@ -175,24 +184,24 @@ class TestCreateSessionTemplateSignature:
         return []
 
     def test_stop_py_uses_date_str(self):
-        """stop.py: create_session_template must use `date_str` as argument name."""
-        params = self._get_param_names(STOP_PY)
-        assert params, "create_session_template not found in stop.py"
+        """session_utils.py: create_session_template must use `date_str` as argument name."""
+        params = self._get_param_names(SESSION_UTILS_PY)
+        assert params, "create_session_template not found in session_utils.py"
         assert "date_str" in params, (
-            f"stop.py create_session_template uses {params!r}; "
+            f"session_utils.py create_session_template uses {params!r}; "
             "expected 'date_str'. Rename the argument from 'yyyymmdd' to 'date_str'."
         )
         assert "yyyymmdd" not in params, (
-            f"stop.py create_session_template still uses old name 'yyyymmdd'; "
+            f"session_utils.py create_session_template still uses old name 'yyyymmdd'; "
             "rename it to 'date_str'."
         )
 
     def test_pre_compact_py_uses_date_str(self):
-        """pre_compact.py: create_session_template must use `date_str` as argument name."""
-        params = self._get_param_names(PRE_COMPACT_PY)
-        assert params, "create_session_template not found in pre_compact.py"
+        """session_utils.py: create_session_template must use `date_str` as argument name."""
+        params = self._get_param_names(SESSION_UTILS_PY)
+        assert params, "create_session_template not found in session_utils.py"
         assert "date_str" in params, (
-            f"pre_compact.py create_session_template uses {params!r}; expected 'date_str'."
+            f"session_utils.py create_session_template uses {params!r}; expected 'date_str'."
         )
 
 
