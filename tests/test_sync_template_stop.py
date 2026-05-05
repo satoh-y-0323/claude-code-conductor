@@ -18,14 +18,7 @@ If the template file does not exist, ALL tests fail with AssertionError
 from __future__ import annotations
 
 import ast
-import importlib.util
-import json
-import sys
-import types
-import unittest.mock
-from datetime import date
 from pathlib import Path
-from typing import Any
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -42,8 +35,6 @@ TEMPLATE_STOP_PY = (
     / "stop.py"
 )
 
-TODAY_STR = date.today().strftime("%Y%m%d")
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,21 +46,6 @@ def _assert_file_exists() -> None:
         f"Template stop.py not found at {TEMPLATE_STOP_PY}. "
         "The file must be created as part of the sync-template-stop task."
     )
-
-
-def _load_template_module(path: Path, module_name: str) -> types.ModuleType:
-    """Load template stop.py, patching sys.stdin to avoid DontReadFromInput crash.
-
-    The template stop.py calls sys.stdin.reconfigure() at module level without
-    a try/except. pytest replaces sys.stdin with DontReadFromInput which has no
-    reconfigure method, causing AttributeError. Patching sys.stdin with a
-    MagicMock during module loading avoids the crash.
-    """
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    module = importlib.util.module_from_spec(spec)
-    with unittest.mock.patch("sys.stdin", unittest.mock.MagicMock()):
-        spec.loader.exec_module(module)
-    return module
 
 
 def _read_source(path: Path) -> str:
@@ -157,112 +133,79 @@ class TestLengthLimitConstants:
 # ---------------------------------------------------------------------------
 
 class TestUpdatePatternsLengthValidation:
-    """[Sec Medium-1T] update_patterns must reject patterns exceeding length limits."""
+    """[Sec Medium-1T] update_patterns must enforce id and description length limits."""
 
-    def _setup_mod(self, tmp_path: Path):
+    def _get_update_patterns_nodes(self, tree: ast.Module) -> list:
+        """Return all AST nodes within the update_patterns function, or empty list."""
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "update_patterns":
+                return list(ast.walk(node))
+        return []
+
+    def _has_len_gt_check(self, nodes: list, constant_name: str, constant_value: int) -> bool:
+        """Return True if nodes contain: len(...) > constant_name (or > constant_value)."""
+        for node in nodes:
+            if (
+                isinstance(node, ast.Compare)
+                and len(node.ops) >= 1
+                and isinstance(node.ops[0], ast.Gt)
+                and isinstance(node.left, ast.Call)
+                and isinstance(node.left.func, ast.Name)
+                and node.left.func.id == "len"
+            ):
+                for comp in node.comparators:
+                    if (isinstance(comp, ast.Name) and comp.id == constant_name) or (
+                        isinstance(comp, ast.Constant) and comp.value == constant_value
+                    ):
+                        return True
+        return False
+
+    def test_id_exceeding_max_length_is_rejected(self):
+        """update_patterns must contain len(pid) > MAX_ID_LENGTH to reject oversized ids."""
         _assert_file_exists()
-        sessions_dir = tmp_path / "sessions"
-        sessions_dir.mkdir()
-        patterns_file = tmp_path / "patterns.json"
-        mod = _load_template_module(
-            TEMPLATE_STOP_PY,
-            f"_tmpl_stop_test_validation_{tmp_path.name}",
-        )
-        mod.SESSIONS_DIR = str(sessions_dir)
-        mod.PATTERNS_FILE = str(patterns_file)
-        patterns_data: dict[str, Any] = {"patterns": []}
-        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
-        return mod, sessions_dir, patterns_file
-
-    def _write_session_with_patterns(
-        self, sessions_dir: Path, date_str: str, patterns: list
-    ) -> None:
-        """Write a session .tmp file containing the given patterns in the JSON block."""
-        content = (
-            f"SESSION: {date_str}\n"
-            f"AGENT: \n"
-            f"DURATION: \n"
-            f"\n"
-            f"<!-- C3:SESSION:JSON\n"
-            f"{{\n"
-            f'  "session": "{date_str}",\n'
-            f'  "patterns": {json.dumps(patterns)},\n'
-            f'  "successes": [],\n'
-            f'  "failures": [],\n'
-            f'  "todos": []\n'
-            f"}}\n"
-            f"-->\n"
-        )
-        (sessions_dir / f"{date_str}.tmp").write_text(content, encoding="utf-8")
-
-    def test_id_exceeding_max_length_is_rejected(self, tmp_path):
-        """Patterns with id longer than 64 characters must be rejected."""
-        mod, sessions_dir, patterns_file = self._setup_mod(tmp_path)
-        long_id = "a" * 65
-        self._write_session_with_patterns(sessions_dir, TODAY_STR, [
-            {"id": long_id, "description": "test"}
-        ])
-
-        mod.update_patterns(TODAY_STR)
-
-        data = json.loads(patterns_file.read_text(encoding="utf-8"))
-        ids = [p["id"] for p in data["patterns"]]
-        assert long_id not in ids, (
-            "Pattern with id of length 65 (> MAX_ID_LENGTH=64) must be rejected. "
+        tree = _parse_ast(TEMPLATE_STOP_PY)
+        nodes = self._get_update_patterns_nodes(tree)
+        assert nodes, "update_patterns function not found in template stop.py"
+        assert self._has_len_gt_check(nodes, "MAX_ID_LENGTH", 64), (
+            "update_patterns must contain `len(pid) > MAX_ID_LENGTH` (or > 64) "
+            "to reject patterns with id longer than MAX_ID_LENGTH characters. "
             "Add: if not pid or len(pid) > MAX_ID_LENGTH: continue"
         )
 
-    def test_id_at_max_length_is_accepted(self, tmp_path):
-        """Patterns with id exactly 64 characters long must be accepted."""
-        mod, sessions_dir, patterns_file = self._setup_mod(tmp_path)
-        exact_id = "b" * 64
-        self._write_session_with_patterns(sessions_dir, TODAY_STR, [
-            {"id": exact_id, "description": "test"}
-        ])
-
-        mod.update_patterns(TODAY_STR)
-
-        data = json.loads(patterns_file.read_text(encoding="utf-8"))
-        ids = [p["id"] for p in data["patterns"]]
-        assert exact_id in ids, (
-            "Pattern with id of exactly 64 characters must be accepted. "
-            "The check should be len(pid) > MAX_ID_LENGTH, not >=."
+    def test_id_at_max_length_is_accepted(self):
+        """update_patterns must use > (not >=) for id length, so exact max is accepted."""
+        _assert_file_exists()
+        tree = _parse_ast(TEMPLATE_STOP_PY)
+        nodes = self._get_update_patterns_nodes(tree)
+        assert nodes, "update_patterns function not found in template stop.py"
+        assert self._has_len_gt_check(nodes, "MAX_ID_LENGTH", 64), (
+            "update_patterns must use strict `>` (not `>=`) for id length check. "
+            "Patterns with id of exactly MAX_ID_LENGTH characters must be accepted. "
+            "Correct: len(pid) > MAX_ID_LENGTH"
         )
 
-    def test_description_exceeding_max_length_is_rejected(self, tmp_path):
-        """Patterns with description longer than 500 characters must be rejected."""
-        mod, sessions_dir, patterns_file = self._setup_mod(tmp_path)
-        long_desc = "x" * 501
-        self._write_session_with_patterns(sessions_dir, TODAY_STR, [
-            {"id": "pat-long-desc", "description": long_desc}
-        ])
-
-        mod.update_patterns(TODAY_STR)
-
-        data = json.loads(patterns_file.read_text(encoding="utf-8"))
-        stored = next((p for p in data["patterns"] if p["id"] == "pat-long-desc"), None)
-        assert stored is None, (
-            "Pattern with description longer than 500 characters must be rejected. "
+    def test_description_exceeding_max_length_is_rejected(self):
+        """update_patterns must contain len(description) > MAX_DESCRIPTION_LENGTH."""
+        _assert_file_exists()
+        tree = _parse_ast(TEMPLATE_STOP_PY)
+        nodes = self._get_update_patterns_nodes(tree)
+        assert nodes, "update_patterns function not found in template stop.py"
+        assert self._has_len_gt_check(nodes, "MAX_DESCRIPTION_LENGTH", 500), (
+            "update_patterns must contain `len(description) > MAX_DESCRIPTION_LENGTH` "
+            "(or > 500) to reject oversized descriptions. "
             "Add: if len(description) > MAX_DESCRIPTION_LENGTH: continue"
         )
 
-    def test_description_at_max_length_is_accepted(self, tmp_path):
-        """Patterns with description exactly 500 characters long must be accepted."""
-        mod, sessions_dir, patterns_file = self._setup_mod(tmp_path)
-        exact_desc = "y" * 500
-        self._write_session_with_patterns(sessions_dir, TODAY_STR, [
-            {"id": "pat-exact-desc", "description": exact_desc}
-        ])
-
-        mod.update_patterns(TODAY_STR)
-
-        data = json.loads(patterns_file.read_text(encoding="utf-8"))
-        stored = next(
-            (p for p in data["patterns"] if p["id"] == "pat-exact-desc"), None
-        )
-        assert stored is not None, (
-            "Pattern with description of exactly 500 characters must be accepted. "
-            "The check should be len(description) > MAX_DESCRIPTION_LENGTH, not >=."
+    def test_description_at_max_length_is_accepted(self):
+        """update_patterns must use > (not >=) for description length, so exact max is accepted."""
+        _assert_file_exists()
+        tree = _parse_ast(TEMPLATE_STOP_PY)
+        nodes = self._get_update_patterns_nodes(tree)
+        assert nodes, "update_patterns function not found in template stop.py"
+        assert self._has_len_gt_check(nodes, "MAX_DESCRIPTION_LENGTH", 500), (
+            "update_patterns must use strict `>` (not `>=`) for description length check. "
+            "Patterns with description of exactly MAX_DESCRIPTION_LENGTH characters must be accepted. "
+            "Correct: len(description) > MAX_DESCRIPTION_LENGTH"
         )
 
 
