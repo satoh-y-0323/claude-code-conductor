@@ -2,6 +2,7 @@
 """Shared utilities for session management hooks (stop.py, pre_compact.py)."""
 
 import os
+from datetime import datetime, timezone
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
@@ -40,3 +41,39 @@ def create_session_template(date_str: str) -> str:
         f"}}\n"
         f"-->\n"
     )
+
+
+def append_checkpoint(session_file: str, label: str, summary: str) -> None:
+    """Append a checkpoint block to the session file.
+
+    Used by wave-execution (milestone snapshots) and pre_compact.py
+    (compaction markers). Checkpoint blocks are append-only — they record
+    the state at a point in time and never overwrite earlier entries.
+
+    Args:
+        session_file: Absolute path to the session file (.tmp).
+        label: Short identifier shown in the heading
+            (e.g. "Wave 2 success", "PreCompact: manual").
+        summary: Multi-line Markdown body describing the state.
+    """
+    os.makedirs(os.path.dirname(session_file), exist_ok=True)
+
+    needs_template = (
+        not os.path.exists(session_file)
+        or os.path.getsize(session_file) == 0
+    )
+    if needs_template:
+        date_str = os.path.splitext(os.path.basename(session_file))[0]
+        with open(session_file, 'w', encoding='utf-8') as f:
+            f.write(create_session_template(date_str))
+
+    ts = datetime.now(timezone.utc).isoformat()
+    body = summary.strip()
+    block = (
+        f"\n"
+        f"## [Checkpoint: {label} - {ts}]\n"
+        f"{body}\n"
+    )
+
+    with open(session_file, 'a', encoding='utf-8') as f:
+        f.write(block)

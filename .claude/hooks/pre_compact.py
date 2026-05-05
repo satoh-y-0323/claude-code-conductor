@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreCompact hook: append checkpoint marker to today's session file."""
+"""PreCompact hook: append checkpoint marker and inject save instruction."""
 
 import json
 import os
@@ -13,7 +13,16 @@ _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
 
-from session_utils import is_worktree, create_session_template
+from session_utils import append_checkpoint, is_worktree
+
+
+SAVE_INSTRUCTION = (
+    "コンテキスト圧縮が間もなく発生します。圧縮で詳細な文脈が失われる前に、"
+    "CLAUDE.md の Compact Instructions（KEEP/DISCARD ルール）に従って "
+    "今日のセッションファイル（.claude/memory/sessions/YYYYMMDD.tmp）に "
+    "現在の残タスク・直近の重要な判断・解決済みのハマりどころを書き出してください。"
+    "雑談・解決済みエラーログ・冗長なコード断片は書かず、KEEP に該当する情報のみ。"
+)
 
 
 def main():
@@ -29,28 +38,24 @@ def main():
     trigger = payload.get('trigger', 'unknown')
     context_items_before = payload.get('context_items_before', 0)
 
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
-
     now = datetime.now(timezone.utc)
     date_str = now.strftime('%Y%m%d')
     session_file = os.path.join(SESSIONS_DIR, f'{date_str}.tmp')
 
-    try:
-        with open(session_file, 'x', encoding='utf-8') as f:
-            f.write(create_session_template(date_str))
-    except FileExistsError:
-        pass  # already created by stop.py or another process
-
-    ts = now.isoformat()
-    checkpoint = (
-        f'\n'
-        f'## [PreCompact checkpoint: {trigger} - {ts}]\n'
-        f'コンテキスト圧縮 ({trigger}) が発生しました。圧縮前: {context_items_before} アイテム。\n'
-        f'このポイント以前の詳細な文脈は失われています。\n'
+    summary = (
+        f"- trigger: {trigger}\n"
+        f"- context_items_before: {context_items_before}\n"
+        f"- このポイント以前の詳細な文脈は圧縮により失われます。"
     )
+    append_checkpoint(session_file, f'PreCompact: {trigger}', summary)
 
-    with open(session_file, 'a', encoding='utf-8') as f:
-        f.write(checkpoint)
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreCompact",
+            "additionalContext": SAVE_INSTRUCTION,
+        }
+    }
+    print(json.dumps(output, ensure_ascii=False))
 
     print(f'[PreCompact] セッション状態を {session_file} に保存しました', file=sys.stderr)
 

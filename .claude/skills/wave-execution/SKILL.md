@@ -263,6 +263,21 @@ case A で TDD ループが不合格のまま終わった、または case B で
 
 全タスク成功した wave のみ、セッションファイルの `- [ ] Wave {N} (M tasks)` を `- [x] Wave {N} (M tasks)` に Edit する。
 
+**さらに `session_utils.append_checkpoint()` を呼び出して checkpoint ブロックを追記する。** これにより wave 完了時の状態（成功 wave 数・残 wave 数・成果物の要約）が時系列で残り、後続の `/init-session` や `/pattern-status` で進捗が追跡できる。
+
+呼び出し例（Bash 経由）:
+```bash
+python -c "from session_utils import append_checkpoint, SESSIONS_DIR; import os; \
+  append_checkpoint(os.path.join(SESSIONS_DIR, '{YYYYMMDD}.tmp'), \
+    'Wave {N} success', \
+    '- 成功タスク: {M}件\n- 残 wave: {K}/{TOTAL}\n- 成果物: {要約}')" \
+  --hooks-dir .claude/hooks
+```
+
+または Python ヘルパーを直接呼び出してもよい。**checkpoint の summary には KEEP ルール（設計判断・決定事項・解決済みのハマりどころ）に該当する情報のみ書く**。雑談・進捗報告はセッションファイル本体（`## うまくいったアプローチ` 等）へ。
+
+**失敗 wave を「スキップして次の wave へ」した場合も同じ仕組みで記録する。** label は `Wave {N} skipped`、summary に失敗内容と判断理由を書く。
+
 **次の wave に進む前に main をコミットしてクリーンに保つ。** wave 成果物を未コミットのまま次の wave で PO に入ると、worktree が同名ファイルを再生成して必ず auto-merge 衝突が起きる（Step 0-pre と同じ理由）。親 Claude が wave の成果物を確認のうえ「Wave {N}: {要約}」のメッセージでコミットしてから 2-A の次のループに戻る。
 
 ---
