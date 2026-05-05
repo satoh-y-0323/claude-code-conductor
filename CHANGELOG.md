@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.5.1] - 2026-05-05
+
+### Added
+- New `/pattern-status` skill (read-only) that visualizes `patterns.json`:
+  trust score distribution, promotion candidates, expiry-near patterns,
+  and already-promoted patterns. Use it before `/promote-pattern` to
+  inspect the current state without modifying the file.
+- `session_utils.append_checkpoint(session_file, label, summary)` helper
+  for milestone state snapshots. Safely handles non-existent and empty
+  session files by writing the template before appending. Used by both
+  `wave-execution` (success/skipped-failure waves) and `pre_compact.py`.
+- `CLAUDE.md` "When to use /compact" guideline — decision flow for
+  `/compact` vs session restart, aimed at clarifying the choice for
+  power users (restart) vs casual users (`/compact`).
+
+### Changed
+- `pre_compact.py` now emits `hookSpecificOutput.additionalContext` to
+  inject KEEP/DISCARD save instructions into Claude's context just
+  before compaction. Previously the hook only wrote a timestamp marker
+  to the session file. Claude now writes important state (remaining
+  tasks, key decisions, resolved gotchas) to the session before the
+  context shrinks.
+- `wave-execution` Step 2-F now records a checkpoint block to the
+  session file on every wave completion (success or skipped failure),
+  in addition to flipping `[ ]` → `[x]`. This gives a time-stamped
+  trail of milestones for `/init-session` and `/pattern-status`.
+- Added `WebSearch` to `permissions.allow` in `settings.json` so
+  research subagents can use it without prompting.
+
+## [0.5.0] - 2026-05-05
+
+### Added
+- New `systematic-debugger` agent: dedicated investigation phase for
+  root-cause analysis and pattern matching when `developer` gets stuck.
+  Runs in a separate phase from implementation, preserving C3's
+  multi-agent separation.
+- `developer` agent: Stuck Signal — after 3 failed attempts at the
+  same problem, write a `debug-needed` report and stop, letting the
+  orchestrator dispatch `systematic-debugger`.
+- `dev-workflow` D-2.5 and `worktree-tdd-workflow` Step 3.5: detect
+  Stuck Signal, run systematic-debugger, re-invoke developer with the
+  debug analysis injected.
+- `tester` agent: Verify RED rule — before handing off to developer,
+  confirm tests fail for the right reason (missing feature, not
+  syntax errors), and document the verification in the test-report.
+- `developer` agent: minimal code principle — Green phase writes
+  only what tests require, no premature extensions or speculative
+  abstractions.
+- `developer` agent: lightweight verification before tester handoff
+  (syntax/build check) drawn from superpowers' verification ideas
+  while keeping C3's agent-separated structure.
+
 ## [0.4.0] - 2026-05-04
 
 ### Breaking Changes
