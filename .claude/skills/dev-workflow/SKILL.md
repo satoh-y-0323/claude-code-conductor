@@ -200,6 +200,21 @@ AskUserQuestion ツール:
 ### C-2: plan-report の生成と承認
 
 `.claude/reports/plan-report-YYYYMMDD-HHMMSS.md` に Write する。
+
+**承認前に agent 種別を明示する:**
+plan-report の全タスクを走査し、以下の形式でテキスト出力する（AskUserQuestion の前に必ず行う）:
+
+```
+## タスク一覧（agent 種別確認）
+| タスク ID | agent | read_only |
+|---|---|---|
+| {id} | {agent} | {true/false} |
+...
+```
+
+`read_only: false` のタスクに `tdd-develop` 以外の agent（例: `developer`）が使われている場合は、
+その理由をテキストで説明した上で承認を求めること。
+
 内容を提示した後、AskUserQuestion で確認する:
 
 ```json
