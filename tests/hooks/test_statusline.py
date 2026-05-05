@@ -5,12 +5,17 @@ Covers:
   after breaking out of the read loop when total_size > MAX_INPUT.
 - Normal input (below MAX_INPUT) must be processed without truncation.
 - statusline display output (context gauge) must be produced for valid JSON input.
+- Unit tests: pct_color, build_gauge, format_reset_time
+- Subprocess-based render_output integration tests
 """
 
 import importlib.util
 import io
+import json
+import subprocess
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -198,3 +203,131 @@ class TestDisplayOutput:
         )
         output = run_main_with_input(payload)
         assert "5hour limits:" in output
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: pct_color
+# ---------------------------------------------------------------------------
+class TestPctColor:
+    def test_91_contains_red(self):
+        """91% exceeds 90 threshold → result contains RED ANSI code."""
+        assert statusline.RED in statusline.pct_color(91)
+
+    def test_76_contains_orange(self):
+        """76% exceeds 75 threshold → result contains ORANGE ANSI code."""
+        assert statusline.ORANGE in statusline.pct_color(76)
+
+    def test_61_contains_yellow(self):
+        """61% exceeds 60 threshold → result contains YELLOW ANSI code."""
+        assert statusline.YELLOW in statusline.pct_color(61)
+
+    def test_50_contains_green(self):
+        """50% is at or below 60 threshold → result contains GREEN ANSI code."""
+        assert statusline.GREEN in statusline.pct_color(50)
+
+    def test_90_is_not_red(self):
+        """90% is not strictly > 90 → result does NOT contain RED (boundary)."""
+        assert statusline.RED not in statusline.pct_color(90)
+
+    def test_75_is_not_orange(self):
+        """75% is not strictly > 75 → result does NOT contain ORANGE (boundary)."""
+        assert statusline.ORANGE not in statusline.pct_color(75)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: build_gauge
+# ---------------------------------------------------------------------------
+class TestBuildGauge:
+    def test_100_pct_has_10_filled_blocks(self):
+        """100% → all 10 cells are filled (BLOCK character × 10)."""
+        gauge = statusline.build_gauge(100)
+        assert gauge.count(statusline.BLOCK) == 10
+
+    def test_0_pct_has_no_filled_blocks(self):
+        """0% → 0 BLOCK characters and 10 BLOCK_EMPTY characters."""
+        gauge = statusline.build_gauge(0)
+        assert gauge.count(statusline.BLOCK) == 0
+        assert gauge.count(statusline.BLOCK_EMPTY) == 10
+
+    def test_50_pct_has_5_filled_blocks(self):
+        """50% → exactly 5 BLOCK characters."""
+        gauge = statusline.build_gauge(50)
+        assert gauge.count(statusline.BLOCK) == 5
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: format_reset_time
+# ---------------------------------------------------------------------------
+class TestFormatResetTime:
+    def test_none_returns_empty_string(self):
+        """None input → empty string."""
+        assert statusline.format_reset_time(None) == ""
+
+    def test_empty_string_returns_empty(self):
+        """Empty string input → empty string."""
+        assert statusline.format_reset_time("") == ""
+
+    def test_past_unix_timestamp_returns_reset(self):
+        """Past Unix timestamp → 'reset'."""
+        past = datetime.now(timezone.utc).timestamp() - 600  # 10 minutes ago
+        assert statusline.format_reset_time(past) == "reset"
+
+    def test_future_unix_timestamp_returns_minutes_format(self):
+        """Future Unix timestamp (10 min ahead) → 'Xm' format string."""
+        future = datetime.now(timezone.utc).timestamp() + 600  # 10 minutes ahead
+        result = statusline.format_reset_time(future)
+        # Expected: '10m' or '9m' depending on exact timing; validate format
+        assert result.endswith("m"), f"Expected 'Xm' format, got: {result!r}"
+        assert result[:-1].isdigit(), f"Expected numeric prefix, got: {result!r}"
+
+    def test_future_iso_string_returns_minutes_format(self):
+        """ISO format future time string → parsed correctly and returns 'Xm' format."""
+        future_dt = datetime.now(timezone.utc) + timedelta(minutes=5)
+        iso_str = future_dt.isoformat()
+        result = statusline.format_reset_time(iso_str)
+        assert result.endswith("m"), f"Expected 'Xm' format, got: {result!r}"
+        assert result[:-1].isdigit(), f"Expected numeric prefix, got: {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Subprocess-based tests: render_output via full script execution
+# ---------------------------------------------------------------------------
+class TestRenderOutputSubprocess:
+    """Run statusline.py as a subprocess to verify end-to-end output."""
+
+    def _run(self, payload) -> str:
+        """Execute statusline.py with JSON (or raw string) on stdin, return stdout."""
+        if isinstance(payload, dict):
+            stdin_data = json.dumps(payload).encode("utf-8")
+        else:
+            stdin_data = str(payload).encode("utf-8")
+        result = subprocess.run(
+            [sys.executable, str(STATUSLINE_PATH)],
+            input=stdin_data,
+            capture_output=True,
+            timeout=10,
+        )
+        return result.stdout.decode("utf-8", errors="replace")
+
+    def test_context_usage_label_and_percentage_in_output(self):
+        """used_percentage:50 → stdout contains 'context usage:' and '50%'."""
+        output = self._run({"context_window": {"used_percentage": 50}})
+        assert "context usage:" in output
+        assert "50%" in output
+
+    def test_rate_limits_five_hour_label_and_percentage_in_output(self):
+        """rate_limits.five_hour.used_percentage:80 → '5hour limits:' and '80%' in stdout."""
+        output = self._run({
+            "context_window": {"used_percentage": 10},
+            "rate_limits": {
+                "five_hour": {"used_percentage": 80, "resets_at": None},
+            },
+        })
+        assert "5hour limits:" in output
+        assert "80%" in output
+
+    def test_broken_json_does_not_crash_and_produces_output(self):
+        """Broken JSON input → process exits cleanly with gauge output (0% context)."""
+        output = self._run("this is not valid json { broken }")
+        assert len(output) > 0
+        assert "context usage:" in output
