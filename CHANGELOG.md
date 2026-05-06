@@ -1,15 +1,17 @@
 # Changelog
 
-## [0.6.1] - 2026-05-07
-
-### Changed
-- Raise default agent timeout from 900 s to 1200 s (`_INTERNAL_TIMEOUT_SEC`).
-- Raise default parallel worker count from 3 to 5 (`_DEFAULT_MAX_WORKERS`).
+## [0.6.2] - 2026-05-07
 
 ### Fixed
 - `c3 update` no longer copies `.claude/logs/` files into the destination
   project. `logs/*` is now listed in `EXCLUDE_PATTERNS` in both
   `hatch_build.py` and `src/c3/_excludes.py`.
+
+## [0.6.1] - 2026-05-07
+
+### Changed
+- Raise default agent timeout from 900 s to 1200 s (`_INTERNAL_TIMEOUT_SEC`).
+- Raise default parallel worker count from 3 to 5 (`_DEFAULT_MAX_WORKERS`).
 
 ## [0.6.0] - 2026-05-07
 
