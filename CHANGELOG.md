@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-05-07
 
 ### Changed
 - **Bundled `parallel-orchestra` (PO) into the C3 distribution.** PO is now
