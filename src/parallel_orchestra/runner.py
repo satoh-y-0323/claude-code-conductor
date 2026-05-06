@@ -41,7 +41,7 @@ FailureCategory = Literal["transient", "permanent", "rate_limited", "timeout", "
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CLAUDE_EXECUTABLE = "claude"
-_DEFAULT_MAX_WORKERS: int = 3
+_DEFAULT_MAX_WORKERS: int = 5
 _CLAUDE_PROMPT_FLAG = "-p"
 _WORKTREE_ROOT_NAME = ".po-worktrees"
 _GIT_COMMAND_TIMEOUT_SEC = 30
@@ -54,7 +54,7 @@ _DASHBOARD_NONLIVE_RENDER_SEC = 30
 _TOOL_ACTION_MAX_LEN = 45
 
 # Internally managed constants — not configurable via manifest.
-_INTERNAL_TIMEOUT_SEC: int = 900
+_INTERNAL_TIMEOUT_SEC: int = 1200
 _INTERNAL_RETRY_DELAY_SEC: float = 1.0
 _INTERNAL_RETRY_BACKOFF_FACTOR: float = 2.0
 
@@ -1398,7 +1398,7 @@ def run_manifest(
 
     Args:
         manifest: A Manifest instance, or a Path/str pointing to a manifest file.
-        max_workers: Maximum number of worker threads (default: 3).
+        max_workers: Maximum number of worker threads (default: 5).
         claude_executable: Name or path of the claude binary.
         log_dir: Directory for task stdout/stderr log files.
         log_enabled: When False, log writing is skipped entirely.

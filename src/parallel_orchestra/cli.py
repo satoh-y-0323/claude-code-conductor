@@ -60,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         metavar="N",
-        help="Maximum number of parallel worker threads (default: 3).",
+        help="Maximum number of parallel worker threads (default: 5).",
     )
     run_parser.add_argument(
         "--claude-exe",
