@@ -20,7 +20,6 @@ _STATUS_ICON: dict[str, str] = {
     "succeeded": "✓",
     "failed": "✗",
     "skipped": "⊘",
-    "resumed": "↩",
 }
 
 _SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({".json", ".md", ".markdown"})
@@ -36,8 +35,6 @@ def _md_escape(text: str) -> str:
 
 
 def _task_status(result: TaskResult) -> str:
-    if result.resumed:
-        return "resumed"
     if result.skipped:
         return "skipped"
     if result.ok:
@@ -70,7 +67,6 @@ def _build_report_dict(
     succeeded = statuses.count("succeeded")
     failed = statuses.count("failed")
     skipped = statuses.count("skipped")
-    resumed = statuses.count("resumed")
 
     duration_sec = (finished_at - started_at).total_seconds()
 
@@ -82,15 +78,13 @@ def _build_report_dict(
         "total": total,
         "succeeded": succeeded,
         "failed": failed,
-        "skipped": skipped + resumed,
-        "_resumed": resumed,
+        "skipped": skipped,
         "tasks": [_build_task_dict(r) for r in results],
     }
 
 
 def _format_json(report_dict: dict[str, Any]) -> str:
-    public = {k: v for k, v in report_dict.items() if not k.startswith("_")}
-    return json.dumps(public, ensure_ascii=False, indent=2) + "\n"
+    return json.dumps(report_dict, ensure_ascii=False, indent=2) + "\n"
 
 
 def _format_markdown(report_dict: dict[str, Any]) -> str:
@@ -100,16 +94,13 @@ def _format_markdown(report_dict: dict[str, Any]) -> str:
     duration_sec = report_dict["duration_sec"]
     succeeded = report_dict["succeeded"]
     failed = report_dict["failed"]
-    resumed = report_dict.get("_resumed", 0)
-    skipped = report_dict["skipped"] - resumed
+    skipped = report_dict["skipped"]
 
     results_parts = [
         f"{succeeded} succeeded",
         f"{failed} failed",
         f"{skipped} skipped",
     ]
-    if resumed:
-        results_parts.append(f"{resumed} resumed")
     results_line = " / ".join(results_parts)
 
     lines: list[str] = [
@@ -130,7 +121,7 @@ def _format_markdown(report_dict: dict[str, Any]) -> str:
         icon = _STATUS_ICON.get(status, "?")
         label = f"{icon} {status}"
 
-        if status in ("skipped", "resumed"):
+        if status == "skipped":
             duration_cell = "—"
             retries_cell = "—"
             failure_cell = "—"

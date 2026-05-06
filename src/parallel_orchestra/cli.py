@@ -10,11 +10,9 @@ import parallel_orchestra
 
 from .manifest import ManifestError, load_manifest
 from .runner import (
-    _DEFAULT_MAX_WORKERS,
     RunnerError,
     RunResult,
     TaskResult,
-    format_dry_run,
     run_manifest,
 )
 
@@ -76,43 +74,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Suppress output for successful tasks.",
     )
     run_parser.add_argument(
-        "--log-dir",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help=(
-            "Directory for per-task stdout/stderr logs"
-            " (default: <git-root>/.claude/logs). "
-            "Logs may contain sensitive information - do not share publicly."
-        ),
-    )
-    run_parser.add_argument(
-        "--no-log",
-        action="store_true",
-        help=(
-            "Disable per-task log file persistence. "
-            "Recommended when running in sensitive or shared environments."
-        ),
-    )
-    run_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help=(
-            "Print the execution plan (task order, timeout, dependencies) "
-            "without running any tasks."
-        ),
-    )
-    run_parser.add_argument(
-        "--resume",
-        action="store_true",
-        help=(
-            "Skip tasks that already succeeded in a previous run by loading"
-            " the .po-run-state-<manifest-stem>.json file next to the manifest."
-            " If the state file is missing or the manifest has changed,"
-            " a warning is emitted and all tasks are run normally."
-        ),
-    )
-    run_parser.add_argument(
         "--report",
         type=Path,
         default=None,
@@ -123,31 +84,11 @@ def _build_parser() -> argparse.ArgumentParser:
             ".json for JSON, .md or .markdown for Markdown."
         ),
     )
-    dashboard_group = run_parser.add_mutually_exclusive_group()
-    dashboard_group.add_argument(
-        "--dashboard",
-        action="store_true",
-        dest="force_dashboard",
-        default=False,
-        help=(
-            "Force-enable the ANSI progress dashboard "
-            "regardless of TTY detection."
-        ),
-    )
-    dashboard_group.add_argument(
-        "--no-dashboard",
-        action="store_true",
-        dest="no_dashboard",
-        default=False,
-        help="Disable the ANSI progress dashboard.",
-    )
 
     return parser
 
 
 def _status_label(result: TaskResult) -> str:
-    if result.resumed:
-        return "skip"
     if result.timed_out:
         return "timeout"
     if result.returncode == 0:
@@ -198,9 +139,6 @@ def _print_timeout_tail(result: TaskResult) -> None:
 
 def _print_summary(run_result: RunResult, *, quiet: bool) -> None:
     for result in run_result.results:
-        if result.resumed:
-            print(f"[skip] {result.task_id} ({result.agent}) resumed")
-            continue
         is_success = result.ok
         if quiet and is_success:
             continue
@@ -240,31 +178,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ManifestError: {exc}", file=sys.stderr)
         return _EXIT_MANIFEST_ERROR
 
-    effective_max_workers = (
-        args.max_workers if args.max_workers is not None else _DEFAULT_MAX_WORKERS
-    )
-
-    if args.dry_run:
-        print(format_dry_run(manifest, max_workers=effective_max_workers))
-        return _EXIT_SUCCESS
-
-    if args.force_dashboard:
-        dashboard_enabled: bool | None = True
-    elif args.no_dashboard:
-        dashboard_enabled = False
-    else:
-        dashboard_enabled = None
-
     try:
         run_result = run_manifest(
             manifest,
             max_workers=args.max_workers,
             claude_executable=args.claude_exe,
-            log_enabled=not args.no_log,
-            log_dir=args.log_dir,
-            resume=args.resume,
             report_path=args.report,
-            dashboard_enabled=dashboard_enabled,
         )
     except RunnerError as exc:
         print(f"RunnerError: {exc}", file=sys.stderr)

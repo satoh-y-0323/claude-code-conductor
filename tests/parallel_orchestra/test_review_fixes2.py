@@ -14,21 +14,6 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
-_MANIFEST_WITH_WEBHOOK = """\
----
-po_plan_version: "0.1"
-name: webhook-test
-cwd: "."
-tasks:
-  - id: task1
-    agent: reviewer
-    read_only: true
-on_complete:
-  webhook_url: "{url}"
----
-"""
-
-
 # ---------------------------------------------------------------------------
 # Task 6 / R-6 — _mask_sensitive_env_values must mask short values
 # ---------------------------------------------------------------------------
@@ -58,53 +43,6 @@ def test_mask_threshold_masks_short_values(monkeypatch: pytest.MonkeyPatch) -> N
         f"Expected '[MASKED]' to appear in result, but it did not. "
         f"Got: {result!r}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Task 8 / R-8 — _BLOCKED_HOSTNAMES must include localhost aliases
-# ---------------------------------------------------------------------------
-
-
-def _write_webhook_manifest(tmp_path: Path, url: str) -> Path:
-    manifest_path = tmp_path / "manifest.md"
-    manifest_path.write_text(
-        _MANIFEST_WITH_WEBHOOK.format(url=url), encoding="utf-8"
-    )
-    return manifest_path
-
-
-def test_webhook_localhost_localdomain_blocked(tmp_path: Path) -> None:
-    """https://localhost.localdomain must be rejected after R-8 fix.
-
-    Current _BLOCKED_HOSTNAMES: {"localhost", "ip6-localhost", "ip6-loopback"}.
-    "localhost.localdomain" is NOT in the set, so the URL is NOT rejected.
-
-    After fix: "localhost.localdomain" is added to _BLOCKED_HOSTNAMES.
-    """
-    from parallel_orchestra.manifest import ManifestError, load_manifest
-
-    manifest_path = _write_webhook_manifest(
-        tmp_path, "https://localhost.localdomain/hook"
-    )
-
-    with pytest.raises(ManifestError):
-        load_manifest(manifest_path)
-
-
-def test_webhook_localhost4_blocked(tmp_path: Path) -> None:
-    """https://localhost4 must be rejected after R-8 fix.
-
-    Current _BLOCKED_HOSTNAMES does not contain "localhost4",
-    so the URL is NOT rejected.
-
-    After fix: "localhost4" is added to _BLOCKED_HOSTNAMES.
-    """
-    from parallel_orchestra.manifest import ManifestError, load_manifest
-
-    manifest_path = _write_webhook_manifest(tmp_path, "https://localhost4/hook")
-
-    with pytest.raises(ManifestError):
-        load_manifest(manifest_path)
 
 
 # ---------------------------------------------------------------------------

@@ -6,13 +6,11 @@ A manifest file is a Markdown file with a YAML frontmatter block delimited by
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import re
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlparse
 
 import yaml
 
@@ -27,36 +25,17 @@ SUPPORTED_PLAN_VERSIONS: frozenset[str] = frozenset({"0.1"})
 # Maximum allowed value for a single concurrency_limits entry.
 MAX_CONCURRENCY_LIMIT: int = 256
 
-# Maximum allowed length for a webhook URL (characters).
-_WEBHOOK_URL_MAX_LENGTH: int = 2048
-
 # Default max_retries used when neither task nor defaults specify a value.
 _DEFAULT_TASK_MAX_RETRIES: int = 1
 
 # Known keys for the ``defaults:`` section.  Unrecognised keys are warned.
 _KNOWN_DEFAULTS_KEYS: frozenset[str] = frozenset({"max_retries"})
 
-# Known keys for ``on_complete:`` / ``on_failure:`` sections.
-_KNOWN_WEBHOOK_KEYS: frozenset[str] = frozenset({"webhook_url"})
-
 # Regular expression that defines the set of characters allowed in a task ID.
 _TASK_ID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # Regular expression that defines the set of characters allowed in an agent name.
 _AGENT_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]+$")
-
-# Well-known internal hostnames blocked in webhook URLs to mitigate SSRF.
-# IP-literal blocking is handled separately by _is_blocked_ip().
-_BLOCKED_HOSTNAMES: frozenset[str] = frozenset(
-    {
-        "localhost",
-        "localhost.localdomain",  # common alias on some Linux distributions
-        "localhost4",             # IPv4 localhost alias (e.g. RHEL/CentOS /etc/hosts)
-        "localhost6",             # IPv6 localhost alias (e.g. RHEL/CentOS /etc/hosts)
-        "ip6-localhost",
-        "ip6-loopback",
-    }
-)
 
 # Environment variable keys that are blocked for security reasons.
 # PO_WORKTREE_GUARD is also blocked to prevent user override of PO internals.
@@ -138,13 +117,6 @@ class Defaults:
 
 
 @dataclass(frozen=True)
-class WebhookConfig:
-    """Webhook notification configuration for a manifest event."""
-
-    webhook_url: str
-
-
-@dataclass(frozen=True)
 class Manifest:
     """Parsed representation of a parallel-orchestra manifest file.
 
@@ -156,8 +128,6 @@ class Manifest:
             the working directory. Passed as-is to the runner.
         tasks: Ordered tuple of tasks declared in the manifest.
         defaults: Global default values for task fields. None if not specified.
-        on_complete: Webhook config to call after all tasks finish.
-        on_failure: Webhook config to call when one or more tasks fail.
         concurrency_limits: Mapping of concurrency group name to max concurrency.
     """
 
@@ -167,25 +137,12 @@ class Manifest:
     cwd: str
     tasks: tuple[Task, ...]
     defaults: Defaults | None = None
-    on_complete: WebhookConfig | None = None
-    on_failure: WebhookConfig | None = None
     concurrency_limits: dict[str, int] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _is_blocked_ip(host: str) -> bool:
-    """Return True when *host* is a blocked IP address literal."""
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return (
-        addr.is_loopback or addr.is_link_local or addr.is_private or addr.is_unspecified
-    )
 
 
 def _parse_non_negative_int(raw: object, task_id: str, field_name: str) -> int:
@@ -239,57 +196,6 @@ def _parse_defaults(raw: object) -> Defaults:
         max_retries = _parse_non_negative_int(raw["max_retries"], _ctx, "max_retries")
 
     return Defaults(max_retries=max_retries)
-
-
-def _parse_webhook_config(raw: object, section_name: str) -> WebhookConfig:
-    """Parse a ``on_complete`` or ``on_failure`` section into a WebhookConfig."""
-    if not isinstance(raw, dict):
-        raise ManifestError(
-            f"'{section_name}' must be a YAML mapping, got {type(raw)!r}."
-        )
-
-    for key in raw:
-        if key not in _KNOWN_WEBHOOK_KEYS:
-            warnings.warn(
-                f"Unknown key {key!r} in '{section_name}' section will be ignored.",
-                stacklevel=2,
-            )
-
-    url = raw.get("webhook_url")
-    if url is None:
-        raise ManifestError(f"'{section_name}' is missing required key: 'webhook_url'.")
-    if not isinstance(url, str):
-        raise ManifestError(
-            f"'{section_name}.webhook_url' must be a string, got {type(url)!r}."
-        )
-    if not url.startswith("https://"):
-        parsed_scheme = urlparse(url)
-        raise ManifestError(
-            f"'{section_name}.webhook_url' must use HTTPS"
-            f" (got scheme '{parsed_scheme.scheme or '(none)'}'). "
-            "Use 'https://' to protect webhook payloads in transit."
-        )
-
-    if len(url) > _WEBHOOK_URL_MAX_LENGTH:
-        raise ManifestError(
-            f"'{section_name}.webhook_url' exceeds the maximum allowed length"
-            f" of {_WEBHOOK_URL_MAX_LENGTH} characters."
-        )
-
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
-    if _is_blocked_ip(host):
-        raise ManifestError(
-            f"'{section_name}.webhook_url' points to a blocked address"
-            " (loopback, link-local, private, or unspecified)."
-        )
-    if host.lower() in _BLOCKED_HOSTNAMES:
-        raise ManifestError(
-            f"'{section_name}.webhook_url' points to a blocked hostname"
-            f" ({host!r})."
-        )
-
-    return WebhookConfig(webhook_url=url)
 
 
 def _extract_frontmatter(text: str) -> str:
@@ -442,6 +348,20 @@ def _parse_task(
         max_retries=max_retries,
         concurrency_group=concurrency_group,
     )
+
+
+def _check_duplicate_task_ids(tasks: tuple[Task, ...]) -> None:
+    """Verify that every task has a unique ``id``."""
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for task in tasks:
+        if task.id in seen:
+            duplicates.add(task.id)
+        else:
+            seen.add(task.id)
+    if duplicates:
+        sorted_ids = ", ".join(sorted(duplicates))
+        raise ManifestError(f"duplicate task id(s): {sorted_ids}")
 
 
 def _check_depends_on_refs(tasks: tuple[Task, ...]) -> None:
@@ -660,17 +580,6 @@ def load_manifest(path: str | Path) -> Manifest:
     if raw_defaults is not None:
         defaults = _parse_defaults(raw_defaults)
 
-    # Parse optional webhook sections.
-    on_complete: WebhookConfig | None = None
-    raw_on_complete = data.get("on_complete")
-    if raw_on_complete is not None:
-        on_complete = _parse_webhook_config(raw_on_complete, "on_complete")
-
-    on_failure: WebhookConfig | None = None
-    raw_on_failure = data.get("on_failure")
-    if raw_on_failure is not None:
-        on_failure = _parse_webhook_config(raw_on_failure, "on_failure")
-
     # Validate tasks.
     raw_tasks = data.get("tasks")
     if raw_tasks is None:
@@ -686,6 +595,7 @@ def load_manifest(path: str | Path) -> Manifest:
         _parse_task(raw_task, default_cwd, defaults) for raw_task in raw_tasks
     )
 
+    _check_duplicate_task_ids(tasks)
     _check_depends_on_refs(tasks)
     _check_cyclic_dependencies(tasks)
     _check_writes_conflicts(tasks)
@@ -701,7 +611,5 @@ def load_manifest(path: str | Path) -> Manifest:
         cwd=raw_cwd,
         tasks=tasks,
         defaults=defaults,
-        on_complete=on_complete,
-        on_failure=on_failure,
         concurrency_limits=concurrency_limits,
     )

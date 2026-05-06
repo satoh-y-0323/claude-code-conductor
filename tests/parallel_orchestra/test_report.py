@@ -23,7 +23,6 @@ def _make_task_result(
     agent: str = "general-purpose",
     returncode: int = 0,
     skipped: bool = False,
-    resumed: bool = False,
     timed_out: bool = False,
     duration_sec: float = 10.0,
     retry_count: int = 0,
@@ -39,7 +38,6 @@ def _make_task_result(
         timeout_reason=None,
         duration_sec=duration_sec,
         skipped=skipped,
-        resumed=resumed,
         branch_name=None,
         retry_count=retry_count,
         failure_category=failure_category,
@@ -181,12 +179,6 @@ def test_Markdown_スキップアイコンが含まれる(tmp_path: Path):
     run_result = _make_run_result(_make_task_result(skipped=True, returncode=None))
     md = _generate_md(tmp_path, run_result)
     assert "⊘" in md
-
-
-def test_Markdown_resumedアイコンが含まれる(tmp_path: Path):
-    run_result = _make_run_result(_make_task_result(resumed=True, returncode=0))
-    md = _generate_md(tmp_path, run_result)
-    assert "↩" in md
 
 
 def test_Markdown_拡張子markdownも対応(tmp_path: Path):

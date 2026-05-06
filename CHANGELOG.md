@@ -18,12 +18,36 @@
 - `c3 doctor` now reports the bundled PO version instead of probing for a
   separately installed `parallel-orchestra` binary on PATH.
 
-### Removed
+### Removed (post-bundling cleanup)
+- **Webhook notifications** (`on_complete` / `on_failure` / `webhook_url`)
+  removed from the manifest schema, parser, and runner. C3 never used
+  webhooks (they were dropped explicitly in `build_wave_manifest_text`).
+  Roughly 160 LOC of dispatch/SSRF-mitigation code and `urllib.request`
+  imports are gone.
+- **`--resume` and `RunState`**: `parallel_orchestra/run_state.py`
+  deleted. The `parallel-orchestra run --resume` flag is removed; C3
+  commits each wave on completion so partial-run restoration is
+  unnecessary. Roughly 240 LOC and the `resumed` field on `TaskResult`
+  are gone.
+- **`parallel_orchestra/__main__.py`** removed. Use the
+  `parallel-orchestra` console script (or `c3 po run`) instead of
+  `python -m parallel_orchestra`.
+- **PO CLI options** that C3 doesn't expose: `--log-dir` / `--no-log`
+  / `--dashboard` / `--no-dashboard` / `--dry-run` (C3 has its own
+  `c3 po dry-run` subcommand). The `format_dry_run` helper is
+  removed.
 - `src/c3/po/detect.py` and the `RunStatus="not_installed"` branch — PO
   is always available now that it ships with C3.
 - The "PO is not installed" guidance in `wave-execution` Step 0 and the
   "optional install" section of the README; replaced with a note that
   PO is bundled.
+- **PO public API trimmed**: `parallel_orchestra` now re-exports only
+  `run_manifest`, `load_manifest`, `RunResult`, `ManifestError`,
+  `RunnerError`, and `ParallelOrchestraError`. `Defaults`, `Manifest`,
+  `Task`, `TaskResult`, `WebhookConfig`, `SUPPORTED_PLAN_VERSIONS`,
+  and `generate_report` are no longer top-level exports (still
+  accessible via `parallel_orchestra.manifest` /
+  `parallel_orchestra.runner` for advanced callers).
 
 ### Added
 - `PyYAML>=6.0` runtime dependency.
@@ -31,6 +55,18 @@
   the C3 test run (`pytest tests/`).
 - `[tool.pytest.ini_options]` block declaring `testpaths` and the
   `slow` marker (carried over from PO's pyproject.toml).
+- Explicit `_check_duplicate_task_ids` validation in
+  `parallel_orchestra.load_manifest`. Previously duplicate IDs were
+  caught only indirectly via `depends_on` reference checks.
+
+### Changed (post-bundling cleanup)
+- `c3.po.manifest.validate_manifest` now delegates structural
+  validation to `parallel_orchestra.load_manifest` and only adds the
+  C3-specific check that each task's `agent` resolves to a file under
+  `.claude/agents/`. The duplicated po_plan_version / name / cwd /
+  task-field checks are removed (~70 LOC).
+- `c3.po.manifest._yaml_quote` reuses `json.dumps(..., ensure_ascii=False)`
+  for double-quoted YAML scalars instead of hand-rolled escaping.
 
 ## [0.5.1] - 2026-05-05
 

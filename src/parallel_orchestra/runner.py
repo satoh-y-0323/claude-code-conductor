@@ -18,8 +18,6 @@ import threading
 import time
 import traceback
 import unicodedata
-import urllib.error
-import urllib.request
 import uuid
 import warnings
 from collections.abc import Callable, Sequence
@@ -30,16 +28,7 @@ from pathlib import Path
 from typing import IO, Any, Literal
 
 from ._exceptions import ParallelOrchestraError
-from .manifest import Manifest, Task, WebhookConfig, load_manifest
-from .run_state import (
-    RunState,
-    create_run_state,
-    delete_run_state,
-    load_run_state,
-    mark_task_completed,
-    state_file_exists,
-    state_file_path,
-)
+from .manifest import Manifest, Task, load_manifest
 
 # ---------------------------------------------------------------------------
 # Types
@@ -60,7 +49,6 @@ _CONFLICT_STDERR_MAX_CHARS = 2000
 _PROGRESS_INTERVAL_SEC = 5
 _STARTUP_DISPLAY_SEC = 60
 _LAST_LINES_ON_TIMEOUT = 20
-_WEBHOOK_TIMEOUT_SEC = 10
 _DASHBOARD_IDLE_RENDER_SEC = _PROGRESS_INTERVAL_SEC
 _DASHBOARD_NONLIVE_RENDER_SEC = 30
 _TOOL_ACTION_MAX_LEN = 45
@@ -127,7 +115,6 @@ class TaskResult:
     timed_out: bool
     duration_sec: float
     skipped: bool = False
-    resumed: bool = False
     branch_name: str | None = None
     timeout_reason: Literal["total"] | None = None
     retry_count: int = 0
@@ -140,8 +127,6 @@ class TaskResult:
 
     @property
     def ok(self) -> bool:
-        if self.resumed:
-            return True
         return not self.skipped and self.returncode == 0 and not self.timed_out
 
 
@@ -440,97 +425,6 @@ class _Dashboard:
             lines.append(f"    └ {action}")
 
         return lines
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Disable automatic redirect following for webhook requests."""
-
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-        newurl: str,
-    ) -> None:
-        raise urllib.error.HTTPError(
-            req.full_url, code, "redirects are not followed", headers, fp
-        )
-
-
-def _send_webhook(
-    config: WebhookConfig,
-    *,
-    event: Literal["complete", "failure"],
-    manifest_name: str,
-    total: int,
-    succeeded: int,
-    failed: int,
-    skipped: int,
-    duration_sec: float,
-) -> None:
-    """Send an HTTP POST webhook notification on a best-effort basis."""
-    payload = {
-        "event": event,
-        "manifest": manifest_name,
-        "total": total,
-        "succeeded": succeeded,
-        "failed": failed,
-        "skipped": skipped,
-        "duration_sec": duration_sec,
-    }
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        config.webhook_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        opener = urllib.request.build_opener(_NoRedirectHandler)
-        with opener.open(req, timeout=_WEBHOOK_TIMEOUT_SEC):
-            pass
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        logger.warning("webhook notification failed (%s): %s", event, exc)
-
-
-def _dispatch_webhooks(
-    manifest: Manifest,
-    run_result: RunResult,
-    *,
-    run_start_time: float,
-) -> None:
-    """Fire ``on_complete`` and ``on_failure`` webhook notifications."""
-    duration_sec = time.perf_counter() - run_start_time
-    total = len(run_result.results)
-    succeeded = sum(1 for r in run_result.results if r.ok)
-    skipped = sum(1 for r in run_result.results if r.skipped)
-    failed = total - succeeded - skipped
-
-    if manifest.on_complete is not None:
-        _send_webhook(
-            manifest.on_complete,
-            event="complete",
-            manifest_name=manifest.name,
-            total=total,
-            succeeded=succeeded,
-            failed=failed,
-            skipped=skipped,
-            duration_sec=round(duration_sec, 1),
-        )
-
-    if manifest.on_failure is not None and failed > 0:
-        _send_webhook(
-            manifest.on_failure,
-            event="failure",
-            manifest_name=manifest.name,
-            total=total,
-            succeeded=succeeded,
-            failed=failed,
-            skipped=skipped,
-            duration_sec=round(duration_sec, 1),
-        )
 
 
 def _sanitize_for_display(text: str, max_len: int = _TOOL_ACTION_MAX_LEN) -> str:
@@ -1372,13 +1266,10 @@ class _DependencyScheduler:
         tasks: Sequence[Task],
         executor: ThreadPoolExecutor,
         execute_fn: Callable[[Task], TaskResult],
-        *,
-        resumed_task_ids: frozenset[str] | None = None,
     ) -> None:
         self._tasks: Sequence[Task] = tasks
         self._executor: ThreadPoolExecutor = executor
         self._execute_fn: Callable[[Task], TaskResult] = execute_fn
-        self._resumed_task_ids: frozenset[str] = resumed_task_ids or frozenset()
 
         self._tasks_by_id: dict[str, Task] = {t.id: t for t in tasks}
         self._indegree: dict[str, int] = {t.id: len(t.depends_on) for t in tasks}
@@ -1403,19 +1294,6 @@ class _DependencyScheduler:
             branch_name=None,
         )
 
-    def _make_resumed(self, task: Task) -> TaskResult:
-        return TaskResult(
-            task_id=task.id,
-            agent=task.agent,
-            returncode=0,
-            stdout="",
-            stderr="",
-            timed_out=False,
-            duration_sec=0.0,
-            resumed=True,
-            branch_name=None,
-        )
-
     def _unlock_task(
         self,
         task_id: str,
@@ -1425,13 +1303,7 @@ class _DependencyScheduler:
     ) -> None:
         task = self._tasks_by_id[task_id]
 
-        if task_id in self._resumed_task_ids:
-            results[task_id] = self._make_resumed(task)
-            for downstream_id in self._reverse_deps[task_id]:
-                self._indegree[downstream_id] -= 1
-                if self._indegree[downstream_id] == 0:
-                    self._unlock_task(downstream_id, results, future_to_task, pending)
-        elif self._should_skip(task, results):
+        if self._should_skip(task, results):
             results[task_id] = self._make_skipped(task)
             self._propagate_skip(task, results)
         else:
@@ -1445,34 +1317,6 @@ class _DependencyScheduler:
         results: dict[str, TaskResult] = {}
         future_to_task: dict[Future[TaskResult], Task] = {}
         runner_error: RunnerError | None = None
-
-        # Pre-loop: process resumed tasks in topological order so that
-        # multi-level resumed chains correctly propagate _indegree decrements.
-        #
-        # NOTE — test injection seam: this loop is kept separate from the main
-        # execution loop so that tests can monkeypatch ``_make_resumed`` to
-        # inject synthetic TaskResult objects without touching live execution.
-        #
-        # NOTE — indegree ownership: _indegree decrements performed here apply
-        # only to the downstream tasks of *resumed* tasks.  The main loop's
-        # ``_unlock_task`` handles decrements for tasks that actually execute.
-        # A downstream task whose indegree reaches 0 here will be skipped by
-        # the ``if task.id in results`` guard below and will therefore NOT be
-        # decremented a second time by ``_unlock_task``.
-        remaining = [t for t in self._tasks if t.id in self._resumed_task_ids]
-        max_iterations = len(remaining) + 1  # guard against unexpected cycles
-        iterations = 0
-        while remaining and iterations < max_iterations:
-            iterations += 1
-            still_pending = []
-            for task in remaining:
-                if all(dep in results for dep in task.depends_on):
-                    results[task.id] = self._make_resumed(task)
-                    for downstream_id in self._reverse_deps[task.id]:
-                        self._indegree[downstream_id] -= 1
-                else:
-                    still_pending.append(task)
-            remaining = still_pending
 
         pending: set[Future[TaskResult]] = set()
         for task in self._tasks:
@@ -1536,74 +1380,6 @@ class _DependencyScheduler:
 
 
 # ---------------------------------------------------------------------------
-# Dry-run helpers
-# ---------------------------------------------------------------------------
-
-
-def _compute_task_stages(tasks: Sequence[Task]) -> dict[str, int]:
-    """Return task_id → stage number (1-based) for each task."""
-    stage: dict[str, int] = {}
-    remaining = list(tasks)
-    for _ in range(len(tasks) + 1):
-        if not remaining:
-            break
-        next_remaining = []
-        for task in remaining:
-            if all(dep in stage for dep in task.depends_on):
-                stage[task.id] = (
-                    max((stage[dep] for dep in task.depends_on), default=0) + 1
-                )
-            else:
-                next_remaining.append(task)
-                continue
-        if len(next_remaining) == len(remaining):
-            break
-        remaining = next_remaining
-    for task in remaining:
-        stage[task.id] = -1
-    return stage
-
-
-def format_dry_run(manifest: Manifest, *, max_workers: int) -> str:
-    """Return a human-readable execution plan without running any tasks."""
-    tasks = manifest.tasks
-    stages = _compute_task_stages(tasks)
-    num_stages = max(stages.values(), default=0)
-
-    lines: list[str] = [
-        "Dry run -- no tasks will be executed.",
-        "",
-        f"Execution plan (max_workers={max_workers}):",
-    ]
-
-    for task in tasks:
-        stage = stages.get(task.id, -1)
-        parts = [
-            f"  [stage {stage}]",
-            f"{task.id}",
-            f"agent={task.agent}",
-            f"timeout={_INTERNAL_TIMEOUT_SEC}s",
-        ]
-        if task.max_retries > 0:
-            parts.append(f"retries={task.max_retries}")
-        if task.read_only:
-            parts.append("read_only")
-        if task.depends_on:
-            parts.append(f"depends={list(task.depends_on)}")
-        if task.concurrency_group is not None:
-            limit = manifest.concurrency_limits.get(task.concurrency_group, "?")
-            parts.append(f"group={task.concurrency_group}(limit={limit})")
-        lines.append("  ".join(parts))
-
-    n = len(tasks)
-    task_word = "task" if n == 1 else "tasks"
-    stage_word = "stage" if num_stages == 1 else "stages"
-    lines.append("")
-    lines.append(f"{n} {task_word}, {num_stages} {stage_word}")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1615,7 +1391,6 @@ def run_manifest(
     claude_executable: str = _DEFAULT_CLAUDE_EXECUTABLE,
     log_dir: Path | None = None,
     log_enabled: bool = True,
-    resume: bool = False,
     report_path: Path | None = None,
     dashboard_enabled: bool | None = None,
 ) -> RunResult:
@@ -1627,7 +1402,6 @@ def run_manifest(
         claude_executable: Name or path of the claude binary.
         log_dir: Directory for task stdout/stderr log files.
         log_enabled: When False, log writing is skipped entirely.
-        resume: When True, skip tasks that already completed in a prior run.
         report_path: When provided, write a JSON or Markdown run summary.
         dashboard_enabled: Override ANSI dashboard visibility.
 
@@ -1664,28 +1438,6 @@ def run_manifest(
         log_config = LogConfig(base_dir=resolved_log_dir)
     else:
         log_config = None
-
-    manifest_path = manifest.path
-
-    run_state: RunState | None
-    resumed_task_ids: frozenset[str]
-
-    if resume:
-        loaded = load_run_state(manifest_path)
-        if loaded is None:
-            if not state_file_exists(manifest_path):
-                logger.warning(
-                    "--resume: no state file found (%s). Starting a normal run.",
-                    state_file_path(manifest_path),
-                )
-            run_state = create_run_state(manifest_path)
-            resumed_task_ids = frozenset()
-        else:
-            run_state = loaded
-            resumed_task_ids = frozenset(loaded.completed_tasks)
-    else:
-        run_state = create_run_state(manifest_path)
-        resumed_task_ids = frozenset()
 
     group_semaphores: dict[str, threading.Semaphore] = {
         group: threading.Semaphore(limit)
@@ -1743,21 +1495,15 @@ def run_manifest(
         finally:
             if sem is not None:
                 sem.release()
-        if result.ok and run_state is not None:
-            mark_task_completed(run_state, task.id, manifest_path)
         return result
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        scheduler = _DependencyScheduler(
-            tasks, executor, execute_fn, resumed_task_ids=resumed_task_ids
-        )
+        scheduler = _DependencyScheduler(tasks, executor, execute_fn)
         task_results: tuple[TaskResult, ...] = scheduler.run()
 
     for tr in task_results:
         if tr.skipped:
             dashboard.update(tr.task_id, status="skipped")
-        elif tr.resumed:
-            dashboard.update(tr.task_id, status="resumed")
     dashboard.stop()
 
     merge_results: tuple[MergeResult, ...] = ()
@@ -1765,11 +1511,6 @@ def run_manifest(
         merge_results = _merge_write_branches(default_cwd, base_branch, task_results)
 
     run_result = RunResult(results=task_results, merge_results=merge_results)
-
-    if run_result.overall_ok:
-        delete_run_state(manifest_path)
-
-    _dispatch_webhooks(manifest, run_result, run_start_time=_run_start_time)
 
     if report_path is not None:
         from .report import generate_report  # noqa: PLC0415

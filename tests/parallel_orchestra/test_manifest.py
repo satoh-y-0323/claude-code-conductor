@@ -13,7 +13,6 @@ from parallel_orchestra.manifest import (
     Manifest,
     ManifestError,
     Task,
-    WebhookConfig,
     load_manifest,
 )
 
@@ -866,50 +865,6 @@ tasks:
     agent: code-reviewer
     read_only: true
     concurrency_group: api-calls
----
-"""
-    path = manifest_file(content)
-    with pytest.raises(ManifestError):
-        load_manifest(path)
-
-
-# ---------------------------------------------------------------------------
-# Webhook sections
-# ---------------------------------------------------------------------------
-
-
-def test_on_failureのwebhookがパースされる(manifest_file):
-    content = """\
----
-po_plan_version: "0.1"
-name: test
-cwd: "."
-tasks:
-  - id: review
-    agent: code-reviewer
-    read_only: true
-on_failure:
-  webhook_url: "https://example.com/notify"
----
-"""
-    path = manifest_file(content)
-    result = load_manifest(path)
-    assert result.on_failure is not None
-    assert result.on_failure.webhook_url == "https://example.com/notify"
-
-
-def test_プライベートIPのwebhookURLでManifestErrorが送出される(manifest_file):
-    content = """\
----
-po_plan_version: "0.1"
-name: test
-cwd: "."
-tasks:
-  - id: review
-    agent: code-reviewer
-    read_only: true
-on_complete:
-  webhook_url: "https://192.168.1.1/hook"
 ---
 """
     path = manifest_file(content)

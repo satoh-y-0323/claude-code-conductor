@@ -6,6 +6,7 @@ module performs C3-side preflight only (agent file existence, wave decomposition
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -154,12 +155,17 @@ def build_wave_manifest_text(
 
 
 def _yaml_quote(s: str) -> str:
-    if s == "":
-        return '""'
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Render *s* as a YAML double-quoted scalar.
+
+    JSON's double-quoted string syntax is a strict subset of YAML's, so we use
+    :func:`json.dumps` with ``ensure_ascii=False`` to keep non-ASCII characters
+    intact while letting the standard library handle ``\\`` and ``"`` escaping.
+    """
+    return json.dumps(s, ensure_ascii=False)
 
 
 def _yaml_scalar(v: Any) -> str:
+    """Render a primitive Python value as a YAML scalar."""
     if v is None:
         return "null"
     if isinstance(v, bool):
@@ -201,80 +207,31 @@ def extract_frontmatter(plan_report_path: Path) -> dict | None:
 
 
 def validate_manifest(plan_report_path: Path, claude_root: Path) -> list[str]:
-    """Run C3-side preflight checks. Returns a list of error strings (empty = OK).
+    """Run preflight checks. Returns a list of error strings (empty = OK).
+
+    Delegates structural validation (po_plan_version / name / cwd / task fields,
+    cycle detection, write conflicts, …) to ``parallel_orchestra.load_manifest``,
+    then adds C3-specific checks (agent file existence under ``.claude/agents/``).
 
     ``claude_root`` is the directory that contains the ``.claude/`` folder
     (i.e. the project root).
     """
-    errors: list[str] = []
-    fm = extract_frontmatter(plan_report_path)
-    if fm is None:
-        return [
-            f"frontmatter missing or malformed in {plan_report_path}. "
-            "Re-run /start Phase C to regenerate the plan-report."
-        ]
+    from parallel_orchestra import ManifestError, load_manifest
 
-    plan_version = fm.get("po_plan_version")
-    if plan_version != "0.1":
-        errors.append(
-            f"unsupported po_plan_version: {plan_version!r} (expected '0.1')"
-        )
+    try:
+        manifest = load_manifest(plan_report_path)
+    except ManifestError as exc:
+        return [str(exc)]
 
-    if not isinstance(fm.get("name"), str) or not fm["name"]:
-        errors.append("`name` is required and must be a non-empty string")
-
-    cwd = fm.get("cwd")
-    if not isinstance(cwd, str) or not cwd:
-        errors.append("`cwd` is required and must be a non-empty string")
-
-    tasks = fm.get("tasks")
-    if not isinstance(tasks, list) or not tasks:
-        errors.append("`tasks` is required and must contain at least one entry")
-        return errors
-
-    seen_ids: set[str] = set()
     agents_dir = claude_root / ".claude" / "agents"
-    for index, task in enumerate(tasks):
-        if not isinstance(task, dict):
-            errors.append(f"tasks[{index}] must be a mapping")
-            continue
-        prefix = f"tasks[{index}]"
-        task_id = task.get("id")
-        if not isinstance(task_id, str) or not _ID_RE.match(task_id):
+    errors: list[str] = []
+    for task in manifest.tasks:
+        agent_file = agents_dir / f"{task.agent}.md"
+        if not agent_file.is_file():
             errors.append(
-                f"{prefix}.id must match [A-Za-z0-9_-]+ (got {task_id!r})"
+                f"task {task.id!r}: agent {task.agent!r} not found at {agent_file}"
             )
-        elif task_id in seen_ids:
-            errors.append(f"duplicate task id: {task_id!r}")
-        else:
-            seen_ids.add(task_id)
-
-        agent = task.get("agent")
-        if not isinstance(agent, str) or not agent:
-            errors.append(f"{prefix}.agent is required and must be a string")
-        elif not (agents_dir / f"{agent}.md").is_file():
-            errors.append(
-                f"{prefix}.agent {agent!r} not found at {agents_dir / f'{agent}.md'}"
-            )
-
-        if "read_only" not in task or not isinstance(task["read_only"], bool):
-            errors.append(f"{prefix}.read_only is required and must be a boolean")
-
-        prompt = task.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
-            errors.append(f"{prefix}.prompt is required and must be non-empty")
-
-        depends_on = task.get("depends_on")
-        if depends_on is not None and not (
-            isinstance(depends_on, list)
-            and all(isinstance(d, str) for d in depends_on)
-        ):
-            errors.append(f"{prefix}.depends_on must be a list of strings")
-
     return errors
-
-
-_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 # ---------------------------------------------------------------------------

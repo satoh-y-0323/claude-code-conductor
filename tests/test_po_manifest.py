@@ -117,7 +117,7 @@ def test_validate_manifest_duplicate_id(tmp_path: Path):
     plan_report.write_text(bad, encoding="utf-8")
     _make_claude_root(tmp_path)
     errors = validate_manifest(plan_report, tmp_path)
-    assert any("duplicate task id" in e for e in errors), errors
+    assert any("uplicate" in e for e in errors), errors
 
 
 def test_validate_manifest_wrong_version(tmp_path: Path):
@@ -134,4 +134,4 @@ def test_validate_manifest_missing_frontmatter(tmp_path: Path):
     plan_report.write_text("# no frontmatter\n", encoding="utf-8")
     _make_claude_root(tmp_path)
     errors = validate_manifest(plan_report, tmp_path)
-    assert errors and "frontmatter missing" in errors[0]
+    assert errors and "frontmatter" in errors[0]

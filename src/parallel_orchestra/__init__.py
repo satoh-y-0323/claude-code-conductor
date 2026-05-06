@@ -1,19 +1,18 @@
-"""parallel-orchestra: Run Claude Code agents in parallel."""
+"""parallel-orchestra: Run Claude Code agents in parallel.
+
+Bundled inside ``claude-code-conductor``. The top-level package re-exports
+only the symbols that callers actually need to construct CLI wrappers
+(:class:`RunResult`, :class:`ManifestError`, :class:`RunnerError`,
+:func:`run_manifest`, :func:`load_manifest`). Internal types such as
+``Manifest`` / ``Task`` / ``Defaults`` remain accessible via
+``parallel_orchestra.manifest`` for advanced callers.
+"""
 
 from importlib.metadata import PackageNotFoundError, version
 
 from ._exceptions import ParallelOrchestraError
-from .manifest import (
-    SUPPORTED_PLAN_VERSIONS,
-    Defaults,
-    Manifest,
-    ManifestError,
-    Task,
-    WebhookConfig,
-    load_manifest,
-)
-from .report import generate_report
-from .runner import RunnerError, RunResult, TaskResult, run_manifest
+from .manifest import ManifestError, load_manifest
+from .runner import RunnerError, RunResult, run_manifest
 
 try:
     __version__: str = version("parallel-orchestra")
@@ -26,16 +25,9 @@ except PackageNotFoundError:
 
 __all__ = [
     "ParallelOrchestraError",
-    "SUPPORTED_PLAN_VERSIONS",
-    "Defaults",
-    "Manifest",
     "ManifestError",
-    "Task",
-    "WebhookConfig",
     "load_manifest",
-    "generate_report",
     "RunnerError",
     "RunResult",
-    "TaskResult",
     "run_manifest",
 ]
