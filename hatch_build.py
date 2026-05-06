@@ -31,6 +31,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "docs/game-studios-research.md",
     "settings.local.json",
     "pytest_temp.ini",
+    "logs/*",
 )
 
 KEEP_PATTERNS: tuple[str, ...] = (
