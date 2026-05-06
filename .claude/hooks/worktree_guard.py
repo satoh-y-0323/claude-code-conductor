@@ -8,10 +8,16 @@ Write / Edit ツールの対象パスが CWD（worktree ルート）外であれ
 
 import json
 import os
+import re
 import sys
 
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
+
+
+def _sanitize(s: str) -> str:
+    """ターミナルインジェクション対策: 制御文字（ANSI エスケープ含む）を除去する。"""
+    return re.sub(r'[\x00-\x1f\x7f]', '', s)
 
 
 def main():
@@ -39,9 +45,9 @@ def main():
     if resolved != cwd and not resolved.startswith(cwd + os.sep):
         print(
             f'[WorktreeGuard BLOCK] worktree 外へのファイル操作をブロックしました。\n'
-            f'  対象パス: {file_path}\n'
-            f'  解決パス: {resolved}\n'
-            f'  許可範囲: {cwd}',
+            f'  対象パス: {_sanitize(file_path)}\n'
+            f'  解決パス: {_sanitize(resolved)}\n'
+            f'  許可範囲: {_sanitize(cwd)}',
             file=sys.stderr
         )
         sys.exit(2)

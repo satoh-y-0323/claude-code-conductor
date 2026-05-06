@@ -23,6 +23,12 @@ def main():
         full_path = os.path.join(FILE_HISTORY_DIR, name)
         try:
             if os.path.islink(full_path):
+                # TOCTOU 対策: リンク先が FILE_HISTORY_DIR 配下に解決されることを確認してから削除する
+                real = os.path.realpath(full_path)
+                if not real.startswith(os.path.realpath(FILE_HISTORY_DIR)):
+                    print(f'[clear-file-history] シンボリックリンクのリンク先が FILE_HISTORY_DIR 外のためスキップ: {name}',
+                          file=sys.stderr)
+                    continue
                 os.unlink(full_path)
             elif os.path.isdir(full_path):
                 shutil.rmtree(full_path)
@@ -32,7 +38,7 @@ def main():
         except FileNotFoundError:
             pass  # already deleted by another process between listdir and unlink/rmtree
         except Exception as e:
-            print(f'[clear-file-history] 削除に失敗: {name} ({e})')
+            print(f'[clear-file-history] 削除に失敗: {name} ({e})', file=sys.stderr)
 
     print(f'[clear-file-history] {deleted} 件削除しました。')
 

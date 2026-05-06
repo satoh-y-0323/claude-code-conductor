@@ -9,11 +9,7 @@ from datetime import datetime, timezone
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
-_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
-_CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
-SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
-
-from session_utils import SESSION_JSON_MARKER, append_checkpoint, is_worktree
+from session_utils import SESSION_JSON_MARKER, append_checkpoint, is_worktree, SESSIONS_DIR
 
 
 SAVE_INSTRUCTION = (
@@ -36,7 +32,8 @@ def main():
         sys.exit(0)
 
     trigger = payload.get('trigger', 'unknown')
-    context_items_before = payload.get('context_items_before', 0)
+    context_items_before = payload.get('context_items_before')
+    context_items_before_str = 'N/A' if context_items_before is None else str(context_items_before)
 
     now = datetime.now(timezone.utc)
     date_str = now.strftime('%Y%m%d')
@@ -44,7 +41,7 @@ def main():
 
     summary = (
         f"- trigger: {trigger}\n"
-        f"- context_items_before: {context_items_before}\n"
+        f"- context_items_before: {context_items_before_str}\n"
         f"- このポイント以前の詳細な文脈は圧縮により失われます。"
     )
     append_checkpoint(session_file, f'PreCompact: {trigger}', summary)

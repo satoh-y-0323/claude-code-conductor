@@ -16,8 +16,8 @@
    - ファイルが存在しない場合、テンプレートを書いてからチェックポイントを追記する
    - ファイルが存在する場合、追記のみ行う（既存内容を消さない）
    - 追記ブロックに ## [Checkpoint: {label} が含まれる
-   - TOCTOU テスト（Red）: open('x') + FileExistsError パターンを使っているか AST で検証する
-     現在は open('w') を使っているので、このテストは Red（失敗）になるはず
+   - TOCTOU テスト: open('x') + FileExistsError パターンを使っているか AST で検証する
+   - summary の --> サニタイズテスト: summary に --> が含まれる場合 -- > に置換されること（Low 指摘対応）
 """
 
 from __future__ import annotations
@@ -172,12 +172,7 @@ class TestAppendCheckpoint:
         assert summary in content
 
     def test_toctou_uses_open_x_mode(self):
-        """TOCTOU テスト（Red）: append_checkpoint が open('x') + FileExistsError パターンを
-        使っていることを AST で検証する。
-
-        現在の実装は open('w') を使っているため、このテストは意図的に FAIL する。
-        実装を open('x') + FileExistsError に変更すると Green になる。
-        """
+        """`append_checkpoint` が `open('x')` + `FileExistsError` パターンを使用していることを AST 検証する。"""
         tree = _parse_source()
 
         # append_checkpoint 関数ノードを探す
@@ -216,4 +211,35 @@ class TestAppendCheckpoint:
             "append_checkpoint は open('x') + FileExistsError パターンを使っていない。\n"
             "現在は open('w') を使っているため、TOCTOU 競合状態が発生しうる。\n"
             "修正: open(session_file, 'x') を使い FileExistsError をキャッチして追記に切り替える。"
+        )
+
+    def test_append_checkpoint_sanitizes_comment_closer_in_summary(self, tmp_path: Path):
+        """`summary` に `-->` が含まれる場合、`-- >` に置換されてファイルに書き込まれること。
+
+        `<!-- C3:SESSION:JSON ... -->` ブロックはセッションファイルのメタデータを保持する。
+        `summary` に `-->` がそのまま含まれると、このブロックが途中で閉じられてしまい
+        JSON パースが壊れる可能性がある。
+
+        現在の実装は `body = summary.strip()` のままでサニタイズが未実装のため、
+        このテストは FAIL する（機能未実装による失敗）。
+
+        修正: `body = summary.strip().replace('-->', '-- >')` に変更すること。
+        """
+        module = _load_module()
+        session_file = str(tmp_path / "20260505.tmp")
+        # summary に --> を含める（HTMLコメント終端を模したインジェクション）
+        summary = "作業完了 --> 次のフェーズへ"
+
+        module.append_checkpoint(session_file, "TestLabel", summary)
+
+        content = Path(session_file).read_text(encoding="utf-8")
+        # --> がそのまま書き込まれていないこと（-- > に置換されていること）
+        assert "-->" not in content, (
+            "summary に含まれる `-->` がサニタイズされずにファイルへ書き込まれている。\n"
+            "`<!-- C3:SESSION:JSON ... -->` ブロックが破壊される可能性がある。\n"
+            "修正: `body = summary.strip().replace('-->', '-- >')` を追加すること。"
+        )
+        # サニタイズ後の値 '-- >' が書き込まれていること
+        assert "-- >" in content, (
+            "`-->` が `-- >` に置換されていない。サニタイズ処理が正しく動作していない。"
         )

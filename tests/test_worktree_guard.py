@@ -5,6 +5,9 @@ Tests are organised around four scenarios:
 2. PO_WORKTREE_GUARD not set  → stderr must be EMPTY (no noisy print)  [RED – production code still prints]
 3. PO_WORKTREE_GUARD=1        → Write inside worktree passes (exit 0)
 4. PO_WORKTREE_GUARD=1        → Write outside worktree is blocked (exit 2)
+
+[New Red-phase tests]
+5. Block message sanitizes ANSI escapes in file_path (sec-Low)
 """
 
 from __future__ import annotations
@@ -162,4 +165,55 @@ def test_write_outside_worktree_is_blocked(tmp_path: Path):
     )
     assert result.stderr.strip(), (
         "Blocked operation must also emit a message to stderr."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5. [New Red-phase] Block message sanitizes ANSI escapes in file_path
+# ---------------------------------------------------------------------------
+
+def test_block_message_sanitizes_ansi_escapes(tmp_path: Path):
+    """[New] When file_path contains ANSI escape sequences, the block message in stderr
+    must sanitize them (e.g. via repr()) to prevent terminal injection.
+
+    Current implementation:
+        print(
+            f'[WorktreeGuard BLOCK] worktree 外へのファイル操作をブロックしました.\\n'
+            f'  対象パス: {file_path}\\n'      # file_path inserted verbatim
+            f'  解決パス: {resolved}\\n'
+            f'  許可範囲: {cwd}',
+            file=sys.stderr
+        )
+
+    If file_path contains ANSI escape sequences (e.g. \\x1b[31m), they will be
+    interpreted by the terminal, enabling terminal injection attacks.
+
+    Expected after fix: file_path and resolved must be wrapped in repr() or
+    otherwise sanitized before output.
+
+    This test FAILS on the unfixed implementation (ANSI escapes passed verbatim).
+    """
+    # Construct a file_path with ANSI escape sequences
+    # Use the parent directory (outside the worktree) to ensure the block triggers
+    ansi_injected_path = str(tmp_path.parent / "outside\x1b[31mINJECTED\x1b[0m.txt")
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": ansi_injected_path},
+    }
+    result = _run_guard(payload, env_guard="1", cwd=str(tmp_path))
+
+    # The command should still be blocked (exit 2)
+    assert result.returncode == 2, (
+        f"Command with ANSI-injected path must still be blocked (exit 2), "
+        f"got exit={result.returncode}.\nstderr: {result.stderr!r}"
+    )
+
+    # The ANSI escape sequence must NOT appear verbatim in stderr
+    # ESC character (\x1b) must be escaped/sanitized in the output
+    assert "\x1b" not in result.stderr, (
+        "[sec-Low] Block message must not contain raw ANSI escape sequences. "
+        "file_path with ANSI escapes was passed verbatim to stderr output, "
+        "enabling terminal injection. "
+        "Expected: file_path wrapped in repr() or ANSI sequences stripped.\n"
+        f"stderr preview: {result.stderr[:300]!r}"
     )

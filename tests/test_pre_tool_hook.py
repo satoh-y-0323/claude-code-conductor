@@ -278,3 +278,145 @@ class TestNonBashTool:
         )
 
 
+# ---------------------------------------------------------------------------
+# [NEW Red-phase tests] — expected to FAIL against current implementation
+# ---------------------------------------------------------------------------
+
+
+class TestBlockMessageTruncation:
+    """[New] Block message must be truncated at 200 characters to prevent secret leakage."""
+
+    def test_block_message_is_truncated_at_200_chars(self):
+        """[sec-Medium] Block message for a dangerous command must be truncated to 200 chars.
+
+        Current implementation outputs the full command without any length cap:
+            f'[PreToolUse BLOCK] 危険なコマンドをブロックしました: {cmd}'
+        This can leak long secrets embedded in the command string.
+
+        This test FAILS on the unfixed implementation (full command output).
+        """
+        # Build a command that triggers rm -rf blocking and has a payload > 200 chars
+        long_suffix = "A" * 300  # 300 extra characters
+        cmd = f"rm -rf /some/path/{long_suffix}"
+        result = _run_hook(cmd)
+        assert _is_blocked(result), (
+            f"Command should still be blocked (exit 2), got exit={result.returncode}"
+        )
+        # The stderr block message must NOT contain the full 300-char suffix verbatim
+        # i.e. the command preview must be capped at 200 chars
+        assert long_suffix not in result.stderr, (
+            "[sec-Medium] Block message must truncate the command to 200 chars. "
+            "The full long suffix was found verbatim in stderr, indicating no truncation.\n"
+            f"stderr: {result.stderr[:300]!r}"
+        )
+
+
+class TestTruncateWordBoundary:
+    """[New] TRUNCATE keyword detection must use word boundary to avoid false positives."""
+
+    def test_truncate_table_triggers_warning(self):
+        """TRUNCATE TABLE foo must produce a warning (sanity check — should still pass)."""
+        result = _run_hook("TRUNCATE TABLE foo")
+        assert _is_allowed(result), (
+            f"TRUNCATE TABLE must be allowed, got exit={result.returncode}"
+        )
+        assert result.stderr.strip() != "", (
+            "Expected a warning for 'TRUNCATE TABLE foo', but got no output"
+        )
+
+    def test_pretruncate_word_does_NOT_trigger_warning(self):
+        """[sec-Low] 'PRETRUNCATE' must NOT trigger the DB destructive operation warning.
+
+        Current implementation uses a plain 'TRUNCATE' substring pattern (no word boundary):
+            re.search(r'DROP TABLE|DROP DATABASE|TRUNCATE', cmd, re.IGNORECASE)
+        This matches the substring 'TRUNCATE' inside 'PRETRUNCATE orders', causing
+        a false positive warning.
+
+        After fix: pattern uses \\bTRUNCATE\\b so 'PRETRUNCATE' is not matched.
+
+        This test FAILS on the unfixed implementation (false positive warning emitted).
+        """
+        result = _run_hook("PRETRUNCATE orders")
+        assert _is_allowed(result), (
+            f"Command with 'PRETRUNCATE' must be allowed, got exit={result.returncode}"
+        )
+        assert result.stderr.strip() == "", (
+            "[sec-Low] 'PRETRUNCATE' must NOT trigger the TRUNCATE warning.\n"
+            "Current implementation lacks word boundary (\\b) around TRUNCATE,\n"
+            "causing 'PRETRUNCATE' to match the 'TRUNCATE' substring.\n"
+            f"stderr: {result.stderr!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# [Round 4 Red-phase] Full-path rm detection
+# ---------------------------------------------------------------------------
+
+
+class TestFullPathRmDetection:
+    """[Round 4] Full-path rm (e.g. /bin/rm, ./rm) must be blocked when -rf flags are given.
+
+    Current implementation:
+        re.fullmatch(r'rm', tok.strip("'\""))
+    This pattern only matches the bare string 'rm'. A token like '/bin/rm' or './rm'
+    does not satisfy fullmatch(r'rm', ...) so the block is bypassed.
+
+    After fix: the check must match the basename of the rm token as well.
+
+    These tests FAIL on the unfixed implementation (full-path rm is not detected).
+    """
+
+    def test_full_path_rm_rf_is_blocked(self):
+        """/bin/rm -rf /important must be blocked (sec-Medium).
+
+        re.fullmatch(r'rm', '/bin/rm') is False, so the current implementation
+        does NOT block this command.
+
+        This test FAILS on the unfixed implementation.
+        """
+        result = _run_hook("/bin/rm -rf /important")
+        assert _is_blocked(result), (
+            "[sec-Medium] '/bin/rm -rf /important' must be blocked (exit 2). "
+            "Current implementation uses re.fullmatch(r'rm', tok) which does not "
+            "match '/bin/rm'. After fix, the basename of the rm token must also be "
+            "checked so that full-path invocations are caught.\n"
+            f"Got exit={result.returncode}, stderr={result.stderr!r}"
+        )
+
+    def test_relative_path_rm_rf_is_blocked(self):
+        """./rm -rf /important must be blocked (sec-Medium).
+
+        re.fullmatch(r'rm', './rm') is False, so the current implementation
+        does NOT block this command.
+
+        This test FAILS on the unfixed implementation.
+        """
+        result = _run_hook("./rm -rf /important")
+        assert _is_blocked(result), (
+            "[sec-Medium] './rm -rf /important' must be blocked (exit 2). "
+            "Current implementation uses re.fullmatch(r'rm', tok) which does not "
+            "match './rm'. After fix, path-prefixed rm invocations must also be detected.\n"
+            f"Got exit={result.returncode}, stderr={result.stderr!r}"
+        )
+
+    def test_usr_bin_rm_rf_is_blocked(self):
+        """/usr/bin/rm -rf /tmp/data must be blocked (sec-Medium).
+
+        This covers an alternative installation path for rm.
+
+        This test FAILS on the unfixed implementation.
+        """
+        result = _run_hook("/usr/bin/rm -rf /tmp/data")
+        assert _is_blocked(result), (
+            "[sec-Medium] '/usr/bin/rm -rf /tmp/data' must be blocked (exit 2). "
+            "re.fullmatch(r'rm', '/usr/bin/rm') is False so the block is bypassed.\n"
+            f"Got exit={result.returncode}, stderr={result.stderr!r}"
+        )
+
+    def test_bare_rm_rf_still_blocked(self):
+        """Sanity check: bare 'rm -rf /path' (existing behavior) must still be blocked."""
+        result = _run_hook("rm -rf /path")
+        assert _is_blocked(result), (
+            "Bare 'rm -rf /path' must still be blocked after the full-path fix.\n"
+            f"Got exit={result.returncode}, stderr={result.stderr!r}"
+        )

@@ -2,8 +2,9 @@
 """PostToolUse hook: remind to test when skills/ files are modified."""
 
 import json
-import sys
 import os
+import re
+import sys
 
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
@@ -21,12 +22,14 @@ def main():
     file_path = payload.get('tool_input', {}).get('file_path', '')
     normalized = file_path.replace('\\', '/')
 
-    if '/.claude/skills/' not in normalized:
+    if '.claude/skills/' not in normalized:
         return
 
+    # skill_name をサニタイズ（ターミナルインジェクション対策）
     skill_name = os.path.basename(file_path)
+    skill_name = re.sub(r'[^\x20-\x7e　-鿿]', '', skill_name)
     print(f'[C3] .claude/skills/{skill_name} を変更しました。実際のエージェント動作で確認してください。')
 
 
 if __name__ == '__main__':
-    sys.exit(main() or 0)
+    sys.exit(main() or 0)  # main() が None を返す場合 0 で終了

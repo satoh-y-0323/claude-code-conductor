@@ -2,6 +2,7 @@
 """Shared utilities for session management hooks (stop.py, pre_compact.py)."""
 
 import os
+import re
 from datetime import datetime, timezone
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,8 +40,20 @@ def create_session_template(date_str: str) -> str:
         f'  "failures": [],\n'
         f'  "todos": []\n'
         f"}}\n"
-        f"-->\n"
+        f"-- >\n"
     )
+
+
+def ensure_session_initialized(path: str, date_str: str) -> None:
+    """空のセッションファイルをテンプレートで再初期化する共有ヘルパー。
+
+    FileExistsError ブランチで使用: ファイルが空の場合のみテンプレートを書き直す。
+    stop.py::ensure_session_file と append_checkpoint の両方から呼ばれる。
+    """
+    # 単一プロセス前提: getsize と open('w') の間の TOCTOU は許容範囲（並列実行なし）
+    if os.path.getsize(path) == 0:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(create_session_template(date_str))
 
 
 def append_checkpoint(session_file: str, label: str, summary: str) -> None:
@@ -63,15 +76,19 @@ def append_checkpoint(session_file: str, label: str, summary: str) -> None:
         with open(session_file, 'x', encoding='utf-8') as f:
             f.write(create_session_template(date_str))
     except FileExistsError:
-        if os.path.getsize(session_file) == 0:
-            with open(session_file, 'w', encoding='utf-8') as f:
-                f.write(create_session_template(date_str))
+        ensure_session_initialized(session_file, date_str)
 
     ts = datetime.now(timezone.utc).isoformat()
-    body = summary.strip()
+    # --> を '-- >' に置換して <!-- C3:SESSION:JSON ... --> ブロックの破壊を防ぐ
+    body = summary.strip().replace('-->', '-- >')
+    # label のサニタイズ（ターミナルインジェクション対策 + HTML コメントブロック保護）:
+    # - \x00-\x08, \x0b-\x0c, \x0e-\x1f: 制御文字を除去（\n=\x0a と \t=\x09 は保持）
+    # - --> を '-- >' に置換して <!-- C3:SESSION:JSON ... --> ブロックの破壊を防ぐ
+    sanitized_label = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f]', '', label)
+    sanitized_label = sanitized_label.replace('-->', '-- >')
     block = (
         f"\n"
-        f"## [Checkpoint: {label} - {ts}]\n"
+        f"## [Checkpoint: {sanitized_label} - {ts}]\n"
         f"{body}\n"
     )
 

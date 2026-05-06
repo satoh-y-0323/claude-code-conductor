@@ -2,11 +2,40 @@
 """PreToolUse hook: guard dangerous Bash commands."""
 
 import json
+import os
 import re
+import shlex
 import sys
 
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
+
+
+def _is_rm_rf(tokens: list[str], rm_idx: int) -> bool:
+    """tokens[rm_idx] が rm であるとき、再帰強制削除フラグ（-rf 相当）が続くか検査する。
+
+    rm の直後のフラグトークンのみを見る。フラグ以外のトークン（ファイル名等）が
+    出現した時点で検査を終了し、前のコマンドのフラグを誤検出しない。
+    """
+    has_r = False
+    has_f = False
+    for tok in tokens[rm_idx + 1:]:
+        stripped = tok.strip("'\"")
+        if stripped == '--recursive':
+            has_r = True
+        elif stripped == '--force':
+            has_f = True
+        elif stripped.startswith('-') and not stripped.startswith('--'):
+            # 短形式フラグ: -r/-R/-f など
+            flag_chars = stripped[1:]
+            if 'r' in flag_chars or 'R' in flag_chars:
+                has_r = True
+            if 'f' in flag_chars:
+                has_f = True
+        elif not stripped.startswith('-'):
+            # フラグ以外のトークン（ファイル名等）が来たらフラグ収集終了
+            break
+    return has_r and has_f
 
 
 def main():
@@ -28,22 +57,26 @@ def main():
               file=sys.stderr)
 
     # DROP TABLE / DROP DATABASE / TRUNCATE: 警告（ブロックしない）
-    if re.search(r'DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE', cmd, re.IGNORECASE):
+    # \bTRUNCATE\b でワードバウンダリを使って PRETRUNCATE 等の誤検出を防ぐ
+    if re.search(r'DROP\s+TABLE|DROP\s+DATABASE|\bTRUNCATE\b', cmd, re.IGNORECASE):
         print('[PreToolUse WARNING] 破壊的な DB 操作を検出しました。本番環境での実行でないことを確認してください。',
               file=sys.stderr)
 
     # rm -rf 系: ブロック
-    # rm の直後のフラグのみを収集することで、前のコマンドのフラグを誤検出しない
-    if re.search(r'\brm\b', cmd):
-        rm_flags_match = re.findall(r'\brm\b((?:\s+-[a-zA-Z]+)*)', cmd)
-        flags_str = ''.join(rm_flags_match)
-        has_r = bool(re.search(r'-[a-zA-Z]*r', flags_str)) or '--recursive' in cmd
-        has_f = bool(re.search(r'-[a-zA-Z]*f', flags_str)) or '--force' in cmd
-        has_long_recursive = '--recursive' in cmd
-        has_long_force = '--force' in cmd
-        if (has_r and has_f) or (has_long_recursive and has_long_force):
-            print(f'[PreToolUse BLOCK] 危険なコマンドをブロックしました: {cmd}', file=sys.stderr)
-            sys.exit(2)
+    # shlex.split() でトークン分割し、各 rm トークンのフラグを _is_rm_rf() で検査する。
+    # これにより "ls -rf && rm somefile" のような前コマンドのフラグを誤検出しない。
+    try:
+        tokens = shlex.split(cmd, posix=False)
+    except ValueError:
+        # shlex が解析できない場合はスキップ
+        tokens = []
+
+    for idx, tok in enumerate(tokens):
+        if os.path.basename(tok.strip("'\"")) == 'rm':
+            if _is_rm_rf(tokens, idx):
+                cmd_preview = cmd[:200] + ('...' if len(cmd) > 200 else '')
+                print(f'[PreToolUse BLOCK] 危険なコマンドをブロックしました: {cmd_preview}', file=sys.stderr)
+                sys.exit(2)
 
     sys.exit(0)
 

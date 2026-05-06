@@ -8,9 +8,10 @@ import json
 import sys
 import os
 import re
+import tempfile
 from datetime import date, datetime, timezone
 
-from session_utils import SESSION_JSON_MARKER, is_worktree, create_session_template, SESSIONS_DIR
+from session_utils import SESSION_JSON_MARKER, is_worktree, create_session_template, SESSIONS_DIR, ensure_session_initialized
 
 try:
     sys.stdin.reconfigure(encoding='utf-8')
@@ -30,6 +31,9 @@ MAX_ID_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 500
 MAX_LAST_MSG = 500
 
+# _append_last_message が処理済みのパスを記録するキャッシュ（重複 read/write 防止）。
+_last_message_applied_paths: set = set()
+
 
 def get_session_path(date_str: str) -> str:
     return os.path.join(SESSIONS_DIR, f'{date_str}.tmp')
@@ -44,47 +48,78 @@ def ensure_session_file(date_str: str) -> None:
             f.write(create_session_template(date_str))
         print(f'[Stop] セッションファイルを作成しました: {path}', file=sys.stderr)
     except FileExistsError:
-        # /exit による中断等でファイルが空の場合はテンプレートを書き直す
-        if os.path.getsize(path) == 0:
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write(create_session_template(date_str))
-            print(f'[Stop] 空セッションファイルを再初期化しました: {path}', file=sys.stderr)
-        else:
-            _update_facts_timestamp(path)
+        # /exit による中断等でファイルが空の場合はテンプレートを書き直す（DRY: session_utils へ委譲）
+        ensure_session_initialized(path, date_str)
+        _update_facts_timestamp(path)
+
+
+def _apply_session_updates(path: str, content: str, message: str = '') -> None:
+    """タイムスタンプ更新と最終応答追記を1回のread/writeで処理する内部ヘルパー。
+
+    Args:
+        path: セッションファイルのパス
+        content: 既に読み込み済みのファイル内容
+        message: 追記する最終応答メッセージ（空文字の場合はタイムスタンプのみ更新）
+    """
+    # タイムスタンプを更新
+    now = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S')
+    updated = re.sub(r'(- 記録時刻: ).*', rf'\g<1>{now}', content)
+
+    # 最終応答を追記（メッセージがあり、まだ存在しない場合のみ）
+    if message and '- 最終応答:' not in updated:
+        single_line = ' '.join(message.split())
+        # サロゲート文字など UTF-8 非互換文字を除去（JSON デコード時に生成される場合がある）
+        single_line = single_line.encode('utf-8', errors='replace').decode('utf-8')
+        truncated = single_line[:MAX_LAST_MSG]
+        if len(single_line) > MAX_LAST_MSG:
+            truncated += '…（省略）'
+        # --> をサニタイズして <!-- C3:SESSION:JSON ... --> ブロックを保護する
+        truncated = truncated.replace('-->', '-- >')
+
+        updated = re.sub(
+            r'(- 記録時刻: [^\n]*)',
+            lambda m: m.group(0) + f'\n- 最終応答: {truncated}',
+            updated
+        )
+
+    if updated != content:
+        dir_ = os.path.dirname(path)
+        # アトミック書き込み: 一時ファイルに書き込んでから os.replace() で置換する
+        tmp_path = None
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_, suffix='.tmp')
+            try:
+                with os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_f:
+                    tmp_f.write(updated)
+            except Exception:
+                os.close(tmp_fd)
+                raise
+            os.replace(tmp_path, path)
+            tmp_path = None  # os.replace が成功したので finally でのクリーンアップ不要
+        finally:
+            if tmp_path is not None and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
 
 def _append_last_message(path: str, message: str) -> None:
+    """セッションファイルに最終応答を追記し、記録時刻を更新する（1回のread/writeで処理）。"""
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
-
-    if '- 最終応答:' in content:
-        return
-
-    single_line = ' '.join(message.split())
-    # サロゲート文字など UTF-8 非互換文字を除去（JSON デコード時に生成される場合がある）
-    single_line = single_line.encode('utf-8', errors='replace').decode('utf-8')
-    truncated = single_line[:MAX_LAST_MSG]
-    if len(single_line) > MAX_LAST_MSG:
-        truncated += '…（省略）'
-
-    updated = re.sub(
-        r'(- 記録時刻: [^\n]*)',
-        lambda m: m.group(0) + f'\n- 最終応答: {truncated}',
-        content
-    )
-    if updated != content:
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(updated)
+    _apply_session_updates(path, content, message)
+    # 処理済みパスとして記録し、_update_facts_timestamp の重複処理を防ぐ
+    _last_message_applied_paths.add(os.path.abspath(path))
 
 
 def _update_facts_timestamp(path: str) -> None:
+    """記録時刻を更新する。_append_last_message が同じパスに対して実行済みの場合は
+    タイムスタンプ更新が完了しているためスキップする（重複read/writeを防ぐ）。"""
+    abs_path = os.path.abspath(path)
+    if abs_path in _last_message_applied_paths:
+        # _append_last_message がタイムスタンプ更新済みのためスキップ
+        return
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
-    now = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S')
-    updated = re.sub(r'(- 記録時刻: ).*', rf'\g<1>{now}', content)
-    if updated != content:
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(updated)
+    _apply_session_updates(path, content)
 
 
 def extract_session_patterns(date_str: str) -> list:
@@ -93,7 +128,9 @@ def extract_session_patterns(date_str: str) -> list:
         return []
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
-    match = re.search(rf'<!-- {SESSION_JSON_MARKER}\s*(.*?)-->', content, re.DOTALL)
+    # --\s*> は --> と '-- >' の両方にマッチさせる。
+    # append_checkpoint がサニタイズで --> を '-- >' に変換するため、両形式を許容する必要がある。
+    match = re.search(rf'<!-- {SESSION_JSON_MARKER}\s*(.*?)--\s*>', content, re.DOTALL)
     if not match:
         return []
     try:
@@ -110,22 +147,18 @@ def _parse_session_date(date_str: str):
         return date.min
 
 
-def _build_sessions_by_date(sessions_dir: str) -> dict:
-    """Build a mapping of date string -> session count from sessions directory.
+def _build_sessions_by_date(sessions_dir: str) -> set[str]:
+    """Build a set of yyyymmdd strings from the sessions directory.
 
-    Returns a dict mapping each yyyymmdd string found in sessions_dir to 1,
-    enabling O(1) lookup without repeated os.listdir calls.
+    Returns a set of date strings (yyyymmdd) for .tmp files found in sessions_dir.
+    Builds the result once so repeated calls to os.listdir are avoided.
     """
     if not os.path.isdir(sessions_dir):
-        return {}
-    result = {}
-    for fname in os.listdir(sessions_dir):
-        if fname.endswith('.tmp'):
-            result[fname[:-4]] = True
-    return result
+        return set()
+    return {fname[:-4] for fname in os.listdir(sessions_dir) if fname.endswith('.tmp')}
 
 
-def count_sessions_since(registered_date_str: str, sessions_by_date: dict | None = None) -> int:
+def count_sessions_since(registered_date_str: str, sessions_by_date: set[str] | None = None) -> int:
     if sessions_by_date is None:
         if not os.path.isdir(SESSIONS_DIR):
             return 1
@@ -141,14 +174,33 @@ def count_sessions_since(registered_date_str: str, sessions_by_date: dict | None
 def load_patterns() -> dict:
     if os.path.exists(PATTERNS_FILE):
         with open(PATTERNS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError as e:
+                print(f'[Stop] patterns.json の JSON 解析に失敗しました（空データで継続）: {e}',
+                      file=sys.stderr)
+                return {"patterns": []}
     return {"patterns": []}
 
 
 def save_patterns(data: dict) -> None:
-    os.makedirs(os.path.dirname(PATTERNS_FILE), exist_ok=True)
-    with open(PATTERNS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    patterns_dir = os.path.dirname(PATTERNS_FILE)
+    os.makedirs(patterns_dir, exist_ok=True)
+    # アトミック書き込み: 一時ファイルに書き込んでから os.replace() で置換する
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=patterns_dir, suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as tmp_f:
+                json.dump(data, tmp_f, ensure_ascii=False, indent=2)
+        except Exception:
+            os.close(fd)
+            raise
+        os.replace(tmp_path, PATTERNS_FILE)
+        tmp_path = None  # os.replace が成功したので finally でのクリーンアップ不要
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def update_patterns(date_str: str) -> None:
@@ -207,7 +259,7 @@ def update_patterns(date_str: str) -> None:
     data['patterns'] = active
     save_patterns(data)
 
-    print(f'[Stop] セッション終了処理が完了しました', file=sys.stderr)
+    print('[Stop] セッション終了処理が完了しました', file=sys.stderr)
 
 
 def main():

@@ -14,6 +14,17 @@ Additional tests for stop.py:
     - New pattern registered      -> trust_score is calculated and stored
     - Pattern 4 days old, trust=1.0 -> promotion_candidate: true
     - Pattern 31 days old         -> excluded from patterns.json (EXPIRY_DAYS=30)
+
+  [New Red-phase tests]
+  TestEnsureSessionFileSingleReadWrite
+    - _append_last_message + _update_facts_timestamp must complete with
+      exactly 1 read + 1 write total (not 2 reads + 2 writes)
+
+  TestLoadPatternsJsonDecodeError
+    - load_patterns() must return {"patterns": []} on broken JSON, not raise
+
+  TestAppendLastMessageEscapesCommentCloser
+    - --> in last_assistant_message must be sanitized so JSON block is not broken
 """
 
 from __future__ import annotations
@@ -23,6 +34,7 @@ import json
 import types
 from datetime import date, timedelta
 from pathlib import Path
+from unittest import mock
 
 # ---------------------------------------------------------------------------
 # Constants / module loader
@@ -333,4 +345,225 @@ class TestUpdatePatternsTrustScore:
         assert "expired-pat" not in ids, (
             "Pattern registered 31 days ago must be excluded from patterns.json. "
             "EXPIRY_DAYS=30, days_elapsed=31 >= 30 -> pattern must be dropped."
+        )
+
+
+# ---------------------------------------------------------------------------
+# [New Red-phase] TestEnsureSessionFileSingleReadWrite
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureSessionFileSingleReadWrite:
+    """[New] _append_last_message + _update_facts_timestamp must complete with
+    1 read + 1 write total (not 2 separate read-modify-write cycles).
+
+    Current implementation:
+      _append_last_message: open(r) + open(w)  -> 1 read + 1 write
+      _update_facts_timestamp: open(r) + open(w)  -> 1 read + 1 write
+    Total: 2 reads + 2 writes.
+
+    Expected after fix: combined into 1 read + 1 write.
+
+    This test FAILS on the unfixed implementation.
+    """
+
+    def test_ensure_session_file_does_single_read_write(self, tmp_path):
+        """Combined _append_last_message + _update_facts_timestamp must use
+        at most 1 file read and 1 file write (total across both operations).
+
+        Verification: count open() calls with 'r' and 'w' modes during a
+        simulated existing-file path through ensure_session_file().
+        This test targets the scenario where FileExistsError is raised and
+        both _update_facts_timestamp and _append_last_message are called.
+        """
+        mod = _load_stop_module(f"_stop_single_rw_{tmp_path.name}")
+
+        # Create a session file that already has the timestamp line
+        session_file = tmp_path / f"{TODAY_STR}.tmp"
+        session_file.write_text(
+            f"SESSION: {TODAY_STR}\n"
+            f"## 事実ログ\n"
+            f"- 記録時刻: 2026-05-05 00:00:00\n",
+            encoding="utf-8",
+        )
+
+        read_count = [0]
+        write_count = [0]
+        original_open = open
+
+        def counting_open(file, mode="r", **kwargs):
+            if str(file) == str(session_file):
+                if "r" in mode and "w" not in mode:
+                    read_count[0] += 1
+                elif "w" in mode or "a" in mode:
+                    write_count[0] += 1
+            return original_open(file, mode, **kwargs)
+
+        message = "test assistant message"
+
+        with mock.patch("builtins.open", side_effect=counting_open):
+            mod._append_last_message(str(session_file), message)
+            mod._update_facts_timestamp(str(session_file))
+
+        # After fix: both operations should be combined into 1 read + 1 write
+        assert read_count[0] <= 1, (
+            f"[code-High-2] Combined operations must read the file at most once. "
+            f"Got {read_count[0]} reads. Current implementation reads twice "
+            f"(once in _append_last_message, once in _update_facts_timestamp)."
+        )
+        assert write_count[0] <= 1, (
+            f"[code-High-2] Combined operations must write the file at most once. "
+            f"Got {write_count[0]} writes. Current implementation writes twice."
+        )
+
+
+# ---------------------------------------------------------------------------
+# [New Red-phase] TestLoadPatternsJsonDecodeError
+# ---------------------------------------------------------------------------
+
+
+class TestLoadPatternsJsonDecodeError:
+    """[New] load_patterns() must handle broken JSON gracefully.
+
+    Current implementation:
+        def load_patterns() -> dict:
+            if os.path.exists(PATTERNS_FILE):
+                with open(PATTERNS_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)  # raises JSONDecodeError on broken JSON
+            return {"patterns": []}
+
+    Expected after fix: catch JSONDecodeError and return {"patterns": []}.
+
+    This test FAILS on the unfixed implementation.
+    """
+
+    def test_load_patterns_handles_json_decode_error(self, tmp_path):
+        """load_patterns() on a broken patterns.json must return {"patterns": []}
+        without raising an exception.
+
+        This test FAILS on the unfixed implementation (json.JSONDecodeError raised).
+        """
+        broken_patterns_file = tmp_path / "patterns.json"
+        broken_patterns_file.write_text(
+            "{ this is definitely not valid JSON !!!",
+            encoding="utf-8",
+        )
+
+        mod = _load_stop_module(f"_stop_load_err_{tmp_path.name}")
+        mod.PATTERNS_FILE = str(broken_patterns_file)
+
+        # Should not raise — must return {"patterns": []} instead
+        try:
+            result = mod.load_patterns()
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                "[code-Medium-5] load_patterns() raised json.JSONDecodeError on broken "
+                f"patterns.json. Expected it to catch the error and return "
+                f'{{"patterns": []}}. Error: {exc}'
+            ) from exc
+
+        assert result == {"patterns": []}, (
+            f"[code-Medium-5] load_patterns() on broken JSON must return "
+            f'{{"patterns": []}}, got {result!r}'
+        )
+
+
+# ---------------------------------------------------------------------------
+# [New Red-phase] TestAppendLastMessageEscapesCommentCloser
+# ---------------------------------------------------------------------------
+
+
+class TestAppendLastMessageEscapesCommentCloser:
+    """[New] --> in last_assistant_message must be sanitized.
+
+    The session file uses <!-- C3:SESSION:JSON ... --> blocks. If
+    last_assistant_message contains '-->', the block comment is prematurely
+    closed, corrupting the JSON block.
+
+    Current implementation:
+        # No sanitization of '-->' in the message.
+
+    Expected after fix:
+        Replace '-->' with '-- >' (or similar) before writing.
+
+    This test FAILS on the unfixed implementation.
+    """
+
+    def _make_session_with_json_block(self, session_file: Path, date_str: str) -> None:
+        """Write a session file with a valid C3:SESSION:JSON block."""
+        content = (
+            f"SESSION: {date_str}\n"
+            f"## 事実ログ\n"
+            f"- 記録時刻: 2026-05-05 00:00:00\n"
+            f"\n"
+            f"<!-- C3:SESSION:JSON\n"
+            f"{{\n"
+            f'  "session": "{date_str}",\n'
+            f'  "patterns": [],\n'
+            f'  "successes": [],\n'
+            f'  "failures": [],\n'
+            f'  "todos": []\n'
+            f"}}\n"
+            f"-->\n"
+        )
+        session_file.write_text(content, encoding="utf-8")
+
+    def test_append_last_message_escapes_comment_closer(self, tmp_path):
+        """When last_assistant_message contains '-->', the session file's JSON block
+        must remain intact (not be broken by an unescaped comment closer).
+
+        This test FAILS on the unfixed implementation because '-->' is written
+        verbatim, which closes the HTML comment block prematurely.
+        """
+        session_file = tmp_path / f"{TODAY_STR}.tmp"
+        self._make_session_with_json_block(session_file, TODAY_STR)
+
+        mod = _load_stop_module(f"_stop_comment_{tmp_path.name}")
+
+        # A message with --> that would prematurely close the JSON block
+        dangerous_message = "See the comparison: a --> b means 'a leads to b'"
+        mod._append_last_message(str(session_file), dangerous_message)
+
+        content = session_file.read_text(encoding="utf-8")
+
+        # The JSON block marker/closing must still be present and intact
+        assert "<!-- C3:SESSION:JSON" in content, (
+            "The C3:SESSION:JSON opening comment must remain in the session file"
+        )
+
+        # Find the JSON block and verify it's not broken by the --> in the message
+        import re
+        json_block_match = re.search(
+            r"<!-- C3:SESSION:JSON\s*(.*?)-->",
+            content,
+            re.DOTALL,
+        )
+        assert json_block_match is not None, (
+            "[sec-Medium] The C3:SESSION:JSON block was broken by '-->' in the message. "
+            "The block comment was prematurely closed, corrupting the JSON block.\n"
+            "Expected: '-->' to be sanitized (e.g. replaced with '-- >') before writing.\n"
+            f"File content:\n{content}"
+        )
+
+        # The matched JSON block must be valid JSON
+        try:
+            block_content = json_block_match.group(1).strip()
+            json.loads(block_content)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                "[sec-Medium] The JSON inside C3:SESSION:JSON block is invalid after "
+                f"writing a message with '-->'. Error: {exc}\n"
+                f"Block content: {block_content!r}"
+            ) from exc
+
+        # The written message must not contain literal --> (it must be sanitized)
+        response_line = next(
+            (line for line in content.splitlines() if line.startswith("- 最終応答:")),
+            None,
+        )
+        assert response_line is not None, "'- 最終応答:' line must be written"
+        assert "-->" not in response_line, (
+            "[sec-Medium] The '- 最終応答:' line must not contain literal '-->' "
+            "as it would break the JSON comment block. "
+            f"Got: {response_line!r}"
         )

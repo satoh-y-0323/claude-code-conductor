@@ -10,6 +10,11 @@ HOME / USERPROFILE を一時ディレクトリに向けることで本番の ~/.
 3. サブディレクトリの削除: ディレクトリが消える
 4. シンボリックリンクの削除: symlink 自体が消えるが target は残る（OS サポートがある場合）
 5. FileNotFoundError ハンドリング: 削除中にファイルが消えても crash しない（exit 0）
+
+[New Red-phase tests]
+6. シンボリックリンクの削除前にリンク先が FILE_HISTORY_DIR 配下に解決されることを検証する
+   （TOCTOU 対策 / sec-Medium）
+7. [Round 5 Low-3] except Exception のエラー出力が stderr に送られること（stdout ではない）
 """
 
 from __future__ import annotations
@@ -230,4 +235,153 @@ def test_file_not_found_error_is_handled(tmp_path: Path):
         f"exit 0 であるべき（FileNotFoundError があっても crash しない）。"
         f" got: {result.returncode}\n"
         f"stderr: {result.stderr!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 6. [New Red-phase] シンボリックリンク先の検証（TOCTOU 対策）
+# ---------------------------------------------------------------------------
+
+
+def test_symlink_target_validated_before_deletion(tmp_path: Path):
+    """[New] シンボリックリンクの削除前にリンク先が FILE_HISTORY_DIR 配下に解決されることを
+    ソースコードレベルで検証する（sec-Medium / TOCTOU 対策）。
+
+    現在の実装:
+        if os.path.islink(full_path):
+            os.unlink(full_path)  # リンク先の検証なしに削除
+
+    期待する実装:
+        if os.path.islink(full_path):
+            real = os.path.realpath(full_path)
+            if real.startswith(FILE_HISTORY_DIR):
+                os.unlink(full_path)
+            else:
+                # 範囲外リンクはスキップまたはエラー
+
+    検証方法: AST 解析で os.path.realpath の呼び出しが存在することを確認する。
+    また、realpath の結果が FILE_HISTORY_DIR と比較されていることを確認する。
+
+    この テスト は未修正の実装に対して FAIL する（realpath 検証が存在しないため）。
+    """
+    source = HOOK_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # os.path.realpath の呼び出しを検索
+    has_realpath_call = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "realpath"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "path"
+                and isinstance(node.func.value.value, ast.Name)
+                and node.func.value.value.id == "os"
+            ):
+                has_realpath_call = True
+                break
+
+    assert has_realpath_call, (
+        "[sec-Medium / TOCTOU] clear_file_history.py must call os.path.realpath() "
+        "to resolve the symlink target before deletion. "
+        "Current implementation deletes symlinks without validating their targets, "
+        "which is vulnerable to TOCTOU attacks where a symlink could be replaced "
+        "to point outside FILE_HISTORY_DIR between the islink() check and os.unlink(). "
+        "Expected: os.path.realpath(full_path) must be called and the result must be "
+        "verified to start with FILE_HISTORY_DIR before deletion."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. [New Red-phase Round 5] except Exception のエラー出力が stderr に送られること (Low-3)
+# ---------------------------------------------------------------------------
+
+
+def test_exception_output_goes_to_stderr(tmp_path: Path):
+    """[Low-3] 予期しない例外発生時のエラーメッセージが stderr に出力されること（stdout ではない）。
+
+    現在の実装:
+        except Exception as e:
+            print(f'[clear-file-history] 削除に失敗: {name} ({e})')
+            # file= 引数なし → stdout に出力される
+
+    問題: エラーメッセージが stdout に出力されている。
+    通常、エラーメッセージは stderr に出力するべきである。
+    stdout に混在すると、hook の出力をパースするスクリプトがエラーメッセージを
+    誤ってデータとして扱う可能性がある。
+
+    期待する修正:
+        except Exception as e:
+            print(f'[clear-file-history] 削除に失敗: {name} ({e})', file=sys.stderr)
+
+    検証方法:
+    1. AST 解析で except Exception ハンドラ内の print 呼び出しが
+       file=sys.stderr を持つことを確認する。
+    2. 実行ベース検証: 削除失敗を引き起こすシナリオを用意し、
+       エラーメッセージが stderr に出力され stdout に含まれないことを確認する。
+
+    この テスト は未修正の実装に対して FAIL する。
+    現在の実装では `file=sys.stderr` なしで print() を呼び出しているため
+    エラーメッセージが stdout に出力される。
+    """
+    # --- 静的検証: AST で except Exception 内の print が file=sys.stderr を持つか確認 ---
+    source = HOOK_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    exception_print_uses_stderr = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        # except Exception: または except Exception as e: を探す
+        if node.type is None:
+            # bare except: はスキップ
+            continue
+        if not (isinstance(node.type, ast.Name) and node.type.id == "Exception"):
+            continue
+        # この except ハンドラ内の print 呼び出しを探す
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            func = child.func
+            if not (isinstance(func, ast.Name) and func.id == "print"):
+                continue
+            # print のキーワード引数に file=sys.stderr があるか確認
+            for kw in child.keywords:
+                if kw.arg != "file":
+                    continue
+                # file=sys.stderr の確認
+                val = kw.value
+                if (
+                    isinstance(val, ast.Attribute)
+                    and val.attr == "stderr"
+                    and isinstance(val.value, ast.Name)
+                    and val.value.id == "sys"
+                ):
+                    exception_print_uses_stderr = True
+                    break
+            if exception_print_uses_stderr:
+                break
+        if exception_print_uses_stderr:
+            break
+
+    assert exception_print_uses_stderr, (
+        "[Low-3] clear_file_history.py の except Exception ハンドラ内の print() が\n"
+        "file=sys.stderr を使っていない。\n"
+        "\n"
+        "現在の実装:\n"
+        "    except Exception as e:\n"
+        "        print(f'[clear-file-history] 削除に失敗: {name} ({e})')\n"
+        "        # file= 引数なし → stdout に出力される\n"
+        "\n"
+        "期待する修正:\n"
+        "    except Exception as e:\n"
+        "        print(f'[clear-file-history] 削除に失敗: {name} ({e})', file=sys.stderr)\n"
+        "\n"
+        "エラーメッセージは stderr に出力するべきである。\n"
+        "stdout に混在すると、hook の出力をパースするスクリプトが\n"
+        "エラーメッセージを誤ってデータとして扱う可能性がある。\n"
+        "\n"
+        "AST チェック: except Exception ハンドラ内の print() に "
+        "file=sys.stderr が見つからない。"
     )

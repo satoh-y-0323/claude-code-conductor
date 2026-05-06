@@ -4,6 +4,9 @@
 import json
 import os
 import sys
+import tempfile
+
+from session_utils import is_worktree
 
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
@@ -26,9 +29,8 @@ FULL_SANDBOX_CONFIG = {
 def main():
     cwd = os.getcwd()
 
-    # git worktree 内では実行しない（.git がファイルの場合は worktree）
-    git_path = os.path.join(cwd, '.git')
-    if os.path.exists(git_path) and os.path.isfile(git_path):
+    # git worktree 内では実行しない（session_utils.is_worktree で判定）
+    if is_worktree(cwd):
         print('[enable-sandbox] git worktree 内での実行のためスキップします。')
         return
 
@@ -50,9 +52,23 @@ def main():
 
     settings['sandbox'] = FULL_SANDBOX_CONFIG
 
-    with open(settings_path, 'w', encoding='utf-8') as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
-        f.write('\n')
+    # アトミック書き込み: 一時ファイルに書き込んでから os.replace() で置換する
+    tmp_path = None
+    try:
+        settings_dir = os.path.dirname(settings_path)
+        fd, tmp_path = tempfile.mkstemp(dir=settings_dir, suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as tmp_f:
+                json.dump(settings, tmp_f, ensure_ascii=False, indent=2)
+                tmp_f.write('\n')
+        except Exception:
+            os.close(fd)
+            raise
+        os.replace(tmp_path, settings_path)
+        tmp_path = None  # os.replace が成功したので finally でのクリーンアップ不要
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
     print('[enable-sandbox] sandbox を有効化しました。Claude Code 再起動後に反映されます。')
 

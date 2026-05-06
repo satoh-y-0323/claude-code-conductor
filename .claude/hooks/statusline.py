@@ -7,6 +7,7 @@ import json
 import sys
 import threading
 from datetime import datetime, timezone
+from typing import Any
 
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
@@ -81,7 +82,7 @@ def format_reset_time(resets_at) -> str:
 
 
 def render_output(raw: str) -> None:
-    data: dict = {}
+    data: dict[str, Any] = {}
     try:
         data = json.loads(raw)
     except Exception:
@@ -156,10 +157,13 @@ def main() -> None:
     try:
         for line in sys.stdin:
             chunks.append(line)
-            total_size += len(line)
+            total_size += len(line.encode('utf-8'))
             if total_size > MAX_INPUT:
                 overflow = total_size - MAX_INPUT
-                chunks[-1] = chunks[-1][: len(chunks[-1]) - overflow]
+                last_bytes = chunks[-1].encode('utf-8')
+                # バイト単位で切り詰め。errors='replace' でマルチバイト境界をまたいだ場合も安全に処理する
+                keep = len(last_bytes) - overflow
+                chunks[-1] = last_bytes[:keep].decode('utf-8', errors='replace')
                 break
     except Exception:
         pass

@@ -8,14 +8,21 @@ subprocess 経由で実行し、終了コード・出力メッセージ・ファ
 3. sandbox が未設定: exit 0、「sandbox を有効化」を含む出力、enabled: true が書き込まれる
 4. worktree 内（.git がファイル）: exit 0、「スキップ」を含む出力
 5. JSON が壊れている: exit 0、「JSON 解析に失敗」を含む出力
+
+[New Red-phase tests]
+6. settings.json への書き込みはアトミックに行われること（一時ファイル → os.replace()）
+7. enable_sandbox.py が session_utils.is_worktree を使用していること（DRY 遵守）
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 # テスト対象スクリプトへの絶対パス
 _HOOK = Path(__file__).parent.parent / ".claude" / "hooks" / "enable_sandbox.py"
@@ -167,4 +174,114 @@ def test_broken_json_exits_zero_with_parse_error_message(tmp_path: Path):
     content_after = settings_path.read_text(encoding="utf-8")
     assert content_after == content_before, (
         "壊れた JSON の場合、ファイルを変更してはいけない。"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 6. [New Red-phase] アトミック書き込み検証
+# ---------------------------------------------------------------------------
+
+
+def test_settings_json_write_is_atomic(tmp_path: Path):
+    """[New] settings.json への書き込みは一時ファイル経由で os.replace() によって
+    アトミックに行われること（code-Medium-1 / sec-Low）。
+
+    現在の実装:
+        with open(settings_path, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, ...)  # 直接書き込み（非アトミック）
+
+    期待する実装:
+        with tempfile.NamedTemporaryFile(...) as tmp_f:
+            json.dump(settings, tmp_f, ...)
+        os.replace(tmp_path, settings_path)  # アトミック置換
+
+    検証方法: AST 解析でソースコードに `os.replace` の呼び出しが存在することを確認する。
+    動的な振る舞いテストと組み合わせて、書き込み後にファイルが正常に読み取れることも確認する。
+
+    この テスト は未修正の実装に対して FAIL する（os.replace が使われていないため）。
+    """
+    source = _HOOK.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # os.replace() の呼び出しを検索
+    has_os_replace = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            # os.replace(...) の形式
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "replace"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "os"
+            ):
+                has_os_replace = True
+                break
+
+    assert has_os_replace, (
+        "[code-Medium-1 / sec-Low] enable_sandbox.py must use os.replace() for "
+        "atomic writes to settings.json. "
+        "Current implementation writes directly to the target file, which is not atomic. "
+        "Expected: write to a NamedTemporaryFile, then os.replace(tmp, target)."
+    )
+
+    # 動作確認: 書き込み後に正常に JSON が読み取れること（回帰テスト）
+    initial = {"someKey": "someValue"}
+    settings_path = _make_settings(tmp_path, initial)
+
+    result = _run_hook(tmp_path)
+
+    assert result.returncode == 0, (
+        f"アトミック書き込み後も exit 0 であるべき。got: {result.returncode}"
+    )
+    updated = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert updated.get("sandbox", {}).get("enabled") is True, (
+        "アトミック書き込み後も sandbox.enabled が True に設定されているべき。"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. [Round 4 Red-phase] DRY 違反 — session_utils.is_worktree の使用検証
+# ---------------------------------------------------------------------------
+
+
+def test_enable_sandbox_uses_session_utils_is_worktree():
+    """[Round 4] enable_sandbox.py は session_utils.is_worktree をインポートして使用すること。
+
+    現在の実装:
+        git_path = os.path.join(cwd, '.git')
+        if os.path.exists(git_path) and os.path.isfile(git_path):
+            ...
+    この独自 worktree 判定は session_utils.is_worktree() と重複している（DRY 違反）。
+
+    期待する実装:
+        from session_utils import is_worktree
+        ...
+        if is_worktree(cwd):
+            ...
+
+    検証方法: AST 解析で enable_sandbox.py が session_utils から is_worktree を
+    インポートしていることを確認する。
+
+    この テスト は未修正の実装に対して FAIL する
+    （独自実装のため from session_utils import is_worktree がないため）。
+    """
+    source = _HOOK.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # from session_utils import is_worktree の ImportFrom ノードを探す
+    has_import = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "session_utils":
+                imported_names = [alias.name for alias in node.names]
+                if "is_worktree" in imported_names:
+                    has_import = True
+                    break
+
+    assert has_import, (
+        "[code-Low] enable_sandbox.py must import is_worktree from session_utils "
+        "instead of reimplementing the worktree check inline. "
+        "Current implementation duplicates the worktree detection logic that already "
+        "exists in session_utils.is_worktree(). "
+        "Expected: 'from session_utils import is_worktree' and use it in the main() function."
     )
