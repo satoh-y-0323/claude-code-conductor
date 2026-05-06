@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import io
 import json
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from c3.cli_po import (
     _handle_run_wave,
     _handle_waves,
 )
+from c3.po.run import RunResult
 
 
 _PLAN_REPORT = textwrap.dedent(
@@ -102,15 +100,6 @@ def test_waves_includes_per_task_metadata(tmp_path: Path, capsys):
 # ---------------------------------------------------------------------------
 
 
-class _FakeProc:
-    def __init__(self, returncode: int = 0):
-        self.returncode = returncode
-        self.stderr = io.StringIO("")
-
-    def wait(self) -> int:
-        return self.returncode
-
-
 def test_run_wave_writes_ephemeral_manifest_then_invokes_po(tmp_path: Path):
     project, plan = _make_project(tmp_path)
     args = type(
@@ -128,17 +117,13 @@ def test_run_wave_writes_ephemeral_manifest_then_invokes_po(tmp_path: Path):
 
     captured: dict = {}
 
-    def fake_popen(argv, **kwargs):
-        captured["argv"] = argv
-        captured["kwargs"] = kwargs
-        # Verify the manifest path passed to PO is under .claude/tmp/
-        manifest_path = Path(argv[2])
+    def fake_run_manifest(manifest_path, **kwargs):
         captured["manifest_path"] = manifest_path
-        captured["manifest_text"] = manifest_path.read_text(encoding="utf-8")
-        return _FakeProc(0)
+        captured["manifest_text"] = Path(manifest_path).read_text(encoding="utf-8")
+        captured["kwargs"] = kwargs
+        return RunResult(exit_code=0, status="ok", report_path=None, stderr_tail=None)
 
-    with patch("c3.po.run.subprocess.Popen", side_effect=fake_popen), \
-         patch("c3.cli_po.detect_po", return_value=(True, "0.1.1", "/usr/bin/parallel-orchestra")):
+    with patch("c3.cli_po.run_manifest", side_effect=fake_run_manifest):
         rc = _handle_run_wave(args)
 
     assert rc == 0
@@ -168,29 +153,7 @@ def test_run_wave_index_out_of_range_returns_2(tmp_path: Path, capsys):
             "claude_exe": None,
         },
     )()
-    with patch("c3.cli_po.detect_po", return_value=(True, "0.1.1", "/usr/bin/parallel-orchestra")):
-        rc = _handle_run_wave(args)
+    rc = _handle_run_wave(args)
     assert rc == 2
     err = capsys.readouterr().err
     assert "out of range" in err
-
-
-def test_run_wave_when_po_missing_returns_1(tmp_path: Path, capsys):
-    project, plan = _make_project(tmp_path)
-    args = type(
-        "A",
-        (),
-        {
-            "manifest": plan,
-            "wave_index": 0,
-            "max_workers": None,
-            "report": None,
-            "quiet": False,
-            "claude_exe": None,
-        },
-    )()
-    with patch("c3.cli_po.detect_po", return_value=(False, None, None)):
-        rc = _handle_run_wave(args)
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "parallel-orchestra is not installed" in err

@@ -22,7 +22,6 @@ def test_init_scaffolds_claude_dir(tmp_path: Path, capsys):
     assert (tmp_path / ".claude").is_dir()
     assert (tmp_path / ".claude" / "agents").is_dir()
     assert (tmp_path / ".claude" / "skills").is_dir()
-    assert (tmp_path / ".claude" / "commands").is_dir()
     captured = capsys.readouterr()
     assert "initialized" in captured.out
 

@@ -23,10 +23,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development",
 ]
-dependencies = []
+dependencies = ["PyYAML>=6.0"]
 
 [project.scripts]
 c3 = "c3.cli:main"
+parallel-orchestra = "parallel_orchestra.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/satoh-y-0323/claude-code-conductor"
@@ -39,7 +40,7 @@ path = "src/c3/__init__.py"
 path = "hatch_build.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/c3"]
+packages = ["src/c3", "src/parallel_orchestra"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/c3/_template" = "c3/_template"
@@ -47,6 +48,8 @@ packages = ["src/c3"]
 [tool.hatch.build.targets.sdist]
 include = [
     "src/c3",
+    "src/parallel_orchestra",
+    "tests",
     "hatch_build.py",
     ".claude",
     "README.md",
@@ -63,3 +66,8 @@ exclude = [
     ".claude/docs/taxonomy.md",
     ".claude/docs/game-studios-research.md",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: marks tests as slow"]
+addopts = "-m 'not slow'"

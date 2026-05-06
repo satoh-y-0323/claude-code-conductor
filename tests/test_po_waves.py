@@ -168,8 +168,8 @@ def test_wave_manifest_emits_writes():
     fm = _fm(_task("a", writes=["src/x.py", "tests/test_x.py"]))
     text = build_wave_manifest_text(fm, wave_index=0)
     assert "writes:" in text
-    assert "- src/x.py" in text
-    assert "- tests/test_x.py" in text
+    assert '- "src/x.py"' in text
+    assert '- "tests/test_x.py"' in text
 
 
 def test_wave_manifest_emits_multiline_prompt_as_block():

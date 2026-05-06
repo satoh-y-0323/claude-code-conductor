@@ -1,160 +1,178 @@
-"""Tests for c3.po.run.run_manifest. The PO subprocess is mocked."""
+"""Tests for c3.po.run.run_manifest. The PO Python API is mocked."""
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
+import pytest
 
 from c3.po.run import RunResult, run_manifest
+from parallel_orchestra import ManifestError, RunnerError
 
 
-class _FakeProc:
-    def __init__(self, returncode: int, stderr_text: str = ""):
+class _FakeTaskResult:
+    """Stand-in for parallel_orchestra.TaskResult in tests."""
+
+    def __init__(
+        self,
+        *,
+        task_id: str = "t1",
+        agent: str = "developer",
+        returncode: int | None = 0,
+        stderr: str = "",
+        timed_out: bool = False,
+        skipped: bool = False,
+        resumed: bool = False,
+    ) -> None:
+        self.task_id = task_id
+        self.agent = agent
         self.returncode = returncode
-        self.stderr = io.StringIO(stderr_text)
+        self.stderr = stderr
+        self.timed_out = timed_out
+        self.skipped = skipped
+        self.resumed = resumed
 
-    def wait(self) -> int:
-        return self.returncode
+    @property
+    def ok(self) -> bool:
+        if self.resumed:
+            return True
+        return not self.skipped and self.returncode == 0 and not self.timed_out
 
 
-def _make_popen(returncode: int, stderr_text: str = ""):
-    def factory(argv, **kwargs):
-        factory.last_argv = argv
-        factory.last_kwargs = kwargs
-        return _FakeProc(returncode, stderr_text)
+class _FakeRunResult:
+    def __init__(self, results: list[_FakeTaskResult]) -> None:
+        self.results = results
 
-    factory.last_argv = None
-    factory.last_kwargs = None
-    return factory
+    @property
+    def overall_ok(self) -> bool:
+        return all(r.ok for r in self.results)
+
+
+def _write_manifest(tmp_path: Path) -> Path:
+    manifest = tmp_path / "plan-report.md"
+    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+    return manifest
 
 
 def test_run_manifest_success(tmp_path: Path):
-    manifest = tmp_path / "plan-report.md"
-    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+    manifest = _write_manifest(tmp_path)
+    fake = _FakeRunResult([_FakeTaskResult()])
 
-    factory = _make_popen(0)
-    with patch("c3.po.run.subprocess.Popen", side_effect=factory):
-        result = run_manifest(manifest)
+    with patch("c3.po.run._po_run_manifest", return_value=fake) as po_run:
+        result = run_manifest(manifest, max_workers=4)
 
     assert result == RunResult(
         exit_code=0, status="ok", report_path=None, stderr_tail=None
     )
-    assert factory.last_argv[0] == "parallel-orchestra"
-    assert factory.last_argv[1] == "run"
-    assert factory.last_argv[2] == str(manifest)
-    assert factory.last_kwargs["shell"] is False
+    args, kwargs = po_run.call_args
+    assert args[0] == manifest
+    assert kwargs["max_workers"] == 4
 
 
-def test_run_manifest_task_failure_captures_stderr_tail(tmp_path: Path):
-    manifest = tmp_path / "plan-report.md"
-    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+def test_run_manifest_task_failure_captures_failure_tail(tmp_path: Path):
+    manifest = _write_manifest(tmp_path)
+    fake = _FakeRunResult(
+        [
+            _FakeTaskResult(
+                task_id="t1",
+                returncode=1,
+                stderr="task A failed\nstack trace line 1\nstack trace line 2\n",
+            )
+        ]
+    )
 
-    stderr = "task A failed\nstack trace line 1\nstack trace line 2\n"
-    factory = _make_popen(1, stderr_text=stderr)
-    with patch("c3.po.run.subprocess.Popen", side_effect=factory):
+    with patch("c3.po.run._po_run_manifest", return_value=fake):
         result = run_manifest(manifest)
 
     assert result.exit_code == 1
     assert result.status == "task_failure"
     assert result.stderr_tail is not None
     assert "task A failed" in result.stderr_tail
+    assert "task=t1" in result.stderr_tail
 
 
 def test_run_manifest_manifest_invalid(tmp_path: Path):
-    manifest = tmp_path / "plan-report.md"
-    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+    manifest = _write_manifest(tmp_path)
 
-    factory = _make_popen(2, stderr_text="manifest invalid\n")
-    with patch("c3.po.run.subprocess.Popen", side_effect=factory):
+    with patch(
+        "c3.po.run._po_run_manifest", side_effect=ManifestError("invalid manifest")
+    ):
         result = run_manifest(manifest)
 
     assert result.exit_code == 2
     assert result.status == "manifest_invalid"
+    assert result.stderr_tail is not None
+    assert "invalid manifest" in result.stderr_tail
 
 
 def test_run_manifest_runner_error(tmp_path: Path):
-    manifest = tmp_path / "plan-report.md"
-    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+    manifest = _write_manifest(tmp_path)
 
-    factory = _make_popen(3, stderr_text="claude binary missing\n")
-    with patch("c3.po.run.subprocess.Popen", side_effect=factory):
+    with patch("c3.po.run._po_run_manifest", side_effect=RunnerError("claude missing")):
         result = run_manifest(manifest)
 
     assert result.exit_code == 3
     assert result.status == "runner_error"
+    assert result.stderr_tail is not None
+    assert "claude missing" in result.stderr_tail
 
 
-def test_run_manifest_unknown_exit_code_maps_to_runner_error(tmp_path: Path):
-    manifest = tmp_path / "plan-report.md"
-    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+def test_run_manifest_dry_run_validates_only(tmp_path: Path):
+    manifest = _write_manifest(tmp_path)
 
-    factory = _make_popen(99)
-    with patch("c3.po.run.subprocess.Popen", side_effect=factory):
-        result = run_manifest(manifest)
+    with patch("c3.po.run.load_manifest") as loader, patch(
+        "c3.po.run._po_run_manifest"
+    ) as runner:
+        result = run_manifest(manifest, dry_run=True)
 
-    assert result.status == "runner_error"
-
-
-def test_run_manifest_not_installed(tmp_path: Path):
-    manifest = tmp_path / "plan-report.md"
-    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
-
-    with patch("c3.po.run.subprocess.Popen", side_effect=FileNotFoundError):
-        result = run_manifest(manifest)
-
-    assert result == RunResult(
-        exit_code=-1, status="not_installed", report_path=None, stderr_tail=None
-    )
+    assert result.status == "ok"
+    assert result.exit_code == 0
+    loader.assert_called_once_with(manifest)
+    runner.assert_not_called()
 
 
-def test_run_manifest_argv_assembly(tmp_path: Path):
-    manifest = tmp_path / "plan-report.md"
+def test_run_manifest_dry_run_propagates_manifest_error(tmp_path: Path):
+    manifest = _write_manifest(tmp_path)
+
+    with patch(
+        "c3.po.run.load_manifest", side_effect=ManifestError("bad frontmatter")
+    ):
+        result = run_manifest(manifest, dry_run=True)
+
+    assert result.status == "manifest_invalid"
+    assert result.exit_code == 2
+    assert result.stderr_tail is not None
+    assert "bad frontmatter" in result.stderr_tail
+
+
+def test_run_manifest_kwargs_assembly(tmp_path: Path):
+    manifest = _write_manifest(tmp_path)
     report = tmp_path / "report.json"
-    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+    fake = _FakeRunResult([_FakeTaskResult()])
 
-    factory = _make_popen(0)
-    with patch("c3.po.run.subprocess.Popen", side_effect=factory):
+    with patch("c3.po.run._po_run_manifest", return_value=fake) as po_run:
         run_manifest(
             manifest,
             max_workers=4,
             report=report,
             quiet=True,
-            dry_run=True,
             claude_exe="/opt/claude",
         )
 
-    argv = factory.last_argv
-    assert argv[0] == "parallel-orchestra"
-    assert argv[1] == "run"
-    assert argv[2] == str(manifest)
-    assert "--max-workers" in argv and "4" in argv
-    assert "--report" in argv and str(report) in argv
-    assert "--quiet" in argv
-    assert "--dry-run" in argv
-    assert "--claude-exe" in argv and "/opt/claude" in argv
-    assert factory.last_kwargs["shell"] is False
+    _, kwargs = po_run.call_args
+    assert kwargs["max_workers"] == 4
+    assert kwargs["report_path"] == report
+    assert kwargs["dashboard_enabled"] is False
+    assert kwargs["claude_executable"] == "/opt/claude"
 
 
-def test_run_manifest_decodes_stderr_as_utf8(tmp_path: Path):
-    """Regression: on Windows the default locale (cp932) cannot decode PO's
-    UTF-8 stderr, causing UnicodeDecodeError. The wrapper must pin the
-    decoding to UTF-8 with a permissive error handler.
-    """
-    manifest = tmp_path / "plan-report.md"
-    manifest.write_text("---\npo_plan_version: '0.1'\n---\n", encoding="utf-8")
+def test_run_manifest_returns_report_path_on_success(tmp_path: Path):
+    manifest = _write_manifest(tmp_path)
+    report = tmp_path / "report.json"
+    fake = _FakeRunResult([_FakeTaskResult()])
 
-    factory = _make_popen(0)
-    with patch("c3.po.run.subprocess.Popen", side_effect=factory):
-        run_manifest(manifest)
+    with patch("c3.po.run._po_run_manifest", return_value=fake):
+        result = run_manifest(manifest, report=report)
 
-    kwargs = factory.last_kwargs
-    assert kwargs.get("encoding") == "utf-8", (
-        "Popen must pin encoding='utf-8' so PO's UTF-8 stderr decodes "
-        "regardless of the platform's locale (Windows cp932)."
-    )
-    assert kwargs.get("errors") == "replace", (
-        "Popen must use errors='replace' so a stray byte does not crash "
-        "the wrapper mid-stream."
-    )
-    assert kwargs.get("text") is True
+    assert result.report_path == report

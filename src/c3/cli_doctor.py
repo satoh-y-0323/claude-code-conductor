@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 from c3.paths import claude_root_for
-from c3.po.detect import detect_po
 
 _OK = "OK"
 _WARN = "WARN"
@@ -96,19 +95,12 @@ def _check_claude_binary() -> tuple[str, str, str]:
 
 
 def _check_po() -> tuple[str, str, str]:
-    available, version, cli_path = detect_po()
-    if available:
-        ver = version or "unknown version"
-        return _OK, "parallel-orchestra", f"{ver} at {cli_path}"
-    return (
-        _WARN,
-        "parallel-orchestra",
-        (
-            "not installed (optional). 並列実行を使うには "
-            "`pip install parallel-orchestra` を実行してください。"
-            "詳細: https://pypi.org/project/parallel-orchestra/"
-        ),
-    )
+    try:
+        import parallel_orchestra  # type: ignore[import-not-found]
+    except ImportError as exc:
+        return _ERR, "parallel-orchestra", f"bundled package failed to import: {exc}"
+    ver = getattr(parallel_orchestra, "__version__", "unknown")
+    return _OK, "parallel-orchestra", f"{ver} (bundled)"
 
 
 def _supports_color() -> bool:

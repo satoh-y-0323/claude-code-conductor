@@ -139,8 +139,8 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | `c3 update` | `.claude/` をパッケージ最新版へ更新する（個人ファイルはスキップ） |
 | `c3 list-agents` / `list-skills` | 設置済みアセットを一覧表示 |
 | `c3 doctor` | 環境診断（`.claude/`・settings.json・claude バイナリ・parallel-orchestra） |
-| `c3 po dry-run <plan-report>` | plan-report をマニフェストとして検証（PO 必要） |
-| `c3 po run <plan-report>` | plan-report を parallel-orchestra で並列実行（PO 必要） |
+| `c3 po dry-run <plan-report>` | plan-report をマニフェストとして検証 |
+| `c3 po run <plan-report>` | plan-report を parallel-orchestra で並列実行 |
 
 ### 基本的な使い方
 
@@ -289,30 +289,19 @@ Copy-Item -Recurse claude-code-conductor\.claude your-project\
 
 ---
 
-## オプション: 並列実行 (parallel-orchestra)
+## 並列実行 (parallel-orchestra)
 
-計画フェーズで生成した plan-report を YAML フロントマター付きマニフェストとして [parallel-orchestra (PO)](https://pypi.org/project/parallel-orchestra/) に渡し、独立タスクを git worktree で並列実行できます。
+計画フェーズで生成した plan-report を YAML フロントマター付きマニフェストとして parallel-orchestra (PO) に渡し、独立タスクを git worktree で並列実行できます。
 
-**インストール:**
-
-```bash
-pip install parallel-orchestra
-```
-
-要件: Python ≥ 3.10、PATH に `claude` バイナリが必要です。
+PO は C3 に同梱されているため、`pip install claude-code-conductor` だけで利用可能です。別途のインストールは不要。要件は Python ≥ 3.10、PATH に `claude` バイナリ、PyYAML（C3 の依存として自動インストール）。
 
 **使い方:**
 
 1. `/start` で要件→設計→計画フェーズを完走させる（planner が plan-report の先頭に PO 用 YAML フロントマターを自動付与します）
 2. `/develop` を起動 → **D-0** で「PO 並列実行」を選ぶ
-3. C3 が `c3 doctor` で PO 利用可否を確認、`c3 po dry-run` でマニフェスト妥当性を検証、ユーザー承認を取ってから `parallel-orchestra run` を呼びます
+3. C3 が `c3 po dry-run` でマニフェスト妥当性を検証、ユーザー承認を取ってから `c3 po run` で並列実行します
 
-**未インストール時:** `/develop` の D-0 で「PO 並列実行」を選んだ際にガイダンスメッセージが表示されます（エラーにはなりません）。逐次実行（D-0 の選択肢「TDD 逐次実行」）に切り替えるか、上記コマンドで PO を導入してください。
-
-**疎結合保証:**
-- C3 の `pyproject.toml` の `dependencies` / `optional-dependencies` のいずれにも parallel-orchestra は含まれません
-- C3 → PO の通信は subprocess CLI のみ。Python 内部 API への依存はありません
-- 並列実行が不要な利用者は PO を導入する必要はありません
+マニフェスト仕様の詳細は `.claude/docs/parallel-orchestra-manifest.md` を参照してください。
 
 ---
 

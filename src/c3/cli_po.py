@@ -1,4 +1,4 @@
-"""``c3 po`` - thin wrapper around the parallel-orchestra CLI."""
+"""``c3 po`` - thin wrapper around the bundled parallel-orchestra runner."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 
 from c3.paths import claude_root_for
-from c3.po.detect import detect_po
 from c3.po.manifest import (
     build_wave_manifest_text,
     compute_waves,
@@ -17,13 +16,6 @@ from c3.po.manifest import (
     validate_manifest,
 )
 from c3.po.run import run_manifest
-
-
-_NOT_INSTALLED_MSG = (
-    "parallel-orchestra is not installed. "
-    "並列実行を使うには `pip install parallel-orchestra` を実行してください。"
-    "詳細: https://pypi.org/project/parallel-orchestra/"
-)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -72,14 +64,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     run_wave.set_defaults(handler=_handle_run_wave)
 
 
-def _ensure_po_available() -> int:
-    available, _, _ = detect_po()
-    if not available:
-        print(_NOT_INSTALLED_MSG, file=sys.stderr)
-        return 1
-    return 0
-
-
 def _preflight(manifest: Path) -> int:
     if not manifest.is_file():
         print(f"manifest not found: {manifest}", file=sys.stderr)
@@ -100,21 +84,13 @@ def _handle_dry_run(args: argparse.Namespace) -> int:
     rc = _preflight(args.manifest)
     if rc != 0:
         return rc
-    if (rc := _ensure_po_available()) != 0:
-        return rc
     result = run_manifest(args.manifest, dry_run=True)
-    # defensive guard: _ensure_po_available() already verified PO is installed
-    if result.status == "not_installed":
-        print(_NOT_INSTALLED_MSG, file=sys.stderr)
-        return 1
     return result.exit_code if result.exit_code >= 0 else 1
 
 
 def _handle_run(args: argparse.Namespace) -> int:
     rc = _preflight(args.manifest)
     if rc != 0:
-        return rc
-    if (rc := _ensure_po_available()) != 0:
         return rc
     result = run_manifest(
         args.manifest,
@@ -123,10 +99,6 @@ def _handle_run(args: argparse.Namespace) -> int:
         quiet=args.quiet,
         claude_exe=args.claude_exe,
     )
-    # defensive guard: _ensure_po_available() already verified PO is installed
-    if result.status == "not_installed":
-        print(_NOT_INSTALLED_MSG, file=sys.stderr)
-        return 1
     return result.exit_code if result.exit_code >= 0 else 1
 
 
@@ -171,8 +143,6 @@ def _handle_run_wave(args: argparse.Namespace) -> int:
     rc = _preflight(args.manifest)
     if rc != 0:
         return rc
-    if (rc := _ensure_po_available()) != 0:
-        return rc
 
     fm = extract_frontmatter(args.manifest)
     if fm is None:
@@ -211,8 +181,4 @@ def _handle_run_wave(args: argparse.Namespace) -> int:
         )
     finally:
         wave_path.unlink(missing_ok=True)
-    # defensive guard: _ensure_po_available() already verified PO is installed
-    if result.status == "not_installed":
-        print(_NOT_INSTALLED_MSG, file=sys.stderr)
-        return 1
     return result.exit_code if result.exit_code >= 0 else 1

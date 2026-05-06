@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Bundled `parallel-orchestra` (PO) into the C3 distribution.** PO is now
+  part of the same wheel as C3; users no longer need to `pip install
+  parallel-orchestra` separately. The `parallel-orchestra` CLI command is
+  still exposed as a console script for backward compatibility.
+- `c3.po.run.run_manifest` now calls `parallel_orchestra.run_manifest`
+  directly via the Python API instead of spawning a `parallel-orchestra`
+  subprocess. The `subprocess` round-trip and ANSI-stream parsing are
+  removed; PO failures surface as typed `ManifestError` / `RunnerError`
+  exceptions and are mapped to C3 exit codes.
+- `c3.po.manifest` now uses `yaml.safe_load` (via the new `PyYAML>=6.0`
+  dependency) for frontmatter parsing. The ~200-line homegrown YAML
+  subset parser is removed.
+- `c3 doctor` now reports the bundled PO version instead of probing for a
+  separately installed `parallel-orchestra` binary on PATH.
+
+### Removed
+- `src/c3/po/detect.py` and the `RunStatus="not_installed"` branch — PO
+  is always available now that it ships with C3.
+- The "PO is not installed" guidance in `wave-execution` Step 0 and the
+  "optional install" section of the README; replaced with a note that
+  PO is bundled.
+
+### Added
+- `PyYAML>=6.0` runtime dependency.
+- `tests/parallel_orchestra/` — PO's test suite is now run as part of
+  the C3 test run (`pytest tests/`).
+- `[tool.pytest.ini_options]` block declaring `testpaths` and the
+  `slow` marker (carried over from PO's pyproject.toml).
+
 ## [0.5.1] - 2026-05-05
 
 ### Added

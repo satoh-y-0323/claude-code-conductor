@@ -167,11 +167,13 @@ class TestWritesRoundTrip:
 
     def _parse_writes_from_text(self, text: str) -> list[str]:
         """Extract the writes list from a manifest text using the manifest parser."""
-        from c3.po.manifest import _parse_yaml, _FRONTMATTER_RE
+        import yaml
+
+        from c3.po.manifest import _FRONTMATTER_RE
 
         match = _FRONTMATTER_RE.match(text)
         assert match is not None, "No frontmatter found in generated text"
-        fm = _parse_yaml(match.group(1))
+        fm = yaml.safe_load(match.group(1))
         return fm["tasks"][0].get("writes", [])
 
     def test_normal_path_round_trips(self):
