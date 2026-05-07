@@ -46,7 +46,25 @@ Glob で `.claude/rules/coding-standards.md` と `.claude/rules/project-conventi
 
 **Step 3: `.claude/rules/coding-standards.md` を生成**
 
+言語に応じた `paths` を YAML フロントマターに設定し、関係するファイルを編集している時だけこのルールが適用されるようにする。
+
+言語 → 拡張子の対応例（複数言語の場合は全て列挙する）:
+- Python → `**/*.py`
+- TypeScript → `**/*.ts`, `**/*.tsx`
+- JavaScript → `**/*.js`, `**/*.jsx`, `**/*.mjs`, `**/*.cjs`
+- TypeScript + JavaScript → 上記すべて
+- Go → `**/*.go`
+- Java → `**/*.java`
+- Kotlin → `**/*.kt`, `**/*.kts`
+- C# → `**/*.cs`
+- Rust → `**/*.rs`
+- Ruby → `**/*.rb`
+
 ```markdown
+---
+paths:
+  - "**/*.{拡張子}"
+---
 # Coding Standards: {スタック名}
 <!-- /agent-project-setup により生成。言語・フレームワークのバージョンアップ時に更新する。-->
 最終更新: YYYY-MM-DD

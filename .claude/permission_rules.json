@@ -1,0 +1,14 @@
+{
+  "_readme": "auto_allow にパターンを追加すると権限ダイアログなしで自動承認します。settings.json の permissions.allow と同じ書式です。notify_on_auto を false にすると自動承認時の通知を無効にできます。",
+  "notify_on_auto": true,
+  "auto_allow": [
+    "Bash(git status*)",
+    "Bash(git log*)",
+    "Bash(git diff*)",
+    "Bash(git add*)",
+    "Bash(git commit*)",
+    "Bash(git rev-parse*)",
+    "Bash(git stash*)",
+    "Bash(git check-ignore*)"
+  ]
+}

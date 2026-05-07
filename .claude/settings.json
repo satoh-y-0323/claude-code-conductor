@@ -6,6 +6,8 @@
       "Bash(python .claude/hooks/stop.py*)",
       "Bash(python .claude/hooks/pre_tool.py*)",
       "Bash(python .claude/hooks/pre_compact.py*)",
+      "Bash(python .claude/hooks/restore_session.py*)",
+      "Bash(python .claude/hooks/permission_handler.py*)",
       "Bash(python .claude/hooks/validate_skill_change.py*)",
       "Bash(python .claude/hooks/statusline.py*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/clear_file_history.py\"*)",
@@ -13,6 +15,8 @@
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_compact.py\"*)",
+      "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/restore_session.py\"*)",
+      "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/permission_handler.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate_skill_change.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/statusline.py\"*)",
       "Read(**)",
@@ -111,6 +115,28 @@
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate_skill_change.py\""
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/permission_handler.py\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/restore_session.py\""
           }
         ]
       }

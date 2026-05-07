@@ -195,6 +195,10 @@ AskUserQuestion ツール:
 - コメント方針: {回答}
 - テストカバレッジ目標: {回答}
 - その他: {回答}
+
+## 生成ルール
+- coding-standards.md には言語に対応するファイル拡張子の YAML フロントマター paths を必ず付ける
+- project-conventions.md には paths を付けない（git・コミット規約など横断的ルールのため常時適用）
 ```
 
 ---
