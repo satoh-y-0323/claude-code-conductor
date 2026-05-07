@@ -1129,10 +1129,9 @@ def _execute_task(
     PO_WORKTREE_GUARD=1 is set in the environment automatically.
     For read_only=True tasks, effective_cwd (passed by the caller) is used.
     """
-    if task.read_only:
-        cmd = [claude_exe, "--read-only"]
-    else:
-        cmd = [claude_exe, "--dangerously-skip-permissions"]
+    # read_only controls worktree creation only — never passed to claude as a flag.
+    # Both task types need --dangerously-skip-permissions for headless execution.
+    cmd = [claude_exe, "--dangerously-skip-permissions"]
     if task.agent:
         cmd.extend(["--agent", task.agent])
     cmd.extend([_CLAUDE_PROMPT_FLAG, task.prompt])

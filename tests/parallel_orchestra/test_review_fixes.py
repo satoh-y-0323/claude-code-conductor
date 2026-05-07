@@ -164,16 +164,19 @@ def test_log_masks_api_key(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Task 16 / S-1 — read_only tasks use --read-only, not --dangerously-skip-permissions
+# Task 16 / S-1 — read_only tasks use --dangerously-skip-permissions (not --read-only)
+# read_only controls worktree creation only; it must never be passed to claude as a flag.
 # ---------------------------------------------------------------------------
 
 
-def test_readonly_task_gets_read_only_flag(tmp_path, monkeypatch):
-    """A task with read_only=true must use --read-only flag, not --dangerously-skip-permissions."""
+def test_readonly_task_uses_dangerously_skip_permissions(tmp_path, monkeypatch):
+    """A task with read_only=true must use --dangerously-skip-permissions, not --read-only.
+
+    read_only is an internal PO control field (worktree vs no-worktree).
+    Claude Code CLI has no --read-only flag, so passing it would break execution.
+    """
     from parallel_orchestra import load_manifest, run_manifest
 
-    # Set up a git repo in tmp_path so run_manifest can resolve git_root for write tasks.
-    # We only have a read_only task, so git_root is not required.
     manifest_text = (
         "---\n"
         "po_plan_version: \"0.1\"\n"
@@ -206,7 +209,6 @@ def test_readonly_task_gets_read_only_flag(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
 
-    # Disable the dashboard to avoid TTY issues in CI
     fake_stderr = io.StringIO()
     fake_stderr.isatty = lambda: False  # type: ignore[attr-defined]
     monkeypatch.setattr(sys, "stderr", fake_stderr)
@@ -217,11 +219,11 @@ def test_readonly_task_gets_read_only_flag(tmp_path, monkeypatch):
     assert captured_commands, "No subprocess.Popen calls were recorded"
 
     task_cmd = captured_commands[0]
-    assert "--read-only" in task_cmd, (
-        f"--read-only was not found in command: {task_cmd}"
+    assert "--dangerously-skip-permissions" in task_cmd, (
+        f"--dangerously-skip-permissions was not found in read_only=true command: {task_cmd}"
     )
-    assert "--dangerously-skip-permissions" not in task_cmd, (
-        f"--dangerously-skip-permissions was found in read_only=true command: {task_cmd}"
+    assert "--read-only" not in task_cmd, (
+        f"--read-only (non-existent Claude flag) was found in command: {task_cmd}"
     )
 
 
