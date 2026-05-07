@@ -13,6 +13,9 @@ examples/
 # Temporary files
 .claude/tmp/
 
+# PO task execution logs
+.claude/logs/
+
 # Python bytecode / cache
 __pycache__/
 *.pyc
