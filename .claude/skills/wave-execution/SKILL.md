@@ -196,7 +196,7 @@ c3 po run-wave <plan-report-path> --wave-index {N} --report .claude/reports/po-r
 | exit code | 意味 | 次のアクション |
 |---|---|---|
 | `0` | wave 内全タスク成功 | 2-D へ |
-| `1` | 1件以上のタスクが失敗 | 2-D へ（失敗一覧を含めて提示）。**注:** PO は 1 タスクあたり 15 分（`_INTERNAL_TIMEOUT_SEC = 900`、ハードコード上書き不可）でタイムアウトする。15 分超で failure 扱いになっていれば planner の粒度を見直す |
+| `1` | 1件以上のタスクが失敗 | 2-D へ（失敗一覧を含めて提示）。**注:** PO は 1 タスクあたり 20 分（`_INTERNAL_TIMEOUT_SEC = 1200`）でタイムアウトする。20 分超で failure 扱いになっていれば planner の粒度を見直す |
 | `2` | マニフェストエラー（Step 0 をすり抜けた）| エラー内容を提示しスキル終了 |
 | `3` | auto-merge 衝突（worktree → main の取り込みに失敗）| 下記「auto-merge が衝突した場合」のリカバリ手順へ |
 

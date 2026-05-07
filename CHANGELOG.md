@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.3] - 2026-05-07
+
+### Fixed
+- `read_only=true` tasks (e.g. `code-reviewer`, `security-reviewer`) were
+  launched with `--read-only`, a flag that does not exist in Claude Code CLI,
+  causing immediate failure. All tasks now use `--dangerously-skip-permissions`
+  regardless of `read_only`. `read_only` controls worktree creation only and
+  is never passed to the `claude` binary.
+- `wave-execution/SKILL.md`: update timeout note from 900 s (15 min) to
+  1200 s (20 min) to reflect the v0.6.1 change.
+
 ## [0.6.2] - 2026-05-07
 
 ### Fixed
