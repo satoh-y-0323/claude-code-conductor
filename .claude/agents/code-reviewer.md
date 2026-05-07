@@ -40,7 +40,7 @@ tools:
 - 修正必須と推奨の2段階で提示する
 
 **After:**
-- `.claude/reports/code-review-report-YYYYMMDD-HHMMSS.md` に Write して出力する
+- Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/code-review-report-{timestamp}.md` に出力する
 
 ## Tools & Constraints
 制限: ソースファイルの編集・書き込みは行わない

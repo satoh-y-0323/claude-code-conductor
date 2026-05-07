@@ -82,7 +82,7 @@ AskUserQuestion ツールで以下を提示する:
 
 ## Step 2: dev-workflow/SKILL.md を Read してフェーズを実行する
 
-**最初に必ず** `.claude/skills/dev-workflow/SKILL.md` を Read する。記憶・推測で進めず、dev-workflow/SKILL.md の AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
+**最初に必ず** `.claude/skills/dev-workflow/SKILL.md` を Read する。記憶・推測で進めず、`.claude/skills/dev-workflow/SKILL.md` の AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
 
 選択した開始地点に対応するフェーズから実行する:
 

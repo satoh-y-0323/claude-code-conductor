@@ -41,7 +41,7 @@ requirements-report を受け取り、システム設計・技術選定・依存
 - 不明点はユーザーに確認する
 
 **After:**
-- `.claude/reports/architecture-report-YYYYMMDD-HHMMSS.md` に Write して出力する
+- Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/architecture-report-{timestamp}.md` に出力する
 
 ## Tools & Constraints
 制限: ソースファイルの編集・書き込みは行わない

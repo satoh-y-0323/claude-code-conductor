@@ -40,7 +40,7 @@ requirements-report・architecture-report・各種レビューレポートを統
 - タスクは「1タスク = 1コミット」の粒度を意識して分解する
 
 **After:**
-- `.claude/reports/plan-report-YYYYMMDD-HHMMSS.md` に Write して出力する
+- Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/plan-report-{timestamp}.md` に出力する
 - plan-report の**先頭に YAML フロントマターを必ず付与する**。フォーマットは `.claude/docs/parallel-orchestra-manifest.md` の仕様に従う。最低限以下を出力すること:
   - `po_plan_version: "0.1"`
   - `name`（プランの表示名・文字列）

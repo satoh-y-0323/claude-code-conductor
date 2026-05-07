@@ -52,7 +52,7 @@ tools:
 
 **After:**
 - 指定された出力先にドキュメントを Write する:
-  - レポート: `.claude/reports/doc-{名前}-YYYYMMDD-HHMMSS.md`
+  - レポート: Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/doc-{名前}-{timestamp}.md` に出力する
   - 指定パス: 指定されたパスに直接 Write（ディレクトリが存在しない場合は Bash で作成）
   - 表示のみ: Write せずにコンテキストに出力する
 

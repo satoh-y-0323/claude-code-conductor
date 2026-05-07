@@ -1,5 +1,5 @@
 ---
-description: ヒアリング→設計→計画→実装→レビューの全フェーズワークフロー。/start・/develop・/code-review コマンドが内部参照する。
+description: ヒアリング→設計→計画→実装→レビューの全フェーズワークフロー。/start・/develop・/code-review・wave-execution スキルが内部参照する。
 disable-model-invocation: false
 user-invocable: false
 ---
@@ -7,7 +7,7 @@ user-invocable: false
 # Dev Workflow
 
 要件定義から実装・レビューまでを複数エージェントで連携させるフルワークフロー。
-`commands/` の各コマンドからこのファイルを Read して指定フェーズから実行する。
+`.claude/skills/` の各スキルからこのファイルを Read して指定フェーズから実行する。
 フェーズ間の遷移はこのファイル内で完結する（外部コマンド呼び出し不要）。
 
 ---
@@ -249,7 +249,7 @@ plan-report の冒頭を Read し、YAML フロントマター（`---` で始ま
 
 **フロントマターありの場合:**
 1. **最初に必ず** `.claude/skills/wave-execution/SKILL.md` を Read する（記憶・推測で進めない）
-2. `wave-execution/SKILL.md` の手順に完全に従って wave 単位で実装を進める
+2. `.claude/skills/wave-execution/SKILL.md` の手順に完全に従って wave 単位で実装を進める
 3. 全 wave 完了後はフェーズ E（レビュー）へ進む（wave に reviewer タスクが含まれていれば E をスキップ可能と案内する）
 
 **フロントマターなしの場合（legacy フォールバック）:**

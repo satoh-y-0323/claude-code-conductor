@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.4] - 2026-05-07
+
+### Changed
+- `CLAUDE.md`: 不要・重複・抽象的なセクションを削除・整理（Startup Protocol / Session Update Rules / Pattern Recording / Rule Compliance を削除、Communication Style・User Interaction Rules・Approval Flow・Compact Instructions・Available Commands・Directory Structure を整理・圧縮）
+- `agents/`: `report-timestamp` スキル呼び出しとファイル出力の記述を全エージェントで統一（architect・code-reviewer・doc-writer・interviewer・planner・security-reviewer）
+- `skills/`: `.claude/skills/` プレフィックスなしのパス参照を修正（code-review・dev-workflow・develop・start・wave-execution）
+- `skills/dev-workflow/SKILL.md`: `commands/` の記述を `skills/` に更新、description に wave-execution を参照元として追記
+- `README.md`: パターン昇格パス・c3 po コマンド一覧・PO 並列実行の説明・エージェント一覧（tdd-develop・systematic-debugger 追加）を現状に合わせて修正
+
 ## [0.6.3] - 2026-05-07
 
 ### Fixed
