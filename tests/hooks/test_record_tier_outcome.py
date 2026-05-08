@@ -141,3 +141,151 @@ class TestRecordTierOutcome:
         with pytest.raises(SystemExit) as exc_info:
             mod.main(["--outcome", "wrong"])
         assert exc_info.value.code == 2  # argparse error
+
+
+class TestPromptHistoryAppend:
+    """Phase 2-C: prompt-history.jsonl への追記検証。"""
+
+    def _write_selection_with_prompt(
+        self, path: Path, *, complexity: str, tier: str,
+        prompt_prefix: str, prompt_hash: str,
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "complexity": complexity,
+                "tier": tier,
+                "mode": "thompson",
+                "prompt_prefix": prompt_prefix,
+                "prompt_hash": prompt_hash,
+            }),
+            encoding="utf-8",
+        )
+
+    def test_appends_record_on_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        history_path = tmp_path / "logs" / "prompt-history.jsonl"
+        self._write_selection_with_prompt(
+            sel_path,
+            complexity="simple", tier="haiku",
+            prompt_prefix="typo を修正してください",
+            prompt_hash="abcdef0123456789",
+        )
+
+        mod = _load_hook_module()
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
+        monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
+
+        from parallel_orchestra import c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        rc = mod.main(["--outcome", "success"])
+        assert rc == 0
+        assert history_path.is_file()
+        lines = history_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["complexity"] == "simple"
+        assert record["tier"] == "haiku"
+        assert record["outcome"] == "success"
+        assert record["prompt_prefix"] == "typo を修正してください"
+        assert record["prompt_hash"] == "abcdef0123456789"
+        assert "ts" in record
+
+    def test_appends_record_on_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        history_path = tmp_path / "logs" / "prompt-history.jsonl"
+        self._write_selection_with_prompt(
+            sel_path,
+            complexity="complex", tier="opus",
+            prompt_prefix="リファクタしてください",
+            prompt_hash="0000111122223333",
+        )
+
+        mod = _load_hook_module()
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
+        monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
+
+        from parallel_orchestra import c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        rc = mod.main(["--outcome", "failure"])
+        assert rc == 0
+        record = json.loads(
+            history_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+        )
+        assert record["outcome"] == "failure"
+        assert record["complexity"] == "complex"
+        assert record["tier"] == "opus"
+
+    def test_skip_when_selection_lacks_prompt_info(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """旧フォーマットの tier_selection.json（prompt_prefix なし）では追記しない。"""
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        # prompt_prefix / prompt_hash 無しの旧フォーマット
+        _write_selection(sel_path, "simple", "haiku")
+        history_path = tmp_path / "logs" / "prompt-history.jsonl"
+
+        mod = _load_hook_module()
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
+        monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
+
+        from parallel_orchestra import c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        rc = mod.main(["--outcome", "success"])
+        assert rc == 0
+        # 追記されていない
+        assert not history_path.exists()
+
+    def test_appends_to_existing_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """既存 prompt-history.jsonl に追記される（上書きしない）。"""
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        history_path = tmp_path / "logs" / "prompt-history.jsonl"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        history_path.write_text(
+            json.dumps({
+                "ts": "2026-05-01T00:00:00+09:00",
+                "prompt_prefix": "既存エントリ",
+                "prompt_hash": "deadbeefcafebabe",
+                "complexity": "medium",
+                "tier": "sonnet",
+                "outcome": "success",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        self._write_selection_with_prompt(
+            sel_path,
+            complexity="simple", tier="haiku",
+            prompt_prefix="新しいエントリ",
+            prompt_hash="1234567890abcdef",
+        )
+
+        mod = _load_hook_module()
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
+        monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
+
+        from parallel_orchestra import c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        rc = mod.main(["--outcome", "success"])
+        assert rc == 0
+        lines = history_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 2
+        assert json.loads(lines[0])["prompt_prefix"] == "既存エントリ"
+        assert json.loads(lines[1])["prompt_prefix"] == "新しいエントリ"

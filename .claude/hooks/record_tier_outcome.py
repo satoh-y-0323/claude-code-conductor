@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -35,6 +36,8 @@ except AttributeError:
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 TIER_SELECTION_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_selection.json")
+# Phase 2-C: prompt 履歴ファイル（select_tier.py が読む類似度推定の母数）。
+PROMPT_HISTORY_PATH = os.path.join(_CLAUDE_DIR, "logs", "prompt-history.jsonl")
 
 
 def _load_c3_db_module():
@@ -86,6 +89,36 @@ def _delete_tier_selection() -> None:
         )
 
 
+def _append_prompt_history(selection: dict, success: bool) -> None:
+    """Phase 2-C: prompt-history.jsonl に 1 行追記する。
+
+    selection に prompt_prefix / prompt_hash が含まれていなければスキップ
+    （古い tier_selection.json との後方互換）。
+    書き込み失敗は警告のみで握り潰す（呼び出し元の dev-workflow を止めない）。
+    """
+    prompt_prefix = selection.get("prompt_prefix")
+    prompt_hash = selection.get("prompt_hash")
+    if not isinstance(prompt_prefix, str) or not isinstance(prompt_hash, str):
+        return
+    record = {
+        "ts": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "prompt_hash": prompt_hash,
+        "prompt_prefix": prompt_prefix,
+        "complexity": selection.get("complexity"),
+        "tier": selection.get("tier"),
+        "outcome": "success" if success else "failure",
+    }
+    try:
+        os.makedirs(os.path.dirname(PROMPT_HISTORY_PATH), exist_ok=True)
+        with open(PROMPT_HISTORY_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print(
+            f"[record_tier_outcome] prompt-history append skipped: {exc}",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Record tier outcome for F-005 Thompson Sampling"
@@ -128,6 +161,9 @@ def main(argv: list[str] | None = None) -> int:
             f"[record_tier_outcome] tier_recent_outcomes record skipped: {exc}",
             file=sys.stderr,
         )
+
+    # Phase 2-C: prompt-history.jsonl にも 1 行追記。
+    _append_prompt_history(selection, success)
 
     if ok:
         _delete_tier_selection()
