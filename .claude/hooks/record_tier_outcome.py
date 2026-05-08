@@ -114,6 +114,21 @@ def main(argv: list[str] | None = None) -> int:
         selection["tier"],
         success=success,
     )
+    # Phase 2-B: tier_recent_outcomes にも 1 件記録（escalation 判定の母数）。
+    # tier_bandit 更新が失敗してもこちらは試みる（DB が一時的に詰まる程度なら
+    # 片方だけ通る可能性もある）。
+    try:
+        c3_db.record_tier_recent_outcome(
+            complexity=selection["complexity"],
+            tier=selection["tier"],
+            success=success,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[record_tier_outcome] tier_recent_outcomes record skipped: {exc}",
+            file=sys.stderr,
+        )
+
     if ok:
         _delete_tier_selection()
     else:

@@ -539,3 +539,102 @@ def update_tier_params(
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to update tier_params: %s", exc)
         return False
+
+
+# Phase 2-B 用: tier_recent_outcomes ヘルパー（直近 N 件の outcome 履歴）
+
+# escalation 判定の最小サンプル数。これより少ないと escalation しない（統計的に弱い）。
+_FAILURE_RATE_MIN_SAMPLES = 5
+
+
+def record_tier_recent_outcome(
+    *,
+    complexity: str,
+    tier: str,
+    success: bool,
+    db_path: Path | None = None,
+) -> bool:
+    """``tier_recent_outcomes`` に 1 件 INSERT する。
+
+    Phase 2-B のエスカレーション判定用。tier_bandit の累積 α/β とは別に、
+    直近 N 件の event を時系列で保持する。
+
+    Returns:
+        INSERT 成功時 True、DB 不在 / エラー時 False。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return False
+
+    from datetime import timezone as _tz  # noqa: PLC0415
+    now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                "INSERT INTO tier_recent_outcomes "
+                "(task_complexity, tier, success, ts) VALUES (?, ?, ?, ?)",
+                (complexity, tier, 1 if success else 0, now_iso),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to record tier_recent_outcome: %s", exc)
+        return False
+
+
+def read_tier_failure_rate(
+    complexity: str,
+    tier: str,
+    *,
+    last_n: int = 10,
+    db_path: Path | None = None,
+) -> tuple[float | None, int]:
+    """直近 ``last_n`` 件の outcome から failure rate を計算する。
+
+    Args:
+        complexity: 'simple' / 'medium' / 'complex'。
+        tier: 'haiku' / 'sonnet' / 'opus'。
+        last_n: 何件を対象にするか（デフォルト 10 件）。
+        db_path: c3.db のパス。
+
+    Returns:
+        ``(failure_rate, sample_count)`` のタプル。
+
+        - ``sample_count`` は実際に取得できた件数（最大 last_n）。
+        - ``failure_rate`` は失敗件数 / sample_count。
+        - サンプルが ``_FAILURE_RATE_MIN_SAMPLES`` 未満の場合は
+          ``failure_rate = None`` を返し、escalation 判定を skip する目印にする。
+        - DB 不在 / エラー時も ``(None, 0)`` を返す。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return None, 0
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT success FROM tier_recent_outcomes "
+                "WHERE task_complexity = ? AND tier = ? "
+                "ORDER BY ts DESC LIMIT ?",
+                (complexity, tier, last_n),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read tier_failure_rate: %s", exc)
+        return None, 0
+
+    sample_count = len(rows)
+    if sample_count < _FAILURE_RATE_MIN_SAMPLES:
+        return None, sample_count
+
+    failures = sum(1 for r in rows if r[0] == 0)
+    return failures / sample_count, sample_count

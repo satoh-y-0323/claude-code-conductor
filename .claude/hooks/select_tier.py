@@ -109,7 +109,70 @@ def select_tier(
     return chosen, "thompson"
 
 
-def write_tier_selection(complexity: str, tier: str, mode: str) -> None:
+# Phase 2-B: 失敗率による昇格マッピング（haiku → sonnet, sonnet → opus）。
+# opus からの昇格はなし（最上位）。
+_ESCALATION_MAP: dict[str, str] = {
+    "haiku": "sonnet",
+    "sonnet": "opus",
+}
+
+# Phase 2-B: failure rate がこの値以上で escalation 判定。
+ESCALATION_THRESHOLD = 0.5
+
+
+def maybe_escalate(
+    complexity: str,
+    chosen_tier: str,
+    *,
+    failure_rate_fn=None,
+) -> tuple[str, str | None]:
+    """Phase 2-B: failure rate が高ければ 1 段昇格する。
+
+    Args:
+        complexity: ``simple`` / ``medium`` / ``complex``。
+        chosen_tier: select_tier が選んだ tier。
+        failure_rate_fn: テスト用に注入可能な
+            ``(complexity, tier) -> (rate_or_None, sample_count)``。
+            省略時は :func:`c3_db.read_tier_failure_rate` を使う。
+
+    Returns:
+        ``(effective_tier, escalation_reason)``。
+        昇格しない場合は ``escalation_reason`` が None。
+        opus はそれ以上昇格できないので常に元の tier を返す。
+    """
+    if chosen_tier not in _ESCALATION_MAP:
+        return chosen_tier, None
+
+    if failure_rate_fn is None:
+        # 既定の DB ヘルパーを呼ぶ（C3 開発版なら parallel_orchestra.c3_db、
+        # 配布版でも同モジュールが import 可能）。
+        c3_db = _load_c3_db_module()
+        if c3_db is None:
+            return chosen_tier, None
+
+        def failure_rate_fn(complexity: str, tier: str):  # type: ignore[no-redef]
+            return c3_db.read_tier_failure_rate(complexity, tier)
+
+    rate, samples = failure_rate_fn(complexity, chosen_tier)
+    if rate is None or rate < ESCALATION_THRESHOLD:
+        return chosen_tier, None
+
+    escalated = _ESCALATION_MAP[chosen_tier]
+    reason = (
+        f"{chosen_tier}_failure_rate={rate:.2f} "
+        f"({samples} 試行) → {escalated} に昇格"
+    )
+    return escalated, reason
+
+
+def write_tier_selection(
+    complexity: str,
+    tier: str,
+    mode: str,
+    *,
+    escalated: bool = False,
+    escalation_reason: str | None = None,
+) -> None:
     """直近の選択結果を ``tier_selection.json`` に書く。
 
     record_tier_outcome.py がこの json を読んで α/β を更新する。
@@ -118,15 +181,22 @@ def write_tier_selection(complexity: str, tier: str, mode: str) -> None:
     F-005 Phase 2-A: ``suggested_model`` も併せて書く。runner.py がこれを読んで
     PO 経由のサブエージェント起動時に ``claude --agents`` で動的に上書きする。
     tier 名と model の短縮名は同一とする。
+
+    F-005 Phase 2-B: ``escalated`` / ``escalation_reason`` を任意で含める。
+    failure rate に基づく昇格が起きた場合のみ True / 文字列が入る。
     """
     os.makedirs(os.path.dirname(TIER_SELECTION_PATH), exist_ok=True)
-    payload = {
+    payload: dict[str, object] = {
         "complexity": complexity,
         "tier": tier,
         "mode": mode,
         # Phase 2-A: tier はそのまま claude --agents の model 短縮名として使える
         "suggested_model": tier,
     }
+    if escalated:
+        payload["escalated"] = True
+        if escalation_reason:
+            payload["escalation_reason"] = escalation_reason
     try:
         with open(TIER_SELECTION_PATH, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -140,6 +210,8 @@ def write_tier_selection(complexity: str, tier: str, mode: str) -> None:
 def build_additional_context(
     complexity: str, tier: str, mode: str,
     params: dict[str, tuple[float, float, int]],
+    *,
+    escalation_reason: str | None = None,
 ) -> str:
     """親 Claude に追加注入する文字列を組み立てる。"""
     trials = sum(p[2] for p in params.values())
@@ -149,10 +221,16 @@ def build_additional_context(
         tier_trials = params[tier][2]
         confidence = f"信頼度 trials={tier_trials}"
 
+    suffix = ""
+    if escalation_reason:
+        suffix = f" [Phase 2-B 昇格: {escalation_reason}]"
+
     return (
         f"[F-005 Tier 推奨] 複雑度: {complexity} / 推奨 Tier: {tier}（{confidence}）。"
-        f"これはあくまで推奨で、agent の model: フロントマターは現状の手動指定が"
-        f"優先されます。コスト最適化したい場合は手動で切り替えてください。"
+        f"PO 経由のサブエージェント起動時はこの推奨が claude --agents JSON で"
+        f" 自動適用されます（Phase 2-A）。親 Claude の Agent ツール経由は依然"
+        f" frontmatter 指定が優先されるため、コスト最適化したい場合は手動切替"
+        f" してください。{suffix}"
     )
 
 
@@ -192,9 +270,20 @@ def main() -> int:
         params = c3_db.read_tier_params(complexity)
 
     tier, mode = select_tier(params)
-    write_tier_selection(complexity, tier, mode)
 
-    context_text = build_additional_context(complexity, tier, mode, params)
+    # Phase 2-B: failure rate に基づく escalation
+    effective_tier, escalation_reason = maybe_escalate(complexity, tier)
+    escalated = effective_tier != tier
+
+    write_tier_selection(
+        complexity, effective_tier, mode,
+        escalated=escalated, escalation_reason=escalation_reason,
+    )
+
+    context_text = build_additional_context(
+        complexity, effective_tier, mode, params,
+        escalation_reason=escalation_reason,
+    )
     output = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",

@@ -93,6 +93,19 @@ CREATE TABLE IF NOT EXISTS tier_bandit (
     PRIMARY KEY (task_complexity, tier)
 );
 
+-- F-005 Phase 2-B: 直近 N 件の outcome を保持して failure rate を計算する。
+-- tier_bandit が「累積 α/β」の集約を持つのに対し、こちらは個別 event の履歴。
+-- select_tier.py が直近 5 件以上で failure rate ≥ 0.5 を検出したら 1 段昇格する。
+CREATE TABLE IF NOT EXISTS tier_recent_outcomes (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_complexity  TEXT NOT NULL,
+    tier             TEXT NOT NULL,
+    success          INTEGER NOT NULL,     -- 0=failure / 1=success
+    ts               TEXT NOT NULL         -- ISO8601
+);
+CREATE INDEX IF NOT EXISTS idx_tier_recent
+    ON tier_recent_outcomes(task_complexity, tier, ts DESC);
+
 -- ---------------------------------------------------------------------------
 -- F-008: SubagentStop メトリクス（既存 JSONL と並行運用）
 -- ---------------------------------------------------------------------------

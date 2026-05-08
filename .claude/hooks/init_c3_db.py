@@ -35,7 +35,7 @@ except AttributeError:
 
 # 現行スキーマバージョン。schema.sql に破壊的変更を入れたら +1 して
 # マイグレーションロジックを apply_schema() に追加する。
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # F-005 Phase 2-B で tier_recent_outcomes を追加
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
