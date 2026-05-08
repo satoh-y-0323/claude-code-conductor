@@ -287,3 +287,134 @@ def aggregate_decisions(rows: list[dict]) -> dict:
         if d in summary:
             summary[d] += 1  # type: ignore[index]
     return summary
+
+
+# ---------------------------------------------------------------------------
+# F-003: po_status ヘルパー（PO 並列処理の状況可視化）
+# ---------------------------------------------------------------------------
+
+# po_status.state の許容語彙（schema.sql のコメントと一致）
+_PO_STATUS_VALID_STATES: frozenset[str] = frozenset({
+    "starting", "running", "completed", "failed",
+})
+
+
+def upsert_po_status(
+    *,
+    session_id: str,
+    worktree_id: str,
+    state: str,
+    current_step: str | None = None,
+    progress_pct: int | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """``po_status`` テーブルに 1 行 UPSERT する。
+
+    PRIMARY KEY ``(session_id, worktree_id)`` で重複を解消し、
+    ``last_heartbeat`` は常に現在時刻（UTC ISO8601）に更新する。
+
+    Args:
+        session_id: PO 実行の識別子（``record_task_results`` と同じ ID 形式）。
+        worktree_id: worktree のブランチ名。read-only タスクは
+            ``"(read-only)"`` のようなプレースホルダで構わない。
+        state: ``"starting" | "running" | "completed" | "failed"``。
+            未知の値も受け付けるが警告ログのみ出して通過させる。
+        current_step: 現在のサブステップ名（``"Wave 2 - tester"`` 等）。
+        progress_pct: 進捗率 0-100。不明なら ``None``。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+
+    Returns:
+        UPSERT 成功時 True、DB 不在 / エラー時 False。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return False
+
+    if state not in _PO_STATUS_VALID_STATES:
+        # 未知 state は警告のみで通過させる（呼び出し側の冪等性を優先）
+        logger.warning("po_status: unknown state %r (continuing)", state)
+
+    from datetime import timezone as _tz  # noqa: PLC0415
+    now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            # SQLite 3.24+ の UPSERT 構文を使う（Python 3.10 同梱版で利用可能）
+            conn.execute(
+                "INSERT INTO po_status "
+                "(session_id, worktree_id, state, current_step, "
+                " progress_pct, last_heartbeat) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, worktree_id) DO UPDATE SET "
+                "  state = excluded.state, "
+                "  current_step = excluded.current_step, "
+                "  progress_pct = excluded.progress_pct, "
+                "  last_heartbeat = excluded.last_heartbeat",
+                (session_id, worktree_id, state, current_step,
+                 progress_pct, now_iso),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to upsert po_status: %s", exc)
+        return False
+
+
+def fetch_po_status(
+    *,
+    session_id: str | None = None,
+    db_path: Path | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """``po_status`` から行を取得する。
+
+    Args:
+        session_id: 指定時はその session のみ。省略時は全 session を対象。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        limit: 返す最大件数（``last_heartbeat`` 降順で先頭から）。
+
+    Returns:
+        各行を dict 化したリスト。キー:
+        ``session_id`` / ``worktree_id`` / ``state`` / ``current_step`` /
+        ``progress_pct`` / ``last_heartbeat``。
+        DB 不在 / エラーは空リスト。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.row_factory = sqlite3.Row
+            if session_id is not None:
+                rows = conn.execute(
+                    "SELECT session_id, worktree_id, state, current_step, "
+                    "       progress_pct, last_heartbeat "
+                    "FROM po_status "
+                    "WHERE session_id = ? "
+                    "ORDER BY last_heartbeat DESC "
+                    "LIMIT ?",
+                    (session_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT session_id, worktree_id, state, current_step, "
+                    "       progress_pct, last_heartbeat "
+                    "FROM po_status "
+                    "ORDER BY last_heartbeat DESC "
+                    "LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to fetch po_status: %s", exc)
+        return []

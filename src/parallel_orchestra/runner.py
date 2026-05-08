@@ -171,6 +171,20 @@ _TaskStatus = Literal[
 ]
 
 
+# F-003: _TaskStatus → po_status.state の語彙マッピング。
+# schema.sql の state は 'starting' | 'running' | 'completed' | 'failed' の 4 種。
+# 'waiting'（まだ実行されていない）は heartbeat 側で除外する。
+_PO_STATUS_STATE_MAPPING: dict[str, str] = {
+    "waiting": "starting",       # 実際には waiting 行は heartbeat で除外
+    "starting_up": "starting",
+    "running": "running",
+    "complete": "completed",
+    "failed": "failed",
+    "skipped": "completed",
+    "resumed": "running",
+}
+
+
 @dataclass
 class _TaskDisplayState:
     """Per-task mutable display state for _Dashboard."""
@@ -244,6 +258,18 @@ class _Dashboard:
                 setattr(state, k, v)
         if important or self._live_renders:
             self._dirty_event.set()
+
+    def snapshot_states(self) -> list[_TaskDisplayState]:
+        """Return a thread-safe shallow copy of all task display states.
+
+        F-003 heartbeat thread uses this to read PO progress without holding
+        the dashboard lock during DB I/O. The returned dataclasses are copies
+        so the caller can safely iterate after the lock is released.
+        """
+        from copy import copy as _copy  # noqa: PLC0415
+
+        with self._lock:
+            return [_copy(s) for s in self._states.values()]
 
     def _render_loop(self) -> None:
         interval = (
@@ -425,6 +451,56 @@ class _Dashboard:
             lines.append(f"    └ {action}")
 
         return lines
+
+
+# ---------------------------------------------------------------------------
+# F-003: PO 並列処理の状況可視化（heartbeat to po_status table）
+# ---------------------------------------------------------------------------
+
+
+def _heartbeat_po_status_loop(
+    dashboard: _Dashboard,
+    session_id: str,
+    stop_event: threading.Event,
+    *,
+    interval: float = 30.0,
+) -> None:
+    """30 秒ごとに dashboard の状態スナップショットを取って po_status に UPSERT する。
+
+    F-003: PO 並列処理の状況可視化。`.claude/state/c3.db` の po_status テーブルに
+    各 worktree の current state を定期的に書き込む。dashboard が無効化されている
+    環境（非 TTY 等）では呼び出し側でこのスレッド自体を起動しない想定。
+
+    実装上の注意:
+    - dashboard._lock は ``snapshot_states()`` 内でしか取得しない（DB I/O は
+      ロック解放後に行う）。
+    - DB 不在 / SQL エラー時は upsert_po_status 側で握りつぶす（PO 本体を
+      止めない）。
+    - 初回は即座に発火、その後 ``interval`` 秒間隔で発火する。
+    - ``stop_event.wait(interval)`` で停止可能（ブロックせず返る）。
+    """
+    from .c3_db import upsert_po_status  # noqa: PLC0415 - 遅延 import で循環回避
+
+    while True:
+        try:
+            states = dashboard.snapshot_states()
+            for s in states:
+                # waiting（実行前）は記録対象外。schema の state は 4 種のみ
+                # （'starting' / 'running' / 'completed' / 'failed'）。
+                if s.status == "waiting":
+                    continue
+                state_label = _PO_STATUS_STATE_MAPPING.get(s.status, "running")
+                upsert_po_status(
+                    session_id=session_id,
+                    worktree_id=s.task_id,
+                    state=state_label,
+                    current_step=s.current_action or None,
+                )
+        except Exception:  # noqa: BLE001 - 観測機能なので PO 本体を止めない
+            pass
+
+        if stop_event.wait(timeout=interval):
+            break
 
 
 def _sanitize_for_display(text: str, max_len: int = _TOOL_ACTION_MAX_LEN) -> str:
@@ -1475,6 +1551,26 @@ def run_manifest(
     if _dash_enabled:
         dashboard.start()
 
+    # F-002 / F-003 共通: session_id を上部で算出して両機能で共有する
+    _po_session_id = (
+        f"{manifest.name}_{_run_started_at.strftime('%Y%m%dT%H%M%SZ')}"
+    )
+
+    # F-003: dashboard が有効な場合のみ heartbeat スレッドを起動（30 秒間隔で
+    # po_status テーブルに UPSERT）。非 TTY 環境では起動しない。
+    _hb_stop_event: threading.Event | None = None
+    _hb_thread: threading.Thread | None = None
+    if _dash_enabled:
+        _hb_stop_event = threading.Event()
+        _hb_thread = threading.Thread(
+            target=_heartbeat_po_status_loop,
+            args=(dashboard, _po_session_id, _hb_stop_event),
+            kwargs={"interval": 30.0},
+            daemon=True,
+            name="po-status-heartbeat",
+        )
+        _hb_thread.start()
+
     def execute_fn(task: Task) -> TaskResult:
         sem: threading.Semaphore | None = (
             group_semaphores.get(task.concurrency_group)
@@ -1503,6 +1599,29 @@ def run_manifest(
     for tr in task_results:
         if tr.skipped:
             dashboard.update(tr.task_id, status="skipped")
+
+    # F-003: heartbeat 終了 → 最終状態をもう一度 UPSERT してから停止
+    if _hb_thread is not None and _hb_stop_event is not None:
+        # 最終状態を即座に反映するため、heartbeat スレッドが寝ている可能性に
+        # 関わらず明示的に upsert を 1 回実行する
+        try:
+            from .c3_db import upsert_po_status  # noqa: PLC0415
+
+            for s in dashboard.snapshot_states():
+                if s.status == "waiting":
+                    continue
+                state_label = _PO_STATUS_STATE_MAPPING.get(s.status, "running")
+                upsert_po_status(
+                    session_id=_po_session_id,
+                    worktree_id=s.task_id,
+                    state=state_label,
+                    current_step=s.current_action or None,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        _hb_stop_event.set()
+        _hb_thread.join(timeout=2.0)
+
     dashboard.stop()
 
     merge_results: tuple[MergeResult, ...] = ()
@@ -1515,16 +1634,13 @@ def run_manifest(
 
     # F-002: 実行結果を `.claude/state/c3.db` の po_results に記録する。
     # DB が無い環境（C3 利用先で init_c3_db.py が走っていない等）や記録エラー時は
-    # 静かにスキップする（PO 本体を止めない）。
+    # 静かにスキップする（PO 本体を止めない）。session_id は F-003 と共通。
     try:
         from .c3_db import record_task_results  # noqa: PLC0415
 
-        session_id = (
-            f"{manifest.name}_{_run_started_at.strftime('%Y%m%dT%H%M%SZ')}"
-        )
         record_task_results(
             task_results,
-            session_id=session_id,
+            session_id=_po_session_id,
             started_at=_run_started_at,
             finished_at=_run_finished_at,
         )
