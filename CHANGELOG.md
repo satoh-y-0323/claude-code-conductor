@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.1.0] - 2026-05-09
+
+### マイルストーン
+
+第 5 波として F-005（Tier 自動ルーティング）の Phase 2 を A/B/C すべて完成。1.0.0 までは「推奨 Tier を `additionalContext` で提示するだけ」の MVP だったが、本リリースで PO 経由のサブエージェントについては **起動時の model を Tier 推奨で動的上書き** するレコメンダーから自動オペレーターへ進化した。さらに過去類似タスクからの complexity 補正と、Haiku 連続失敗時の自動エスカレーションを追加し、F-005 全体の精度・コスト最適化が機能するようになった。
+
+### 追加（第 5 波）
+
+#### F-005 Phase 2-A: model 動的切替（PO 経由）
+
+- `src/parallel_orchestra/manifest.py`: `Task` dataclass に `model_override: str | None`、`Defaults` に `model: str | None` を追加。許可値は `haiku`/`sonnet`/`opus`。`_KNOWN_TASK_KEYS` / `_KNOWN_DEFAULTS_KEYS` に `model` を許可。
+- `src/parallel_orchestra/runner.py`: `_resolve_effective_model()` / `_read_tier_selection()` を新規追加。優先順位は (1) `tier_selection.json` の `suggested_model` → (2) `Task.model_override` → (3) `Defaults.model` → (4) frontmatter。値がある場合は `claude --agents '{"<agent>":{"model":"<tier>"}}'` で起動、無ければ既存の `--agent <name>` で後方互換。
+- `.claude/hooks/select_tier.py`: `tier_selection.json` payload に `suggested_model` フィールドを追加（tier 名と model 短縮名は同一）。
+- 新規テスト: `tests/parallel_orchestra/test_runner_model_override.py`（14 ケース、優先順位 4 パターン + フォールバック含む）。
+- スコープ: PO 経由のサブエージェントのみ。親 Claude の Agent ツール経由は公式 API に動的 model 指定手段が無く対象外（CHANGELOG / dev-workflow.md で明示）。
+
+#### F-005 Phase 2-B: Haiku 失敗フォールバック（次回補正のみ）
+
+- `.claude/hooks/schema.sql` に `tier_recent_outcomes` テーブルを新規追加（直近 outcome を保持）。`SCHEMA_VERSION` を 1 → 2 に bump。
+- `src/parallel_orchestra/c3_db.py` に `record_tier_recent_outcome()` / `read_tier_failure_rate()` を追加。直近 N 件（既定 10、最小サンプル数 5）から failure rate を計算。
+- `.claude/hooks/select_tier.py` に `maybe_escalate()` を実装。Beta サンプリング後、failure rate ≥ 0.5 で 1 段昇格（haiku → sonnet, sonnet → opus）。opus は最上位なので昇格なし。`tier_selection.json` に `escalated: true` / `escalation_reason` を残す。
+- `.claude/hooks/record_tier_outcome.py`: tier_bandit 更新と並行して `tier_recent_outcomes` にも 1 件追記。
+- 新規テスト: `tests/hooks/test_select_tier_escalation.py`（10 ケース、境界値・サンプル不足・opus 抑止を含む）。
+- 設計判断: 同一プロンプト retry はせず「次回プロンプトの選択補正」のみ。倍コストと PO retry 機構との二重化を避けるため案 A を採用。
+
+#### F-005 Phase 2-C: 類似度推定（complexity 推定の精度向上）
+
+- 新規 `.claude/logs/prompt-history.jsonl`（実行時生成、`.gitignore` / `EXCLUDE_PATTERNS` で配布除外済み）。
+- `.claude/hooks/select_tier.py`: `difflib.SequenceMatcher` で過去プロンプトとの類似度を計算。threshold 0.8 以上で complexity を上書き、0.6-0.8 は信頼度補強のみ。`tier_selection.json` に prompt 情報（prefix 200 文字 + SHA256 先頭 16 文字）を含める。末尾 1000 行のみ `collections.deque` で読み込み（O(n) のスキャンを抑制）。
+- `.claude/hooks/record_tier_outcome.py`: tier_selection.json から prompt 情報を読み、`prompt-history.jsonl` に 1 行追記。旧フォーマット（prompt 情報なし）はスキップする後方互換。
+- 新規テスト: `tests/hooks/test_similarity_boost.py`（14 ケース）+ `tests/hooks/test_record_tier_outcome.py` に 4 ケース追加。
+- プライバシー対策: prefix 200 文字 + SHA256 16 文字のみ保存し、フルプロンプトは保存しない。
+
+### 注意（既存利用先への影響）
+
+- PO の動的 model 切替は **PO 経由のサブエージェントのみ** 対象。dev-workflow フェーズ A/B/C/E や対話中の Agent ツール経由は依然 frontmatter 指定が優先される。コスト最適化したい場合は手動切替が必要。
+- `.claude/state/c3.db` は `SCHEMA_VERSION` 2 に bump されるが、`CREATE TABLE IF NOT EXISTS` のみで既存 DB を破壊しない（マイグレーション不要）。
+- `.claude/logs/prompt-history.jsonl` は新規生成される。`.gitignore` / `EXCLUDE_PATTERNS` で除外済みのため利用先プロジェクトに git 汚染は出ない。
+
+### 内部
+
+- 新規テスト追加: 14（Phase 2-A）+ 10（Phase 2-B）+ 14 + 4（Phase 2-C）= **42 ケース**。
+- 全体テスト: **705 passed / 3 skipped / 0 failed**（前バージョン 663 → 705、+42）。
+
 ## [1.0.0] - 2026-05-09
 
 ### マイルストーン
