@@ -83,7 +83,6 @@ Claude Code Conductor（C3）における各ファイルタイプの意味を定
 
 ```yaml
 ---
-description: このルールの説明（Claude が関連性を判断するために使用）
 paths:
   - "src/**/*.py"
   - "tests/**/*.py"
@@ -91,7 +90,6 @@ paths:
 ```
 
 - `paths`: 指定したグロブパターンにマッチするファイルを扱う時だけルールが適用される。省略時は常に適用。
-- `description`: Claude がルールの関連性を判断するために使う説明文。
 
 **サブフォルダ:**
 
