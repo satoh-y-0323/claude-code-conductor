@@ -38,6 +38,32 @@ def _is_rm_rf(tokens: list[str], rm_idx: int) -> bool:
     return has_r and has_f
 
 
+# 秘密情報パターン (F-006)
+# 検出値そのものは警告に含めない（二次漏洩防止）。パターン名のみを返す。
+# 初期パターンは「= で続く値」を必須とすることで、シェルコメント
+# （# password reset 等）の誤爆を回避する。
+_SECRET_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
+    ('password', re.compile(r'password=\S+', re.IGNORECASE)),
+    ('api_key', re.compile(r'api[_-]?key=\S+', re.IGNORECASE)),
+    ('bearer', re.compile(r'Bearer\s+[\w\-\.]+', re.IGNORECASE)),
+    ('token', re.compile(r'\btoken=\S+', re.IGNORECASE)),
+    ('secret', re.compile(r'\bsecret=\S+', re.IGNORECASE)),
+    ('aws_secret', re.compile(r'aws_secret_access_key=\S+', re.IGNORECASE)),
+    ('private_key', re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')),
+]
+
+
+def _contains_secret(cmd: str) -> tuple[bool, str | None]:
+    """秘密情報パターンを検出する。ヒット時は (True, パターン名) を返す。
+
+    パターン名のみを警告文用に返し、検出値そのものは返さない（二次漏洩防止）。
+    """
+    for name, pattern in _SECRET_PATTERNS:
+        if pattern.search(cmd):
+            return True, name
+    return False, None
+
+
 def main():
     try:
         payload = json.loads(sys.stdin.read())
@@ -77,6 +103,17 @@ def main():
                 cmd_preview = cmd[:200] + ('...' if len(cmd) > 200 else '')
                 print(f'[PreToolUse BLOCK] 危険なコマンドをブロックしました: {cmd_preview}', file=sys.stderr)
                 sys.exit(2)
+
+    # 秘密情報の代入を検出: ブロック (F-006)
+    # bypass: C3_SKIP_SECRET_CHECK=1 で検出をスキップ（誤爆時の逃げ道）
+    if os.environ.get('C3_SKIP_SECRET_CHECK') != '1':
+        is_secret, pattern_name = _contains_secret(cmd)
+        if is_secret:
+            print(f'[PreToolUse BLOCK] 秘密情報の代入を検出しました（パターン: {pattern_name}）。',
+                  file=sys.stderr)
+            print('検出値そのものは表示しません。誤検出の場合は C3_SKIP_SECRET_CHECK=1 を設定してください。',
+                  file=sys.stderr)
+            sys.exit(2)
 
     sys.exit(0)
 

@@ -49,6 +49,9 @@ _EVENT_START = "SubagentStart"
 _EVENT_STOP = "SubagentStop"
 
 # payload のホワイトリスト対象フィールド (sec-M-1)
+# F-008: total_tokens / status / token_usage / model を追加。
+# Tier 自動ルーティング (F-005) の学習データ収集の前提となる。
+# result 系（応答本文・コード断片混入リスク）は意図的に除外。
 _SAFE_PAYLOAD_FIELDS = frozenset({
     'hook_event_name',
     'session_id',
@@ -58,6 +61,10 @@ _SAFE_PAYLOAD_FIELDS = frozenset({
     'transcript_path',
     'stop_hook_active',
     'permission_mode',
+    'total_tokens',
+    'status',
+    'token_usage',
+    'model',
 })
 
 # U+2028 (LINE SEPARATOR) / U+2029 (PARAGRAPH SEPARATOR) の定数 (sec-H-1)

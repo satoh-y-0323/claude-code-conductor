@@ -898,3 +898,133 @@ class TestAppendLogTypeErrorTolerance:
         except Exception:
             # OSError / その他の例外は想定内（TypeError でなければ合格）
             pass
+
+
+# ---------------------------------------------------------------------------
+# F-008: メトリクスフィールド拡張
+# ---------------------------------------------------------------------------
+
+
+class TestF008MetricsFieldsExtended:
+    """F-008: total_tokens / status / token_usage / model がホワイトリストに含まれ、
+    payload に存在すれば記録される。Tier 自動ルーティング (F-005) の学習データ前提。
+    result 系（応答本文混入リスク）は引き続き除外されること。
+    """
+
+    def test_start_payload_records_model(self, tmp_path: Path) -> None:
+        """SubagentStart payload に model フィールドがあれば記録される。"""
+        module = _load_hook_module(HOOK_PATH)
+        payload = _make_start_payload()
+        payload["model"] = "claude-sonnet-4-6"
+
+        _run_hook(module, payload, tmp_path)
+
+        records = _read_records(tmp_path)
+        assert len(records) == 1
+        assert records[0]["payload"].get("model") == "claude-sonnet-4-6"
+
+    def test_stop_payload_records_token_metrics(self, tmp_path: Path) -> None:
+        """SubagentStop payload に total_tokens / status / token_usage / model
+        が含まれていれば全て記録される。
+        """
+        module = _load_hook_module(HOOK_PATH)
+        start_payload = _make_start_payload()
+        _run_hook(module, start_payload, tmp_path)
+
+        stop_payload = _make_stop_payload()
+        stop_payload["total_tokens"] = 12345
+        stop_payload["status"] = "success"
+        stop_payload["token_usage"] = {
+            "input_tokens": 8000,
+            "output_tokens": 4345,
+            "cache_read_input_tokens": 0,
+        }
+        stop_payload["model"] = "claude-sonnet-4-6"
+
+        _run_hook(module, stop_payload, tmp_path)
+
+        records = _read_records(tmp_path)
+        stop_records = [
+            r for r in records
+            if r["payload"].get("hook_event_name") == "SubagentStop"
+        ]
+        assert len(stop_records) == 1
+        stop = stop_records[0]
+        assert stop["payload"].get("total_tokens") == 12345
+        assert stop["payload"].get("status") == "success"
+        assert stop["payload"].get("token_usage") == {
+            "input_tokens": 8000,
+            "output_tokens": 4345,
+            "cache_read_input_tokens": 0,
+        }
+        assert stop["payload"].get("model") == "claude-sonnet-4-6"
+
+    def test_result_field_is_still_excluded(self, tmp_path: Path) -> None:
+        """ホワイトリスト外フィールド（result / last_assistant_message 等）は
+        F-008 拡張後も引き続き除外される。応答本文・コード断片の混入を防ぐ。
+        """
+        module = _load_hook_module(HOOK_PATH)
+        stop_payload = _make_stop_payload(last_message="some private response")
+        stop_payload["result"] = "this is a long result body with code"
+        stop_payload["total_tokens"] = 100  # 新フィールドは記録される
+
+        _run_hook(module, stop_payload, tmp_path)
+
+        records = _read_records(tmp_path)
+        assert len(records) == 1
+        payload = records[0]["payload"]
+        # 新フィールドは記録される
+        assert payload.get("total_tokens") == 100
+        # 旧除外フィールドは引き続き除外される
+        assert "result" not in payload
+        assert "last_assistant_message" not in payload
+        assert "agent_transcript_path" not in payload
+
+    def test_parallel_subagents_pair_with_new_fields(self, tmp_path: Path) -> None:
+        """並列エージェントで agent_id ベースペアリングが新フィールド追加後も機能する。
+        SubagentStop に duration_seconds が付与され、新フィールドも保持される。
+        """
+        module = _load_hook_module(HOOK_PATH)
+
+        # 2 つの Start を投入
+        start_a = _make_start_payload(session_id="sess-1", agent_id="agent-a")
+        start_a["model"] = "claude-haiku-4-5"
+        _run_hook(module, start_a, tmp_path)
+
+        start_b = _make_start_payload(session_id="sess-1", agent_id="agent-b")
+        start_b["model"] = "claude-sonnet-4-6"
+        _run_hook(module, start_b, tmp_path)
+
+        # 逆順に Stop（B → A）
+        stop_b = _make_stop_payload(session_id="sess-1", agent_id="agent-b")
+        stop_b["total_tokens"] = 5000
+        stop_b["status"] = "success"
+        _run_hook(module, stop_b, tmp_path)
+
+        stop_a = _make_stop_payload(session_id="sess-1", agent_id="agent-a")
+        stop_a["total_tokens"] = 1500
+        stop_a["status"] = "success"
+        _run_hook(module, stop_a, tmp_path)
+
+        records = _read_records(tmp_path)
+        # 4 レコード（start x2, stop x2）
+        assert len(records) == 4
+
+        # Stop のペアリングが正しいこと、メトリクスが保持されていること
+        stops = [
+            r for r in records
+            if r["payload"].get("hook_event_name") == "SubagentStop"
+        ]
+        assert len(stops) == 2
+        for stop in stops:
+            agent_id = stop["payload"]["agent_id"]
+            # ペアリング成功で duration_seconds と matched_start_ts が付く
+            assert "duration_seconds" in stop
+            assert "matched_start_ts" in stop
+            # メトリクスが保持されている
+            assert "total_tokens" in stop["payload"]
+            assert "status" in stop["payload"]
+            if agent_id == "agent-a":
+                assert stop["payload"]["total_tokens"] == 1500
+            elif agent_id == "agent-b":
+                assert stop["payload"]["total_tokens"] == 5000
