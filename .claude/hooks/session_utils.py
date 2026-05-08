@@ -56,6 +56,32 @@ def ensure_session_initialized(path: str, date_str: str) -> None:
             f.write(create_session_template(date_str))
 
 
+def extract_section(content: str, heading: str) -> str:
+    """セッションファイル本文から ``## {heading}`` セクションの内容を抽出する。
+
+    F-004（MemoryConsolidation）と restore_session.py で共通利用される。
+    ``## {heading}\\n`` から次の ``\\n## `` または ``\\n<!--`` または末尾までを返す。
+    見つからない場合は空文字列を返す。
+
+    Args:
+        content: セッションファイル全体のテキスト。
+        heading: 抽出したいセクションの見出し（``## `` の後の文字列）。
+            例: ``"うまくいったアプローチ"``。
+
+    Returns:
+        セクション本文（前後の空白除去済み）、または空文字列。
+
+    Notes:
+        restore_session.py には独自実装の同名関数があり、後方互換性のため
+        当面そのまま残す。新規コード（consolidate_memory.py 等）は本関数を使う。
+    """
+    pattern = rf'## {re.escape(heading)}\n(.*?)(?=\n## |\n<!--|\Z)'
+    match = re.search(pattern, content, re.DOTALL)
+    if not match:
+        return ''
+    return match.group(1).strip()
+
+
 def append_checkpoint(session_file: str, label: str, summary: str) -> None:
     """Append a checkpoint block to the session file.
 
