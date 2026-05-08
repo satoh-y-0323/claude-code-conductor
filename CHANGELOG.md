@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.7.1] - 2026-05-08
+
+### 追加（開発者向け）
+
+- `agents/`: developer / tester / code-reviewer / security-reviewer / systematic-debugger の 5 サブエージェントに `memory: project` フロントマターを付与。`.claude/agent-memory/<エージェント名>/MEMORY.md` が起動時にシステムプロンプトへ自動注入され、セッションをまたいだ知見蓄積が可能になった。配布版（`_template/`）には `agent-memory/` を含めず、利用側はゼロから蓄積する方針。
+- `hooks/subagent_log.py`（C3 開発版専用）: SubagentStart / SubagentStop イベントの payload を `.claude/logs/agent-runs.jsonl` に追記する hook を追加。`payload.agent_id` ベースで Start / Stop をペアリングし `duration_seconds` を計算。配布版（`_template/`）からは `EXCLUDE_PATTERNS` で除外。
+
+### 修正（`subagent_log.py` 堅牢化）
+
+- U+2028 / U+2029 を JSON ASCII エスケープして JSONL 構造破壊を防止。
+- payload をホワイトリスト方式でサニタイズし、`last_assistant_message` 等の長文・任意コンテンツが永続化されないように変更。
+- `stdin` を 1 MB 上限・ログ走査を末尾 10,000 行に制限してメモリ DoS を防止。
+- ファイル作成パーミッションを `0o700` / `0o600` に明示設定（POSIX）。
+- `stdin` / `json.loads` 失敗時の `Exception` catch と record 非書き込みでフェイルセーフ化。
+- `_append_log` の catch を `OSError` から `Exception` に拡大（`json.dumps` の `TypeError` 等も対応）。
+- `collections.deque` ベースのペアリングで `popleft()` を `O(1)` 化、走査コストを削減。
+
+### 内部（テスト・ドキュメント整備）
+
+- `tests/hooks/test_subagent_log.py` を 6 → 19 ケースに拡張（U+2028 エスケープ・残留 Start・Stop 先着・サニタイズ・巨大 payload・`TypeError` 耐性・`main()` 戻り値検証など）。
+- `tests/hooks/test_restore_session.py` を新規追加（13 ケース、`find_latest_session` / `extract_section` / `main` subprocess）。
+- `tests/hooks/test_permission_handler.py` を新規追加（29 ケース、`load_rules` / `_glob_to_regex` / `matches_pattern` / `describe_tool` / `main` subprocess / `notify_on_auto`）。
+- `.claude/docs/taxonomy.md`: `.claude/rules/` フロントマターの `description` キー記述を削除（公式仕様に存在しないため）。
+- `.claude/CLAUDE.md`: コミットメッセージ・チェンジログ・リリースページの日本語記述ルールを追記。
+- `.claude/settings.local.json`: SubagentStart / SubagentStop hook 登録と開発作業用 Bash 許可を追加。
+
 ## [0.6.4] - 2026-05-07
 
 ### Changed
