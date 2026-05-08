@@ -20,10 +20,9 @@ examples/
 # PO task execution logs
 .claude/logs/
 
-# C3 SQLite state DB (per-user runtime state, never committed)
-.claude/state/c3.db
-.claude/state/c3.db-wal
-.claude/state/c3.db-shm
+# C3 runtime state (per-user, never committed; tier_selection.json も hooks が動的生成する一時ファイル)
+.claude/state/*
+!.claude/state/.gitkeep
 
 # Python bytecode / cache
 __pycache__/

@@ -36,9 +36,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "settings.local.json",
     "pytest_temp.ini",
     "logs/*",
-    "state/c3.db",
-    "state/c3.db-wal",
-    "state/c3.db-shm",
+    "state/*",
 )
 
 KEEP_PATTERNS: tuple[str, ...] = (

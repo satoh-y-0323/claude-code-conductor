@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.1] - 2026-05-09
+
+### 修正
+
+- v1.1.0 の wheel に開発元リポジトリの `.claude/state/tier_selection.json`（hooks が実行時に書き出す一時ファイル）が混入していた問題を修正。`c3 update` 実行時に利用先プロジェクトに「開発元の最後の Tier 選択結果」がコピーされてしまっていた。
+- 恒久対策として `src/c3/_excludes.py` / `hatch_build.py` の `EXCLUDE_PATTERNS` を `state/c3.db*` から `state/*`（`KEEP_PATTERNS` の `state/.gitkeep` のみ残す）に変更。今後 `state/` 配下に新規ファイルが増えても自動的に配布除外される。
+- `.gitignore` も同様に `.claude/state/c3.db*` 3 行から `.claude/state/*` + `!.claude/state/.gitkeep` に変更。
+
+### 内部
+
+- `.claude/settings.json` の permission allow 一覧に `git tag*` / `git push origin main` / `git push origin v*` / `gh release create v*` / `gh release view v*` を追加（リリース作業の自動化）。
+
+### 既存利用先への対応
+
+- v1.1.0 を `c3 update` で導入済みの場合、`.claude/state/tier_selection.json` が残っている可能性がある。次回プロンプトで上書きされるか、`record_tier_outcome.py` 実行時に削除されるため副作用は無いが、気になる場合は手動で削除可。
+
 ## [1.1.0] - 2026-05-09
 
 ### マイルストーン
