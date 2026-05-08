@@ -27,6 +27,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "docs/decisions.md",
     "docs/taxonomy.md",
     "docs/game-studios-research.md",
+    "hooks/subagent_log.py",
     "settings.local.json",
     "pytest_temp.ini",
     "logs/*",

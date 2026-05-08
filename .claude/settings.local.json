@@ -9,6 +9,7 @@
       "Bash(python .claude/hooks/pre_compact.py*)",
       "Bash(python .claude/hooks/validate_skill_change.py*)",
       "Bash(python .claude/hooks/statusline.py*)",
+      "Bash(python .claude/hooks/subagent_log.py*)",
       "Bash(python *)",
       "Bash(pytest *)",
       "Bash(xargs wc *)",
@@ -39,6 +40,30 @@
       "Bash(Write-Output \"OK\")",
       "Bash(python3 *)",
       "Bash(gh release *)"
+    ]
+  },
+  "hooks": {
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_log.py\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_log.py\""
+          }
+        ]
+      }
     ]
   }
 }
