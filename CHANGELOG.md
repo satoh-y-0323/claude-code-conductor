@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.9.0] - 2026-05-09
+
+### 追加（第 2 波・第 3 波）
+
+#### F-009: DuckDB ハイブリッド構成（基盤）
+- `pyproject.toml` の `dependencies` に `duckdb>=0.10` を追加（必須化）。
+- 新規 `.claude/hooks/schema.sql`: 6 テーブル（`schema_version` / `review_decisions` / `po_results` / `po_status` / `tier_bandit` / `agent_runs`）の DDL を定義。
+- 新規 `.claude/hooks/init_c3_db.py`: `.claude/state/c3.db` を WAL モードで初期化し、`CREATE TABLE IF NOT EXISTS` で冪等にスキーマ適用。失敗してもセッションを止めない。
+- `.claude/settings.json` の `SessionStart` に登録（matcher 空で全セッション開始時に実行）。
+- 配布版にも `.claude/state/.gitkeep` でディレクトリ確保。`c3.db` 本体は `.gitignore` / `EXCLUDE_PATTERNS` で除外。
+- 書き込みは Python 標準 `sqlite3`、読み・分析は DuckDB の `sqlite_scanner` で ATTACH するハイブリッド構成。
+
+#### F-010: タスク種別 → エージェント編成 skill
+- 新規 `.claude/skills/task-routing/SKILL.md`: bug-fix / feature / refactor / security-audit / docs の 5 種別 × 対応エージェント編成テーブルを定義。
+- AskUserQuestion での選択 → 編成提示 → 承認 → 起動の 4 Step フロー。新エージェント追加時は本 SKILL.md の編成テーブルも更新する旨を注記。
+
+#### F-002: PO 集約レイヤ SQLite 化（Phase 1）
+- 新規 `src/parallel_orchestra/c3_db.py`: `locate_c3_db()` / `record_task_results()` で TaskResult を `po_results` テーブルに INSERT。DB 不在時 / SQL エラー時は警告ログのみで PO 本体を止めない。
+- `src/parallel_orchestra/runner.py`: `run_manifest()` 終了時に `record_task_results` を呼ぶ。`session_id` は `{manifest.name}_{started_at}` 形式で自動生成。
+- Phase 2（worktree 内からの直接書き込み）は要望が出るまで保留。
+
+#### F-001: レビュー判断ヒント機能
+- `.claude/rules/code-review-checklist.md` / `security-review-checklist.md` の全項目（CR: 58 / SR: 47）に `[CR-XX-NNN]` / `[SR-XX-NNN]` 形式の ID を付与。
+- `.claude/agents/code-reviewer.md` / `security-reviewer.md` の Workflow に「指摘時に該当 ID を併記」の指示を追加。
+- `src/parallel_orchestra/c3_db.py` に `fetch_review_decisions` / `insert_review_decision` / `aggregate_decisions` ヘルパーを追加。
+- 新規 `.claude/hooks/review_hint_inject.py`: レビューレポートから ID を抽出し、`c3.db.review_decisions` の過去判断を「## 過去判断ヒント」として末尾に追記。6 ヶ月超は `[要再評価]` ラベル、両レポートで同一 ID は ⚠ 重複指摘フラグを付与。
+- 新規 `.claude/hooks/record_review_decision.py`: dev-workflow から判断を `c3.db` に INSERT する CLI ラッパー。
+- `.claude/skills/dev-workflow/SKILL.md` フェーズ E に上記スクリプトの呼び出しを統合。
+
+#### F-004: MemoryConsolidation 集約フック（MVP）
+- `.claude/hooks/session_utils.py` に `extract_section()` を共通化（既存 `restore_session.py` の独自実装は後方互換のため残置）。
+- 新規 `.claude/hooks/consolidate_memory.py`: 過去 7 日分の `.claude/memory/sessions/*.tmp` から「うまくいったアプローチ」「試みたが失敗したアプローチ」を抽出し、重複行除去 + 出現順保持で `.claude/memory/consolidated_summary.md` に出力。LLM 要約は使わず決定論的な単純行マージ。
+- `.claude/settings.json` の `Stop` hook 配列に登録（既存 `stop.py` と並列実行）。
+- patterns.json の自動 promotion 判定変更や auto-memory への直接書き込みは次フェーズで検討。
+
+### 内部（テスト・運用ドキュメント）
+
+- 新規テストファイル 4 件 / 計 47 ケース追加:
+  - `tests/hooks/test_init_c3_db.py`（9 ケース）
+  - `tests/parallel_orchestra/test_po_results_recording.py`（12 ケース）
+  - `tests/hooks/test_review_hint_inject.py`(16 ケース）
+  - `tests/hooks/test_consolidate_memory.py`（10 ケース）
+- 全体テスト: **614 passed / 3 skipped / 0 failed**（前バージョン 567 → 614、+47）。
+- 機能検討ドキュメント 4 件（`ruflo_research_result.md` / `c3候補機能への質問に対する回答.md` / `c3候補機能採用.md` / `c3追加予定機能リスト.md`）はローカル管理のみ（git / 配布物から除外）。
+
+### 注意（既存利用先への影響）
+
+- `pyproject.toml` の依存に DuckDB が追加された。`pip install --upgrade claude-code-conductor` で自動的に取り込まれる。Python 3.10 以上で動作する軽量パッケージ（wheel 10-30MB）。
+- `SessionStart` 時に `.claude/state/c3.db` が自動生成される（無ければ作成、既存なら no-op）。利用先プロジェクトでは `.gitignore` に `.claude/state/c3.db*` を追加することを推奨。
+- レビュー時の `code-reviewer` / `security-reviewer` の出力に `[CR-XX-NNN]` / `[SR-XX-NNN]` 形式の ID 表記が含まれるようになる。
+- `Stop` 時に `.claude/memory/consolidated_summary.md` が自動更新される。
+
 ## [0.8.0] - 2026-05-08
 
 ### 追加（フック・第 1 波）
