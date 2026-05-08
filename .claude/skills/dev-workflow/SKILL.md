@@ -364,6 +364,16 @@ AskUserQuestion で確認する:
 
 Agent ツールで `code-reviewer` エージェントを起動する。
 
+**F-001 過去判断ヒント注入（レポート生成後）:**
+code-reviewer がレポートを Write し終えたら、Bash で `.claude/hooks/review_hint_inject.py` を呼んで過去判断ヒントをレポート末尾に追記する:
+
+```bash
+python .claude/hooks/review_hint_inject.py .claude/reports/code-review-report-{timestamp}.md
+```
+
+ヒントは独立セクションとして追加されるだけで、code-reviewer の指摘本文は変更されない。
+DB に過去判断が無ければ何も追記されない（no-op）。
+
 レポートの指摘の有無で分岐する。
 
 **指摘がない場合:**
@@ -412,8 +422,17 @@ AskUserQuestion で確認する:
 ```
 1. 対応する指摘に `> **[対応予定]**` を追記する
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
-4. セッションファイルの `- [ ] code-review` を `- [x]` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
+3. **F-001 判断記録**: 各指摘について Bash で c3.db に記録する（`[CR-XX-NNN]` を含むもののみ）:
+   ```bash
+   python .claude/hooks/record_review_decision.py \
+     --checklist-id CR-Q-001 \
+     --finding "{指摘本文を 1 行で}" \
+     --decision {fixed|accepted} \
+     --reason "{許容理由（accepted の時のみ）}" \
+     --reviewer code-reviewer
+   ```
+4. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
+5. セッションファイルの `- [ ] code-review` を `- [x]` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
 
 **「全て許容して進む」の場合:**
 AskUserQuestion で許容理由を確認する:
@@ -425,8 +444,9 @@ AskUserQuestion で許容理由を確認する:
 }
 ```
 1. 全指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-2. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
-3. セッションファイルの `- [ ] code-review` を `- [x]` に Edit して E-2 へ。
+2. **F-001 判断記録**: 全 `[CR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
+3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
+4. セッションファイルの `- [ ] code-review` を `- [x]` に Edit して E-2 へ。
 
 **「否認・再レビューを依頼する」の場合:**
 追加の AskUserQuestion でフィードバックを確認し再実行する。
@@ -437,6 +457,18 @@ AskUserQuestion で許容理由を確認する:
 ### E-2: security-reviewer エージェントの起動
 
 Agent ツールで `security-reviewer` エージェントを起動する。
+
+**F-001 過去判断ヒント注入（レポート生成後）:**
+security-reviewer がレポートを Write し終えたら、Bash で `.claude/hooks/review_hint_inject.py` に **両レポートのパス** を渡して呼ぶ。両方渡すことで重複指摘フラグ（同じ checklist_id を CR と SR が指摘）が判定される:
+
+```bash
+python .claude/hooks/review_hint_inject.py \
+  .claude/reports/code-review-report-{ts1}.md \
+  .claude/reports/security-review-report-{ts2}.md
+```
+
+これにより SR レポートにも過去判断ヒント + 重複指摘フラグが追記される。
+CR レポートも上書きされる（既にヒントセクションがあれば二重追記は回避される）。
 
 レポートの指摘の有無で分岐する。
 
@@ -486,8 +518,17 @@ AskUserQuestion で確認する:
 ```
 1. 対応する指摘に `> **[対応予定]**` を追記する
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
-4. セッションファイルの `- [ ] security-review` を `- [x]` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
+3. **F-001 判断記録**: 各指摘について Bash で c3.db に記録する（`[SR-XX-NNN]` を含むもののみ）:
+   ```bash
+   python .claude/hooks/record_review_decision.py \
+     --checklist-id SR-K-002 \
+     --finding "{指摘本文を 1 行で}" \
+     --decision {fixed|accepted} \
+     --reason "{許容理由（accepted の時のみ）}" \
+     --reviewer security-reviewer
+   ```
+4. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
+5. セッションファイルの `- [ ] security-review` を `- [x]` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
 
 **「全て許容して完了」の場合:**
 AskUserQuestion で許容理由を確認する:
@@ -499,8 +540,9 @@ AskUserQuestion で許容理由を確認する:
 }
 ```
 1. 全指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-2. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
-3. セッションファイルの `- [ ] security-review` を `- [x]` に Edit してコミットを提案する。
+2. **F-001 判断記録**: 全 `[SR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
+3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
+4. セッションファイルの `- [ ] security-review` を `- [x]` に Edit してコミットを提案する。
 
 **「否認・再診断を依頼する」の場合:**
 追加の AskUserQuestion でフィードバックを確認し再実行する。

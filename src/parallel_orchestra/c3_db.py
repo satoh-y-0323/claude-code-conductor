@@ -1,11 +1,17 @@
-"""C3 SQLite write helpers for parallel-orchestra.
+"""C3 SQLite write/read helpers for parallel-orchestra and review hooks.
 
 F-002: PO の結果を `.claude/state/c3.db` の `po_results` テーブルに記録する。
-DB が見つからない場合・書き込みエラー時は静かにスキップし、runner.py 本体は
-止めない（PO の主目的は記録ではないため、観測機能の失敗で全体を止めない方針）。
+F-001: review_decisions の INSERT / SELECT ヘルパーを追加（review_hint_inject.py から利用）。
+
+DB が見つからない場合・書き込みエラー時は静かにスキップし、呼び出し側の本体は
+止めない（観測機能の失敗で全体を止めない方針）。
 
 書き込みは Python 標準の `sqlite3` で行う（WAL モード）。
 読み・分析は別途 DuckDB の sqlite_scanner で ATTACH する想定（F-009 と整合）。
+
+注記: パッケージ配置は `src/parallel_orchestra/` だが、F-001 のレビュー hook
+からも import される。将来的に `src/c3/c3_db.py` への移動も検討するが、当面は
+ここに集約することで `c3.db` 関連ロジックの単一窓口とする。
 """
 
 from __future__ import annotations
@@ -149,3 +155,135 @@ def record_task_results(
     except Exception as exc:  # noqa: BLE001 - 観測機能なので広く捕捉して PO 本体を止めない
         logger.warning("failed to record po_results: %s", exc)
         return 0
+
+
+# ---------------------------------------------------------------------------
+# F-001: review_decisions ヘルパー
+# ---------------------------------------------------------------------------
+
+
+def fetch_review_decisions(
+    checklist_id: str,
+    *,
+    db_path: Path | None = None,
+    limit: int = 3,
+    months_window: int = 6,
+) -> list[dict]:
+    """指定 checklist_id に対する過去判断を直近順で返す。
+
+    Args:
+        checklist_id: 'CR-Q-001' / 'SR-K-001' 等の ID。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        limit: 返す最大件数（直近順）。デフォルト 3。
+        months_window: 何ヶ月前までを対象にするか。デフォルト 6 ヶ月。
+            これより古いレコードは表示時に「[要再評価]」フラグの判定に使う。
+
+    Returns:
+        各行を dict にしたリスト。キー:
+        ``checklist_id`` / ``finding_text`` / ``decision`` / ``reason`` /
+        ``context_summary`` / ``decided_at`` / ``reviewer``。
+        DB 不在 / エラー / レコード無しの場合は空リスト。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT checklist_id, finding_text, decision, reason, "
+                "       context_summary, decided_at, reviewer "
+                "FROM review_decisions "
+                "WHERE checklist_id = ? "
+                "ORDER BY decided_at DESC "
+                "LIMIT ?",
+                (checklist_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to fetch review_decisions: %s", exc)
+        return []
+
+
+def insert_review_decision(
+    *,
+    checklist_id: str,
+    finding_text: str,
+    decision: str,
+    reason: str | None = None,
+    context_summary: str | None = None,
+    reviewer: str,
+    decided_at: datetime | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """review_decisions に 1 行 INSERT する。
+
+    Args:
+        checklist_id: 'CR-Q-001' 等。
+        finding_text: 指摘本文（参照表示用）。
+        decision: 'fixed' | 'accepted' | 'deferred'。
+        reason: 許容/保留時の理由（``decision='accepted'`` / ``'deferred'`` で必要）。
+        context_summary: ファイル名・コミット等の補助情報。
+        reviewer: 'code-reviewer' | 'security-reviewer'。
+        decided_at: 判断日時（UTC 推奨）。省略時は ``datetime.now(timezone.utc)``。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+
+    Returns:
+        INSERT 成功時 True、DB 不在 / エラー時 False。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return False
+
+    if decided_at is None:
+        from datetime import timezone as _tz  # noqa: PLC0415
+        decided_at = datetime.now(_tz.utc)
+    decided_iso = decided_at.isoformat(timespec="seconds")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                "INSERT INTO review_decisions "
+                "(checklist_id, finding_text, decision, reason, "
+                " context_summary, decided_at, reviewer) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    checklist_id,
+                    finding_text,
+                    decision,
+                    reason,
+                    context_summary,
+                    decided_iso,
+                    reviewer,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to insert review_decision: %s", exc)
+        return False
+
+
+def aggregate_decisions(rows: list[dict]) -> dict:
+    """fetch_review_decisions の結果を要約する。
+
+    Returns:
+        ``{"total": int, "fixed": int, "accepted": int, "deferred": int}``。
+        rows が空でも 0 埋めで返す。
+    """
+    summary = {"total": len(rows), "fixed": 0, "accepted": 0, "deferred": 0}
+    for r in rows:
+        d = r.get("decision")
+        if d in summary:
+            summary[d] += 1  # type: ignore[index]
+    return summary
