@@ -149,6 +149,15 @@
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/restore_session.py\""
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/init_c3_db.py\""
+          }
+        ]
       }
     ],
     "PreCompact": [

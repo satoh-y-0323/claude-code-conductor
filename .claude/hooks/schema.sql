@@ -1,0 +1,119 @@
+-- C3 SQLite schema (F-009: DuckDB ハイブリッド構成の基盤)
+--
+-- このファイルは init_c3_db.py から読まれ、`.claude/state/c3.db` に対して
+-- 冪等に CREATE TABLE IF NOT EXISTS で適用される。
+-- WAL モードへの切り替えは init_c3_db.py 側で PRAGMA journal_mode=WAL を実行する。
+--
+-- 書き込みは Python の sqlite3 経由、読み・分析は DuckDB の sqlite_scanner で
+-- ATTACH してアクセスする想定（書き込みフローは sqlite3 に統一する）。
+--
+-- スキーマ変更時は schema_version を上げて、init_c3_db.py 側に
+-- マイグレーション処理を追加すること（CREATE TABLE IF NOT EXISTS だけで
+-- 表現できない変更が必要になった場合の備え）。
+
+-- ---------------------------------------------------------------------------
+-- F-009 自身: スキーマバージョン管理
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version     INTEGER PRIMARY KEY,
+    applied_at  TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- F-001: レビュー判断ヒント機能
+-- ---------------------------------------------------------------------------
+-- code-reviewer / security-reviewer の指摘に対して、人間が下した判断
+-- （対応 / 許容 / 保留）と理由を蓄積する。次回以降のレビュー時に過去判断を
+-- ヒントとしてレポートに追記するために使う。
+
+CREATE TABLE IF NOT EXISTS review_decisions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    checklist_id     TEXT NOT NULL,        -- 例: 'CR-Q-001' / 'SR-A-002'
+    finding_text     TEXT NOT NULL,        -- 指摘内容（参考表示用）
+    decision         TEXT NOT NULL,        -- 'fixed' | 'accepted' | 'deferred'
+    reason           TEXT,                 -- 許容・保留時の理由
+    context_summary  TEXT,                 -- ファイル名・コミット等
+    decided_at       TEXT NOT NULL,        -- ISO8601
+    reviewer         TEXT NOT NULL         -- 'code-reviewer' | 'security-reviewer'
+);
+CREATE INDEX IF NOT EXISTS idx_review_decisions_checklist
+    ON review_decisions(checklist_id, decided_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- F-002: PO 集約レイヤ
+-- ---------------------------------------------------------------------------
+-- Parallel Orchestra の各 worktree の完了結果を集約する。
+-- 親 Claude が SELECT で結果を集約できるようにする。
+
+CREATE TABLE IF NOT EXISTS po_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL,
+    worktree_id     TEXT NOT NULL,
+    task_id         TEXT NOT NULL,
+    status          TEXT NOT NULL,         -- 'success' | 'failure' | 'cancelled'
+    started_at      TEXT,                  -- ISO8601
+    completed_at    TEXT,                  -- ISO8601
+    output_summary  TEXT,
+    error_message   TEXT,
+    UNIQUE(session_id, worktree_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_po_results_session
+    ON po_results(session_id, completed_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- F-003: PO 並列処理の状況可視化
+-- ---------------------------------------------------------------------------
+-- 各 worktree の現在状況を heartbeat で記録する。親 Claude は SELECT で
+-- 並列処理の進捗を確認できる。
+
+CREATE TABLE IF NOT EXISTS po_status (
+    session_id      TEXT NOT NULL,
+    worktree_id     TEXT NOT NULL,
+    state           TEXT NOT NULL,         -- 'starting' | 'running' | 'completed' | 'failed'
+    current_step    TEXT,
+    progress_pct    INTEGER,
+    last_heartbeat  TEXT NOT NULL,         -- ISO8601
+    PRIMARY KEY (session_id, worktree_id)
+);
+
+-- ---------------------------------------------------------------------------
+-- F-005: Tier 自動ルーティング（Thompson Sampling 学習データ）
+-- ---------------------------------------------------------------------------
+-- タスク複雑度ごとに各 Tier の Beta(α, β) 事前分布を保持する。
+-- α / β は完了ごとに更新され、サンプリングで次の Tier を選ぶ。
+
+CREATE TABLE IF NOT EXISTS tier_bandit (
+    task_complexity  TEXT NOT NULL,        -- 'simple' | 'medium' | 'complex'
+    tier             TEXT NOT NULL,        -- 'haiku' | 'sonnet' | 'opus'
+    alpha            REAL NOT NULL DEFAULT 1.0,
+    beta             REAL NOT NULL DEFAULT 1.0,
+    trials           INTEGER NOT NULL DEFAULT 0,
+    last_updated     TEXT,                 -- ISO8601
+    PRIMARY KEY (task_complexity, tier)
+);
+
+-- ---------------------------------------------------------------------------
+-- F-008: SubagentStop メトリクス（既存 JSONL と並行運用）
+-- ---------------------------------------------------------------------------
+-- subagent_log.py が JSONL に追記している記録を SQLite にも保存する。
+-- F-005 の学習データ収集の前提。
+-- 既存 .claude/logs/agent-runs.jsonl は移行までの間並行運用する。
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id         TEXT,
+    agent_id           TEXT,
+    agent_type         TEXT,
+    event              TEXT NOT NULL,      -- 'start' | 'stop'
+    ts                 TEXT NOT NULL,      -- ISO8601
+    duration_seconds   REAL,               -- stop 時のみ
+    total_tokens       INTEGER,
+    status             TEXT,
+    model              TEXT,
+    payload_json       TEXT                -- 元 payload を JSON 文字列で保持（拡張用）
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_session
+    ON agent_runs(session_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_agent
+    ON agent_runs(agent_id, ts DESC);

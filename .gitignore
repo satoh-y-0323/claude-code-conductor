@@ -19,6 +19,11 @@ examples/
 # PO task execution logs
 .claude/logs/
 
+# C3 SQLite state DB (per-user runtime state, never committed)
+.claude/state/c3.db
+.claude/state/c3.db-wal
+.claude/state/c3.db-shm
+
 # Python bytecode / cache
 __pycache__/
 *.pyc
