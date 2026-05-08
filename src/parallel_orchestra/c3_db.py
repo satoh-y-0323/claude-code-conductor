@@ -418,3 +418,124 @@ def fetch_po_status(
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to fetch po_status: %s", exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# F-005: tier_bandit ヘルパー（Tier 自動ルーティング Thompson Sampling）
+# ---------------------------------------------------------------------------
+
+# 学習対象の Tier 一覧（schema.sql のコメントと整合）
+_TIER_BANDIT_TIERS: tuple[str, ...] = ("haiku", "sonnet", "opus")
+
+
+def read_tier_params(
+    complexity: str,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, tuple[float, float, int]]:
+    """指定 complexity の各 Tier の (alpha, beta, trials) を返す。
+
+    Args:
+        complexity: 'simple' | 'medium' | 'complex'。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+
+    Returns:
+        ``{"haiku": (alpha, beta, trials), "sonnet": ..., "opus": ...}``。
+        行が無い tier は ``(1.0, 1.0, 0)`` で初期化扱い（Beta(1,1)＝一様分布）。
+        DB 不在 / エラー時も全 tier を初期値で返す。
+    """
+    defaults: dict[str, tuple[float, float, int]] = {
+        t: (1.0, 1.0, 0) for t in _TIER_BANDIT_TIERS
+    }
+
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return defaults
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT tier, alpha, beta, trials "
+                "FROM tier_bandit "
+                "WHERE task_complexity = ?",
+                (complexity,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read tier_params: %s", exc)
+        return defaults
+
+    result = dict(defaults)
+    for r in rows:
+        tier = r["tier"]
+        if tier in result:
+            result[tier] = (float(r["alpha"]), float(r["beta"]), int(r["trials"]))
+    return result
+
+
+def update_tier_params(
+    complexity: str,
+    tier: str,
+    *,
+    success: bool,
+    db_path: Path | None = None,
+) -> bool:
+    """tier_bandit の (alpha, beta, trials) を 1 試行分更新する。
+
+    Args:
+        complexity: 'simple' | 'medium' | 'complex'。
+        tier: 'haiku' | 'sonnet' | 'opus'。
+        success: True なら alpha+=1、False なら beta+=1。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+
+    Returns:
+        UPDATE / INSERT 成功時 True、DB 不在 / エラー時 False。
+
+    Notes:
+        - 行が無ければ INSERT（初期 alpha=1.0, beta=1.0, trials=0 から開始）。
+        - last_updated は現在時刻（UTC ISO8601）に更新。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return False
+
+    if tier not in _TIER_BANDIT_TIERS:
+        logger.warning("update_tier_params: unknown tier %r (continuing)", tier)
+
+    from datetime import timezone as _tz  # noqa: PLC0415
+    now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
+    alpha_delta = 1.0 if success else 0.0
+    beta_delta = 0.0 if success else 1.0
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            # SQLite 3.24+ の UPSERT。既存行があれば加算更新、無ければ初期値 + 1 試行分
+            conn.execute(
+                "INSERT INTO tier_bandit "
+                "(task_complexity, tier, alpha, beta, trials, last_updated) "
+                "VALUES (?, ?, ?, ?, 1, ?) "
+                "ON CONFLICT(task_complexity, tier) DO UPDATE SET "
+                "  alpha = alpha + ?, "
+                "  beta = beta + ?, "
+                "  trials = trials + 1, "
+                "  last_updated = excluded.last_updated",
+                (
+                    complexity, tier,
+                    1.0 + alpha_delta, 1.0 + beta_delta, now_iso,
+                    alpha_delta, beta_delta,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to update tier_params: %s", exc)
+        return False

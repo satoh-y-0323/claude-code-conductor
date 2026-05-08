@@ -487,6 +487,10 @@ AskUserQuestion で確認する:
 ```
 
 承認後 → セッションファイルの `- [ ] security-review` を `- [x]` に Edit してコミットを提案する。
+**F-005 結果記録**: フェーズ E の最終承認時のみ Bash で記録する（多重カウント防止のため E-1 では記録しない）:
+```bash
+python .claude/hooks/record_tier_outcome.py --outcome success
+```
 
 **指摘がある場合:**
 指摘一覧をテキストで提示してから AskUserQuestion で方針を確認する:
@@ -543,7 +547,21 @@ AskUserQuestion で許容理由を確認する:
 2. **F-001 判断記録**: 全 `[SR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
 3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 4. セッションファイルの `- [ ] security-review` を `- [x]` に Edit してコミットを提案する。
+5. **F-005 結果記録**: 全許容で完了するのも「成功」としてカウント:
+   ```bash
+   python .claude/hooks/record_tier_outcome.py --outcome success
+   ```
 
 **「否認・再診断を依頼する」の場合:**
 追加の AskUserQuestion でフィードバックを確認し再実行する。
 セッションファイルの `## 試みたが失敗したアプローチ` に教訓をルール形式で追記し `patterns` に追加する。
+**F-005 結果記録**: 否認は「失敗」としてカウント:
+```bash
+python .claude/hooks/record_tier_outcome.py --outcome failure
+```
+
+**「全て対応する」「対応する指摘を選ぶ」の場合（フェーズ C へ戻る）:**
+これらも tier の選択がコスト最適でなかったとみなし、**F-005 結果記録**で失敗をカウントしてからフェーズ C へ:
+```bash
+python .claude/hooks/record_tier_outcome.py --outcome failure
+```

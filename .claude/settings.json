@@ -140,6 +140,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/select_tier.py\""
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "compact",
