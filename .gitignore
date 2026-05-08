@@ -7,6 +7,9 @@
 .claude/memory/patterns.json
 .claude/memory/agent-audit.log
 
+# Agent-individual memory (personal, populated at runtime)
+.claude/agent-memory/
+
 # Workflow test sandbox (not for distribution)
 examples/
 
