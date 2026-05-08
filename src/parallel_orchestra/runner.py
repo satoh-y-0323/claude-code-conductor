@@ -1511,10 +1511,29 @@ def run_manifest(
 
     run_result = RunResult(results=task_results, merge_results=merge_results)
 
+    _run_finished_at = datetime.now(tz=timezone.utc)
+
+    # F-002: 実行結果を `.claude/state/c3.db` の po_results に記録する。
+    # DB が無い環境（C3 利用先で init_c3_db.py が走っていない等）や記録エラー時は
+    # 静かにスキップする（PO 本体を止めない）。
+    try:
+        from .c3_db import record_task_results  # noqa: PLC0415
+
+        session_id = (
+            f"{manifest.name}_{_run_started_at.strftime('%Y%m%dT%H%M%SZ')}"
+        )
+        record_task_results(
+            task_results,
+            session_id=session_id,
+            started_at=_run_started_at,
+            finished_at=_run_finished_at,
+        )
+    except Exception:  # noqa: BLE001 - 観測機能なので PO 本体を止めない
+        pass
+
     if report_path is not None:
         from .report import generate_report  # noqa: PLC0415
 
-        _run_finished_at = datetime.now(tz=timezone.utc)
         try:
             generate_report(
                 run_result,
