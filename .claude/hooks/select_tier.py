@@ -114,9 +114,19 @@ def write_tier_selection(complexity: str, tier: str, mode: str) -> None:
 
     record_tier_outcome.py がこの json を読んで α/β を更新する。
     既存ファイルは上書きされる（最新 1 件のみ保持）。
+
+    F-005 Phase 2-A: ``suggested_model`` も併せて書く。runner.py がこれを読んで
+    PO 経由のサブエージェント起動時に ``claude --agents`` で動的に上書きする。
+    tier 名と model の短縮名は同一とする。
     """
     os.makedirs(os.path.dirname(TIER_SELECTION_PATH), exist_ok=True)
-    payload = {"complexity": complexity, "tier": tier, "mode": mode}
+    payload = {
+        "complexity": complexity,
+        "tier": tier,
+        "mode": mode,
+        # Phase 2-A: tier はそのまま claude --agents の model 短縮名として使える
+        "suggested_model": tier,
+    }
     try:
         with open(TIER_SELECTION_PATH, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)

@@ -29,7 +29,11 @@ MAX_CONCURRENCY_LIMIT: int = 256
 _DEFAULT_TASK_MAX_RETRIES: int = 1
 
 # Known keys for the ``defaults:`` section.  Unrecognised keys are warned.
-_KNOWN_DEFAULTS_KEYS: frozenset[str] = frozenset({"max_retries"})
+_KNOWN_DEFAULTS_KEYS: frozenset[str] = frozenset({"max_retries", "model"})
+
+# Tier 自動ルーティング (F-005 Phase 2-A) で許容する model フロントマター値。
+# Claude Code 公式仕様の短縮名のみ。
+_ALLOWED_MODEL_VALUES: frozenset[str] = frozenset({"haiku", "sonnet", "opus"})
 
 # Regular expression that defines the set of characters allowed in a task ID.
 _TASK_ID_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -103,6 +107,9 @@ class Task:
     depends_on: tuple[str, ...] = ()
     max_retries: int = 0
     concurrency_group: str | None = None
+    # F-005 Phase 2-A: model 動的切替。指定時は claude --agents JSON で
+    # 起動時に上書きする。許容値は haiku / sonnet / opus（短縮名のみ）。
+    model_override: str | None = None
 
 
 @dataclass(frozen=True)
@@ -111,9 +118,13 @@ class Defaults:
 
     Attributes:
         max_retries: Default maximum number of retries for each task.
+        model: Default model override applied to all tasks unless overridden
+            per-task. F-005 Phase 2-A の優先順位は task.model_override >
+            defaults.model > frontmatter（最後の砦）。
     """
 
     max_retries: int | None = None
+    model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -195,7 +206,28 @@ def _parse_defaults(raw: object) -> Defaults:
     if "max_retries" in raw:
         max_retries = _parse_non_negative_int(raw["max_retries"], _ctx, "max_retries")
 
-    return Defaults(max_retries=max_retries)
+    model: str | None = None
+    if "model" in raw:
+        model = _parse_model_value(raw["model"], _ctx, "defaults.model")
+
+    return Defaults(max_retries=max_retries, model=model)
+
+
+def _parse_model_value(raw: object, ctx: str, field_name: str) -> str:
+    """Validate that a model frontmatter value is haiku/sonnet/opus.
+
+    F-005 Phase 2-A 用。許容値以外は ManifestError。
+    """
+    if not isinstance(raw, str):
+        raise ManifestError(
+            f"{ctx}: '{field_name}' must be a string, got {type(raw)!r}."
+        )
+    if raw not in _ALLOWED_MODEL_VALUES:
+        raise ManifestError(
+            f"{ctx}: '{field_name}' must be one of "
+            f"{sorted(_ALLOWED_MODEL_VALUES)}, got {raw!r}."
+        )
+    return raw
 
 
 def _extract_frontmatter(text: str) -> str:
@@ -337,6 +369,16 @@ def _parse_task(
             )
         concurrency_group = raw_concurrency_group
 
+    # F-005 Phase 2-A: model 動的切替の per-task 指定を読む。
+    # task に明示があれば優先、無ければ defaults.model を継承。
+    model_override: str | None = None
+    if "model" in raw:
+        model_override = _parse_model_value(
+            raw["model"], f"Task '{task_id}'", "model"
+        )
+    elif defaults is not None and defaults.model is not None:
+        model_override = defaults.model
+
     return Task(
         id=task_id,
         agent=agent,
@@ -347,6 +389,7 @@ def _parse_task(
         depends_on=depends_on,
         max_retries=max_retries,
         concurrency_group=concurrency_group,
+        model_override=model_override,
     )
 
 

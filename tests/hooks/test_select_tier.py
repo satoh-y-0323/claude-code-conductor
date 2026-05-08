@@ -264,7 +264,13 @@ class TestContextAndStateFile:
         mod.write_tier_selection("complex", "opus", "thompson")
         assert target.is_file()
         data = json.loads(target.read_text(encoding="utf-8"))
-        assert data == {"complexity": "complex", "tier": "opus", "mode": "thompson"}
+        # F-005 Phase 2-A: suggested_model フィールドが tier と同じ値で追加されている
+        assert data == {
+            "complexity": "complex",
+            "tier": "opus",
+            "mode": "thompson",
+            "suggested_model": "opus",
+        }
 
 
 # ---------------------------------------------------------------------------

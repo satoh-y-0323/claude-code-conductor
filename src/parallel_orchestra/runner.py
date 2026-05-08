@@ -1191,6 +1191,53 @@ def _run_with_progress(
     return "".join(lines_stdout), "".join(lines_stderr), timed_out, reason
 
 
+def _resolve_effective_model(
+    task: Task, tier_selection: dict | None
+) -> tuple[str | None, str]:
+    """F-005 Phase 2-A: タスクの最終 effective_model と override_source を解決する。
+
+    優先順位（高い順）:
+      1. ``task.model_override``（manifest 側で明示指定）
+      2. ``tier_selection.json`` の ``suggested_model``（F-005 動的推奨）
+      3. None（agent frontmatter に任せる、最後の砦）
+
+    Returns:
+        ``(effective_model, override_source)``。
+        ``effective_model`` が None なら ``--agent`` 単独で起動、それ以外は
+        ``--agents`` JSON で model を上書き起動する。
+        ``override_source`` は ``"manifest" | "tier_selection" | "frontmatter"``。
+    """
+    if task.model_override:
+        return task.model_override, "manifest"
+    if tier_selection:
+        suggested = tier_selection.get("suggested_model")
+        if isinstance(suggested, str) and suggested:
+            return suggested, "tier_selection"
+    return None, "frontmatter"
+
+
+def _read_tier_selection() -> dict | None:
+    """``.claude/state/tier_selection.json`` を読んで dict を返す。
+
+    存在しない / 壊れている場合は None。runner.py が PO 起動時に各タスクの
+    model 上書き推奨を確認するために使う。F-005 select_tier.py が UserPromptSubmit
+    hook で書き込む json を共有読みする形。
+    """
+    # cwd から見て .claude/state/tier_selection.json を探す。
+    # PO は通常リポジトリルートで起動されるためこの相対パスで十分。
+    selection_path = Path.cwd() / ".claude" / "state" / "tier_selection.json"
+    if not selection_path.is_file():
+        return None
+    try:
+        with open(selection_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
 def _execute_task(
     task: Task,
     claude_exe: str,
@@ -1208,8 +1255,17 @@ def _execute_task(
     # read_only controls worktree creation only — never passed to claude as a flag.
     # Both task types need --dangerously-skip-permissions for headless execution.
     cmd = [claude_exe, "--dangerously-skip-permissions"]
+    # F-005 Phase 2-A: model 動的切替の解決。effective_model が決まれば
+    # --agents JSON で起動、無ければ既存の --agent 単独で起動（後方互換）。
+    tier_selection = _read_tier_selection()
+    effective_model, _override_source = _resolve_effective_model(task, tier_selection)
     if task.agent:
-        cmd.extend(["--agent", task.agent])
+        if effective_model is not None:
+            # shell=False + list 引数 + json.dumps で Windows でもエスケープ問題なし
+            agents_obj = {task.agent: {"model": effective_model}}
+            cmd.extend(["--agents", json.dumps(agents_obj, separators=(",", ":"))])
+        else:
+            cmd.extend(["--agent", task.agent])
     cmd.extend([_CLAUDE_PROMPT_FLAG, task.prompt])
     env = {**os.environ, **task.env}
 
