@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.8.0] - 2026-05-08
+
+### 追加（フック・第 1 波）
+
+- **F-006: Bash 秘密情報検出フック**: `hooks/pre_tool.py` に正規表現ベースの判定を追加。`password=` / `api_key=` / `Bearer` / `token=` / `secret=` / `aws_secret_access_key=` / PEM 秘密鍵の 7 パターンを検出してブロックする。誤爆時は環境変数 `C3_SKIP_SECRET_CHECK=1` で bypass 可能。警告メッセージには検出値そのものを含めず、二次漏洩を防ぐ設計。これは既存 `security-review-checklist.md` の項目「秘密情報がログに出力されていないか」を実行前に自動化するもの。
+- **F-007: Edit 後コード品質スキャンフック**: 新規 `hooks/post_tool.py` を追加し、Write / Edit 完了後にコード品質スキャンを実行する。`console.log` / `print(` / `TODO` / `FIXME` / `XXX` を検出して警告（**非ブロッキング**、`exit 0`）。対象拡張子は `.py` / `.js` / `.ts` / `.tsx` / `.jsx` / `.cs` / `.go` / `.rs`。バイナリ（先頭 8 KB に NUL バイトを含む）と 256 KB 超は先頭のみスキャン。`settings.json` の `PostToolUse` に既存 `validate_skill_change.py` と並列で登録。配布版にも含める。
+- **F-008: SubagentStop メトリクス拡張**: `hooks/subagent_log.py` の `_SAFE_PAYLOAD_FIELDS` に `total_tokens` / `status` / `token_usage` / `model` を追加。Tier 自動ルーティング（学習ベースのモデル選択）の学習データ収集の前提となる。`result` 系は応答本文・コード断片の混入リスクがあるため引き続き除外。
+
+### 注意（既存利用先への影響）
+
+- F-006 は既存 Bash 実行に対して **新規ブロック動作** を導入する。`echo password=...` のような書式は今後ブロックされるため、誤爆した場合は `C3_SKIP_SECRET_CHECK=1` を設定して回避すること。
+- F-007 は警告のみで非ブロッキング。既存 `validate_skill_change.py` と並列実行されるため、`.claude/skills/` 配下のファイル変更時は両方の hook が動く（出力重複は許容、責務分離優先）。
+
+### 内部（テスト・除外設定）
+
+- `tests/hooks/test_pre_tool.py` を新規追加（14 ケース）。既存 `rm -rf` 等のリグレッション防止 + F-006 各種検出 / 偽陽性回避 / bypass 動作を網羅。
+- `tests/hooks/test_post_tool.py` を新規追加（15 ケース）。各パターン検出 / 対象外拡張子スキップ / バイナリスキップ / 大ファイル制限 / 言語制限を網羅。
+- `tests/hooks/test_subagent_log.py` に `TestF008MetricsFieldsExtended` クラス（4 ケース）を追加。新フィールド記録 / `result` 除外維持 / 並列ペアリングの整合を検証。
+- 全体テスト: **567 passed / 3 skipped / 0 failed**（既存 534 + 新規 33）。
+- 機能検討ドキュメント 4 件（`ruflo_research_result.md` / `c3候補機能への質問に対する回答.md` / `c3候補機能採用.md` / `c3追加予定機能リスト.md`）を `.gitignore` と `EXCLUDE_PATTERNS`（`src/c3/_excludes.py` と `hatch_build.py` の両方）に追加し、git 追跡と wheel 配布の両方から除外。
+
 ## [0.7.1] - 2026-05-08
 
 ### 追加（開発者向け）
