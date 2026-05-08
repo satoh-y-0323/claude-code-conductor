@@ -6,6 +6,7 @@
 .claude/memory/sessions/
 .claude/memory/patterns.json
 .claude/memory/agent-audit.log
+.claude/memory/consolidated_summary.md
 
 # Agent-individual memory (personal, populated at runtime)
 .claude/agent-memory/
