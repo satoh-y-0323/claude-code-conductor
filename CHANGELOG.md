@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.1] - 2026-05-09
+
+### 修正
+
+- F-004 で生成される `.claude/memory/consolidated_summary.md` が `.gitignore` および `EXCLUDE_PATTERNS` に登録されていなかったため、利用先プロジェクトで余計な untracked ファイルが残ってしまう問題を修正。`.gitignore` / `src/c3/_excludes.py` / `hatch_build.py` の 3 箇所に追加。
+
 ## [0.9.0] - 2026-05-09
 
 ### 追加（第 2 波・第 3 波）
