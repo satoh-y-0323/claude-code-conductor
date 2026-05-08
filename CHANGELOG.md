@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.0.0] - 2026-05-09
+
+### マイルストーン
+
+c3 追加予定機能リスト（10 機能 F-001 〜 F-010）を全て実装完了。第 1 波（F-006/007/008）→ 第 2 波（F-009 基盤）→ 第 3 波（F-001/002/004/010）→ 第 4 波（F-003/005）の段階的リリースが完了し、Ruflo 調査から派生した「自己観測 + 自己学習」C3 が 1.0 として一区切り。
+
+### 追加（第 4 波）
+
+#### F-003: PO 並列処理の状況可視化
+
+- `src/parallel_orchestra/c3_db.py` に `upsert_po_status()` / `fetch_po_status()` を追加（SQLite 3.24+ の `INSERT ... ON CONFLICT ... DO UPDATE` で UPSERT、未知 state は警告のみで通過）。
+- `src/parallel_orchestra/runner.py` の `_Dashboard` に `snapshot_states()`（thread-safe コピー）を追加。`_PO_STATUS_STATE_MAPPING` で内部 `_TaskStatus` → schema state の語彙変換を定義。新規 `_heartbeat_po_status_loop()` 関数で 30 秒ごとに状態を UPSERT（waiting タスクは除外）。
+- `run_manifest()` で session_id を上部に移動（F-002 と F-003 で共有）、dashboard が enabled な場合のみ heartbeat スレッドを起動。`dashboard.stop()` の前に最終状態を 1 回 UPSERT してからスレッド停止。
+- 新規 `.claude/skills/po-status/SKILL.md`（4 種の SELECT パターン: 直近 active / session 別 / stale 検出 / 全履歴）。
+- `tests/parallel_orchestra/test_po_status_visibility.py` 新規追加（19 ケース）。
+
+#### F-005: Tier 自動ルーティング（MVP）
+
+- `src/parallel_orchestra/c3_db.py` に `read_tier_params()` / `update_tier_params()` を追加。各 Tier の Beta(α, β) を行が無ければ `Beta(1,1)` で初期化扱い、UPSERT で α または β を加算、trials+=1。
+- 新規 `.claude/hooks/select_tier.py`（UserPromptSubmit hook）: 複雑度を文字数 + キーワードで simple/medium/complex に推定。合計 trials < 30 は uniform random（学習データ収集期）、≥ 30 は `random.betavariate()` による純 Thompson Sampling で Tier 選定。結果を `.claude/state/tier_selection.json` に保存し、`additionalContext` で「推奨 Tier: sonnet（信頼度 trials=12）」を返す。
+- 新規 `.claude/hooks/record_tier_outcome.py`（CLI）: dev-workflow から `--outcome success/failure` で呼ばれて α/β を更新、json を削除（DB 不在時は json 維持してリトライ可能）。
+- `.claude/settings.json` の `UserPromptSubmit` セクションを新規追加し `select_tier.py` を登録。
+- `.claude/skills/dev-workflow/SKILL.md` フェーズ E-2（最終承認）のみに `record_tier_outcome.py` 呼び出しを統合（多重カウント防止のため E-1 では呼ばない）。
+- 新規テスト 30 ケース（`test_select_tier.py` 24 ケース + `test_record_tier_outcome.py` 6 ケース）。
+- 依存ライブラリ追加なし（`random.betavariate()` で stdlib 完結）。
+- **MVP スコープ**: 推奨提示のみ（agent の `model:` フロントマター動的書き換えは次フェーズ）。
+
+### MVP として残した拡張ポイント
+
+- F-002 Phase 2: PO の worktree 内からの直接 SQLite 書き込み（環境変数で DB パス共有）。
+- F-004: patterns.json の自動 promotion 判定変更、auto-memory への直接書き込み、LLM 要約による集約。
+- F-005: agent の `model:` フロントマター動的書き換え、Haiku 失敗時の Sonnet 自動昇格、過去類似タスクからの complexity 類推。
+
+### 注意（既存利用先への影響）
+
+- `UserPromptSubmit` hook が新規登録される。プロンプト送信時に毎回 `additionalContext` で推奨 Tier が表示されるようになる。
+- `Stop` hook は既に F-004 で追加された `consolidate_memory.py` がいる。第 4 波で Stop 周りの追加変更はない。
+- レビューフロー（dev-workflow フェーズ E-2）の最終承認時に `record_tier_outcome.py` が呼ばれて c3.db に記録される。記録失敗時は `tier_selection.json` が残るが、次回プロンプトで上書きされるため副作用なし。
+
+### 内部
+
+- 新規テスト追加: 19（F-003）+ 30（F-005）= **49 ケース**。
+- 全体テスト: **663 passed / 3 skipped / 0 failed**（前バージョン 614 → 663、+49）。
+
 ## [0.9.1] - 2026-05-09
 
 ### 修正
