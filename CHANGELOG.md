@@ -1,5 +1,66 @@
 # Changelog
 
+## [1.5.0] - 2026-05-09
+
+### マイルストーン
+
+第 9 波として F-003（PO 並列処理の状況可視化）の Phase 2 を完成。Phase 1 で実装済みの `po_status` テーブル + heartbeat スレッド + `po-status` skill に対して、対話なしの即時実行 CLI **`c3 status`** を追加した。これにより cron / watch / シェルパイプから機械可読出力（`--json`）を経由した監視自動化が可能になり、`po-status` skill の DuckDB ATTACH 5〜10 秒遅延を解消した（SQLite 直接参照で <1 秒応答）。
+
+### 追加（第 9 波）
+
+#### F-003 Phase 2: `c3 status` ダッシュボード CLI
+
+- `src/c3/cli_status.py` を新規作成（約 395 行）。引数なしで最新 session の active worktree を表形式表示。
+- フラグ: `--session ID` / `--all` / `--state {starting,running,completed,failed,waiting}` / `--worktree GLOB` / `--watch` / `--interval SEC` / `--stale-threshold SEC` / `--no-stale` / `--limit N` / `--json` / `--verbose`。
+- 種別ごとに ANSI 色: 緑=completed / 黄=running+stale / 赤=failed / シアン=running / グレー=starting/waiting。
+- stale 検出: `last_heartbeat` が threshold 秒（デフォルト 90）超の running 行を `[STALE]` でハイライト。
+- 失敗詳細: failed 行に `po_results.error_message` を結合（デフォルト 80 文字、`--verbose` で 500 文字）。
+- `--watch` モード: ANSI 画面クリア + 30 秒間隔再描画。`KeyboardInterrupt` で exit 0。
+- 出力: 表形式デフォルト、`--json` で `json.dumps(..., ensure_ascii=False, indent=2)`。
+- 外部依存ゼロ: `rich` / `tabulate` を追加せず、`cli_doctor.py::_format` 同様の自前 ANSI 実装。
+
+#### `fetch_po_results` の新設
+
+- `src/parallel_orchestra/c3_db.py` に `fetch_po_results(session_id, *, db_path, status, limit)` を追加。
+- 戻り値キー: session_id / worktree_id / task_id / status / started_at / completed_at / output_summary / error_message。
+- `PRAGMA busy_timeout=5000` を冪等適用、エラー時は空リスト。
+
+#### `src/c3/_terminal.py` 共通モジュール新設
+
+- `supports_color()` / `strip_ansi()` / `sanitize_terminal_text()` の 3 関数を提供。
+- `cli_doctor.py` の `_supports_color` をコピーで持っていた DRY 違反を解消。今後の `cli_*.py` でも再利用可能。
+
+### 設計判断
+
+- **テーブル表示は外部依存ゼロで自前実装**: C3 dependencies は最小（PyYAML / duckdb のみ）を維持。`cli_doctor.py::_format()` の前例があり 80 行未満で実装可能。`rich` / `tabulate` 依存追加は摩擦・体積負債が見合わない。
+- **--watch モードは MVP に含める**: heartbeat 自体が 30 秒間隔なのでそれ未満は無駄。`time.sleep` + ANSI 画面クリア + `KeyboardInterrupt` で 20 行内。
+- **デフォルトは最新 session のみ表示**: 引数なしで「いま何が動いてるか」が即わかる UX を優先。`--all` で全 session 横断。
+- **失敗詳細は同じコマンドで取得**: `fetch_po_results` を新設して Python 側で結合。failed 調査時の DB 再アクセスを避ける。
+- **CLI と skill の役割分離**: CLI は速度重視・自動化向け、skill は対話・複雑分析向けで併存。
+
+### セキュリティ
+
+- DB 由来テキスト（`current_step` / `error_message`）を端末に出す前に `sanitize_terminal_text` で ANSI / 制御文字をサニタイズ（`\x00-\x08\x0b\x0c\x0e-\x1f\x7f` を除去）[SR-INJ-003 対応]。
+- `--interval` / `--stale-threshold` に下限クランプ（busy loop / 全 stale 誤検出を防止）[SR-V-001 対応]。
+- SQL は全てプレースホルダ経由（SQL インジェクション対策）。
+
+### 内部
+
+- 新規テスト追加: `tests/test_cli_status.py` 8 ケース + `tests/parallel_orchestra/test_po_status_visibility.py` に `TestFetchPoResults` 3 ケース、計 11 ケース。
+- DB 読み出し全パス（`fetch_po_results` / `_get_latest_session_id` / `_list_recent_sessions`）に `PRAGMA busy_timeout=5000` を設定（F-002 Phase 2-B 既知パターンの再発防止）。
+- `_attach_error_messages` を failed 行のみに書き込むよう責務明確化（JSON 出力でキーの有無により failed/非 failed を判別可能に）。
+- 全体: **758 passed / 3 skipped / 0 failed**（前回 747 + 11）。
+
+### 注意（既存利用先への影響）
+
+- `c3 status` は新サブコマンド追加のみで、既存 `c3 init` / `c3 update` / `c3 list` / `c3 doctor` / `c3 po` には影響なし。
+- 既存 `po-status` skill との併存。skill / CLI どちらからも同じ DB を参照する read-only アクセスのため衝突しない（busy_timeout=5000 で対策済み）。
+- `parallel_orchestra/__init__.py` の version は `importlib.metadata` で host package version を参照する仕組みのため、`pip install -e .` を実行すれば 1.5.0 に追随する。v1.4.0 リリース時に `pip install -e .` 漏れがあったため、リリース後の再インストールをチェックリストに追加。
+
+### 関連コミット
+
+- `cdc840e` feat(cli): F-003 Phase 2 c3 status ダッシュボード CLI を追加
+
 ## [1.4.0] - 2026-05-09
 
 ### マイルストーン
