@@ -21,9 +21,11 @@ F-004 MVP: 過去 N 日分の `.claude/memory/sessions/YYYYMMDD.tmp` から
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -47,6 +49,15 @@ DEFAULT_ARCHIVE_TTL_DAYS = DEFAULT_WINDOW_DAYS * 3
 # 出力先（プロジェクトローカル）
 OUTPUT_FILE_NAME = "consolidated_summary.md"
 
+# F-004 Phase 2-B: 半自動 promotion 候補ログの出力ファイル名
+PROMOTION_CANDIDATES_FILE_NAME = "promotion-candidates.md"
+
+# 候補ログの description 列の最大文字数（表セルの可読性確保）
+_PROMOTION_DESC_MAX_LEN = 80
+
+# 候補ログの ID 列の最大文字数（表セル幅を抑える、id が極端に長い場合の保険）
+_PROMOTION_CID_MAX_LEN = 60
+
 # 集約対象セクション
 TARGET_SECTIONS = ("うまくいったアプローチ", "試みたが失敗したアプローチ")
 
@@ -56,6 +67,10 @@ _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 SESSIONS_DIR = os.path.join(_CLAUDE_DIR, "memory", "sessions")
 OUTPUT_PATH = os.path.join(_CLAUDE_DIR, "memory", OUTPUT_FILE_NAME)
 ARCHIVE_DIR = os.path.join(_CLAUDE_DIR, "memory", "archive")
+PATTERNS_PATH = os.path.join(_CLAUDE_DIR, "memory", "patterns.json")
+PROMOTION_CANDIDATES_PATH = os.path.join(
+    _CLAUDE_DIR, "memory", PROMOTION_CANDIDATES_FILE_NAME
+)
 
 
 def _load_session_utils():
@@ -174,8 +189,13 @@ def write_summary(
     sessions_dir: str = SESSIONS_DIR,
     window_days: int = DEFAULT_WINDOW_DAYS,
     today: datetime | None = None,
+    patterns_path: str | None = None,
 ) -> bool:
     """集約サマリを生成して指定パスに書き出す。
+
+    F-004 Phase 2-B: ``patterns_path`` が指定された場合、末尾に
+    「## 昇格候補」サマリセクションを追加する（候補 ID + trust のみ、
+    詳細は ``promotion-candidates.md`` を参照）。
 
     Returns:
         書き出し成功時 True、対象ファイル無し / I/O エラー時 False。
@@ -194,6 +214,19 @@ def write_summary(
         today=today,
     )
 
+    # Phase 2-B: 昇格候補サマリを末尾に追加
+    if patterns_path is not None:
+        try:
+            section, _ = build_promotion_candidates_section(
+                patterns_path, today=today
+            )
+            summary = summary.rstrip() + "\n\n" + section + "\n"
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[consolidate_memory:promotion] section build failed: {exc}",
+                file=sys.stderr,
+            )
+
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
@@ -203,6 +236,229 @@ def write_summary(
             f"[consolidate_memory] failed to write {output_path}: {exc}",
             file=sys.stderr,
         )
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# F-004 Phase 2-B: 半自動 promotion 候補ログ
+# ---------------------------------------------------------------------------
+
+
+def _load_patterns_readonly(patterns_path: str) -> list[dict]:
+    """``patterns.json`` を読み込んで ``patterns`` 配列を返す。
+
+    stop.py との競合を避けるため **読み込み専用**。ファイル不在 / JSON
+    パース失敗 / スキーマ不正は空リストを返す（呼び出し元でハンドリング）。
+    """
+    if not os.path.isfile(patterns_path):
+        return []
+    try:
+        with open(patterns_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"[consolidate_memory:promotion] failed to load {patterns_path}: {exc}",
+            file=sys.stderr,
+        )
+        return []
+    patterns = data.get("patterns") if isinstance(data, dict) else None
+    if not isinstance(patterns, list):
+        return []
+    return [p for p in patterns if isinstance(p, dict)]
+
+
+def _truncate_for_table(text: str, limit: int = _PROMOTION_DESC_MAX_LEN) -> str:
+    r"""Markdown 表セル用に文字列を整形する。
+
+    処理順:
+      1. 改行 (CR / LF / CRLF) を半角スペースに置換
+      2. ``limit`` 文字超過なら末尾を ``…`` で切り詰め（**エスケープ前**）
+      3. パイプ ``|`` とバッククォート ``\``` をバックスラッシュエスケープ
+
+    ``limit`` は **エスケープ前の文字数** を意味する。エスケープ後は
+    最大 2 倍弱に膨らむ可能性があるが、テーブルセル内表示としては許容。
+    """
+    flat = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    if len(flat) > limit:
+        flat = flat[:limit].rstrip() + "…"
+    # `|` と backtick の両方をエスケープ（インラインコードの閉じ忘れ対策）
+    return flat.replace("|", r"\|").replace("`", r"\`")
+
+
+def build_promotion_candidates_section(
+    patterns_path: str,
+    *,
+    today: datetime | None = None,
+) -> tuple[str, list[dict]]:
+    """consolidated_summary.md 末尾に追加するサマリセクションを返す。
+
+    Args:
+        patterns_path: ``patterns.json`` のパス。
+        today: 「今日」の基準日（ヘッダ表示用）。省略時は現在 UTC。
+
+    Returns:
+        ``(section_markdown, candidates)``。
+        ``candidates`` は ``promotion_candidate=true`` かつ ``promoted!=true``
+        のパターン dict のリスト（出現順）。
+    """
+    if today is None:
+        today = datetime.now(timezone.utc)
+    today_str = (today.date() if isinstance(today, datetime) else today).isoformat()
+
+    patterns = _load_patterns_readonly(patterns_path)
+    candidates = [
+        p for p in patterns
+        if p.get("promotion_candidate") is True and not p.get("promoted", False)
+    ]
+
+    lines: list[str] = ["## 昇格候補", ""]
+    if not candidates:
+        lines.append(f"_候補数: 0 / 最終確認: {today_str}_")
+        lines.append("")
+        lines.append("_該当エントリなし_")
+        return "\n".join(lines), candidates
+
+    lines.append(
+        f"_候補数: {len(candidates)} / 最終確認: {today_str} / "
+        f"詳細は `.claude/memory/{PROMOTION_CANDIDATES_FILE_NAME}` を参照_"
+    )
+    lines.append("")
+    for c in candidates:
+        cid = c.get("id", "?")
+        trust = c.get("trust_score", 0.0)
+        try:
+            trust_str = f"{float(trust):.2f}"
+        except (TypeError, ValueError):
+            trust_str = "?"
+        lines.append(f"- `{cid}` (trust {trust_str})")
+    return "\n".join(lines), candidates
+
+
+def _extract_candidate_fields(c: dict) -> dict:
+    """候補 dict から表示用フィールドを抽出する（DRY ヘルパー）。
+
+    Returns:
+        ``{"cid", "trust_str", "obs_count", "registered", "last_updated",
+            "description"}`` のキーを持つ dict。
+    """
+    cid = str(c.get("id", "?"))
+    trust = c.get("trust_score", 0.0)
+    try:
+        trust_str = f"{float(trust):.2f}"
+    except (TypeError, ValueError):
+        trust_str = "?"
+    obs = c.get("observations") or []
+    obs_count = len(obs) if isinstance(obs, list) else 0
+    registered = str(c.get("registered_date", "?"))
+    last_updated = str(c.get("last_updated", registered))
+    description = str(c.get("description", ""))
+    return {
+        "cid": cid,
+        "trust_str": trust_str,
+        "obs_count": obs_count,
+        "registered": registered,
+        "last_updated": last_updated,
+        "description": description,
+    }
+
+
+def write_promotion_candidates_log(
+    candidates: list[dict],
+    output_path: str = PROMOTION_CANDIDATES_PATH,
+    *,
+    today: datetime | None = None,
+) -> bool:
+    """``promotion-candidates.md`` を書き出す（毎回上書き）。
+
+    候補 0 件でも「候補なし」ファイルを必ず出力する（前回出力を上書き
+    することで古い候補が残り続けるのを防ぐ）。
+
+    アトミック書き込み: ``tempfile.mkstemp`` + ``os.replace`` パターン。
+
+    ``today`` が指定されたときはヘッダの「最終更新」タイムスタンプに
+    使用する（テスト時の決定論性を確保）。省略時は現在 UTC。
+    """
+    if today is None:
+        today = datetime.now(timezone.utc)
+    elif not isinstance(today, datetime):
+        today = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+    if today.tzinfo is None:
+        today = today.replace(tzinfo=timezone.utc)
+    now_iso = today.isoformat(timespec="seconds")
+
+    lines: list[str] = [
+        "# 昇格候補一覧",
+        "",
+        f"_最終更新: {now_iso} / 候補数: {len(candidates)}_",
+        "",
+        "`promotion_candidate: true` かつ `promoted` 未設定のパターンを表示します。",
+        "昇格するには `/promote-pattern` skill を実行してください。",
+        "",
+    ]
+
+    if not candidates:
+        lines.append("_候補なし_")
+        lines.append("")
+    else:
+        # 表セクション
+        lines.append("| ID | trust | 観測 | 登録日 | 説明 |")
+        lines.append("|---|---|---|---|---|")
+        for c in candidates:
+            f = _extract_candidate_fields(c)
+            cid_disp = _truncate_for_table(f["cid"], limit=_PROMOTION_CID_MAX_LEN)
+            desc = _truncate_for_table(f["description"])
+            lines.append(
+                f"| `{cid_disp}` | {f['trust_str']} | "
+                f"{f['obs_count']} | {f['registered']} | {desc} |"
+            )
+        lines.append("")
+        # 詳細セクション（コピペ用）
+        lines.append("---")
+        lines.append("")
+        lines.append("## 詳細（コピペ用）")
+        lines.append("")
+        for c in candidates:
+            f = _extract_candidate_fields(c)
+            lines.append(f"### {f['cid']}  [trust {f['trust_str']}]")
+            lines.append(
+                f"- 登録日: {f['registered']} / 最終更新: {f['last_updated']} / "
+                f"観測: {f['obs_count']} 件"
+            )
+            lines.append(f"- {f['description']}")
+            lines.append("")
+
+    payload = "\n".join(lines).rstrip() + "\n"
+    return _atomic_write(output_path, payload)
+
+
+def _atomic_write(output_path: str, payload: str) -> bool:
+    """tempfile + os.replace でアトミックに書き込む。失敗時は False。"""
+    try:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    except OSError as exc:
+        print(
+            f"[consolidate_memory] failed to create dir for {output_path}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".tmp_", dir=os.path.dirname(output_path)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp_path, output_path)
+    except OSError as exc:
+        print(
+            f"[consolidate_memory] failed to write {output_path}: {exc}",
+            file=sys.stderr,
+        )
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
         return False
     return True
 
@@ -334,11 +590,28 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
 
-    # MVP: consolidated_summary.md 生成
+    # main() 全体で同じ "today" を共有する（datetime.now() の二重評価回避 + 決定論性）
+    today = datetime.now(timezone.utc)
+
+    # MVP + Phase 2-B: consolidated_summary.md 生成 (末尾に昇格候補サマリ含む)
     try:
-        write_summary()
+        write_summary(patterns_path=PATTERNS_PATH, today=today)
     except Exception as exc:  # noqa: BLE001
         print(f"[consolidate_memory] unexpected error: {exc}", file=sys.stderr)
+
+    # Phase 2-B: 半自動 promotion 候補ログ
+    try:
+        _, candidates = build_promotion_candidates_section(
+            PATTERNS_PATH, today=today
+        )
+        write_promotion_candidates_log(
+            candidates, PROMOTION_CANDIDATES_PATH, today=today
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[consolidate_memory:promotion] unexpected error: {exc}",
+            file=sys.stderr,
+        )
 
     # Phase 2-A: 古い session.tmp を archive/ へ移動
     try:

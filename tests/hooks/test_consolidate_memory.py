@@ -472,3 +472,153 @@ class TestArchive:
         assert len(moved) == 1
         assert archive.is_dir()
         assert (archive / "20260417.tmp").is_file()
+
+
+# ---------------------------------------------------------------------------
+# F-004 Phase 2-B: 半自動 promotion 候補ログ
+# ---------------------------------------------------------------------------
+
+
+import json
+
+
+def _write_patterns_json(path: Path, patterns: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"patterns": patterns}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+class TestPromotionCandidates:
+    """`build_promotion_candidates_section()` / `write_promotion_candidates_log()` の検証。"""
+
+    def test_extracts_candidates_from_patterns_json(self, tmp_path: Path) -> None:
+        """promotion_candidate=true & promoted=false のパターンだけ抽出される。"""
+        mod = _load_hook_module()
+        patterns_path = tmp_path / "patterns.json"
+        _write_patterns_json(patterns_path, [
+            {"id": "p1", "description": "d1", "trust_score": 0.9,
+             "promotion_candidate": True, "observations": [{"date": "20260501"}],
+             "registered_date": "20260501"},
+            {"id": "p2", "description": "d2", "trust_score": 0.5,
+             "promotion_candidate": False, "observations": [{"date": "20260501"}],
+             "registered_date": "20260501"},
+            {"id": "p3", "description": "d3", "trust_score": 0.95,
+             "promotion_candidate": True, "observations": [{"date": "20260502"}],
+             "registered_date": "20260502"},
+        ])
+
+        section, candidates = mod.build_promotion_candidates_section(
+            str(patterns_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+        ids = [c["id"] for c in candidates]
+        assert ids == ["p1", "p3"]
+        assert "## 昇格候補" in section
+        assert "p1" in section
+        assert "p3" in section
+        assert "p2" not in section
+
+    def test_excludes_already_promoted(self, tmp_path: Path) -> None:
+        """promotion_candidate=true でも promoted=true は除外。"""
+        mod = _load_hook_module()
+        patterns_path = tmp_path / "patterns.json"
+        _write_patterns_json(patterns_path, [
+            {"id": "p1", "description": "d1", "trust_score": 0.9,
+             "promotion_candidate": True, "promoted": True,
+             "observations": [{"date": "20260501"}],
+             "registered_date": "20260501"},
+            {"id": "p2", "description": "d2", "trust_score": 0.9,
+             "promotion_candidate": True,
+             "observations": [{"date": "20260501"}],
+             "registered_date": "20260501"},
+        ])
+
+        _, candidates = mod.build_promotion_candidates_section(
+            str(patterns_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+        ids = [c["id"] for c in candidates]
+        assert ids == ["p2"]
+
+    def test_writes_no_candidates_message_when_empty(self, tmp_path: Path) -> None:
+        """候補 0 件でもファイルは出力され、「候補なし」表記が含まれる。"""
+        mod = _load_hook_module()
+        patterns_path = tmp_path / "patterns.json"
+        _write_patterns_json(patterns_path, [
+            {"id": "p1", "description": "d1", "trust_score": 0.5,
+             "promotion_candidate": False,
+             "observations": [{"date": "20260501"}],
+             "registered_date": "20260501"},
+        ])
+        output_path = tmp_path / "promotion-candidates.md"
+
+        ok = mod.write_promotion_candidates_log(
+            [], str(output_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+        assert ok is True
+        assert output_path.is_file()
+        text = output_path.read_text(encoding="utf-8")
+        # 「候補なし」を示す表記が含まれる
+        assert "候補なし" in text or "候補数: 0" in text
+
+    def test_consolidated_summary_includes_promotion_section(
+        self, tmp_path: Path
+    ) -> None:
+        """consolidated_summary.md の末尾に「## 昇格候補」サマリが追加される。"""
+        mod = _load_hook_module()
+        sessions = tmp_path / "memory" / "sessions"
+        sessions.mkdir(parents=True)
+        _make_session(sessions, "20260507", success=["- foo"])
+
+        patterns_path = tmp_path / "memory" / "patterns.json"
+        _write_patterns_json(patterns_path, [
+            {"id": "candidate_a", "description": "desc A", "trust_score": 0.9,
+             "promotion_candidate": True,
+             "observations": [{"date": "20260501"}],
+             "registered_date": "20260501"},
+        ])
+
+        output = tmp_path / "memory" / "consolidated_summary.md"
+        ok = mod.write_summary(
+            str(output),
+            sessions_dir=str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+            patterns_path=str(patterns_path),
+        )
+        assert ok is True
+        text = output.read_text(encoding="utf-8")
+        assert "## 昇格候補" in text
+        assert "candidate_a" in text
+
+    def test_promotion_candidates_md_table_escapes_pipe_in_description(
+        self, tmp_path: Path
+    ) -> None:
+        """description に `|` を含む場合、Markdown 表セル内でエスケープされる。"""
+        mod = _load_hook_module()
+        patterns_path = tmp_path / "patterns.json"
+        _write_patterns_json(patterns_path, [
+            {"id": "pipe_in_desc",
+             "description": "before|after pipe",
+             "trust_score": 0.9,
+             "promotion_candidate": True,
+             "observations": [{"date": "20260501"}],
+             "registered_date": "20260501"},
+        ])
+        output_path = tmp_path / "promotion-candidates.md"
+
+        _, candidates = mod.build_promotion_candidates_section(
+            str(patterns_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+        ok = mod.write_promotion_candidates_log(
+            candidates, str(output_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+        assert ok is True
+        text = output_path.read_text(encoding="utf-8")
+        # 表セル内では `|` を `\|` にエスケープ
+        assert r"before\|after pipe" in text

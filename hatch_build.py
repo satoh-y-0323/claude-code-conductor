@@ -27,6 +27,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "memory/patterns.json",
     "memory/agent-audit.log",
     "memory/consolidated_summary.md",
+    "memory/promotion-candidates.md",
     "agent-memory/*",
     "tmp/*",
     "docs/decisions.md",
