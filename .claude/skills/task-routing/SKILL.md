@@ -62,10 +62,10 @@ AskUserQuestion ツール:
 | 1 | `systematic-debugger` | 不具合の根本原因を特定 |
 | 2 | `developer` | 修正実装 |
 | 3 | `tester` | リグレッション確認 |
-| 4 | `code-reviewer` | 軽量レビュー |
+| 4 | `code-reviewer` + `security-reviewer` | 最終レビュー |
 
 意図: 原因不明の不具合は systematic-debugger で先に切り分けてから developer に渡す。
-security-reviewer は省略（必要なら後から追加）。
+修正後のコードに新たな脆弱性が生まれる可能性があるため、最終レビューは code-reviewer と security-reviewer の並列起動で両面を確認する。
 
 ### feature（直列・dev-workflow フルパス）
 
@@ -90,6 +90,7 @@ security-reviewer は省略（必要なら後から追加）。
 
 意図: 動作を変えないため、各リファクタを worktree で並列化できる。
 PO（Parallel Orchestra）の `c3 po run` で時間短縮を狙う。
+最終レビューは `code-reviewer` のみ（リファクタは動作変更を伴わないため新たな攻撃面が生まれにくく、security-reviewer は省略可）。
 
 ### security-audit（並列・レビュアー 2 体）
 
@@ -99,7 +100,7 @@ PO（Parallel Orchestra）の `c3 po run` で時間短縮を狙う。
 | `code-reviewer` | 並列起動 |
 
 意図: 既存コードへの監査のため、レビュアー 2 体を同時に当てる。
-検出指摘の対応は別途 dev-workflow フェーズ C → D へ送る。
+検出指摘の対応は `/start` の security-audit フェーズ F/G/H（修正計画 → TDD 実装 → 最終レビュー）で行う。
 
 ### docs（直列・軽量）
 
@@ -145,7 +146,8 @@ AskUserQuestion ツール:
 - **feature**:
   - `args` に `from_start=true` が含まれているとき: 種別を返却するのみ（制御を /start に返す。再帰呼び出しを避ける）
   - `args` 指定なし/`from_start=false` のとき: `.claude/skills/start/SKILL.md` を Read して `/start` フローに合流する
-- **bug-fix / docs**: 編成順に Agent ツールでエージェントを順次起動する
+- **bug-fix**: `systematic-debugger` → `developer` → `tester` の順に Agent ツールで順次起動し、完了後に `code-reviewer` と `security-reviewer` を 1 メッセージ内で並列起動する
+- **docs**: Agent ツールで `doc-writer` を起動する
 - **refactor**: planner で `po_plan_version` 付き plan-report を生成 → `.claude/skills/wave-execution/SKILL.md` を Read して PO 並列実行に合流する
 - **security-audit**: code-reviewer と security-reviewer を **1 メッセージ内で並列起動**（複数 Agent ツール呼び出し）
 
