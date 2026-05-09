@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
-import sys
 from pathlib import Path
 
+from c3._terminal import supports_color as _supports_color
 from c3.paths import claude_root_for
 
 _OK = "OK"
@@ -101,14 +100,6 @@ def _check_po() -> tuple[str, str, str]:
         return _ERR, "parallel-orchestra", f"bundled package failed to import: {exc}"
     ver = getattr(parallel_orchestra, "__version__", "unknown")
     return _OK, "parallel-orchestra", f"{ver} (bundled)"
-
-
-def _supports_color() -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    if not sys.stdout.isatty():
-        return False
-    return True
 
 
 def _format(status: str, label: str, detail: str, *, color: bool) -> str:

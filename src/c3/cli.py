@@ -12,7 +12,7 @@ import argparse
 import sys
 
 from c3 import __version__
-from c3 import cli_doctor, cli_init, cli_list, cli_po, cli_update
+from c3 import cli_doctor, cli_init, cli_list, cli_po, cli_status, cli_update
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     cli_list.register(sub)
     cli_doctor.register(sub)
     cli_po.register(sub)
+    cli_status.register(sub)
 
     return parser
 

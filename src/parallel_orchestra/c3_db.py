@@ -460,6 +460,63 @@ def fetch_po_status(
         return []
 
 
+def fetch_po_results(
+    *,
+    session_id: str | None = None,
+    db_path: Path | None = None,
+    status: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """``po_results`` から行を取得する（F-003 Phase 2: c3 status CLI 用）。
+
+    Args:
+        session_id: 指定時はその session のみ。省略時は全 session を対象。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        status: 'success' / 'failure' / 'cancelled' のいずれか。指定時はその status のみ。
+        limit: 返す最大件数（``completed_at`` 降順で先頭から）。
+
+    Returns:
+        各行を dict 化したリスト。キー:
+        ``session_id`` / ``worktree_id`` / ``task_id`` / ``status`` /
+        ``started_at`` / ``completed_at`` / ``output_summary`` / ``error_message``。
+        DB 不在 / エラーは空リスト。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            conn.row_factory = sqlite3.Row
+            sql = (
+                "SELECT session_id, worktree_id, task_id, status, "
+                "       started_at, completed_at, output_summary, error_message "
+                "FROM po_results"
+            )
+            params: list = []
+            where: list[str] = []
+            if session_id is not None:
+                where.append("session_id = ?")
+                params.append(session_id)
+            if status is not None:
+                where.append("status = ?")
+                params.append(status)
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+            sql += " ORDER BY completed_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to fetch po_results: %s", exc)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # F-005: tier_bandit ヘルパー（Tier 自動ルーティング Thompson Sampling）
 # ---------------------------------------------------------------------------

@@ -451,3 +451,63 @@ class TestStateMapping:
     ])
     def test_internal_to_schema_state(self, internal: str, expected: str) -> None:
         assert _PO_STATUS_STATE_MAPPING[internal] == expected
+
+
+# ---------------------------------------------------------------------------
+# F-003 Phase 2: fetch_po_results
+# ---------------------------------------------------------------------------
+
+
+class TestFetchPoResults:
+    """fetch_po_results が session_id / status でフィルタ可能なこと。"""
+
+    def _seed(self, db_path: Path) -> None:
+        """po_results に 4 行 seed する（sess-1: success/failure, sess-2: success/cancelled）。"""
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(
+                """
+                INSERT INTO po_results
+                  (session_id, worktree_id, task_id, status, started_at, completed_at, output_summary, error_message)
+                VALUES
+                  ('sess-1', 'wt-a', 'task-1', 'success', '2026-05-09T00:00:00', '2026-05-09T00:01:00', 'ok', NULL),
+                  ('sess-1', 'wt-b', 'task-2', 'failure', '2026-05-09T00:02:00', '2026-05-09T00:03:00', NULL, 'pytest collect failed: ImportError no module named foo'),
+                  ('sess-2', 'wt-c', 'task-3', 'success', '2026-05-09T01:00:00', '2026-05-09T01:01:00', 'done', NULL),
+                  ('sess-2', 'wt-d', 'task-4', 'cancelled', '2026-05-09T01:02:00', '2026-05-09T01:03:00', NULL, NULL);
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_fetch_po_results_filters_by_session(self, tmp_path: Path) -> None:
+        """session_id を指定すると該当 session のみ返る。"""
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        self._seed(db_path)
+
+        rows = c3_db.fetch_po_results(session_id="sess-1", db_path=db_path)
+
+        assert len(rows) == 2
+        assert all(r["session_id"] == "sess-1" for r in rows)
+        # completed_at 降順
+        assert rows[0]["task_id"] == "task-2"
+        assert rows[1]["task_id"] == "task-1"
+
+    def test_fetch_po_results_filters_by_status(self, tmp_path: Path) -> None:
+        """status を指定すると該当 status のみ返る。"""
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        self._seed(db_path)
+
+        rows = c3_db.fetch_po_results(status="failure", db_path=db_path)
+
+        assert len(rows) == 1
+        assert rows[0]["status"] == "failure"
+        assert rows[0]["error_message"].startswith("pytest collect failed")
+
+    def test_fetch_po_results_db_not_found_returns_empty(self, tmp_path: Path) -> None:
+        """DB が無ければ空リストを返す。"""
+        db_path = tmp_path / "nonexistent" / "c3.db"
+        rows = c3_db.fetch_po_results(db_path=db_path)
+        assert rows == []
