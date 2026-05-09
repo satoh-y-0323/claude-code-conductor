@@ -219,6 +219,7 @@ def fetch_review_decisions(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT checklist_id, finding_text, decision, reason, "
@@ -371,14 +372,23 @@ def upsert_po_status(
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-            # SQLite 3.24+ の UPSERT 構文を使う（Python 3.10 同梱版で利用可能）
+            # SQLite 3.24+ の UPSERT 構文を使う（Python 3.10 同梱版で利用可能）。
+            # F-002 Phase 2-B: terminal state (completed / failed) は保護する。
+            # 親 heartbeat と worktree 内子プロセスの heartbeat 競合で、
+            # 子が completed を書いた後に親 heartbeat が running で逆行
+            # 上書きする事故、および completed → failed の上書きも阻止する。
+            # current_step / progress_pct / last_heartbeat は常に最新値で更新する。
             conn.execute(
                 "INSERT INTO po_status "
                 "(session_id, worktree_id, state, current_step, "
                 " progress_pct, last_heartbeat) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_id, worktree_id) DO UPDATE SET "
-                "  state = excluded.state, "
+                "  state = CASE "
+                "    WHEN po_status.state IN ('completed', 'failed') "
+                "      THEN po_status.state "
+                "    ELSE excluded.state "
+                "  END, "
                 "  current_step = excluded.current_step, "
                 "  progress_pct = excluded.progress_pct, "
                 "  last_heartbeat = excluded.last_heartbeat",
@@ -421,6 +431,7 @@ def fetch_po_status(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
             conn.row_factory = sqlite3.Row
             if session_id is not None:
                 rows = conn.execute(
@@ -485,6 +496,7 @@ def read_tier_params(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT tier, alpha, beta, trials "
@@ -651,6 +663,7 @@ def read_tier_failure_rate(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
             rows = conn.execute(
                 "SELECT success FROM tier_recent_outcomes "
                 "WHERE task_complexity = ? AND tier = ? "

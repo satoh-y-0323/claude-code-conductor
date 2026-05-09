@@ -175,6 +175,91 @@ class TestUpsertFetchPoStatus:
         assert len(rows) == 1
         assert rows[0]["state"] == "UNKNOWN_STATE"
 
+    def test_does_not_downgrade_completed_to_running(
+        self, tmp_path: Path
+    ) -> None:
+        """F-002 Phase 2-B: completed の行に running を UPSERT しても完了が保たれる。
+
+        親 heartbeat スレッドと worktree 内子プロセスからの heartbeat の競合で
+        子が completed を書いた直後に親が running で逆行上書きしないこと。
+        """
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+
+        # まず completed を書く
+        c3_db.upsert_po_status(
+            session_id="sess-1", worktree_id="po/t1", state="completed",
+            current_step="done", db_path=db_path,
+        )
+        # 後から running を書く（親 heartbeat の遅延発火を再現）
+        c3_db.upsert_po_status(
+            session_id="sess-1", worktree_id="po/t1", state="running",
+            current_step="overwrite attempt", db_path=db_path,
+        )
+
+        rows = c3_db.fetch_po_status(session_id="sess-1", db_path=db_path)
+        assert len(rows) == 1
+        # 完了状態が保護されている（last_heartbeat / current_step は更新されてもよい）
+        assert rows[0]["state"] == "completed"
+
+    def test_does_not_downgrade_failed_to_running(
+        self, tmp_path: Path
+    ) -> None:
+        """F-002 Phase 2-B: failed の行も running への逆行を阻止する。"""
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+
+        c3_db.upsert_po_status(
+            session_id="sess-1", worktree_id="po/t1", state="failed",
+            db_path=db_path,
+        )
+        c3_db.upsert_po_status(
+            session_id="sess-1", worktree_id="po/t1", state="running",
+            db_path=db_path,
+        )
+
+        rows = c3_db.fetch_po_status(session_id="sess-1", db_path=db_path)
+        assert rows[0]["state"] == "failed"
+
+    def test_running_to_completed_is_normal_progression(
+        self, tmp_path: Path
+    ) -> None:
+        """F-002 Phase 2-B: 正常な running → completed の遷移は通る。"""
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+
+        c3_db.upsert_po_status(
+            session_id="sess-1", worktree_id="po/t1", state="running",
+            db_path=db_path,
+        )
+        c3_db.upsert_po_status(
+            session_id="sess-1", worktree_id="po/t1", state="completed",
+            db_path=db_path,
+        )
+
+        rows = c3_db.fetch_po_status(session_id="sess-1", db_path=db_path)
+        assert rows[0]["state"] == "completed"
+
+    def test_completed_to_failed_is_blocked(self, tmp_path: Path) -> None:
+        """F-002 Phase 2-B: completed の行は failed にも上書きされない。
+
+        どちらも terminal なので最初に書かれた方が保たれる（先勝ち）。
+        """
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+
+        c3_db.upsert_po_status(
+            session_id="sess-1", worktree_id="po/t1", state="completed",
+            db_path=db_path,
+        )
+        c3_db.upsert_po_status(
+            session_id="sess-1", worktree_id="po/t1", state="failed",
+            db_path=db_path,
+        )
+
+        rows = c3_db.fetch_po_status(session_id="sess-1", db_path=db_path)
+        assert rows[0]["state"] == "completed"
+
 
 # ---------------------------------------------------------------------------
 # _Dashboard.snapshot_states

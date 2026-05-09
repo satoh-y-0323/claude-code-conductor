@@ -25,6 +25,7 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 try:
     sys.stdin.reconfigure(encoding='utf-8')
@@ -47,6 +48,13 @@ _MAX_SCAN_LINES = 10_000
 # イベント名定数 (code-L-1)
 _EVENT_START = "SubagentStart"
 _EVENT_STOP = "SubagentStop"
+
+# F-002 Phase 2-B: SubagentStop の status 値の正常終了マーカー（仕様変更時の単一窓口）。
+_STATUS_SUCCESS = "success"
+
+# F-002 Phase 2-B: po_status.current_step の最大文字数 [SR-V-001]。
+# payload.agent_type / agent_id は任意文字列のため DB 容量保護のため切り詰める。
+_MAX_CURRENT_STEP_LEN = 200
 
 # payload のホワイトリスト対象フィールド (sec-M-1)
 # F-008: total_tokens / status / token_usage / model を追加。
@@ -166,12 +174,68 @@ def _append_log(record: dict) -> None:
         print(f'[subagent_log] ログ追記に失敗しました: {e}', file=sys.stderr)
 
 
+def _maybe_upsert_po_status(payload: dict) -> None:
+    """F-002 Phase 2-B: worktree 内 Claude のサブエージェント停止時に po_status を更新。
+
+    ``C3_PO_WORKTREE_ID`` 環境変数が設定されているとき（= 親 runner が
+    PO の worktree として spawn した子 Claude プロセス内の subagent 実行）
+    のみ動作し、SubagentStop の status を見て completed / failed を UPSERT する。
+    親 Claude セッション（環境変数なし）では完全に no-op で副作用ゼロ。
+
+    全例外は内部で catch する（subagent_log の本体機能を止めないため）。
+    """
+    worktree_id = os.environ.get('C3_PO_WORKTREE_ID')
+    session_id = os.environ.get('C3_PO_SESSION_ID')
+    if not worktree_id or not session_id:
+        return
+
+    event_name = payload.get('hook_event_name', '')
+    if event_name not in (_EVENT_START, _EVENT_STOP):
+        return
+
+    if event_name == _EVENT_START:
+        state = 'running'
+    else:  # SubagentStop
+        # status='success' なら completed、それ以外（'error' / 'failure' 等）は failed
+        status = (payload.get('status') or '').lower()
+        state = 'completed' if status == _STATUS_SUCCESS else 'failed'
+
+    # current_step は payload 由来の任意文字列なので長さを制限する [SR-V-001]。
+    # stdin の 1MB 制限と組み合わせて DB 容量保護。
+    raw_step = payload.get('agent_type') or payload.get('agent_id') or ''
+    current_step = raw_step[:_MAX_CURRENT_STEP_LEN] if raw_step else None
+
+    try:
+        # parallel_orchestra.c3_db を src/ から動的 import する。
+        # po_heartbeat.py と同じ Path(__file__).resolve().parents[2] / "src"
+        # 表現で統一する（保守上の一貫性）。
+        src = Path(__file__).resolve().parents[2] / 'src'
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        from parallel_orchestra.c3_db import upsert_po_status  # noqa: PLC0415
+
+        upsert_po_status(
+            session_id=session_id,
+            worktree_id=worktree_id,
+            state=state,
+            current_step=current_step,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(
+            f'[subagent_log] po_status UPSERT skipped: {e}',
+            file=sys.stderr,
+        )
+
+
 def main() -> int:
     """stdin から JSON を読み込み、サニタイズして LOG_FILE に追記する。
 
     SubagentStop イベントの場合は同 session_id + agent_id の最古未消費 Start を
     検索して duration_seconds / matched_start_ts を付加する。
     stdin の IOError・JSON パースエラーを含む全例外を catch して 0 を返す。
+
+    F-002 Phase 2-B: ``C3_PO_WORKTREE_ID`` 環境変数があるときのみ追加で
+    c3.db.po_status に状態を UPSERT する（親 Claude セッションでは no-op）。
     """
     try:
         raw = sys.stdin.read(_MAX_STDIN_BYTES + 1)
@@ -211,6 +275,9 @@ def main() -> int:
                     record['matched_start_ts'] = start.get('ts')
 
     _append_log(record)
+
+    # F-002 Phase 2-B: worktree 内 spawn の場合のみ po_status を UPSERT。
+    _maybe_upsert_po_status(payload)
 
     return 0
 
