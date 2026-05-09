@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.4.0] - 2026-05-09
+
+### マイルストーン
+
+第 8 波として F-010（タスク種別 → エージェント編成 skill）の Phase 2 を完成。Phase 1 で実装済みの `task-routing` skill を **`/start` フローに自動統合** し、bug-fix / refactor / security-audit / docs といった軽量タスクで dev-workflow フェーズ A〜E のフルパスを回避できる経路を提供した。同時に dev-workflow フェーズ A-1（目的選択）と task-routing 5 種別の二重質問を解消し、UX 負債を 1 つ削減した。
+
+### 追加（第 8 波）
+
+#### F-010 Phase 2: task-routing skill を /start フローに自動統合
+
+- `start/SKILL.md` に **Step 0.5「タスク種別の確認」** を新設。Step 0（レポート整理）と Step 1（開始地点選択）の間に挿入され、`/start` 起動時に必ずタスク種別が確定される。
+- 前回 tmp に `TASK_TYPE` があれば「前回と同じ / 別の種別」の 2 択ショートカットで質問数を最小化。なければ Skill ツールで `task-routing` を `args="from_start=true"` 付きで呼び出し。
+- Step 1（開始地点選択）を **種別ごとに選択肢を絞る** 分岐に改修。feature 4 択 / bug-fix 1〜2 択（既存 plan-report 有無で動的）/ refactor 2 択 / security-audit / docs は確認のみの 1 択。
+- Step 2 を **種別 × 開始地点 → フェーズ遷移** マッピング表に拡張。bug-fix → systematic-debugger 直結 / docs → doc-writer 単独 / security-audit → 並列レビュアー / refactor → wave-execution の各経路を明文化。
+- `task-routing/SKILL.md` に **動作モード分岐** を追加。`args` に `from_start=true` が含まれていれば Step 1 のみ実行して `/start` に種別を返却し、Step 2〜4 はスキップ（再帰呼び出し回避）。単独利用（`/task-routing`）は Step 1〜4 すべて実行する後方互換を維持。
+- `dev-workflow/SKILL.md` フェーズ A 冒頭で TASK_TYPE を読み取り、**A-1「目的選択」を削除**して A-2〜A-5 を A-1〜A-4 へ繰り上げ。これにより task-routing 5 種別との二重質問が解消。`/develop` 直接呼び出しなど Step 0.5 を経由しない場合のフォールバックも実装。
+- `dev-workflow/SKILL.md` A-4（旧 A-5）の requirements-report 生成手順に `task_type:` フロントマターを追加し、後段の architect / planner / interviewer に種別を伝達。
+- `init-session/SKILL.md` Step 1 で前回 TASK_TYPE を抽出して Step 3 サマリに含めるよう拡張。Step 5「ワークフローで始める」に「`/start` 内で task-routing が自動実行されるため個別呼び出し不要」と注記追加。
+- `session_utils.py::create_session_template` のテンプレートに `TASK_TYPE: \n` 行を追加（SESSION 直後）。tmp 冒頭順序非依存パーサのため既存 hook（stop / restore_session / consolidate_memory）に影響なし。
+
+### 設計判断
+
+- **Skill ツール呼び出しのフラグ伝達は env ではなく args**: 当初 `C3_TASK_ROUTING_FROM_START=1` の env 経由を想定したが、Skill ツールは LLM 内のコンテキスト読み込みで子プロセス起動を伴わないため env が伝わらない。code-reviewer の H-1 指摘で発見し、Skill `args="from_start=true"` 方式に切り替え。
+- **TASK_TYPE 値のホワイトリスト検証**: 前回 tmp から抽出した `TASK_TYPE` が `feature / bug-fix / refactor / security-audit / docs` のいずれでもない場合は `prev_type=None` として task-routing に進む（プロンプト汚染対策 [SR-V-001]）。
+- **dev-workflow A-1 削除の影響緩和**: requirements-report のフロントマターに `task_type:` を必ず含めることで、後段の architect / planner / interviewer に種別を伝達。`/develop` 直接呼び出し時は dev-workflow A 冒頭で task-routing を `args="from_start=true"` 付きで呼んでフォールバック。
+
+### 注意（既存利用先への影響）
+
+- `/start` 起動時に Step 0.5「タスク種別の確認」が追加されるため、既存ユーザーには質問が 1 つ増える。`feature` を最初の選択肢に置き「feature を選ぶと従来の /start と同じフローに進む」と明示することで UX 劣化を最小化。
+- セッション tmp の冒頭に `TASK_TYPE: \n` 行が追加される。既存 hook はこの行を順序依存でパースしないため影響なし。
+- `/task-routing` 単独利用は完全な後方互換を維持。既存ユーザーの動線に影響なし。
+
+### 内部
+
+- 新規テスト追加: `test_session_utils.py::TestCreateSessionTemplate` に `test_contains_task_type_line` / `test_task_type_line_position_after_session` の 2 ケース。
+- 全体: **747 passed / 3 skipped / 0 failed**（前回 745 + 2）。
+
+### 関連コミット
+
+- `b745c31` feat(skills): F-010 Phase 2 task-routing を /start に自動統合
+
 ## [1.3.0] - 2026-05-09
 
 ### マイルストーン
