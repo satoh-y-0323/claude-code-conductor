@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.2.0] - 2026-05-09
+
+### マイルストーン
+
+第 6 波として F-002（PO 集約レイヤの SQLite 化）の Phase 2 を A/B/C すべて完成。1.1.x までは「親 Claude の `runner.py` が完了後にまとめて INSERT」する Phase 1 の集約だったが、本リリースで **worktree 内の子 Claude プロセスから直接 `.claude/state/c3.db` に書き込める配管** を整備した。子 Claude が自身の進捗を能動的に報告できるようになり、PO の状態可視化（F-003）と review_decisions（F-001）／tier_outcome（F-005）の収集が worktree 内 dev-workflow からも機能するようになった。
+
+### 追加（第 6 波）
+
+#### F-002 Phase 2-A: 環境変数渡し + locate_c3_db env-aware 化
+
+- `src/parallel_orchestra/c3_db.py`: `locate_c3_db()` を env-aware 化。`C3_PO_DB_PATH` 環境変数があればそれを優先し、無効なパスなら警告ログを出して既存の親方向探索に fall-through。後方互換 100%。
+- 全 5 箇所の write 関数（`record_task_results` / `insert_review_decision` / `upsert_po_status` / `update_tier_params` / `record_tier_recent_outcome`）に `PRAGMA busy_timeout=5000` を冪等適用。並列書き込み増加に備える。
+- `READ_ONLY_WORKTREE_ID = "(read-only)"` / `_BUSY_TIMEOUT_MS = 5000` をマジック値から定数化。
+- `src/parallel_orchestra/runner.py`: `_execute_task` / `_execute_with_retry` に `po_session_id: str | None = None` 引数を追加（後方互換）。`run_manifest` の `execute_fn` から `_po_session_id` を伝搬し、subprocess 起動時の env dict に `C3_PO_DB_PATH` / `C3_PO_SESSION_ID` / `C3_PO_TASK_ID` / `C3_PO_WORKTREE_ID` の 4 変数を注入（write task / read_only 両モード対応）。
+- 新規テスト: `tests/parallel_orchestra/test_po_worktree_writes.py`（5 ケース）+ `tests/parallel_orchestra/test_po_results_recording.py` に locate_c3_db env-aware の 3 ケース追加。
+
+#### F-002 Phase 2-B: po_heartbeat CLI + subagent_log fold-in + terminal state 保護
+
+- 新規 `.claude/hooks/po_heartbeat.py`（~98 行）: 子 Claude が任意のタイミングで状態を UPSERT できる薄い CLI。引数は `--state running|starting|completed|failed` / `--step "<text>"` / `--progress 0-100`。環境変数 `C3_PO_SESSION_ID` / `C3_PO_WORKTREE_ID` から自動取得し、欠落時はフェイルセーフで exit 0。
+- `.claude/hooks/subagent_log.py`: `_maybe_upsert_po_status()` を追加。`C3_PO_WORKTREE_ID` + `C3_PO_SESSION_ID` 両方が設定されているときのみ動作し、SubagentStart で `state="running"` / SubagentStop の status を見て `"completed"` / `"failed"` を UPSERT。親 Claude セッション（環境変数なし）では完全 no-op で副作用ゼロ。`current_step` は `_MAX_CURRENT_STEP_LEN=200` 文字で切り詰め（DB 容量保護）。
+- `c3_db.upsert_po_status` SQL に terminal state 保護 CASE を追加（`completed` / `failed` の行は逆行上書きを阻止、current_step / progress_pct / last_heartbeat は常に最新値で更新）。親 heartbeat と worktree 内子 heartbeat の競合で完了状態が running に逆行する事故を防ぐ。
+- read 系 4 関数（`fetch_po_status` / `fetch_review_decisions` / `read_tier_params` / `read_tier_failure_rate`）にも `PRAGMA busy_timeout=5000` を追加（読み出し競合の緩和）。
+- 新規テスト: `test_po_worktree_writes.py` に 8 ケース追加（PoHeartbeatCli 4 + SubagentLogPoStatusFoldIn 4）。`test_po_status_visibility.py` に terminal state 保護の 4 ケース追加。
+
+#### F-002 Phase 2-C: ドキュメント + 動作確認
+
+- 新規 `.claude/docs/po-worktree-writes.md`（172 行）: 環境変数仕様 / locate_c3_db 解決順 / po_heartbeat 使い方 / subagent_log 挙動 / terminal state 保護 / 並列耐性 / hook 別 worktree 内動作表 / 関連リスクをまとめた人間向けドキュメント。
+- 動作確認結果: `record_review_decision.py` / `review_hint_inject.py` は env-aware locate_c3_db で worktree 内からも親リポ c3.db に書ける（追加修正不要）。`record_tier_outcome.py` は `tier_selection.json` が親 Claude セッション専用設計のため worktree 内では no-op（意図通り）。
+
+### 注意（既存利用先への影響）
+
+- `_execute_task` / `_execute_with_retry` のシグネチャに `po_session_id` キーワード引数が追加されたが、既存呼び出し（`po_session_id` 省略）はクラッシュしない後方互換設計。
+- `upsert_po_status` の SQL 改修で terminal state（completed / failed）が保護されるようになった。これは Phase 1 までの「常に最新値で上書き」挙動からの変更点。完了状態を再 running に戻すユースケースがあれば事前に DB 行を削除する必要がある（通常そういうユースケースは想定されない）。
+- 環境変数 `C3_PO_*` プレフィックスを子プロセスに注入するようになった。子から spawn された孫プロセスにも継承されるため、ネスト PO は現状非対応（孫が古い session_id を見る可能性あり）。
+
+### 内部
+
+- 新規テスト追加: 16 ケース（Phase 2-A: 8、Phase 2-B: 8、Phase 2-C: 0）。
+- 全体: 725 passed / 3 skipped / 0 failed。
+
+### 関連コミット
+
+- `1ea6b7f` feat(po): F-002 Phase 2-A worktree 内からの直接 SQLite 書き込み配管
+- `c37e576` feat(po): F-002 Phase 2-B worktree 内 heartbeat 入口
+- `8287894` docs(po): F-002 Phase 2-C ドキュメント追加
+
 ## [1.1.1] - 2026-05-09
 
 ### 修正
