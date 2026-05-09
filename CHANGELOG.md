@@ -1,5 +1,55 @@
 # Changelog
 
+## [1.3.0] - 2026-05-09
+
+### マイルストーン
+
+第 7 波として F-004（MemoryConsolidation 集約フック）の Phase 2 を A/B/C すべて完成。1.2.x までは MVP の「過去 7 日分の `## うまくいったアプローチ` / `## 試みたが失敗したアプローチ` を単純行マージして `consolidated_summary.md` に書き出すだけ」だったが、本リリースで **archive 自動整理 / 半自動 promotion 候補ログ / claude --headless による LLM 要約** の 3 機能を追加した。session ファイルの永久蓄積、見落とされがちな patterns.json の昇格候補、人間が読みづらい単純マージ、という MVP の 3 つのギャップが解消され、C3 の自己学習サイクルが完結した。
+
+### 追加（第 7 波）
+
+#### F-004 Phase 2-A: archive 機能で session.tmp を自動整理
+
+- `consolidate_memory.py` に `archive_old_sessions()` を追加。21 日 (`DEFAULT_WINDOW_DAYS * 3`) 超の `YYYYMMDD.tmp` を `.claude/memory/archive/` に `shutil.move`。同名衝突時は `YYYYMMDD-{N}.tmp` で別名生成 (N=1..1000)。
+- `_resolve_archive_ttl()` で env `C3_CONSOLIDATE_ARCHIVE_TTL_DAYS` を安全解決（不正値・0 以下はデフォルトに戻し、全 session 誤 archive を防止 [SR-V-001]）。
+- `main()` に独立 try/except で archive ステップを追加。MVP マージ失敗と archive 失敗を分離し片方が他方を巻き込まない。
+- 配布除外: `.gitignore` / `_excludes.py` / `hatch_build.py` の 3 箇所同期更新で `memory/archive/*` 追加、`memory/archive/.gitkeep` のみ残す。
+
+#### F-004 Phase 2-B: 半自動 promotion 候補ログ
+
+- `_load_patterns_readonly()` で `patterns.json` を読み込み専用アクセス（stop.py との書き込み競合を構造的に回避）。
+- `build_promotion_candidates_section()` + `write_promotion_candidates_log()` で `promotion_candidate=true` AND NOT `promoted` のパターンを `.claude/memory/promotion-candidates.md` にアトミック書き込み（`tempfile.mkstemp` + `os.replace`）。Markdown 表 + 詳細セクションで一覧化、候補 0 件でも「候補なし」表記で前回出力を上書き。
+- `_truncate_for_table()` で改行除去 + `|` / backtick エスケープ + 末尾切り詰め [SR-INJ-003]。`_extract_candidate_fields()` で表/詳細セクションの DRY 化。
+- `consolidated_summary.md` 末尾にも「## 昇格候補」サマリセクションを追加。詳細は別ファイルに分離して肥大化を抑制。
+- 配布除外: `promotion-candidates.md` も 3 箇所同期で除外。
+
+#### F-004 Phase 2-C: claude --headless で LLM 要約
+
+- `build_llm_summary_section()` で `claude -p --dangerously-skip-permissions` を subprocess 実行し、過去 7 日のセッション履歴を 5〜10 行の Markdown 箇条書きに要約。
+- **プロンプトインジェクション対策** [SR-AI-001]: セッションデータを `<session_data>` / `<successful_approaches>` / `<failed_approaches>` XML タグで囲み、LLM 命令文と明確に分離。
+- **再帰呼び出し抑止**: env `C3_CONSOLIDATE_LLM_DEPTH` を depth+1 で子に伝播し、>=1 で即スキップ。Stop hook → claude → Stop hook の循環を 1 サイクルで停止。timeout 60 秒で最悪ケース保護。
+- **サイズ制御**: 入力 6000 文字（両セクション均等トリム）/ 出力 4000 文字（超過時は `_…（要約が長すぎたため切り詰めました）_` マーカー）。
+- **フェイルセーフ多段**: claude CLI 不在 (`shutil.which` None) / TimeoutExpired / 非ゼロ returncode / 空応答 / `"Error:"` 始まり、いずれも警告ログのみで `None` を返してセクション省略。
+- `write_summary()` に `enable_llm: bool = False` 引数追加（後方互換）。MVP セクション → LLM 要約 → 昇格候補サマリの順で組み立て。
+
+### 注意（既存利用先への影響）
+
+- `.claude/memory/archive/` ディレクトリが Stop hook 実行時に自動生成される。`.gitignore` / wheel から除外済みのため利用先プロジェクトに git 汚染は出ないが、ディスク使用量は徐々に増える（21 日超のセッション履歴を保存し続けるため）。気になる場合は `archive/` を手動削除可能。
+- `.claude/memory/promotion-candidates.md` が新規生成される。同様に配布除外済み。
+- claude CLI が PATH にあれば LLM 要約が走る。env `CLAUDE_BIN=/path/to/claude` で別パス指定可。CLI 不在環境（CI 等）では LLM セクションは省略され、他のセクションのみ生成される。
+- `consolidated_summary.md` のフォーマットが拡張: MVP セクション後に「## LLM 要約」「## 昇格候補」が追加される（既存セクションの位置・内容は変更なし）。
+
+### 内部
+
+- 新規テスト追加: 17 ケース（Phase 2-A: 5 / Phase 2-B: 5 / Phase 2-C: 7）。
+- 全体: **745 passed / 3 skipped / 0 failed**（前回 728 + 17）。
+
+### 関連コミット
+
+- `cab1650` feat(memory): F-004 Phase 2-A archive 機能で session.tmp を自動整理
+- `411eee7` feat(memory): F-004 Phase 2-B 半自動 promotion 候補ログを実装
+- `9ecc2da` feat(memory): F-004 Phase 2-C claude --headless で LLM 要約セクションを生成
+
 ## [1.2.0] - 2026-05-09
 
 ### マイルストーン
