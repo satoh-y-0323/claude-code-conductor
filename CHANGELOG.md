@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.5.2] - 2026-05-09
+
+### マイルストーン
+
+`planner.md` の **PO writes 衝突回避ルール** を実装の挙動に合わせて修正する patch リリース。c3_pip_test 環境で発生した昇格候補パターン `po_pre_setup_main_js_stub_avoidance` を契機に、`src/parallel_orchestra/manifest.py:463 _check_writes_conflicts` が **静的チェックで `depends_on` / `concurrency_group` を考慮しない**事実を確認。1.5.1 までの planner.md ルール 8 / 10 が「writes 重複は (a) まとめる / (b) `depends_on` で順序付け / (c) `concurrency_group` で同時実行を 1 に」と案内していたが、(b)(c) は **実際には dry-run を通らない** ため誤った指針だった。
+
+### 修正
+
+#### `.claude/agents/planner.md` のルール再整理
+
+- **ルール 8 を書き換え**: 同一ファイルへの書き込みは (a) タスクをまとめる / (b) 1 タスク専属にする の 2 つに限られる。`depends_on` / `concurrency_group` では `_check_writes_conflicts` の静的検出を回避できない事実を明記。先行タスクで stub / placeholder を作って後発タスクで上書きする設計は **不可**（dry-run が落ちる）と明示。
+- **ルール 9 を新設**: 統合ファイル（`main.js` のようなエントリポイント）は最後の wave 専属にする。先行 wave は各機能ファイル（`calc.js` / `currency.js` 等）のみを書き、最終 wave がそれらを import して統合する。
+- **ルール 10 / 11 を整理**: タイムアウト 15 分制約を 11→10 に繰り上げ、`depends_on: []` 禁止を 9→11 に繰り下げ。連番に揃えた。
+- **旧ルール 10 を削除**: 新ルール 8 と内容が完全重複していたため。
+- `Tools & Constraints` の参照範囲を「ルール 1〜8」から「ルール 1〜11」に拡張。
+
+### 背景
+
+`src/parallel_orchestra/manifest.py:463 _check_writes_conflicts` の実装は単純に「同一パスを 2 タスク以上が `writes` に持つ」かだけを判定する設計（`depends_on` / `concurrency_group` を考慮しない）。これは衝突を **静的に検出して dry-run で落とす** ことで、並列実行時の破壊的競合を未然に防ぐためのガード。1.5.1 までのルールは実装と整合していなかった。
+
+### 内部
+
+- 既存テスト全件 pass: **770 passed / 3 skipped / 0 failed**（変更はドキュメントのみ、テスト追加なし）。
+
+### 関連コミット
+
+- 単一 commit でリリース予定
+
 ## [1.5.1] - 2026-05-09
 
 ### マイルストーン
