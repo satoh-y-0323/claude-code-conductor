@@ -338,19 +338,23 @@ class TestPoHeartbeatCli:
         assert rows == []
 
     def test_no_db_no_op(self, tmp_path: Path) -> None:
-        """C3_PO_DB_PATH が無い場合も exit 0 で何もしない。
+        """C3_PO_DB_PATH の指定先が無効な場合も exit 0 で何もしない。
 
-        env で C3_PO_DB_PATH を指定せず、cwd を一時ディレクトリにすることで
-        locate_c3_db の親遡り探索が他のリポジトリの c3.db に当たることを防ぐ。
-        書き込みが失敗してもフェイルセーフで exit 0 を保証することを確認。
+        防御策を二重化:
+          1. cwd を tmp_path に隔離（親遡り探索の起点を一時領域に固定）
+          2. C3_PO_DB_PATH を「tmp_path 内の存在しないパス」に明示
+             → locate_c3_db は env_path を発見できず親遡り fallback、
+                tmp_path の祖先（OS の Temp 配下）にも c3.db は無いため None
+             これにより万が一 cwd が想定外でも親リポ DB が誤検出されない。
         """
+        nonexistent_db = tmp_path / "absolutely_does_not_exist.db"
         env = {
             "PATH": "",
-            "C3_PO_SESSION_ID": "sess-x",
-            "C3_PO_WORKTREE_ID": "po/x",
+            "C3_PO_DB_PATH": str(nonexistent_db),
+            "C3_PO_SESSION_ID": "sess-no-db",
+            "C3_PO_WORKTREE_ID": "po/no-db",
             "PYTHONIOENCODING": "utf-8",
         }
-        # cwd を tmp_path にして親遡り探索が tmp_path の祖先のみを見るようにする
         result = subprocess.run(
             [sys.executable, str(PO_HEARTBEAT_PATH), "--state", "running"],
             env=env,
@@ -359,8 +363,115 @@ class TestPoHeartbeatCli:
             text=True,
             timeout=15,
         )
-        # locate_c3_db は親遡りでも見つからない or 見つかっても書き込み失敗 → exit 0
+        # 書き込み失敗でもフェイルセーフで exit 0
         assert result.returncode == 0
+        # nonexistent_db は作られない（DB 不在のため接続前にスキップ）
+        assert not nonexistent_db.exists()
+
+
+# ---------------------------------------------------------------------------
+# F-002 Phase 2 フォローアップ: po_heartbeat.main() の unit test (mock 化)
+# ---------------------------------------------------------------------------
+
+
+def _load_po_heartbeat_module():
+    """`.claude/hooks/po_heartbeat.py` をテストから動的 import する。"""
+    spec = importlib.util.spec_from_file_location(
+        "po_heartbeat", PO_HEARTBEAT_PATH
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+    return module
+
+
+class TestPoHeartbeatUnit:
+    """po_heartbeat.main() の関数レベル unit test。
+
+    subprocess を経由しないため monkeypatch で c3_db.locate_c3_db を mock 化でき、
+    親リポ DB を一切触らずに「DB 不在時の no-op 挙動」を厳密に検証できる。
+    既存の TestPoHeartbeatCli は E2E カバレッジを維持するために残す。
+    """
+
+    def test_main_no_op_when_locate_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """locate_c3_db が None を返す環境で main() が exit 0 を返し、
+        c3_db.upsert_po_status が呼ばれないこと。"""
+        po_heartbeat = _load_po_heartbeat_module()
+
+        # env を完備
+        monkeypatch.setenv("C3_PO_SESSION_ID", "sess-unit-1")
+        monkeypatch.setenv("C3_PO_WORKTREE_ID", "po/unit-1")
+        monkeypatch.delenv("C3_PO_DB_PATH", raising=False)
+
+        # parallel_orchestra.c3_db を mock 化
+        from parallel_orchestra import c3_db
+        upsert_calls: list[dict] = []
+
+        def _fake_upsert(**kwargs):
+            upsert_calls.append(kwargs)
+            return False  # DB 不在を表現
+
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: None)
+        monkeypatch.setattr(c3_db, "upsert_po_status", _fake_upsert)
+
+        rc = po_heartbeat.main(["--state", "running"])
+        assert rc == 0
+        # upsert は呼ばれる（DB 不在判定は upsert 側で行うため）
+        # 重要なのは「親 DB に何も書かれない」こと（locate_c3_db が None なので
+        # upsert 内部の sqlite3.connect も走らない → 副作用ゼロ）
+        assert len(upsert_calls) == 1
+        assert upsert_calls[0]["session_id"] == "sess-unit-1"
+        assert upsert_calls[0]["worktree_id"] == "po/unit-1"
+        assert upsert_calls[0]["state"] == "running"
+
+    def test_main_no_op_when_env_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C3_PO_SESSION_ID / WORKTREE_ID 不在で main() が exit 0、
+        c3_db.upsert_po_status は呼ばれない（DB 触らず早期 return）。"""
+        po_heartbeat = _load_po_heartbeat_module()
+
+        monkeypatch.delenv("C3_PO_SESSION_ID", raising=False)
+        monkeypatch.delenv("C3_PO_WORKTREE_ID", raising=False)
+        monkeypatch.delenv("C3_PO_DB_PATH", raising=False)
+
+        from parallel_orchestra import c3_db
+        upsert_calls: list[dict] = []
+
+        def _fake_upsert(**kwargs):
+            upsert_calls.append(kwargs)
+            return True
+
+        monkeypatch.setattr(c3_db, "upsert_po_status", _fake_upsert)
+
+        rc = po_heartbeat.main(["--state", "running"])
+        assert rc == 0
+        # env 不在なので upsert は一切呼ばれない（早期 return）
+        assert upsert_calls == []
+
+    def test_main_writes_with_explicit_db(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """env 完備 + 有効 DB なら main() が upsert_po_status を実行する。"""
+        po_heartbeat = _load_po_heartbeat_module()
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+
+        monkeypatch.setenv("C3_PO_SESSION_ID", "sess-unit-2")
+        monkeypatch.setenv("C3_PO_WORKTREE_ID", "po/unit-2")
+        monkeypatch.setenv("C3_PO_DB_PATH", str(db_path))
+
+        rc = po_heartbeat.main(
+            ["--state", "completed", "--step", "all green", "--progress", "100"]
+        )
+        assert rc == 0
+        rows = _read_po_status(db_path)
+        assert len(rows) == 1
+        assert rows[0]["state"] == "completed"
+        assert rows[0]["current_step"] == "all green"
+        assert rows[0]["progress_pct"] == 100
 
 
 # ---------------------------------------------------------------------------
