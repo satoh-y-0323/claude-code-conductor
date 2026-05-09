@@ -660,11 +660,15 @@ def _with_retry_info(
     )
 
 
-def _mask_sensitive_env_values(text: str) -> str:
+def _mask_sensitive_env_values(
+    text: str,
+    extra_env: dict[str, str] | None = None,
+) -> str:
     """Replace known sensitive environment variable values with a placeholder.
 
     Scans the process environment for keys listed in ``_SENSITIVE_ENV_KEYS`` and
     replaces any occurrence of their current value in *text* with ``[MASKED]``.
+    ``extra_env`` に渡した dict の全値も同様にマスクする（task.env のシークレット対策）。
 
     Limitation: only the raw (plain-text) form of each value is matched via
     simple string substitution.  If a sensitive value appears in *text* as a
@@ -676,6 +680,10 @@ def _mask_sensitive_env_values(text: str) -> str:
         value = os.environ.get(key)
         if value:  # mask any non-empty value
             text = text.replace(value, "[MASKED]")
+    if extra_env:
+        for value in extra_env.values():
+            if value:
+                text = text.replace(value, "[MASKED]")
     return text
 
 
@@ -686,6 +694,7 @@ def _write_task_logs(
     *,
     attempt: int,
     log_config: LogConfig,
+    task_env: dict[str, str] | None = None,
 ) -> None:
     """Persist a task's stdout/stderr to files on a best-effort basis."""
     if not log_config.enabled:
@@ -696,8 +705,8 @@ def _write_task_logs(
         stderr_path = log_config.base_dir / f"{task_id}-stderr.log"
         mode = "w" if attempt == 0 else "a"
         header = f"\n===== retry attempt {attempt} =====\n" if attempt > 0 else ""
-        safe_stdout = _mask_sensitive_env_values(stdout)
-        safe_stderr = _mask_sensitive_env_values(stderr)
+        safe_stdout = _mask_sensitive_env_values(stdout, extra_env=task_env)
+        safe_stderr = _mask_sensitive_env_values(stderr, extra_env=task_env)
         with stdout_path.open(mode, encoding="utf-8", errors="replace") as fp:
             fp.write(header)
             fp.write(safe_stdout)
@@ -749,6 +758,7 @@ def _execute_with_retry(
                 result.stderr,
                 attempt=attempt,
                 log_config=log_config,
+                task_env=task.env or None,
             )
 
         if result.ok:
@@ -1162,6 +1172,9 @@ def _stream_json_reader(
     task_id: str,
     dashboard: _Dashboard,
 ) -> None:
+    # NOTE: 現在 `_run_with_progress` は常に `_stream_reader` を使用する。
+    # `--output-format stream-json` を cmd に追加した際にこの関数に切り替える。
+    # tool_use イベントからの current_action 更新・tokens_out 集計はその時点で有効化される。
     for line in stream:
         with state.lock:
             state.last_output_ts = time.perf_counter()
@@ -1309,6 +1322,36 @@ def _resolve_effective_model(
     return None, "frontmatter"
 
 
+def _build_claude_cmd(task: Task, claude_exe: str, effective_model: str | None) -> list[str]:
+    """claude CLI のコマンドライン引数リストを組み立てる。"""
+    cmd = [claude_exe, "--dangerously-skip-permissions"]
+    if task.agent:
+        if effective_model is not None:
+            agents_obj = {task.agent: {"model": effective_model}}
+            cmd.extend(["--agents", json.dumps(agents_obj, separators=(",", ":"))])
+        else:
+            cmd.extend(["--agent", task.agent])
+    cmd.extend([_CLAUDE_PROMPT_FLAG, task.prompt])
+    return cmd
+
+
+def _inject_session_env(
+    env: dict,
+    *,
+    task_id: str,
+    po_session_id: str,
+    branch_name: str | None,
+    effective_cwd: Path,
+) -> None:
+    """F-002 Phase 2-A: 子プロセスの env に PO セッション情報を注入する。"""
+    env["C3_PO_SESSION_ID"] = po_session_id
+    env["C3_PO_TASK_ID"] = task_id
+    env["C3_PO_WORKTREE_ID"] = branch_name if branch_name is not None else READ_ONLY_WORKTREE_ID
+    _db_path = locate_c3_db(start=effective_cwd)
+    if _db_path is not None:
+        env["C3_PO_DB_PATH"] = str(_db_path)
+
+
 def _read_tier_selection() -> dict | None:
     """``.claude/state/tier_selection.json`` を読んで dict を返す。
 
@@ -1322,8 +1365,7 @@ def _read_tier_selection() -> dict | None:
     if not selection_path.is_file():
         return None
     try:
-        with open(selection_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = json.loads(selection_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict):
@@ -1354,21 +1396,11 @@ def _execute_task(
           - ``C3_PO_WORKTREE_ID``: ブランチ名 (write task) / ``"(read-only)"`` (read-only)
         子プロセスはこれらを使って `.claude/state/c3.db` に直接書き込める。
     """
-    # read_only controls worktree creation only — never passed to claude as a flag.
-    # Both task types need --dangerously-skip-permissions for headless execution.
-    cmd = [claude_exe, "--dangerously-skip-permissions"]
-    # F-005 Phase 2-A: model 動的切替の解決。effective_model が決まれば
-    # --agents JSON で起動、無ければ既存の --agent 単独で起動（後方互換）。
+    # F-005 Phase 2-A: model 動的切替の解決。shell=False + list 引数 + json.dumps で
+    # Windows でもエスケープ問題なし（後方互換: model なし → --agent 単独起動）。
     tier_selection = _read_tier_selection()
     effective_model, _override_source = _resolve_effective_model(task, tier_selection)
-    if task.agent:
-        if effective_model is not None:
-            # shell=False + list 引数 + json.dumps で Windows でもエスケープ問題なし
-            agents_obj = {task.agent: {"model": effective_model}}
-            cmd.extend(["--agents", json.dumps(agents_obj, separators=(",", ":"))])
-        else:
-            cmd.extend(["--agent", task.agent])
-    cmd.extend([_CLAUDE_PROMPT_FLAG, task.prompt])
+    cmd = _build_claude_cmd(task, claude_exe, effective_model)
     env = {**os.environ, **task.env}
 
     branch_name: str | None = None
@@ -1398,16 +1430,13 @@ def _execute_task(
     # session_id を呼び出し側（run_manifest）が指定した場合のみ注入し、
     # 単体実行（既存テスト互換）では注入をスキップする。
     if po_session_id is not None:
-        env["C3_PO_SESSION_ID"] = po_session_id
-        env["C3_PO_TASK_ID"] = task.id
-        env["C3_PO_WORKTREE_ID"] = (
-            branch_name if branch_name is not None else READ_ONLY_WORKTREE_ID
+        _inject_session_env(
+            env,
+            task_id=task.id,
+            po_session_id=po_session_id,
+            branch_name=branch_name,
+            effective_cwd=effective_cwd,
         )
-        # DB パスは effective_cwd 起点で探索（worktree の親リポを発見できる）。
-        # 見つからない場合は env に入れない（子側の locate_c3_db 親遡りに任せる）。
-        _db_path = locate_c3_db(start=effective_cwd)
-        if _db_path is not None:
-            env["C3_PO_DB_PATH"] = str(_db_path)
 
     start = time.perf_counter()
     if dashboard is not None and dashboard.enabled:

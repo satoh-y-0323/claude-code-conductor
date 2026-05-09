@@ -257,7 +257,7 @@ def _attach_error_messages(
     db_path: Path,
     verbose: bool,
 ) -> list[dict]:
-    """failed 行のみに po_results.error_message を結合する。
+    """failed 行のみに po_results.error_message キーを付与する。
 
     非 failed 行には ``error_message`` キーを付けない。
     JSON 出力でキーの有無により failed/非 failed を判別できる責務分離。

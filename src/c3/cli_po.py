@@ -64,24 +64,25 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     run_wave.set_defaults(handler=_handle_run_wave)
 
 
-def _preflight(manifest: Path) -> int:
+def _preflight(manifest: Path) -> tuple[int, Path | None]:
+    """マニフェストのバリデーションを行い、(rc, root) を返す。"""
     if not manifest.is_file():
         print(f"manifest not found: {manifest}", file=sys.stderr)
-        return 2
+        return 2, None
     root = claude_root_for(manifest.parent) or claude_root_for(Path.cwd())
     if root is None:
         print("could not locate .claude/ directory for agent lookup", file=sys.stderr)
-        return 2
+        return 2, None
     errors = validate_manifest(manifest, root)
     if errors:
         for err in errors:
             print(err, file=sys.stderr)
-        return 2
-    return 0
+        return 2, None
+    return 0, root
 
 
 def _handle_dry_run(args: argparse.Namespace) -> int:
-    rc = _preflight(args.manifest)
+    rc, _ = _preflight(args.manifest)
     if rc != 0:
         return rc
     result = run_manifest(args.manifest, dry_run=True)
@@ -89,7 +90,7 @@ def _handle_dry_run(args: argparse.Namespace) -> int:
 
 
 def _handle_run(args: argparse.Namespace) -> int:
-    rc = _preflight(args.manifest)
+    rc, _ = _preflight(args.manifest)
     if rc != 0:
         return rc
     result = run_manifest(
@@ -103,7 +104,7 @@ def _handle_run(args: argparse.Namespace) -> int:
 
 
 def _handle_waves(args: argparse.Namespace) -> int:
-    rc = _preflight(args.manifest)
+    rc, _ = _preflight(args.manifest)
     if rc != 0:
         return rc
     fm = extract_frontmatter(args.manifest)
@@ -140,7 +141,7 @@ def _handle_waves(args: argparse.Namespace) -> int:
 
 
 def _handle_run_wave(args: argparse.Namespace) -> int:
-    rc = _preflight(args.manifest)
+    rc, root = _preflight(args.manifest)
     if rc != 0:
         return rc
 
@@ -154,7 +155,6 @@ def _handle_run_wave(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    root = claude_root_for(args.manifest.parent) or claude_root_for(Path.cwd())
     if root is None:
         print(
             "could not locate .claude/ directory to materialise the wave manifest",
