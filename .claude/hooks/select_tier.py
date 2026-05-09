@@ -258,8 +258,9 @@ def maybe_escalate(
         if c3_db is None:
             return chosen_tier, None
 
-        def failure_rate_fn(complexity: str, tier: str):  # type: ignore[no-redef]
+        def _db_failure_rate(complexity: str, tier: str) -> tuple:
             return c3_db.read_tier_failure_rate(complexity, tier)
+        failure_rate_fn = _db_failure_rate
 
     rate, samples = failure_rate_fn(complexity, chosen_tier)
     if rate is None or rate < ESCALATION_THRESHOLD:

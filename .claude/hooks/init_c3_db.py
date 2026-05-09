@@ -71,7 +71,7 @@ def apply_schema(db_path: str = DB_PATH, schema_path: str = SCHEMA_PATH) -> None
     with open(schema_path, 'r', encoding='utf-8') as f:
         ddl = f.read()
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     try:
         # WAL モードを有効化（reader が writer をブロックしない）
         conn.execute('PRAGMA journal_mode=WAL')

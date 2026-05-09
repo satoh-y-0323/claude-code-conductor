@@ -90,7 +90,8 @@ def _load_session_utils():
 
     util_path = os.path.join(_HOOKS_DIR, "session_utils.py")
     spec = importlib.util.spec_from_file_location("session_utils", util_path)
-    assert spec is not None and spec.loader is not None
+    if spec is None or spec.loader is None:
+        raise ImportError(f"session_utils が見つかりません: {util_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # type: ignore[attr-defined]
     return module
@@ -174,7 +175,7 @@ def build_summary_markdown(
         "# 集約サマリ",
         "",
         f"_直近 {window_days} 日（{start_str} 〜 {today_str}）の session ファイル {len(files)} 件をマージ_",
-        f"_最終更新: {datetime.now(timezone.utc).isoformat(timespec='seconds')}_",
+        f"_最終更新: {today.isoformat(timespec='seconds')}_",
         "",
         "本ファイルは `.claude/hooks/consolidate_memory.py` が Stop フックで自動生成する。",
         "重複行・空行を除去した単純マージのため、文脈は元の session ファイルを参照すること。",
@@ -499,6 +500,11 @@ def _atomic_write(output_path: str, payload: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _escape_for_xml(text: str) -> str:
+    """XML タグ境界突破を防ぐため閉じタグ記号 `</` を無害化する。[SR-AI-001]"""
+    return text.replace("</", "<\\/")
+
+
 def _build_llm_prompt(
     files: list[str],
     *,
@@ -513,8 +519,8 @@ def _build_llm_prompt(
     success_lines = _collect_section_lines(files, TARGET_SECTIONS[0], extract_fn)
     failure_lines = _collect_section_lines(files, TARGET_SECTIONS[1], extract_fn)
 
-    success_text = "\n".join(success_lines)
-    failure_text = "\n".join(failure_lines)
+    success_text = _escape_for_xml("\n".join(success_lines))
+    failure_text = _escape_for_xml("\n".join(failure_lines))
 
     # 入力サイズ制御: 両セクション合計が _LLM_INPUT_MAX_CHARS を超えたら均等に切り詰める
     half = _LLM_INPUT_MAX_CHARS // 2

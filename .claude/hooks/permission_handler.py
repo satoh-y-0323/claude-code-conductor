@@ -41,7 +41,8 @@ def notify(message: str) -> None:
                 capture_output=True, timeout=5
             )
         elif system == 'Windows':
-            safe = message.replace('"', '`"')
+            safe = re.sub(r'[`$(){}]', '', message)
+            safe = safe.replace('"', '`"')
             ps = (
                 'Add-Type -AssemblyName System.Windows.Forms; '
                 '$n = New-Object System.Windows.Forms.NotifyIcon; '
