@@ -622,3 +622,210 @@ class TestPromotionCandidates:
         text = output_path.read_text(encoding="utf-8")
         # 表セル内では `|` を `\|` にエスケープ
         assert r"before\|after pipe" in text
+
+
+# ---------------------------------------------------------------------------
+# F-004 Phase 2-C: claude --headless LLM 要約
+# ---------------------------------------------------------------------------
+
+
+class TestLLMSummary:
+    """`build_llm_summary_section()` の検証。subprocess.run / shutil.which を mock 化。"""
+
+    def _make_files_for_summary(self, tmp_path: Path) -> list[str]:
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        _make_session(sessions, "20260507", success=["- foo"], failure=["- bar"])
+        mod = _load_hook_module()
+        return mod.list_recent_session_files(
+            str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+    def test_skipped_when_cli_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """shutil.which が None を返す → build_llm_summary_section は None。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: None)
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is None
+
+    def test_skipped_on_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess.run が TimeoutExpired を投げる → None。"""
+        import subprocess as sp
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+
+        def fake_run(*args, **kwargs):
+            raise sp.TimeoutExpired(cmd=args[0], timeout=60)
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is None
+
+    def test_skipped_on_nonzero_returncode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """returncode != 0 → None。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+
+        class _FakeResult:
+            returncode = 1
+            stdout = "Error: something"
+            stderr = "boom"
+
+        def fake_run(*args, **kwargs):
+            return _FakeResult()
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is None
+
+    def test_truncates_oversized_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """stdout が出力上限を超えた場合は切り詰めマーカーが付与される。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+
+        oversized = "- " + ("x" * 5000)  # 5000 文字超
+
+        class _FakeResult:
+            returncode = 0
+            stdout = oversized
+            stderr = ""
+
+        monkeypatch.setattr(mod.subprocess, "run",
+                            lambda *a, **k: _FakeResult())
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is not None
+        # 「## LLM 要約」見出しと切り詰めマーカーが含まれる
+        assert "## LLM 要約" in result
+        assert "切り詰め" in result or "truncated" in result
+        # 全体が制御サイズ内に収まっている
+        assert len(result) < 5500  # 4000 + ヘッダ + マーカー余裕
+
+    def test_recursive_depth_guard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """env に C3_CONSOLIDATE_LLM_DEPTH=1 → subprocess.run 未呼び出しで None。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setenv("C3_CONSOLIDATE_LLM_DEPTH", "1")
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+
+        called = {"n": 0}
+
+        def fake_run(*args, **kwargs):
+            called["n"] += 1
+            raise AssertionError("subprocess.run should NOT be called when depth>=1")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is None
+        assert called["n"] == 0
+
+
+class TestMainE2EExtended:
+    """main() の Phase 2 拡張全体の E2E 検証。"""
+
+    def test_main_runs_all_three_extensions_in_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MVP → LLM → promotion → archive の順で各ステップが呼ばれる。"""
+        mod = _load_hook_module()
+
+        call_order: list[str] = []
+
+        def fake_write_summary(*a, **kw):
+            call_order.append("write_summary")
+            return True
+
+        def fake_build_llm(*a, **kw):
+            call_order.append("build_llm")
+            return None  # スキップ扱い (副作用なし)
+
+        def fake_build_promotion(*a, **kw):
+            call_order.append("build_promotion")
+            return ("", [])
+
+        def fake_write_promotion(*a, **kw):
+            call_order.append("write_promotion")
+            return True
+
+        def fake_archive(*a, **kw):
+            call_order.append("archive")
+            return []
+
+        monkeypatch.setattr(mod, "write_summary", fake_write_summary)
+        monkeypatch.setattr(mod, "build_llm_summary_section", fake_build_llm)
+        monkeypatch.setattr(mod, "build_promotion_candidates_section",
+                            fake_build_promotion)
+        monkeypatch.setattr(mod, "write_promotion_candidates_log",
+                            fake_write_promotion)
+        monkeypatch.setattr(mod, "archive_old_sessions", fake_archive)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod.main()
+        assert rc == 0
+        # write_summary は LLM 要約セクションも呼ぶ可能性があるが、
+        # main() の直接呼び出し順としては summary → promotion → archive
+        assert call_order.index("write_summary") < call_order.index("build_promotion")
+        assert call_order.index("build_promotion") < call_order.index("archive")
+
+    def test_main_partial_failure_continues(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LLM ステップ (write_summary 内) が例外を投げても archive は実行される。"""
+        mod = _load_hook_module()
+
+        archive_called = {"n": 0}
+
+        def boom_summary(*a, **kw):
+            raise RuntimeError("summary boom")
+
+        def fake_archive(*a, **kw):
+            archive_called["n"] += 1
+            return []
+
+        monkeypatch.setattr(mod, "write_summary", boom_summary)
+        monkeypatch.setattr(mod, "archive_old_sessions", fake_archive)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod.main()
+        assert rc == 0
+        assert archive_called["n"] == 1
