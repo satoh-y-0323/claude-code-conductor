@@ -16,27 +16,31 @@ user-invocable: false
 
 `.claude/agents/interviewer.md` を Read してペルソナを採用する。
 
-今日のセッションファイル（`.claude/memory/sessions/YYYYMMDD.tmp`）に以下を追記する（未登録の場合のみ）:
+### TASK_TYPE の確認
+
+今日のセッションファイル（`.claude/memory/sessions/YYYYMMDD.tmp`）の冒頭から
+`^TASK_TYPE: (\S+)$` を抽出してコンテキストに保持する。
+
+抽出した値が `feature / bug-fix / refactor / security-audit / docs` のいずれでもない場合
+（空欄、enum 外の文字列など）は「TASK_TYPE 未確定」とみなして以下のフォールバックを実施する。
+
+`TASK_TYPE` が空欄や行が無い、または enum 外の場合（`/develop` 直接呼び出しなど Step 0.5 を経由しないケース）:
+- Skill ツールで `task-routing` を呼ぶ。`args` に `from_start=true` を渡すことで
+  「種別確認のみモード」で動作させ、Step 2〜4 をスキップさせる（`/start` Step 0.5 と同じ呼び方）:
+  ```
+  Skill(skill="task-routing", args="from_start=true")
+  ```
+- 戻ってきた種別を当日 tmp 冒頭の `TASK_TYPE:` 行に Edit で書き込む（dev-workflow 側で書き込む）
+- これにより task-routing が再帰的に `/start` を Read して再び `task-routing` を呼ぶ事態を回避する
+
+`TASK_TYPE` が `feature` 以外（bug-fix / refactor / security-audit / docs）の場合は、
+本来 dev-workflow フェーズ A〜E のフルパスを通す必要がない種別であることを通知し、
+ユーザーに本当に dev-workflow を実行するか確認する（誤起動の防止）。
+
+今日のセッションファイルに以下を追記する（未登録の場合のみ）:
 - `- [ ] ヒアリング` / `- [ ] 設計` / `- [ ] 計画`
 
-### A-1: 目的
-
-AskUserQuestion ツール:
-```json
-{
-  "questions": [{
-    "question": "このプロジェクト・機能の目的を教えてください",
-    "options": [
-      { "label": "新機能の追加", "description": "新しい機能を実装したい" },
-      { "label": "既存機能の改善", "description": "現在の動作を変えたい・良くしたい" },
-      { "label": "バグ修正", "description": "問題のある動作を直したい" },
-      { "label": "リファクタリング", "description": "動作は変えずに内部を整理したい" }
-    ]
-  }]
-}
-```
-
-### A-2: 背景・きっかけ
+### A-1: 背景・きっかけ
 
 AskUserQuestion ツール:
 ```json
@@ -53,7 +57,7 @@ AskUserQuestion ツール:
 }
 ```
 
-### A-3: 制約・前提条件
+### A-2: 制約・前提条件
 
 AskUserQuestion ツール:
 ```json
@@ -73,7 +77,7 @@ AskUserQuestion ツール:
 
 制約を選んだ場合は補足情報（納期の日付など）を追加で確認する。
 
-### A-4: 非機能要件
+### A-3: 非機能要件
 
 AskUserQuestion ツール:
 ```json
@@ -91,9 +95,19 @@ AskUserQuestion ツール:
 }
 ```
 
-### A-5: requirements-report の生成と承認
+### A-4: requirements-report の生成と承認
 
 収集した内容をもとに `.claude/reports/requirements-report-YYYYMMDD-HHMMSS.md` に Write する。
+ファイル冒頭のフロントマターに `task_type: {task_type}` を含めること（後段の architect / planner が参照する）:
+
+```yaml
+---
+task_type: {task_type}   # /start Step 0.5 で確定した種別（feature / bug-fix / refactor / security-audit / docs のいずれか）を埋める
+---
+```
+
+`{task_type}` は plain string で、前述の TASK_TYPE 確認フェーズで保持した値と同じものを書く。
+
 内容を提示した後、AskUserQuestion で確認する:
 
 ```json
@@ -123,6 +137,8 @@ AskUserQuestion ツール:
 
 **フェーズ A から続いている場合:** 要件はコンテキスト内にあるため読み直し不要。
 **直接開始の場合:** Glob で `.claude/reports/requirements-report-*.md` の最新を Read する。
+requirements-report のフロントマターに `task_type:` があれば読み取ってコンテキストに保持する
+（後段で agent 起動方針の判定に使う）。
 
 今日のセッションファイルに以下を追記する（未登録の場合のみ）:
 - `- [ ] 設計` / `- [ ] 計画`

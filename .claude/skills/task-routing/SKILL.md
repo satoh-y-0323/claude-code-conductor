@@ -7,11 +7,29 @@ disable-model-invocation: false
 
 タスクの種別を選び、それに対応するエージェント編成を提示する skill。
 Ruflo の「タスク種別 → エージェント編成テンプレ」発想を C3 の既存エージェント
-構成に当てはめたもの。当面は単独で利用し、将来的に `/start` への自動統合を検討する。
+構成に当てはめたもの。`/start` から自動呼び出し可能（Skill ツール `args` に
+`from_start=true` が渡される）。単独利用（`/task-routing` 直接実行）も継続サポートする。
+
+## 動作モード
+
+呼び出し元は Skill ツールの `args` パラメータで動作モードを指定する。
+LLM はこの skill が起動された際、文脈や呼び出し情報から `from_start=true` の有無を判定する。
+
+- **/start 経由（args に `from_start=true`）**: Step 1 で種別を確定したら
+  そのまま終了し、種別を `/start` 側に返却する。Step 2〜4 はスキップする。
+  TASK_TYPE 書き込みも `/start` 側で行うため、本 skill では行わない。
+  編成詳細は `/start` 後段（Step 1 開始地点選択 / Step 2 フェーズ遷移）で
+  扱うため、ここでは出さない。
+- **単独利用（args 指定なし、または `from_start=false`）**: 従来通り Step 1 → 2 → 3 → 4 を
+  順に実行する。Step 4 完了時に TASK_TYPE 書き込みも本 skill が行う。
 
 ---
 
 ## Step 1: タスク種別を選択する
+
+Skill ツールの `args` に `from_start=true` が含まれているときは「/start 経由モード」とみなし、
+Step 1 で種別を確定したら **Step 2〜4 はスキップ** して種別を呼び出し元（/start）に
+返却する（編成詳細は /start 側で表示するため）。
 
 AskUserQuestion ツール:
 
@@ -117,9 +135,16 @@ AskUserQuestion ツール:
 
 ### 「この編成で進める」の場合
 
-選択された種別に応じて以下を実行する:
+**まず最初に** 当日のセッション tmp（`.claude/memory/sessions/YYYYMMDD.tmp`）の
+冒頭に `TASK_TYPE: {種別}` 行を Edit で書き込む（既存行があれば置換、空欄なら埋める）。
+これは `args` に `from_start=true` が **無い** 場合のみ task-routing 側で行う
+（`from_start=true` の場合は /start 側が書き込むため、ここでは書かない）。
 
-- **feature**: `.claude/skills/start/SKILL.md` を Read して `/start` フローに合流する
+その後、選択された種別に応じて以下を実行する:
+
+- **feature**:
+  - `args` に `from_start=true` が含まれているとき: 種別を返却するのみ（制御を /start に返す。再帰呼び出しを避ける）
+  - `args` 指定なし/`from_start=false` のとき: `.claude/skills/start/SKILL.md` を Read して `/start` フローに合流する
 - **bug-fix / docs**: 編成順に Agent ツールでエージェントを順次起動する
 - **refactor**: planner で `po_plan_version` 付き plan-report を生成 → `.claude/skills/wave-execution/SKILL.md` を Read して PO 並列実行に合流する
 - **security-audit**: code-reviewer と security-reviewer を **1 メッセージ内で並列起動**（複数 Agent ツール呼び出し）

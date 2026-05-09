@@ -20,6 +20,7 @@ def is_worktree(cwd: str) -> bool:
 def create_session_template(date_str: str) -> str:
     return (
         f"SESSION: {date_str}\n"
+        f"TASK_TYPE: \n"
         f"AGENT: \n"
         f"DURATION: \n"
         f"\n"

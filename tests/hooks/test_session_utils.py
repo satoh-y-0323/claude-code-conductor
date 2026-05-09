@@ -114,6 +114,23 @@ class TestCreateSessionTemplate:
         result = module.create_session_template("20260505")
         assert "<!-- C3:SESSION:JSON" in result
 
+    def test_contains_task_type_line(self):
+        """返り値に TASK_TYPE: 行（空欄）が含まれる。F-010 Phase 2: /start Step 0.5 で埋める。"""
+        module = _load_module()
+        result = module.create_session_template("20260505")
+        assert "TASK_TYPE: \n" in result
+
+    def test_task_type_line_position_after_session(self):
+        """TASK_TYPE: 行は SESSION: 行の直後に配置される（冒頭順序を担保）。"""
+        module = _load_module()
+        result = module.create_session_template("20260505")
+        # 冒頭から: SESSION: -> TASK_TYPE: -> AGENT: -> DURATION: の順
+        lines = result.split("\n")
+        assert lines[0].startswith("SESSION: ")
+        assert lines[1].startswith("TASK_TYPE:")
+        assert lines[2].startswith("AGENT:")
+        assert lines[3].startswith("DURATION:")
+
 
 # ---------------------------------------------------------------------------
 # 3. append_checkpoint(session_file, label, summary)
