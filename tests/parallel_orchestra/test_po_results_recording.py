@@ -123,6 +123,56 @@ class TestLocateC3Db:
             pytest.skip(f"親ディレクトリに c3.db が見つかった: {found}")
         assert found is None
 
+    def test_env_var_priority(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F-002 Phase 2-A: C3_PO_DB_PATH があればそれを優先する。"""
+        # 起点配下にも .claude/state/c3.db を作る（env が優先されることを確認するため）
+        local_dir = tmp_path / "local" / ".claude" / "state"
+        local_dir.mkdir(parents=True)
+        local_db = local_dir / "c3.db"
+        local_db.write_bytes(b"")
+
+        # env で指定する別のパス
+        env_db_dir = tmp_path / "env_db_location"
+        env_db_dir.mkdir()
+        env_db = env_db_dir / "c3.db"
+        env_db.write_bytes(b"")
+
+        monkeypatch.setenv("C3_PO_DB_PATH", str(env_db))
+        found = c3_db.locate_c3_db(start=tmp_path / "local")
+        assert found == env_db.resolve()
+
+    def test_env_var_invalid_falls_back_to_traversal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F-002 Phase 2-A: C3_PO_DB_PATH が無効パスなら親遡りに fallback。"""
+        db_dir = tmp_path / ".claude" / "state"
+        db_dir.mkdir(parents=True)
+        db_path = db_dir / "c3.db"
+        db_path.write_bytes(b"")
+
+        # 存在しないパスを env に指定
+        monkeypatch.setenv(
+            "C3_PO_DB_PATH", str(tmp_path / "does_not_exist" / "c3.db")
+        )
+        found = c3_db.locate_c3_db(start=tmp_path)
+        # env のパスが無効なので、親遡り探索で見つかった db_path を返す
+        assert found == db_path.resolve()
+
+    def test_env_var_empty_string_falls_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F-002 Phase 2-A: 空文字列の C3_PO_DB_PATH は未設定扱い。"""
+        db_dir = tmp_path / ".claude" / "state"
+        db_dir.mkdir(parents=True)
+        db_path = db_dir / "c3.db"
+        db_path.write_bytes(b"")
+
+        monkeypatch.setenv("C3_PO_DB_PATH", "")
+        found = c3_db.locate_c3_db(start=tmp_path)
+        assert found == db_path.resolve()
+
 
 # ---------------------------------------------------------------------------
 # record_task_results

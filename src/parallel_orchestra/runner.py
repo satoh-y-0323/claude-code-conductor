@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import IO, Any, Literal
 
 from ._exceptions import ParallelOrchestraError
+from .c3_db import READ_ONLY_WORKTREE_ID, locate_c3_db
 from .manifest import Manifest, Task, load_manifest
 
 # ---------------------------------------------------------------------------
@@ -629,14 +630,21 @@ def _execute_with_retry(
     effective_cwd: Path,
     log_config: LogConfig | None,
     dashboard: _Dashboard | None = None,
+    po_session_id: str | None = None,
 ) -> TaskResult:
-    """Execute *task* with automatic retry on transient failures."""
+    """Execute *task* with automatic retry on transient failures.
+
+    The ``po_session_id`` is passed through to ``_execute_task`` so the
+    spawned subprocess can write to ``.claude/state/c3.db`` directly
+    (F-002 Phase 2-A).
+    """
     for attempt in range(task.max_retries + 1):
         result = _execute_task(
             task, claude_exe,
             git_root=git_root,
             effective_cwd=effective_cwd,
             dashboard=dashboard,
+            po_session_id=po_session_id,
         )
 
         if log_config is not None:
@@ -1245,12 +1253,21 @@ def _execute_task(
     git_root: Path | None = None,
     effective_cwd: Path,
     dashboard: _Dashboard | None = None,
+    po_session_id: str | None = None,
 ) -> TaskResult:
     """Execute a single agent task as a subprocess and return its result.
 
     For read_only=False tasks, a dedicated git worktree is created and
     PO_WORKTREE_GUARD=1 is set in the environment automatically.
     For read_only=True tasks, effective_cwd (passed by the caller) is used.
+
+    F-002 Phase 2-A:
+        ``po_session_id`` が指定されると、子プロセスの env に以下 4 変数を注入する:
+          - ``C3_PO_DB_PATH`` (見つかった場合のみ): 親リポの c3.db への絶対パス
+          - ``C3_PO_SESSION_ID``: PO 実行 ID
+          - ``C3_PO_TASK_ID``: タスク ID
+          - ``C3_PO_WORKTREE_ID``: ブランチ名 (write task) / ``"(read-only)"`` (read-only)
+        子プロセスはこれらを使って `.claude/state/c3.db` に直接書き込める。
     """
     # read_only controls worktree creation only — never passed to claude as a flag.
     # Both task types need --dangerously-skip-permissions for headless execution.
@@ -1291,6 +1308,21 @@ def _execute_task(
         env["PO_WORKTREE_GUARD"] = "1"
     else:
         task_cwd = effective_cwd
+
+    # F-002 Phase 2-A: 子プロセスから c3.db を直接引けるように env を注入。
+    # session_id を呼び出し側（run_manifest）が指定した場合のみ注入し、
+    # 単体実行（既存テスト互換）では注入をスキップする。
+    if po_session_id is not None:
+        env["C3_PO_SESSION_ID"] = po_session_id
+        env["C3_PO_TASK_ID"] = task.id
+        env["C3_PO_WORKTREE_ID"] = (
+            branch_name if branch_name is not None else READ_ONLY_WORKTREE_ID
+        )
+        # DB パスは effective_cwd 起点で探索（worktree の親リポを発見できる）。
+        # 見つからない場合は env に入れない（子側の locate_c3_db 親遡りに任せる）。
+        _db_path = locate_c3_db(start=effective_cwd)
+        if _db_path is not None:
+            env["C3_PO_DB_PATH"] = str(_db_path)
 
     start = time.perf_counter()
     if dashboard is not None and dashboard.enabled:
@@ -1642,6 +1674,7 @@ def run_manifest(
                 effective_cwd=manifest_cwd,
                 log_config=log_config,
                 dashboard=dashboard,
+                po_session_id=_po_session_id,
             )
         finally:
             if sem is not None:

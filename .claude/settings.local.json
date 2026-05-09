@@ -39,7 +39,8 @@
       "Bash(Out-Null)",
       "Bash(Write-Output \"OK\")",
       "Bash(python3 *)",
-      "Bash(gh release *)"
+      "Bash(gh release *)",
+      "Bash(python -m pytest tests/parallel_orchestra/test_po_worktree_writes.py tests/parallel_orchestra/test_po_results_recording.py::TestLocateC3Db -v)"
     ]
   },
   "hooks": {
