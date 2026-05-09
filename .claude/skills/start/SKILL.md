@@ -245,8 +245,106 @@ new: TASK_TYPE: {task_type}
 | refactor | 計画 | Agent ツールで `planner` を起動して `po_plan_version` 付き plan-report を生成 → `.claude/skills/wave-execution/SKILL.md` を Read |
 | refactor | 実装 | `.claude/skills/wave-execution/SKILL.md` を Read して PO 並列実行に直接入る |
 | security-audit | 即実行 | Agent ツールで `code-reviewer` と `security-reviewer` を **1 メッセージ内で並列起動** |
+| security-audit | 承認後 | Step 3（フェーズ F/G/H）へ進む（自動遷移） |
 | docs | 即実行 | Agent ツールで `doc-writer` を単独起動 |
 
 **最初に必ず** 遷移先の SKILL.md を Read してから実行する。記憶・推測で進めず、AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
 
 各エージェント完了後は通常の Approval Flow に従う。
+
+---
+
+## Step 3: security-audit 承認後フェーズ
+
+security-audit の並列レビュー（Step 2）で両レポートが生成され、ユーザー承認を得た後に
+このフェーズへ進む。フェーズ F → G → H の順に実行する。
+
+---
+
+## フェーズ F: 修正計画（planner）
+
+Glob で `.claude/reports/code-review-report-*.md` と
+`.claude/reports/security-review-report-*.md` の最新をそれぞれ確認する。
+
+Agent ツールで `planner` を起動する。プロンプトには両レポートのファイルパスのみ渡し、Read はエージェント側で行わせる（内容を直接プロンプトに展開しない）[SR-AI-001 対策]。プロンプトには以下を含める:
+- 両レポートのファイルパス（パスのみ渡す）
+- 修正タスクを **High / Medium / Low** の重要度別に整理すること
+- 各タスクに「なぜ直すか（根拠・checklist_id）」を記録すること
+- 許容例外（直さないと判断したもの）を `## 許容・除外した変更` セクションに
+  理由付きで明示すること
+- 各タスクに **複雑度ラベル** を付与すること
+  （Low=1〜5 行 / Medium=〜20 行 / High=大規模リファクタ）
+- 出力先: `.claude/reports/plan-report-YYYYMMDD-HHMMSS.md`（タイムスタンプは `report-timestamp` スキルで取得）
+
+planner 完了後、AskUserQuestion で承認を取る:
+
+```json
+{
+  "questions": [{
+    "question": "plan-report の内容を確認してください。どうしますか？",
+    "header": "フェーズ F 承認",
+    "options": [
+      { "label": "承認—フェーズ G へ進む", "description": "plan-report の修正タスクを TDD で実装する" },
+      { "label": "否認・修正を依頼する", "description": "フィードバックを入力して planner を再起動する" },
+      { "label": "否認・自分で修正する", "description": "plan-report を手動編集してから再開する" }
+    ]
+  }]
+}
+```
+
+---
+
+## フェーズ G: 実装（TDD）
+
+フェーズ F で承認された plan-report の各修正タスクを以下のサイクルで処理する。
+plan-report はファイルパスとして渡し、tester・developer が Read して内容を参照する。
+
+各タスクごとに:
+
+**G-1: tester（Red フェーズ）**
+Agent ツールで `tester` を起動し、修正タスクに対するテストを先行作成させる。
+テストは実装前なので失敗する（Red）のが正しい状態。
+
+**G-2: developer（Green フェーズ）**
+Agent ツールで `developer` を起動し、G-1 のテストが通る最小実装を行わせる。
+
+**G-2.5: Stuck チェック**
+`.claude/reports/debug-needed-*.md` が存在する場合は Agent ツールで
+`systematic-debugger` を起動して根本原因を調査する。
+
+**G-3: tester（最終検証）**
+Agent ツールで `tester` を起動し、全テストの合否を確認させる。
+
+全タスクの TDD サイクル（G-1〜G-3）が完了した後、承認なしでフェーズ H へ進む。
+
+---
+
+## フェーズ H: 最終レビュー
+
+Agent ツールで `code-reviewer` と `security-reviewer` を **1 メッセージ内で並列起動** する。
+
+- `code-reviewer`: フェーズ G で実装したコードの品質・保守性を確認
+- `security-reviewer`: 修正適用後に新たな脆弱性が生まれていないかを確認
+  （修正実装によって別の攻撃経路が開く可能性はゼロではないため必須）
+
+いずれかのレビューエージェントが失敗した場合は再起動して両方の結果を得てから統合する。
+
+両レビュー完了後、AskUserQuestion で承認を取る。承認時は親 Claude がコミットを提案する（git add / git commit）:
+
+```json
+{
+  "questions": [{
+    "question": "最終レビュー結果を確認してください。どうしますか？",
+    "header": "フェーズ H 承認",
+    "options": [
+      { "label": "承認—コミットへ進む", "description": "修正をコミットして完了" },
+      { "label": "全て対応する", "description": "全指摘を修正してフェーズ F へ戻る" },
+      { "label": "対応する指摘を選ぶ", "description": "対応指摘を選択してフェーズ F へ戻る" },
+      { "label": "全て許容して進む", "description": "指摘を許容理由付きで記録してコミットへ進む" }
+    ]
+  }]
+}
+```
+
+「全て対応する」「対応する指摘を選ぶ」を選んだ場合はフェーズ F へ戻り、
+新たな plan-report を生成して TDD サイクルを再度実施する。
