@@ -1,5 +1,5 @@
 ---
-description: 開発ワークフローの入口。既存レポートの整理後、ヒアリング・設計・計画・実装のどこから始めるかを選んで dev-workflow を実行する。
+description: 開発ワークフローの入口。タスク種別（feature / bug-fix / refactor / security-audit / docs）を確認後、種別に応じた最適なエージェント編成と開始地点を選んで実行する。security-audit は並列レビュー→修正計画→TDD 実装→最終レビューのフル修正サイクルを提供する。
 ---
 
 # start
@@ -240,8 +240,9 @@ new: TASK_TYPE: {task_type}
 | feature | 設計 | `.claude/skills/dev-workflow/SKILL.md` を Read してフェーズ B から |
 | feature | 計画 | `.claude/skills/dev-workflow/SKILL.md` を Read してフェーズ C から |
 | feature | 実装 | `.claude/skills/dev-workflow/SKILL.md` を Read してフェーズ D から |
-| bug-fix | systematic-debugger 直起動 | Agent ツールで `systematic-debugger` を起動 → `developer` → `tester` → `code-reviewer` の順 |
+| bug-fix | systematic-debugger 直起動 | Agent ツールで `systematic-debugger` を起動 → `developer` → `tester` 完了後、`code-reviewer` と `security-reviewer` を 1 メッセージ内で並列起動 |
 | bug-fix | 計画から | `.claude/skills/dev-workflow/SKILL.md` を Read してフェーズ C から（既存 plan-report を利用） |
+
 | refactor | 計画 | Agent ツールで `planner` を起動して `po_plan_version` 付き plan-report を生成 → `.claude/skills/wave-execution/SKILL.md` を Read |
 | refactor | 実装 | `.claude/skills/wave-execution/SKILL.md` を Read して PO 並列実行に直接入る |
 | security-audit | 即実行 | Agent ツールで `code-reviewer` と `security-reviewer` を **1 メッセージ内で並列起動** |
@@ -316,6 +317,8 @@ Agent ツールで `developer` を起動し、G-1 のテストが通る最小実
 Agent ツールで `tester` を起動し、全テストの合否を確認させる。
 
 全タスクの TDD サイクル（G-1〜G-3）が完了した後、承認なしでフェーズ H へ進む。
+
+**設計判断**: フェーズ F で plan-report が承認済みのため、フェーズ G 内の中間承認は不要（承認済みの計画を自律実行する）。レビューゲートはフェーズ H（code-reviewer + security-reviewer 並列）で担保する。
 
 ---
 
