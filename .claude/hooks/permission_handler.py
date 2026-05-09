@@ -41,7 +41,7 @@ def notify(message: str) -> None:
                 capture_output=True, timeout=5
             )
         elif system == 'Windows':
-            safe = re.sub(r'[`$(){}]', '', message)
+            safe = re.sub(r'[`$(){}\r\n]', '', message)
             safe = safe.replace('"', '`"')
             ps = (
                 'Add-Type -AssemblyName System.Windows.Forms; '

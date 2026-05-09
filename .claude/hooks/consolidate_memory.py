@@ -501,8 +501,8 @@ def _atomic_write(output_path: str, payload: str) -> bool:
 
 
 def _escape_for_xml(text: str) -> str:
-    """XML タグ境界突破を防ぐため閉じタグ記号 `</` を無害化する。[SR-AI-001]"""
-    return text.replace("</", "<\\/")
+    """XML タグ境界突破を防ぐためタグ記号をエンティティに変換する。[SR-AI-001]"""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _build_llm_prompt(
