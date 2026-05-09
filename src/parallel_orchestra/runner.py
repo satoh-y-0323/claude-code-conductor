@@ -25,7 +25,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, Literal
+from typing import IO, Any, Literal, TextIO
 
 from ._exceptions import ParallelOrchestraError
 from .c3_db import READ_ONLY_WORKTREE_ID, locate_c3_db
@@ -242,8 +242,8 @@ class _Dashboard:
         self._do_render(final=True)
 
     def update(self, task_id: str, *, important: bool = True, **kwargs: Any) -> None:
-        if not self._enabled:
-            return
+        # state は常に保持する（render が無効でも summary loop が snapshot_states を
+        # 読むため、非 TTY 時に状態を捨ててはいけない）。
         with self._lock:
             state = self._states.get(task_id)
             if state is None:
@@ -257,7 +257,8 @@ class _Dashboard:
                 kwargs["start_ts"] = time.perf_counter()
             for k, v in kwargs.items():
                 setattr(state, k, v)
-        if important or self._live_renders:
+        # render の dirty 通知は enabled なときだけ意味がある
+        if self._enabled and (important or self._live_renders):
             self._dirty_event.set()
 
     def snapshot_states(self) -> list[_TaskDisplayState]:
@@ -502,6 +503,100 @@ def _heartbeat_po_status_loop(
 
         if stop_event.wait(timeout=interval):
             break
+
+
+# Default interval for non-TTY summary lines. Aligned with heartbeat (30s).
+_DEFAULT_SUMMARY_INTERVAL_SEC = 30.0
+# Max number of running tasks to enumerate in the summary line before showing
+# "+N more". Keeps the line within ~1 terminal width even with 10+ workers.
+_SUMMARY_DETAIL_TASK_LIMIT = 3
+
+
+def _resolve_summary_interval(default: float = _DEFAULT_SUMMARY_INTERVAL_SEC) -> float:
+    """Return summary interval in seconds (env C3_PO_SUMMARY_INTERVAL_SEC で上書き可)。
+
+    無効値（非数値・0 以下）はデフォルトに戻し、ユーザーが --watch 相当の
+    暴走 print を起こさないようガードする。
+    """
+    raw = os.environ.get("C3_PO_SUMMARY_INTERVAL_SEC")
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        return default
+    if v <= 0:
+        return default
+    return v
+
+
+def _format_summary_line(states: list[_TaskDisplayState], *, now: float) -> str:
+    """非 TTY 用の wave 全体サマリを 1 行で組み立てる。
+
+    Format: ``[summary] N tasks: R running (id1:Xs, id2:Ys), S starting, C completed, F failed``。
+    runtime はモノトニックな ``time.perf_counter()`` 基準で算出する（dashboard.update が
+    start_ts に同じ time base を使うため）。
+    """
+    total = len(states)
+    starting = sum(1 for s in states if s.status == "starting_up")
+    completed = sum(1 for s in states if s.status in ("complete", "skipped"))
+    failed = sum(1 for s in states if s.status == "failed")
+    running_states = [s for s in states if s.status in ("running", "resumed")]
+
+    detail = []
+    for s in running_states[:_SUMMARY_DETAIL_TASK_LIMIT]:
+        elapsed = now - s.start_ts if s.start_ts > 0 else 0.0
+        detail.append(f"{s.task_id}:{int(elapsed)}s")
+    more = (
+        f", +{len(running_states) - _SUMMARY_DETAIL_TASK_LIMIT} more"
+        if len(running_states) > _SUMMARY_DETAIL_TASK_LIMIT
+        else ""
+    )
+    detail_str = ", ".join(detail) + more if detail else ""
+
+    parts = [f"{len(running_states)} running"]
+    if detail_str:
+        parts[-1] += f" ({detail_str})"
+    if starting:
+        parts.append(f"{starting} starting")
+    if completed:
+        parts.append(f"{completed} completed")
+    if failed:
+        parts.append(f"{failed} failed")
+
+    return f"[summary] {total} tasks: " + ", ".join(parts)
+
+
+def _summary_loop(
+    dashboard: _Dashboard,
+    stop_event: threading.Event,
+    *,
+    interval: float,
+    out: TextIO | None = None,
+) -> None:
+    """非 TTY 環境用に wave 全体の進捗を 1 行ずつ ``out`` (default stderr) に出すスレッド。
+
+    各 task の thinking / running 個別ログを廃止する代わりに、定期的にサマリ行を
+    出すことで Claude Code 等のログ集約 UI で行が増えすぎないようにする。
+
+    停止条件: ``stop_event.set()`` または全タスクが waiting / complete / skipped /
+    failed のいずれかに収束した場合。
+    """
+    target = out if out is not None else sys.stderr
+    while True:
+        if stop_event.wait(timeout=interval):
+            break
+        try:
+            states = dashboard.snapshot_states()
+            # 動いているものが何も残っていなければサマリも出さない（最終行は
+            # run_manifest 終了後に dashboard.stop() で出る）。
+            active = [s for s in states if s.status in ("starting_up", "running", "resumed")]
+            if not active:
+                continue
+            line = _format_summary_line(states, now=time.perf_counter())
+            print(line, file=target, flush=True)
+        except Exception:  # noqa: BLE001 - 観測機能なので PO 本体を止めない
+            pass
 
 
 def _sanitize_for_display(text: str, max_len: int = _TOOL_ACTION_MAX_LEN) -> str:
@@ -1130,26 +1225,16 @@ def _watchdog_loop(
         idle = now - last_ts
         total = now - start
 
-        if dashboard is not None and dashboard.enabled:
+        # state 更新は dashboard.enabled に関係なく行う（summary loop が snapshot
+        # を読んで状況を集計するため）。render は dashboard 内で gate される。
+        if dashboard is not None:
             if not received and total < _STARTUP_DISPLAY_SEC:
                 dashboard.update(task.id, status="starting_up", important=False)
             elif idle >= _PROGRESS_INTERVAL_SEC:
                 dashboard.update(task.id, current_action="", important=False)
-        else:
-            if not received and total < _STARTUP_DISPLAY_SEC:
-                print(
-                    f"[{task.id}] starting up... {total:.0f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            elif received and idle < _PROGRESS_INTERVAL_SEC:
-                print(f"[{task.id}] running...", file=sys.stderr, flush=True)
-            else:
-                print(
-                    f"[{task.id}] thinking... {idle:.0f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
+        # 非 TTY 時の per-task thinking / running / starting up の print は
+        # 出力が膨らむため抑制する。代わりに run_manifest が起動する
+        # _summary_loop が 30 秒間隔で wave 全体のサマリを 1 行で出す。
 
         if total >= _INTERNAL_TIMEOUT_SEC:
             with state.lock:
@@ -1659,6 +1744,22 @@ def run_manifest(
         )
         _hb_thread.start()
 
+    # 非 TTY 環境では per-task の thinking / running ログを抑制する代わりに、
+    # 30 秒間隔で wave 全体のサマリ行を 1 行 stderr に出すスレッドを起動する。
+    # env C3_PO_SUMMARY_INTERVAL_SEC で間隔を上書き可能。
+    _sum_stop_event: threading.Event | None = None
+    _sum_thread: threading.Thread | None = None
+    if not _dash_enabled:
+        _sum_stop_event = threading.Event()
+        _sum_thread = threading.Thread(
+            target=_summary_loop,
+            args=(dashboard, _sum_stop_event),
+            kwargs={"interval": _resolve_summary_interval()},
+            daemon=True,
+            name="po-summary",
+        )
+        _sum_thread.start()
+
     def execute_fn(task: Task) -> TaskResult:
         sem: threading.Semaphore | None = (
             group_semaphores.get(task.concurrency_group)
@@ -1710,6 +1811,11 @@ def run_manifest(
             pass
         _hb_stop_event.set()
         _hb_thread.join(timeout=2.0)
+
+    # サマリ行スレッドの停止（非 TTY モード）
+    if _sum_thread is not None and _sum_stop_event is not None:
+        _sum_stop_event.set()
+        _sum_thread.join(timeout=2.0)
 
     dashboard.stop()
 

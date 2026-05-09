@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.5.1] - 2026-05-09
+
+### マイルストーン
+
+`c3 po run-wave` の **非 TTY 環境（Claude Code 等のログ集約 UI 経由）** での進捗表示を改善する patch リリース。1.5.0 までは task ごとに 30 秒間隔で `[task-id] thinking... 73s` のような行が際限なく増え、6 並列だと 1 分で 12 行以上、Claude Code 側で `+63 lines` のように省略されて全タスクの状況が読み取れなかった。1.5.1 ではタスクごとの逐次ログを廃止し、wave 全体を 1 行にまとめた **サマリ行** を 30 秒間隔で 1 行ずつ出すよう変更した。
+
+### 改善
+
+#### 非 TTY 時のサマリ行表示
+
+- `runner.py` に `_summary_loop` / `_format_summary_line` / `_resolve_summary_interval` を新設。30 秒ごとに wave 全体の状況を 1 行で stderr に出す:
+  ```
+  [summary] 6 tasks: 4 running (be-calc:120s, be-currency:90s, fe-base:75s, +1 more), 1 starting, 1 completed
+  ```
+- `_progress_watchdog` の非 TTY 分岐から `[task-id] starting up... / running... / thinking... Xs` の per-task print を削除（dashboard.update による state 管理は維持）。
+- `_Dashboard.update()` を `enabled=False` でも state を保持するよう変更（summary loop が `snapshot_states()` を読むため）。render 通知 (`_dirty_event`) は引き続き enabled で gate。
+- TTY 環境（既存の ANSI in-place dashboard）の挙動は変更なし。
+
+### 設定
+
+- env `C3_PO_SUMMARY_INTERVAL_SEC` で間隔を上書き可能（無効値・0 以下はデフォルト 30 秒に戻す）。
+
+### 内部
+
+- 新規テスト追加: `tests/parallel_orchestra/test_summary_loop.py` に 12 ケース（フォーマット 4 / 環境変数 4 / loop スレッド 3 / dashboard state 保持 1）。
+- 全体: **770 passed / 3 skipped / 0 failed**（前回 758 + 12）。
+
+### 関連コミット
+
+- 単一 commit でリリース予定
+
 ## [1.5.0] - 2026-05-09
 
 ### マイルストーン
