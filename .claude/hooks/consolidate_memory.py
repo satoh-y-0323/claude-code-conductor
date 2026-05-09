@@ -22,6 +22,7 @@ F-004 MVP: 過去 N 日分の `.claude/memory/sessions/YYYYMMDD.tmp` から
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +38,12 @@ except AttributeError:
 # 集約ウィンドウ（直近何日分の session ファイルを対象にするか）
 DEFAULT_WINDOW_DAYS = 7
 
+# F-004 Phase 2-A: archive 機能の生存期間（日）。
+# DEFAULT_WINDOW_DAYS の 3 倍。要約ウィンドウから外れた直後すぐに archive せず、
+# 過去サマリ再生成のための猶予を確保する。
+# 環境変数 ``C3_CONSOLIDATE_ARCHIVE_TTL_DAYS`` で上書き可能。
+DEFAULT_ARCHIVE_TTL_DAYS = DEFAULT_WINDOW_DAYS * 3
+
 # 出力先（プロジェクトローカル）
 OUTPUT_FILE_NAME = "consolidated_summary.md"
 
@@ -48,6 +55,7 @@ _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 SESSIONS_DIR = os.path.join(_CLAUDE_DIR, "memory", "sessions")
 OUTPUT_PATH = os.path.join(_CLAUDE_DIR, "memory", OUTPUT_FILE_NAME)
+ARCHIVE_DIR = os.path.join(_CLAUDE_DIR, "memory", "archive")
 
 
 def _load_session_utils():
@@ -199,18 +207,149 @@ def write_summary(
     return True
 
 
+def archive_old_sessions(
+    sessions_dir: str = SESSIONS_DIR,
+    archive_dir: str = ARCHIVE_DIR,
+    *,
+    ttl_days: int = DEFAULT_ARCHIVE_TTL_DAYS,
+    today: datetime | None = None,
+) -> list[str]:
+    """``ttl_days`` 日以上経過した session.tmp を ``archive_dir`` に移動する。
+
+    F-004 Phase 2-A: session ファイルの永久蓄積を防ぐ。
+    同一 FS 内の ``shutil.move`` を使うため rename は基本的にアトミック。
+
+    Args:
+        sessions_dir: 移動元ディレクトリ。``YYYYMMDD.tmp`` 形式のファイル群。
+        archive_dir: 移動先ディレクトリ。存在しなければ自動生成。
+        ttl_days: 何日以上経過したファイルを archive 対象にするか。
+            ``today - file_date >= ttl_days`` で判定。
+        today: 「今日」の基準日。省略時は ``datetime.now(UTC)``。
+
+    Returns:
+        移動に成功した archive 先パスのリスト。
+        個別の移動失敗（OSError）は警告のみで継続するため、
+        対象だが失敗したファイルはリストに含まれない。
+    """
+    if not os.path.isdir(sessions_dir):
+        return []
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+    elif isinstance(today, datetime):
+        today = today.date()
+
+    targets: list[tuple[str, str]] = []  # (src_path, base_name)
+    for name in os.listdir(sessions_dir):
+        if not name.endswith(".tmp"):
+            continue
+        stem = name[:-4]
+        try:
+            d = datetime.strptime(stem, "%Y%m%d").date()
+        except ValueError:
+            continue
+        if (today - d).days >= ttl_days:
+            targets.append((os.path.join(sessions_dir, name), name))
+
+    if not targets:
+        return []
+
+    try:
+        os.makedirs(archive_dir, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"[consolidate_memory] failed to create archive dir {archive_dir}: {exc}",
+            file=sys.stderr,
+        )
+        return []
+
+    moved: list[str] = []
+    for src_path, base_name in targets:
+        dst_path = _resolve_archive_dest(archive_dir, base_name)
+        try:
+            shutil.move(src_path, dst_path)
+        except OSError as exc:
+            print(
+                f"[consolidate_memory] failed to archive {src_path}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        moved.append(dst_path)
+    return moved
+
+
+def _resolve_archive_ttl() -> int:
+    """``C3_CONSOLIDATE_ARCHIVE_TTL_DAYS`` を安全に解決する。
+
+    不正値・0 以下の値は受け付けず、警告ログ + デフォルトに戻す（[SR-V-001]）。
+    """
+    raw = os.environ.get("C3_CONSOLIDATE_ARCHIVE_TTL_DAYS")
+    if raw is None or raw == "":
+        return DEFAULT_ARCHIVE_TTL_DAYS
+    try:
+        ttl = int(raw)
+    except ValueError:
+        print(
+            f"[consolidate_memory:archive] invalid C3_CONSOLIDATE_ARCHIVE_TTL_DAYS={raw!r}, "
+            f"using default {DEFAULT_ARCHIVE_TTL_DAYS}",
+            file=sys.stderr,
+        )
+        return DEFAULT_ARCHIVE_TTL_DAYS
+    if ttl < 1:
+        print(
+            f"[consolidate_memory:archive] C3_CONSOLIDATE_ARCHIVE_TTL_DAYS={ttl} < 1, "
+            f"using default {DEFAULT_ARCHIVE_TTL_DAYS} to prevent archiving all sessions",
+            file=sys.stderr,
+        )
+        return DEFAULT_ARCHIVE_TTL_DAYS
+    return ttl
+
+
+def _resolve_archive_dest(archive_dir: str, base_name: str) -> str:
+    """同名衝突時に ``YYYYMMDD-{N}.tmp`` で別名を返す。
+
+    既存ファイルが無ければ ``base_name`` のままを返す。
+    suffix が増え続けないよう N=1..1000 で打ち止め（保険）。
+    """
+    candidate = os.path.join(archive_dir, base_name)
+    if not os.path.exists(candidate):
+        return candidate
+    stem = base_name[:-4]  # ".tmp" を除く
+    for n in range(1, 1001):
+        candidate = os.path.join(archive_dir, f"{stem}-{n}.tmp")
+        if not os.path.exists(candidate):
+            return candidate
+    # 1000 件全て埋まっている異常系: 最後のパスを返して上書きさせる
+    # （shutil.move 側で OSError になっても archive_old_sessions が捕捉する）
+    return candidate
+
+
 def main() -> int:
-    """Stop フックエントリポイント。失敗してもセッションを止めない（exit 0）。"""
+    """Stop フックエントリポイント。失敗してもセッションを止めない（exit 0）。
+
+    F-004 Phase 2-A 以降は MVP マージ → archive を独立した try/except で実行。
+    """
     # stdin の payload は読むが内容は使わない（呼び出し元の Claude Code から送られる）
     try:
         sys.stdin.read()
     except Exception:  # noqa: BLE001
         pass
 
+    # MVP: consolidated_summary.md 生成
     try:
         write_summary()
     except Exception as exc:  # noqa: BLE001
         print(f"[consolidate_memory] unexpected error: {exc}", file=sys.stderr)
+
+    # Phase 2-A: 古い session.tmp を archive/ へ移動
+    try:
+        ttl = _resolve_archive_ttl()
+        archive_old_sessions(ttl_days=ttl)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[consolidate_memory:archive] unexpected error: {exc}",
+            file=sys.stderr,
+        )
+
     return 0
 
 

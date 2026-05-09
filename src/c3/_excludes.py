@@ -20,6 +20,7 @@ import fnmatch
 EXCLUDE_PATTERNS: tuple[str, ...] = (
     "reports/*",
     "memory/sessions/*",
+    "memory/archive/*",
     "memory/patterns.json",
     "memory/agent-audit.log",
     "memory/consolidated_summary.md",
@@ -43,6 +44,7 @@ KEEP_PATTERNS: tuple[str, ...] = (
     "reports/.gitkeep",
     "memory/.gitkeep",
     "memory/sessions/.gitkeep",
+    "memory/archive/.gitkeep",
     "tmp/.gitkeep",
     "state/.gitkeep",
 )

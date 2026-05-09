@@ -317,3 +317,158 @@ class TestMainE2E:
 class _StubStdin:
     def read(self):  # noqa: D401
         return ""
+
+
+# ---------------------------------------------------------------------------
+# F-004 Phase 2-A: archive_old_sessions
+# ---------------------------------------------------------------------------
+
+
+class TestArchive:
+    """`archive_old_sessions()` の検証。
+
+    21 日超 (DEFAULT_ARCHIVE_TTL_DAYS) の session.tmp を archive/ へ移動する。
+    """
+
+    def test_archives_files_older_than_ttl(self, tmp_path: Path) -> None:
+        """today=2026-05-09 / ttl=21 → 04-18 以前は archive/ へ移動。
+
+        2026-05-09 - 21 日 = 2026-04-18。04-17 (22 日前) は archive 対象、
+        04-18 (21 日前) も archive 対象（>= ttl_days で判定）。
+        """
+        mod = _load_hook_module()
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        archive = tmp_path / "archive"
+
+        # 範囲外（archive 対象）
+        _make_session(sessions, "20260417")
+        _make_session(sessions, "20260418")
+        # 範囲内（残す）
+        _make_session(sessions, "20260419")
+        _make_session(sessions, "20260509")
+
+        moved = mod.archive_old_sessions(
+            str(sessions),
+            str(archive),
+            ttl_days=21,
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        # 2 件移動
+        assert len(moved) == 2
+        assert (archive / "20260417.tmp").is_file()
+        assert (archive / "20260418.tmp").is_file()
+        assert not (sessions / "20260417.tmp").exists()
+        assert not (sessions / "20260418.tmp").exists()
+
+    def test_keeps_recent_files(self, tmp_path: Path) -> None:
+        """ttl 以内のファイルは sessions/ に残る（archive 対象外）。"""
+        mod = _load_hook_module()
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        archive = tmp_path / "archive"
+
+        _make_session(sessions, "20260420")  # 19 日前
+        _make_session(sessions, "20260509")  # 当日
+
+        moved = mod.archive_old_sessions(
+            str(sessions),
+            str(archive),
+            ttl_days=21,
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        assert moved == []
+        assert (sessions / "20260420.tmp").is_file()
+        assert (sessions / "20260509.tmp").is_file()
+        # archive ディレクトリは作られても良いが、中身は空
+        if archive.exists():
+            assert list(archive.glob("*.tmp")) == []
+
+    def test_handles_filename_collision(self, tmp_path: Path) -> None:
+        """archive/ に同名既存 → YYYYMMDD-1.tmp に rename。"""
+        mod = _load_hook_module()
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        archive = tmp_path / "archive"
+        archive.mkdir()
+
+        # 既存 archive ファイル（衝突源）
+        (archive / "20260417.tmp").write_text("existing", encoding="utf-8")
+
+        # 移動対象（同名）
+        _make_session(sessions, "20260417")
+
+        moved = mod.archive_old_sessions(
+            str(sessions),
+            str(archive),
+            ttl_days=21,
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        assert len(moved) == 1
+        # 既存の 20260417.tmp は維持
+        assert (archive / "20260417.tmp").read_text(encoding="utf-8") == "existing"
+        # 新ファイルは -1 suffix で別名保存
+        assert (archive / "20260417-1.tmp").is_file()
+
+    def test_continues_on_individual_move_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """shutil.move の 1 件目が OSError でも 2 件目は処理継続。"""
+        mod = _load_hook_module()
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        archive = tmp_path / "archive"
+
+        _make_session(sessions, "20260417")
+        _make_session(sessions, "20260418")
+
+        import shutil
+        original_move = shutil.move
+        call_count = {"n": 0}
+
+        def fake_move(src, dst, *args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise OSError("simulated failure")
+            return original_move(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(mod.shutil, "move", fake_move)
+
+        moved = mod.archive_old_sessions(
+            str(sessions),
+            str(archive),
+            ttl_days=21,
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        # 2 件目だけ成功
+        assert len(moved) == 1
+        # os.listdir の順序は OS 依存で非決定的なため、どちらが移動成功したかは
+        # 特定せず件数のみ検証する。重要なのは「1 件目が失敗しても 2 件目を継続実行する」こと。
+        archived_files = sorted(p.name for p in archive.glob("*.tmp"))
+        assert len(archived_files) == 1
+
+    def test_creates_archive_dir_if_missing(self, tmp_path: Path) -> None:
+        """archive/ ディレクトリが無ければ自動生成する。"""
+        mod = _load_hook_module()
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        archive = tmp_path / "nonexistent_archive"
+        # archive ディレクトリは事前に作らない
+        assert not archive.exists()
+
+        _make_session(sessions, "20260417")
+
+        moved = mod.archive_old_sessions(
+            str(sessions),
+            str(archive),
+            ttl_days=21,
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        assert len(moved) == 1
+        assert archive.is_dir()
+        assert (archive / "20260417.tmp").is_file()
