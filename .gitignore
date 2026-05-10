@@ -51,3 +51,11 @@ site/
 .claude/docs/c3候補機能採用.md
 .claude/docs/c3追加予定機能リスト.md
 .claude/docs/ruflo_research_result.md
+
+# C3 distributor-only (配布元固有の開発支援、配布されない)
+.dev/
+/CLAUDE.md
+
+# Personal Claude Code overrides (per-user / per-worktree, never committed)
+# wheel からは _excludes.py / hatch_build.py で既に除外済み。git でも tracking しない方針。
+.claude/settings.local.json

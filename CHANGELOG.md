@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.10.1] - 2026-05-11
+
+### 概要
+
+配布元リポジトリ専用の事故防止 hook 群を `.dev/hooks/` に追加。`src/c3/_template/` 直接編集の誤操作・3 ファイル同期グループ (`.gitignore` / `_excludes.py` / `hatch_build.py`) の漏れ・`pip install -e .` 再実行忘れによる version 同期漏れ（v1.4.0 / v1.10.0 で再発した defect）を構造的に予防する。
+
+**end user の wheel 挙動は不変**（差分は version bump のみ）。これらの hook と登録は配布元のみで動作し、配布物には含まれない:
+
+- `.dev/hooks/` は `.gitignore` 対象、`_excludes.py` / `hatch_build.py` の配布除外対象でもある
+- 登録先 `.claude/settings.local.json` も同じく配布除外
+- 配布物 wheel に入る差分: `c3/__init__.py` の `__version__` を `1.10.0` → `1.10.1`
+
+### 追加（配布元限定）
+
+| パス | 役割 | hook イベント | 動作 |
+|---|---|---|---|
+| `.dev/hooks/_template_guard.py` | `src/c3/_template/` 配下への Write/Edit を機械的にブロック | PreToolUse (Write/Edit) | exit 2 でブロック。`C3_TEMPLATE_GUARD_DISABLE=1` で緊急 bypass |
+| `.dev/hooks/_sync_check.py` | 3 ファイル同期グループのいずれかを変更したら他 2 件の同期確認を促す | PostToolUse (Write/Edit) | stderr 警告のみ・ブロックしない |
+| `.dev/hooks/_pip_reinstall_reminder.py` | `src/c3/__init__.py` / `pyproject.toml` 変更時に `pip install -e .` 再実行を促す | PostToolUse (Write/Edit) | stderr 警告のみ・ブロックしない |
+| `CLAUDE.md` (リポジトリルート) | 配布元専用ルールの集約。Claude Code 起動時に system reminder へ自動注入される | — | gitignore 対象（`/CLAUDE.md` のリーディングスラッシュでルート限定 ignore） |
+
+### テスト追加（配布物には未同梱）
+
+`tests/hooks/` に上記 hook の単体テスト + 設定ポリシーの構造検証を追加（44 ケース、全 PASS）:
+
+- `test_template_guard.py`: 12 ケース（ブロック条件・パス解決・bypass・例外耐性）
+- `test_sync_check.py`: 13 ケース（warn / no-warn / never blocks）
+- `test_pip_reinstall_reminder.py`: 13 ケース（同上）
+- `test_settings_local_absolute_paths.py`: 4 ケース（`settings.local.json` の hook commands が `$CLAUDE_PROJECT_DIR` または OS 絶対パスのみであることを機械検証。過去 defect「相対パス hooks による settings 上書き」の構造的予防）
+
+### リポジトリ運用変更
+
+- `.claude/settings.local.json` を git tracking から除外（`git rm --cached` + `.gitignore` 追加）。理由: per-user / per-worktree のローカル設定として扱う方針を明確化。wheel への配布は `_excludes.py` / `hatch_build.py` で従来から既に除外されており、end user 影響なし
+- `.gitignore` に `.dev/` / `/CLAUDE.md` / `.claude/settings.local.json` の 3 件を追加
+
+### 補足
+
+- v1.10.0 リリース時に `parallel_orchestra.__version__` が `1.9.0` のまま wheel に取り込まれた事象が発生（`pip install -e .` 未再実行が原因）。今回 `_pip_reinstall_reminder.py` を追加して再発防止
+- 全 hook command は `$CLAUDE_PROJECT_DIR` または OS 絶対パスを使用。過去に相対パス hooks が `settings.json` を上書きする defect があり、`test_settings_local_absolute_paths.py` で構造的に予防
+
+---
+
 ## [1.10.0] - 2026-05-10
 
 ### マイルストーン
