@@ -49,6 +49,9 @@ markdown_extensions:
       permalink: true
 
 extra:
+  analytics:
+    provider: google
+    property: G-23DE8PDDNP
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/satoh-y-0323/claude-code-conductor
