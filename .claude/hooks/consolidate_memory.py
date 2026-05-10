@@ -17,6 +17,10 @@ F-004 MVP: 過去 N 日分の `.claude/memory/sessions/YYYYMMDD.tmp` から
 呼び出し:
 - `.claude/settings.json` の `Stop` hook 配列に登録される。
 - stdin から JSON payload を受け取るが、内容は使わない（情報源は session ファイルのみ）。
+
+実行モード:
+- 通常モード（`_full_sync_main`）: Stop hook から起動される。同期で MVP 集約・promotion ログ・archive を完了させ、LLM 要約は子プロセスとしてデタッチ起動して即終了する。Stop hook ブロック時間を 200〜900ms に抑える。
+- LLM 限定モード（`_llm_only_main`、`--llm-only <today_iso>` で起動）: 親の Stop hook がデタッチ起動した子プロセス専用エントリ。`.claude/state/consolidate_llm.lock` で多重起動を防ぎ、`write_summary(enable_llm=True)` を実行して `consolidated_summary.md` を LLM 要約付きで書き直す。
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -82,6 +87,14 @@ PATTERNS_PATH = os.path.join(_CLAUDE_DIR, "memory", "patterns.json")
 PROMOTION_CANDIDATES_PATH = os.path.join(
     _CLAUDE_DIR, "memory", PROMOTION_CANDIDATES_FILE_NAME
 )
+
+# LLM 子プロセスの多重起動防止ロック。
+# `.claude/state/` は `.gitignore` 既存ルールでカバー済み。
+LOCK_PATH = os.path.join(_CLAUDE_DIR, "state", "consolidate_llm.lock")
+# ロックを「新鮮」とみなす TTL（秒）。LLM タイムアウト（60s）の 2 倍を上限とする。
+LOCK_STALE_SEC = 120
+# `--llm-only` モードのフラグ
+LLM_ONLY_FLAG = "--llm-only"
 
 
 def _load_session_utils():
@@ -605,17 +618,27 @@ def build_llm_summary_section(
     # 子プロセスへ env を引き継いで深度を 1 加算（再帰防止フラグ）
     env = {**os.environ, _LLM_DEPTH_ENV: str(depth + 1)}
 
+    # Windows では claude.exe が console application のため、CREATE_NO_WINDOW を
+    # 指定しないとウィンドウが可視化される（特に親 python が DETACHED 系で起動された場合）。
+    run_kwargs: dict = dict(
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env=env,
+        cwd=_CLAUDE_DIR,
+        check=False,
+    )
+    if sys.platform == "win32":
+        run_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NO_WINDOW", 0x08000000
+        )
+
     try:
         result = subprocess.run(
             [claude_exe, "-p", prompt, "--dangerously-skip-permissions"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            env=env,
-            cwd=_CLAUDE_DIR,
-            check=False,
+            **run_kwargs,
         )
     except subprocess.TimeoutExpired:
         print(
@@ -789,10 +812,95 @@ def _resolve_archive_dest(archive_dir: str, base_name: str) -> str:
     return candidate
 
 
-def main() -> int:
-    """Stop フックエントリポイント。失敗してもセッションを止めない（exit 0）。
+def _acquire_llm_lock(lock_path: str = LOCK_PATH) -> bool:
+    """LLM 子プロセスのロックを取得する。新鮮な既存ロックがあれば False を返す。
 
-    F-004 Phase 2-A 以降は MVP マージ → archive を独立した try/except で実行。
+    ロックファイル: ``.claude/state/consolidate_llm.lock``
+    新鮮判定: mtime が現在時刻から ``LOCK_STALE_SEC`` 秒以内
+    """
+    try:
+        if os.path.exists(lock_path):
+            mtime = os.path.getmtime(lock_path)
+            if time.time() - mtime < LOCK_STALE_SEC:
+                return False
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        with open(lock_path, "w", encoding="utf-8") as f:
+            f.write(f"{os.getpid()}\n{time.time()}\n")
+        return True
+    except OSError:
+        return False
+
+
+def _release_llm_lock(lock_path: str = LOCK_PATH) -> None:
+    """LLM 子プロセスのロックを解放する。失敗時は無視（次回 stale 判定で破棄される）。"""
+    try:
+        os.unlink(lock_path)
+    except OSError:
+        pass
+
+
+def _spawn_detached_llm(today_iso: str) -> None:
+    """LLM 要約フェーズを ``--llm-only`` モードで子プロセスとしてデタッチ起動する。
+
+    親（Stop hook 内）は子の完了を待たない。子が失敗・ハングしても親は
+    ブロックされず、``consolidated_summary.md`` は LLM セクションなし版が残る。
+
+    Windows では ``CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`` を使い、
+    Unix 系（macOS / Linux）では ``start_new_session=True`` を使う。
+    """
+    args = [sys.executable, os.path.abspath(__file__), LLM_ONLY_FLAG, today_iso]
+    popen_kwargs: dict = dict(
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        cwd=_CLAUDE_DIR,
+    )
+    if sys.platform == "win32":
+        # CREATE_NO_WINDOW: 子プロセス（および子が呼ぶ console アプリ）の
+        # コンソールウィンドウを完全に非表示にする。
+        # DETACHED_PROCESS は親コンソールから切り離す効果はあるが、
+        # 子が更に呼ぶ console アプリ（claude.exe 等）が新規コンソールを
+        # 自動取得してウィンドウが見えてしまうため使わない（両者は排他）。
+        # CREATE_NEW_PROCESS_GROUP は親からの Ctrl+C 伝播を防ぐので維持。
+        # 値は CREATE_NO_WINDOW=0x08000000, CREATE_NEW_PROCESS_GROUP=0x00000200。
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+        )
+        popen_kwargs["creationflags"] = creationflags
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    try:
+        # Popen の戻り値を保持しない: プロセスはデタッチ起動済みなので親が exit しても継続する。
+        subprocess.Popen(args, **popen_kwargs)
+    except OSError as exc:
+        print(f"[consolidate_memory] detach spawn failed: {exc}", file=sys.stderr)
+
+
+def _parse_today_arg(argv: list[str]) -> datetime:
+    """``--llm-only <today_iso>`` の today を解釈して返す。失敗時は now を返す。"""
+    try:
+        idx = argv.index(LLM_ONLY_FLAG)
+        if idx + 1 < len(argv):
+            parsed = datetime.fromisoformat(argv[idx + 1])
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+    except (ValueError, IndexError):
+        pass
+    return datetime.now(timezone.utc)
+
+
+def _full_sync_main() -> int:
+    """Stop hook 通常モード: 同期処理のみ完了させ LLM はバックグラウンドへ。
+
+    同期で実行する処理:
+      - MVP セクション集約 + 昇格候補サマリの consolidated_summary.md 書き出し（LLM なし）
+      - Phase 2-B: promotion-candidates.md 書き出し
+      - Phase 2-A: 古い session.tmp の archive/ 移動
+
+    完了後、LLM 要約を ``--llm-only`` 子プロセスにデタッチ起動して即 exit 0。
     """
     # stdin の payload は読むが内容は使わない（呼び出し元の Claude Code から送られる）
     try:
@@ -803,18 +911,17 @@ def main() -> int:
     # main() 全体で同じ "today" を共有する（datetime.now() の二重評価回避 + 決定論性）
     today = datetime.now(timezone.utc)
 
-    # MVP + Phase 2-B + Phase 2-C: consolidated_summary.md 生成
-    # (LLM 要約 + 昇格候補サマリを含む)
+    # 同期: MVP + 昇格候補サマリを LLM なしで生成
     try:
         write_summary(
             patterns_path=PATTERNS_PATH,
             today=today,
-            enable_llm=True,
+            enable_llm=False,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[consolidate_memory] unexpected error: {exc}", file=sys.stderr)
 
-    # Phase 2-B: 半自動 promotion 候補ログ
+    # 同期: Phase 2-B 半自動 promotion 候補ログ
     try:
         _, candidates = build_promotion_candidates_section(
             PATTERNS_PATH, today=today
@@ -828,7 +935,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    # Phase 2-A: 古い session.tmp を archive/ へ移動
+    # 同期: Phase 2-A 古い session.tmp を archive/ へ移動
     try:
         ttl = _resolve_archive_ttl()
         archive_old_sessions(ttl_days=ttl)
@@ -838,7 +945,52 @@ def main() -> int:
             file=sys.stderr,
         )
 
+    # 非同期: LLM 要約を子プロセスとしてデタッチ起動
+    _spawn_detached_llm(today.isoformat())
+
     return 0
+
+
+def _llm_only_main() -> int:
+    """``--llm-only`` 子プロセスエントリ: LLM 要約のみ実行して summary を更新する。
+
+    多重起動防止のためロックを取得する。新鮮な既存ロックがあれば即終了する。
+    LLM 要約に失敗しても exit 0（既存挙動と同等）。
+    """
+    today = _parse_today_arg(sys.argv)
+
+    # LOCK_PATH をモジュール属性から取得することでテストの monkeypatch に対応
+    if not _acquire_llm_lock(LOCK_PATH):
+        # 既に他の子が走っている、または直前の子がロック保持中
+        return 0
+
+    try:
+        write_summary(
+            patterns_path=PATTERNS_PATH,
+            today=today,
+            enable_llm=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[consolidate_memory:llm-only] unexpected error: {exc}",
+            file=sys.stderr,
+        )
+    finally:
+        _release_llm_lock(LOCK_PATH)
+
+    return 0
+
+
+def main() -> int:
+    """Stop フックエントリポイント。失敗してもセッションを止めない（exit 0）。
+
+    起動引数で 2 つのモードに分岐する:
+      - ``--llm-only``: 子プロセスとしての LLM 限定モード
+      - それ以外: Stop hook 通常モード（同期処理 + LLM デタッチ）
+    """
+    if LLM_ONLY_FLAG in sys.argv:
+        return _llm_only_main()
+    return _full_sync_main()
 
 
 if __name__ == "__main__":

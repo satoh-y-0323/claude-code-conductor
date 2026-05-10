@@ -502,7 +502,7 @@ AskUserQuestion で確認する:
 }
 ```
 
-承認後 → セッションファイルの `- [ ] security-review` を `- [x]` に Edit してコミットを提案する。
+承認後 → セッションファイルの `- [ ] security-review` を `- [x]` に Edit する。続けて **「引き継ぎバックログの照合」**（後述の共通ステップ）を実行してからコミットを提案する。
 **F-005 結果記録**: フェーズ E の最終承認時のみ Bash で記録する（多重カウント防止のため E-1 では記録しない）:
 ```bash
 python .claude/hooks/record_tier_outcome.py --outcome success
@@ -562,7 +562,7 @@ AskUserQuestion で許容理由を確認する:
 1. 全指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
 2. **F-001 判断記録**: 全 `[SR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
 3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
-4. セッションファイルの `- [ ] security-review` を `- [x]` に Edit してコミットを提案する。
+4. セッションファイルの `- [ ] security-review` を `- [x]` に Edit する。続けて **「引き継ぎバックログの照合」**（後述の共通ステップ）を実行してからコミットを提案する。
 5. **F-005 結果記録**: 全許容で完了するのも「成功」としてカウント:
    ```bash
    python .claude/hooks/record_tier_outcome.py --outcome success
@@ -581,3 +581,37 @@ python .claude/hooks/record_tier_outcome.py --outcome failure
 ```bash
 python .claude/hooks/record_tier_outcome.py --outcome failure
 ```
+
+---
+
+## 引き継ぎバックログの照合（フェーズ E 共通ステップ）
+
+フェーズ E の最終承認後、コミット提案の直前に必ず実行する。
+
+引き継ぎバックログ（過去セッションから繰り越された `## 残タスク` 内の `- [ ]` 行のうち、ワークフローフェーズではない高レベル項目）が今回の作業で完了する場合、ここで `[x]` 化する。リリース時など節目の取りこぼしを防ぐ。
+
+### 手順
+
+1. session.tmp の `## 残タスク` セクションから `- [ ]` 行を抽出する
+2. 当セッションの作業内容（DURATION・requirements-report タイトル・plan-report タイトル・関連コミット予定の内容）と、各 `- [ ]` 行を**キーワード照合**する（`F-XXX` / `Phase X` / 機能名 / 「Zenn」「リリース」「ドキュメント」などの名詞）
+3. ワークフローフェーズ項目（`ヒアリング` / `設計` / `計画` / `tester:` / `developer:` / `code-review` / `security-review` で始まる行）は対象外。引き継ぎバックログのみを候補にする
+4. 候補が**ゼロ件**ならこのステップをスキップしてそのままコミット提案へ
+5. 候補が**1 件以上**あれば AskUserQuestion を提示する:
+
+```json
+{
+  "questions": [{
+    "question": "今回の作業で完了する引き継ぎバックログ項目があれば [x] にしますか？",
+    "options": [
+      { "label": "全て [x] にする", "description": "候補を全て完了扱いにする" },
+      { "label": "個別に選ぶ", "description": "項目ごとに確認する" },
+      { "label": "更新しない", "description": "後で手動確認する" }
+    ]
+  }]
+}
+```
+
+6. 承認された項目は Edit で `- [ ] {元の文}` を `- [x] {元の文} → 完了` に置換する（コミット直前のためハッシュは未確定）
+7. ステップ完了後、通常通りコミット提案へ進む
+
+> 補足: バックログの陳腐化（例: 「v1.0.0〜v1.6.0 の Zenn 記事化」のように完了済みバージョンを含む）も検出したらユーザーに記述更新を促す。

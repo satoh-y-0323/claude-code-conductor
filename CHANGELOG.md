@@ -1,5 +1,55 @@
 # Changelog
 
+## [1.7.0] - 2026-05-10
+
+### マイルストーン
+
+session.tmp の引き継ぎバックログ更新メカニズムを再設計しつつ、Stop hook の体感ブロック時間を **5〜15 秒 → 76ms** に短縮する性能改善を入れた minor リリース。バックログ更新はセッション開始時の git log 照合（init-session Step 1.5）と dev-workflow フェーズ E のコミット直前確認の二重ネットで担保。Stop hook の LLM 要約はバックグラウンド子プロセスにデタッチ起動し、Windows でのコンソールウィンドウ可視化問題（`DETACHED_PROCESS` から `CREATE_NO_WINDOW` への切替）も同時に解消した。
+
+### 新機能
+
+#### 引き継ぎバックログ照合メカニズム
+
+`## 残タスク` セクションには「dev-workflow が更新するフェーズ項目（A）」と「過去セッションから引き継いだ高レベルバックログ（B）」が混在している。種別 B には更新トリガーが存在せず、リリースで完了したタスクが `[ ]` のまま放置される問題があった。これを以下の二重ネットで解決:
+
+- **`.claude/skills/init-session/SKILL.md`**: Step 1.5 を新設し、前回セッション以降の `git log --since` と残タスクをキーワード照合（`F-XXX` / `Phase X` / 機能名）。完了している可能性のあるタスクを Step 3 サマリで提示し、AskUserQuestion でユーザー承認時のみ `[x]` 化する。自動更新は誤検知防止のため行わない
+- **`.claude/skills/dev-workflow/SKILL.md`**: フェーズ E（指摘なし時の承認 / 全許容完了）のコミット提案直前に共通ステップ「引き継ぎバックログの照合」を呼び出すよう変更。当セッションの作業内容と関連しうるバックログ項目を検索し、AskUserQuestion で更新確認する
+- **`.claude/docs/taxonomy.md`**: `memory/` セクションの「ユーザーは原則として手動編集しない」記述を Hook と LLM の責務分担として明確化（Hook が骨格、LLM が内容更新）
+
+### 性能改善
+
+#### Stop hook の LLM 要約をバックグラウンドデタッチ実行
+
+`.claude/hooks/consolidate_memory.py` の `claude CLI subprocess` 呼び出し（最大 60 秒タイムアウト）が Stop hook 内で同期実行されており、ユーザーの次プロンプト入力を 3〜15 秒間ブロックしていた。実装を以下に変更:
+
+- `main()` を 2 モードに分割: 通常モード `_full_sync_main()` は同期処理（MVP 集約・promotion ログ・archive）のみ完了させて即 exit 0、LLM 要約は `--llm-only` 子プロセスとしてデタッチ起動
+- 子プロセス側 `_llm_only_main()` は `.claude/state/consolidate_llm.lock` で多重起動を防ぎながら LLM 要約を生成し、`consolidated_summary.md` に追記
+- 計測結果: Stop hook ブロック時間 **76 ms**（修正前 3〜15 秒）。LLM 要約は終始バックグラウンドで完了
+
+### 修正
+
+#### Windows でのコンソールウィンドウ可視化問題
+
+デタッチ子プロセスが `DETACHED_PROCESS` フラグで起動されると、その子が `claude.exe`（console application）を呼ぶ際に Windows が新しいコンソールを自動割り当てし、ユーザーに「真っ黒な別ウィンドウ」が見えてしまう問題を修正:
+
+- `_spawn_detached_llm()`: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` → `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` に変更（前者は `CREATE_NO_WINDOW` と排他）
+- `build_llm_summary_section()`: claude CLI subprocess に Windows 限定で `creationflags=CREATE_NO_WINDOW` を追加（保険的二重対策）
+- macOS / Linux は `start_new_session=True` 分岐を維持。クロスプラットフォーム動作不変
+
+### 内部
+
+- 新規テスト追加 **23 件**:
+  - `tests/skills/test_session_backlog_reconciliation.py` 8 件（init-session / dev-workflow / taxonomy 整合性検証）
+  - `tests/hooks/test_consolidate_memory.py` 15 件（`_full_sync_main` / `_spawn_detached_llm` / lock / `_llm_only_main` / `_parse_today_arg` / `main` dispatch / Windows・Unix 両プラットフォーム subprocess flags）
+- 既存テスト全件 pass: **823 passed / 3 skipped / 0 failed**
+- `.claude/state/consolidate_llm.lock` は既存の `.gitignore` `.claude/state/*` ルールでカバー済み（追加除外不要）
+
+### 関連コミット
+
+- 単一 commit でリリース予定
+
+---
+
 ## [1.5.2] - 2026-05-09
 
 ### マイルストーン
