@@ -1,5 +1,61 @@
 # Changelog
 
+## [1.8.0] - 2026-05-10
+
+### マイルストーン
+
+F-004（MemoryConsolidation 集約フック）の **消費側を完成** させる minor リリース。v1.7.0 までは `consolidated_summary.md` を毎セッション LLM コストを払って生成しながら、誰も読まない write-only ファイルになっていた。本リリースで Ruflo の MemoryConsolidation 設計意図どおり「auto-context-injection（次セッションで Claude が自動的にコンテキストとして読み込む）」を実装した。LLM 要約セクションだけを抽出した小ファイル `.claude/memory/llm_summary.md`（~3.6KB / ~900 tokens）を CLAUDE.md から @include することで、毎セッション開始時に直近 7 日のドメイン知見が自動注入される。
+
+### 設計意図の出典
+
+`.claude/docs/ruflo_research_result.md` セクション 2.5「C3 への適用判断」より:
+
+> **MemoryConsolidation 相当の集約フック（最有力）**
+> - 日次 `.tmp` を SessionStop フックでマージし、**信頼度スコア付きで `auto-memory/MEMORY.md` に統合**
+> - embedding 不要で導入容易
+
+C3 ではプロジェクトレベルでの常時注入として `.claude/CLAUDE.md` の @include 機構を採用（Ruflo の MEMORY.md 自動注入の C3 版）。
+
+### 新機能
+
+#### LLM 要約の auto-context-injection
+
+`.claude/hooks/consolidate_memory.py` に消費側を実装:
+
+- **新規定数**: `LLM_SUMMARY_PATH`（`.claude/memory/llm_summary.md`）/ `LLM_SUMMARY_PLACEHOLDER`
+- **新規ヘルパー**:
+  - `_ensure_llm_summary_placeholder()`: 初回 clone 後・LLM 未生成時に空のプレースホルダを書き出す（CLAUDE.md @include の前提を確保）
+  - `_write_llm_summary_extract()`: `consolidated_summary.md` から `## LLM 要約` セクションだけを正規表現で抽出し、別ファイルにアトミック書き込み（tempfile + os.replace）
+- **`_full_sync_main()` 改修**: 同期処理内でプレースホルダ確保（初回 clone 後の最初の Stop で作成される）
+- **`_llm_only_main()` 改修**: LLM 要約完了後に `_write_llm_summary_extract()` を呼んで小ファイルに反映
+
+`.claude/CLAUDE.md` の C3 Managed セクションに `@memory/llm_summary.md` を追加。`@rules/promoted/index.md` と同じ機構で毎セッション開始時に自動注入される。
+
+#### サイズ最適化の判断
+
+`consolidated_summary.md` 全体（~19KB / ~5000 tokens）を @include せず、LLM 要約セクションだけ（~3.6KB / ~900 tokens）に絞った理由:
+- MVP セクション（行マージ）: ~10〜14KB の生データ。LLM 要約に既に吸収済みで重複（注入価値低）
+- 昇格候補セクション: ~1KB。`rules/promoted/index.md` で既にカバー済み
+- LLM 要約: ~4KB の distill 済最終形（注入価値高）
+
+5x 削減でコンテキスト効率を保ちつつ、Claude が複数セッションを跨いだドメイン知見を持って次セッションを始められる。
+
+### 内部
+
+- 新規テスト追加 **8 件**（4 クラス）:
+  - `TestLLMSummaryExtract` 4 件: 抽出ロジック / source 不在 / セクション不在 / 既存上書き
+  - `TestLLMSummaryPlaceholder` 2 件: 不在時作成 / 既存非上書き
+  - `TestFullSyncMainEnsuresPlaceholder` 1 件: `_full_sync_main` がプレースホルダ確保を呼ぶこと
+  - `TestLLMOnlyMainExtractsLLMSummary` 1 件: `_llm_only_main` が抽出を呼ぶこと
+- 既存テスト全件 pass: **831 passed / 3 skipped / 0 failed**
+- `.claude/memory/llm_summary.md` は `.gitignore` に追加（machine-local 動的生成）
+
+### 関連コミット
+
+- 単一 commit でリリース予定
+
+---
+
 ## [1.7.0] - 2026-05-10
 
 ### マイルストーン

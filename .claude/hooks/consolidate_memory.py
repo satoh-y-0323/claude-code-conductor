@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -95,6 +96,18 @@ LOCK_PATH = os.path.join(_CLAUDE_DIR, "state", "consolidate_llm.lock")
 LOCK_STALE_SEC = 120
 # `--llm-only` モードのフラグ
 LLM_ONLY_FLAG = "--llm-only"
+
+# F-004 消費側: CLAUDE.md @include 用の小ファイル（LLM 要約セクションのみ抽出）。
+# 毎セッション開始時に Claude のコンテキストに自動注入されるため、
+# サイズを LLM 要約の最大 4KB 程度に抑える。
+LLM_SUMMARY_FILE_NAME = "llm_summary.md"
+LLM_SUMMARY_PATH = os.path.join(_CLAUDE_DIR, "memory", LLM_SUMMARY_FILE_NAME)
+# 初回 / LLM 未生成時のプレースホルダ。@include で参照されても内容が空にならないよう
+# `## LLM 要約` ヘッダだけは確保する。
+LLM_SUMMARY_PLACEHOLDER = (
+    "## LLM 要約\n\n"
+    "_集約サマリ未生成（次回 Stop hook 完了後に更新されます）_\n"
+)
 
 
 def _load_session_utils():
@@ -812,6 +825,80 @@ def _resolve_archive_dest(archive_dir: str, base_name: str) -> str:
     return candidate
 
 
+def _ensure_llm_summary_placeholder(target_path: str = LLM_SUMMARY_PATH) -> None:
+    """``llm_summary.md`` が存在しない場合に空のプレースホルダを書く。
+
+    CLAUDE.md @include で参照されるため、初回 Stop hook 前でも安全に
+    ファイルとして存在させておく。既存ファイルは上書きしない。
+    """
+    if os.path.exists(target_path):
+        return
+    try:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with open(target_path, "w", encoding="utf-8") as f:
+            f.write(LLM_SUMMARY_PLACEHOLDER)
+    except OSError as exc:
+        print(
+            f"[consolidate_memory] failed to ensure placeholder {target_path}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _write_llm_summary_extract(
+    source_path: str = OUTPUT_PATH,
+    target_path: str = LLM_SUMMARY_PATH,
+) -> bool:
+    """``consolidated_summary.md`` から ``## LLM 要約`` セクションだけを抽出して書き出す。
+
+    CLAUDE.md @include 用の小ファイル（~4KB）。アトミック書き込み。
+
+    Returns:
+        書き込み成功時 True、source 不在 / セクション不在 / I/O 失敗時 False。
+    """
+    if not os.path.exists(source_path):
+        return False
+    try:
+        content = Path(source_path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    # ## LLM 要約 から次の ## または末尾までを抽出
+    match = re.search(r"## LLM 要約\s*\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    if not match:
+        return False
+
+    body = "## LLM 要約\n" + match.group(1).rstrip() + "\n"
+
+    # アトミック書き込み（tempfile + os.replace）
+    tmp_path: str | None = None
+    try:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(target_path), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(body)
+        except Exception:
+            os.close(fd)
+            raise
+        os.replace(tmp_path, target_path)
+        tmp_path = None
+        return True
+    except OSError as exc:
+        print(
+            f"[consolidate_memory] failed to write {target_path}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 def _acquire_llm_lock(lock_path: str = LOCK_PATH) -> bool:
     """LLM 子プロセスのロックを取得する。新鮮な既存ロックがあれば False を返す。
 
@@ -921,6 +1008,11 @@ def _full_sync_main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"[consolidate_memory] unexpected error: {exc}", file=sys.stderr)
 
+    # 同期: CLAUDE.md @include 用 llm_summary.md のプレースホルダ確保
+    # 初回 clone 直後 / LLM 未生成時でも CLAUDE.md @include が有効になるよう、
+    # ファイル不在時のみ空プレースホルダを書き出す（既存ファイルは触らない）。
+    _ensure_llm_summary_placeholder()
+
     # 同期: Phase 2-B 半自動 promotion 候補ログ
     try:
         _, candidates = build_promotion_candidates_section(
@@ -970,6 +1062,10 @@ def _llm_only_main() -> int:
             today=today,
             enable_llm=True,
         )
+        # consolidated_summary.md 書き込み完了後、LLM 要約セクションだけを
+        # CLAUDE.md @include 用の llm_summary.md に抽出する（~4KB）。
+        # F-004 消費側: Claude が次セッションで自動的にコンテキスト参照する経路。
+        _write_llm_summary_extract()
     except Exception as exc:  # noqa: BLE001
         print(
             f"[consolidate_memory:llm-only] unexpected error: {exc}",

@@ -1311,3 +1311,194 @@ class TestMainDispatch:
         assert rc == 0
         assert called["full_sync"] is True
         assert called["llm_only"] is False
+
+
+# ---------------------------------------------------------------------------
+# F-004 消費側: LLM 要約抽出 + プレースホルダ
+# ---------------------------------------------------------------------------
+
+
+def _make_summary_with_all_sections() -> str:
+    """MVP / LLM 要約 / 昇格候補 の 3 セクションを含むダミー summary を返す。"""
+    return (
+        "# 集約サマリ\n"
+        "\n"
+        "_直近 7 日のマージ_\n"
+        "\n"
+        "## うまくいったアプローチ\n"
+        "\n"
+        "- 成功 1\n"
+        "- 成功 2\n"
+        "\n"
+        "## 試みたが失敗したアプローチ\n"
+        "\n"
+        "- 失敗 1\n"
+        "\n"
+        "## LLM 要約\n"
+        "\n"
+        "_生成: 2026-05-10T12:00:00+00:00 / model: claude (CLI default)_\n"
+        "\n"
+        "### 主要な傾向\n"
+        "- バックグラウンド化が体感に効いた\n"
+        "- Windows console 問題は CREATE_NO_WINDOW で解決\n"
+        "\n"
+        "## 昇格候補\n"
+        "\n"
+        "| ID | trust |\n"
+        "|---|---|\n"
+        "| foo | 0.5 |\n"
+    )
+
+
+class TestLLMSummaryExtract:
+    """`_write_llm_summary_extract()` の検証。"""
+
+    def test_extracts_llm_section_only(self, tmp_path: Path) -> None:
+        """consolidated_summary.md から ## LLM 要約 セクションだけを切り出す。"""
+        mod = _load_hook_module()
+        source = tmp_path / "consolidated_summary.md"
+        target = tmp_path / "llm_summary.md"
+        source.write_text(_make_summary_with_all_sections(), encoding="utf-8")
+
+        result = mod._write_llm_summary_extract(str(source), str(target))
+        assert result is True
+        assert target.is_file()
+
+        content = target.read_text(encoding="utf-8")
+        # LLM 要約 セクション本体は含まれる
+        assert content.startswith("## LLM 要約\n")
+        assert "バックグラウンド化が体感に効いた" in content
+        assert "Windows console" in content
+        # MVP / 昇格候補 は含まれない
+        assert "うまくいったアプローチ" not in content
+        assert "成功 1" not in content
+        assert "昇格候補" not in content
+        # サイズが小さい（4KB 以下）
+        assert len(content) < 4096
+
+    def test_skips_when_source_missing(self, tmp_path: Path) -> None:
+        """source ファイル不在時は False を返し target を作らない。"""
+        mod = _load_hook_module()
+        source = tmp_path / "missing.md"
+        target = tmp_path / "llm_summary.md"
+
+        result = mod._write_llm_summary_extract(str(source), str(target))
+        assert result is False
+        assert not target.exists()
+
+    def test_skips_when_llm_section_missing(self, tmp_path: Path) -> None:
+        """source に ## LLM 要約 がなければ False、既存 target を上書きしない。"""
+        mod = _load_hook_module()
+        source = tmp_path / "consolidated_summary.md"
+        target = tmp_path / "llm_summary.md"
+        # LLM 要約セクションを含まない summary
+        source.write_text(
+            "# 集約サマリ\n\n## うまくいったアプローチ\n- 成功\n",
+            encoding="utf-8",
+        )
+        # 既存 target を作っておく
+        target.write_text("既存内容", encoding="utf-8")
+
+        result = mod._write_llm_summary_extract(str(source), str(target))
+        assert result is False
+        # 既存 target は上書きされない
+        assert target.read_text(encoding="utf-8") == "既存内容"
+
+    def test_atomic_write_replaces_existing(self, tmp_path: Path) -> None:
+        """既存の target は新しい内容で上書きされる。"""
+        mod = _load_hook_module()
+        source = tmp_path / "consolidated_summary.md"
+        target = tmp_path / "llm_summary.md"
+        source.write_text(_make_summary_with_all_sections(), encoding="utf-8")
+        target.write_text("古い内容", encoding="utf-8")
+
+        result = mod._write_llm_summary_extract(str(source), str(target))
+        assert result is True
+        content = target.read_text(encoding="utf-8")
+        assert "古い内容" not in content
+        assert content.startswith("## LLM 要約\n")
+
+
+class TestLLMSummaryPlaceholder:
+    """`_ensure_llm_summary_placeholder()` の検証。"""
+
+    def test_creates_placeholder_when_missing(self, tmp_path: Path) -> None:
+        """target ファイル不在時にプレースホルダを書き出す。"""
+        mod = _load_hook_module()
+        target = tmp_path / "llm_summary.md"
+        assert not target.exists()
+
+        mod._ensure_llm_summary_placeholder(str(target))
+
+        assert target.is_file()
+        content = target.read_text(encoding="utf-8")
+        assert content.startswith("## LLM 要約\n")
+        assert "未生成" in content
+
+    def test_no_overwrite_when_exists(self, tmp_path: Path) -> None:
+        """既存 target は上書きしない。"""
+        mod = _load_hook_module()
+        target = tmp_path / "llm_summary.md"
+        target.write_text("既存の重要な内容", encoding="utf-8")
+
+        mod._ensure_llm_summary_placeholder(str(target))
+
+        assert target.read_text(encoding="utf-8") == "既存の重要な内容"
+
+
+class TestFullSyncMainEnsuresPlaceholder:
+    """`_full_sync_main()` がプレースホルダ確保を呼ぶ検証。"""
+
+    def test_full_sync_main_calls_placeholder_helper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = _load_hook_module()
+        called = {"placeholder": False}
+
+        def fake_placeholder(*a, **kw):
+            called["placeholder"] = True
+
+        monkeypatch.setattr(mod, "write_summary", lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "build_promotion_candidates_section",
+                            lambda *a, **kw: ("", []))
+        monkeypatch.setattr(mod, "write_promotion_candidates_log",
+                            lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "archive_old_sessions", lambda *a, **kw: [])
+        monkeypatch.setattr(mod, "_spawn_detached_llm", lambda *a, **kw: None)
+        monkeypatch.setattr(mod, "_ensure_llm_summary_placeholder",
+                            fake_placeholder)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod._full_sync_main()
+        assert rc == 0
+        assert called["placeholder"] is True, (
+            "_full_sync_main は _ensure_llm_summary_placeholder を呼ぶ必要がある"
+        )
+
+
+class TestLLMOnlyMainExtractsLLMSummary:
+    """`_llm_only_main()` が LLM 要約抽出を呼ぶ検証。"""
+
+    def test_llm_only_main_calls_extract_helper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = _load_hook_module()
+        lock_path = str(tmp_path / "test.lock")
+        monkeypatch.setattr(mod, "LOCK_PATH", lock_path)
+
+        called = {"extract": False}
+
+        def fake_extract(*a, **kw):
+            called["extract"] = True
+            return True
+
+        monkeypatch.setattr(mod, "write_summary", lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "_write_llm_summary_extract", fake_extract)
+        monkeypatch.setattr(sys, "argv",
+                            ["prog", "--llm-only", "2026-05-10T12:00:00+00:00"])
+
+        rc = mod._llm_only_main()
+        assert rc == 0
+        assert called["extract"] is True, (
+            "_llm_only_main は _write_llm_summary_extract を呼ぶ必要がある"
+        )
