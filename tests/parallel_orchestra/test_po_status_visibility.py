@@ -43,7 +43,7 @@ from parallel_orchestra.runner import (
 
 WORKTREE_ROOT = Path(__file__).parents[2]
 SCHEMA_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "schema.sql"
-INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "init_c3_db.py"
+INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "session_start.py"
 
 
 def _create_c3_db(db_path: Path) -> None:

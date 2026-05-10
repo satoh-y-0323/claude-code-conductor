@@ -31,7 +31,7 @@ F-002 Phase 1 では「親 Claude の `runner.py` が完了後にまとめて IN
 | `PO_WORKTREE_GUARD` | `"1"` | 未設定 | 設定（既存 Phase 1 から） |
 
 `C3_PO_DB_PATH` は親リポ起点で `locate_c3_db()` が見つけたパスのみ注入される。
-DB 不在環境（C3 利用先で `init_c3_db.py` がまだ走っていない等）では未設定。
+DB 不在環境（C3 利用先で `session_start.py` がまだ走っていない等）では未設定。
 
 ## locate_c3_db の解決順
 

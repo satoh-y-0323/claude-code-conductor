@@ -979,8 +979,8 @@ def _parse_today_arg(argv: list[str]) -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _full_sync_main() -> int:
-    """Stop hook 通常モード: 同期処理のみ完了させ LLM はバックグラウンドへ。
+def run_sync(today: datetime | None = None) -> int:
+    """payload に依存しない sync 処理本体。session_stop.py からも呼ばれる.
 
     同期で実行する処理:
       - MVP セクション集約 + 昇格候補サマリの consolidated_summary.md 書き出し（LLM なし）
@@ -988,15 +988,14 @@ def _full_sync_main() -> int:
       - Phase 2-A: 古い session.tmp の archive/ 移動
 
     完了後、LLM 要約を ``--llm-only`` 子プロセスにデタッチ起動して即 exit 0。
-    """
-    # stdin の payload は読むが内容は使わない（呼び出し元の Claude Code から送られる）
-    try:
-        sys.stdin.read()
-    except Exception:  # noqa: BLE001
-        pass
 
+    Args:
+        today: 集約対象日付（省略時は現在時刻）。session_stop.py から
+               複数フェーズで同じ today を共有したい場合に注入する。
+    """
     # main() 全体で同じ "today" を共有する（datetime.now() の二重評価回避 + 決定論性）
-    today = datetime.now(timezone.utc)
+    if today is None:
+        today = datetime.now(timezone.utc)
 
     # 同期: MVP + 昇格候補サマリを LLM なしで生成
     try:
@@ -1041,6 +1040,21 @@ def _full_sync_main() -> int:
     _spawn_detached_llm(today.isoformat())
 
     return 0
+
+
+def _full_sync_main() -> int:
+    """Stop hook 単独実行時のラッパー: stdin を消費してから run_sync を呼ぶ.
+
+    consolidate_memory.py が `--llm-only` なしで直接実行されたとき（旧仕様の
+    Stop hook 経由 or 手動実行）の互換維持用。session_stop.py orchestrator
+    からは run_sync() を直接呼ぶ。
+    """
+    # stdin の payload は読むが内容は使わない（呼び出し元の Claude Code から送られる）
+    try:
+        sys.stdin.read()
+    except Exception:  # noqa: BLE001
+        pass
+    return run_sync()
 
 
 def _llm_only_main() -> int:

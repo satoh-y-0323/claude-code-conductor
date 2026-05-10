@@ -1,14 +1,14 @@
 -- C3 SQLite schema (F-009: DuckDB ハイブリッド構成の基盤)
 --
--- このファイルは init_c3_db.py から読まれ、`.claude/state/c3.db` に対して
--- 冪等に CREATE TABLE IF NOT EXISTS で適用される。
--- WAL モードへの切り替えは init_c3_db.py 側で PRAGMA journal_mode=WAL を実行する。
+-- このファイルは session_start.py の _run_init_c3_db ハンドラから読まれ、
+-- `.claude/state/c3.db` に対して冪等に CREATE TABLE IF NOT EXISTS で適用される。
+-- WAL モードへの切り替えは session_start.py 側で PRAGMA journal_mode=WAL を実行する。
 --
 -- 書き込みは Python の sqlite3 経由、読み・分析は DuckDB の sqlite_scanner で
 -- ATTACH してアクセスする想定（書き込みフローは sqlite3 に統一する）。
 --
--- スキーマ変更時は schema_version を上げて、init_c3_db.py 側に
--- マイグレーション処理を追加すること（CREATE TABLE IF NOT EXISTS だけで
+-- スキーマ変更時は schema_version を上げて、session_start.py の apply_schema()
+-- にマイグレーション処理を追加すること（CREATE TABLE IF NOT EXISTS だけで
 -- 表現できない変更が必要になった場合の備え）。
 
 -- ---------------------------------------------------------------------------

@@ -1,23 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python .claude/hooks/clear_file_history.py*)",
-      "Bash(python .claude/hooks/enable_sandbox.py*)",
       "Bash(python .claude/hooks/stop.py*)",
       "Bash(python .claude/hooks/pre_tool.py*)",
       "Bash(python .claude/hooks/pre_compact.py*)",
       "Bash(python .claude/hooks/restore_session.py*)",
       "Bash(python .claude/hooks/permission_handler.py*)",
-      "Bash(python .claude/hooks/validate_skill_change.py*)",
       "Bash(python .claude/hooks/statusline.py*)",
-      "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/clear_file_history.py\"*)",
-      "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/enable_sandbox.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre_compact.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/restore_session.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/permission_handler.py\"*)",
-      "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate_skill_change.py\"*)",
       "Bash(python \"$CLAUDE_PROJECT_DIR/.claude/hooks/statusline.py\"*)",
       "Read(**)",
       "Glob(**)",
@@ -112,10 +106,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate_skill_change.py\""
-          },
-          {
-            "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_tool.py\""
           }
         ]
@@ -123,10 +113,6 @@
       {
         "matcher": "Edit",
         "hooks": [
-          {
-            "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate_skill_change.py\""
-          },
           {
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_tool.py\""
@@ -171,7 +157,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/init_c3_db.py\""
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_start.py\""
           }
         ]
       }
@@ -193,11 +179,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop.py\""
-          },
-          {
-            "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/consolidate_memory.py\""
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_stop.py\""
           }
         ]
       }

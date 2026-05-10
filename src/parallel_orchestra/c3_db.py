@@ -60,7 +60,7 @@ def locate_c3_db(start: Path | None = None) -> Path | None:
       3. 見つからなければ ``None``。
 
     環境変数が設定されているが指すパスが無効な場合は警告ログを出して 2. に fall-through する
-    （C3 利用先で `init_c3_db.py` がまだ走っていない、もしくは C3 環境ではない
+    （C3 利用先で `session_start.py` がまだ走っていない、もしくは C3 環境ではない
     ケースの後方互換維持）。
 
     Args:
@@ -164,7 +164,7 @@ def record_task_results(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
-            # WAL モードに揃える（init_c3_db.py で既に設定済みでも冪等）。
+            # WAL モードに揃える（session_start.py で既に設定済みでも冪等）。
             conn.execute("PRAGMA journal_mode=WAL")
             # F-002 Phase 2-A: 並列書き込み増加に備えロック待機を伸ばす（冪等）。
             conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")

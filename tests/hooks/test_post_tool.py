@@ -246,3 +246,81 @@ class TestLanguageRestrictions:
         result = _run_hook(_payload("Write", str(target)))
         assert result.returncode == 0
         assert "console.log" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# skills/ 変更検出（旧 validate_skill_change.py 由来）
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsChangeNotification:
+    """`.claude/skills/` 配下を変更したときに動作確認リマインダを出す。
+
+    旧 validate_skill_change.py のロジックを post_tool.py に統合した結果の
+    動作を検証する。
+    """
+
+    def test_skills_md_change_emits_reminder(self, tmp_path: Path) -> None:
+        """skills/ 配下の SKILL.md を編集すると stdout にリマインダが出る。"""
+        skills_dir = tmp_path / ".claude" / "skills" / "foo"
+        skills_dir.mkdir(parents=True)
+        target = skills_dir / "SKILL.md"
+        target.write_text("# foo\n", encoding="utf-8")
+
+        result = _run_hook(_payload("Edit", str(target)))
+        assert result.returncode == 0
+        assert "[C3]" in result.stdout
+        assert "SKILL.md" in result.stdout
+        assert "実際のエージェント動作で確認" in result.stdout
+
+    def test_skills_change_with_backslash_path(self, tmp_path: Path) -> None:
+        """Windows 形式のバックスラッシュパスでも skills/ を検出する。"""
+        skills_dir = tmp_path / ".claude" / "skills" / "bar"
+        skills_dir.mkdir(parents=True)
+        target = skills_dir / "SKILL.md"
+        target.write_text("# bar\n", encoding="utf-8")
+
+        # 明示的にバックスラッシュ形式の path を渡す
+        backslash_path = str(target).replace("/", "\\")
+
+        result = _run_hook(_payload("Write", str(backslash_path)))
+        assert result.returncode == 0
+        assert "[C3]" in result.stdout
+
+    def test_non_skills_path_no_reminder(self, tmp_path: Path) -> None:
+        """skills/ 以外のパスではリマインダを出さない。"""
+        target = tmp_path / "src" / "module.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("x = 1\n", encoding="utf-8")
+
+        result = _run_hook(_payload("Edit", str(target)))
+        assert result.returncode == 0
+        assert "[C3]" not in result.stdout
+
+    def test_skills_md_change_quality_check_runs(self, tmp_path: Path) -> None:
+        """skills/ の .md ファイルでも quality 検査は対象拡張子外のためスキップ。
+
+        skills/ 変更通知（stdout）は出るが、quality 警告（stderr）は出ない。
+        """
+        skills_dir = tmp_path / ".claude" / "skills" / "baz"
+        skills_dir.mkdir(parents=True)
+        target = skills_dir / "SKILL.md"
+        target.write_text("# TODO: write skill\n", encoding="utf-8")
+
+        result = _run_hook(_payload("Edit", str(target)))
+        assert result.returncode == 0
+        assert "[C3]" in result.stdout  # skills/ 通知あり
+        assert "TODO" not in result.stderr  # quality 警告なし（.md は対象外）
+
+    def test_skills_py_change_runs_both_checks(self, tmp_path: Path) -> None:
+        """skills/ 配下の .py を編集すると stdout (skills/) と stderr (quality) 両方出る."""
+        skills_dir = tmp_path / ".claude" / "skills" / "qux"
+        skills_dir.mkdir(parents=True)
+        target = skills_dir / "helper.py"
+        target.write_text("print('debug')\n", encoding="utf-8")
+
+        result = _run_hook(_payload("Write", str(target)))
+        assert result.returncode == 0
+        assert "[C3]" in result.stdout
+        assert "[C3 quality]" in result.stderr
+        assert "print" in result.stderr

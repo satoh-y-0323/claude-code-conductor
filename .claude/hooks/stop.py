@@ -262,20 +262,23 @@ def update_patterns(date_str: str) -> None:
     print('[Stop] セッション終了処理が完了しました', file=sys.stderr)
 
 
-def main():
-    try:
-        payload = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, ValueError):
-        payload = {}
+def run(payload: dict) -> int:
+    """payload を引数で受け取る本体処理。session_stop.py orchestrator からも呼ばれる.
 
+    Args:
+        payload: Stop hook の stdin payload（dict 化済み）。
+
+    Returns:
+        常に 0（失敗してもセッションを止めない方針）。
+    """
     # stop_hook_active=true は Stop hook が decision:block を返した後の 2 回目呼び出し。
     # セッション処理は初回のみ実行する。
     if payload.get('stop_hook_active'):
-        sys.exit(0)
+        return 0
 
     cwd = os.getcwd()
     if is_worktree(cwd):
-        sys.exit(0)
+        return 0
 
     today_str = date.today().strftime('%Y%m%d')
     ensure_session_file(today_str)
@@ -285,6 +288,20 @@ def main():
         _append_last_message(get_session_path(today_str), last_msg)
 
     update_patterns(today_str)
+    return 0
+
+
+def main():
+    """単独実行時のエントリポイント（後方互換）.
+
+    stdin を 1 回読んで run() に渡す。session_stop.py orchestrator 経由では
+    呼ばれない（payload は orchestrator が読む）。
+    """
+    try:
+        payload = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        payload = {}
+    sys.exit(run(payload))
 
 
 if __name__ == '__main__':

@@ -1857,7 +1857,7 @@ def run_manifest(
     _run_finished_at = datetime.now(tz=timezone.utc)
 
     # F-002: 実行結果を `.claude/state/c3.db` の po_results に記録する。
-    # DB が無い環境（C3 利用先で init_c3_db.py が走っていない等）や記録エラー時は
+    # DB が無い環境（C3 利用先で session_start.py が走っていない等）や記録エラー時は
     # 静かにスキップする（PO 本体を止めない）。session_id は F-003 と共通。
     try:
         from .c3_db import record_task_results  # noqa: PLC0415

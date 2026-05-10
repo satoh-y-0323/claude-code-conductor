@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: warn on debug output / TODO / FIXME / XXX in edited files.
+"""PostToolUse hook: skills/ 変更通知 + デバッグ出力 / TODO / FIXME / XXX 検出.
 
-F-007: Write / Edit 完了後に対象ファイルへ console.log / print( / TODO /
-FIXME / XXX を検出して警告する。**警告のみ・ブロックしない**（exit 0）。
+統合された 2 つの責務:
 
-判断は人間に委ねる方針のため、検出してもツール実行を止めない。
-code-review-checklist.md の「不要なデバッグ出力が残っていないか」項目を
-自動化する位置付け。
+1. skills/ 変更通知（旧 validate_skill_change.py 由来）:
+   `.claude/skills/` 配下のファイルを Write / Edit したとき「実際のエージェント
+   動作で確認してください」というリマインダを stdout に出す。
+
+2. デバッグ出力検出（F-007）:
+   Write / Edit 完了後に対象ファイルへ console.log / print( / TODO /
+   FIXME / XXX を検出して stderr に警告する。code-review-checklist.md の
+   「不要なデバッグ出力が残っていないか」項目を自動化する位置付け。
+
+両者とも **警告のみ・ブロックしない**（exit 0）。判断は人間に委ねる方針。
 """
 
 import json
@@ -84,19 +90,23 @@ def _scan_file(file_path: str, max_bytes: int = _MAX_SCAN_BYTES) -> list[tuple[i
     return findings
 
 
-def main():
-    try:
-        payload = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, ValueError):
+def _check_skills_change(file_path: str) -> None:
+    """`.claude/skills/` 配下を変更した場合、動作確認を促すメッセージを stdout に出す.
+
+    旧 validate_skill_change.py 由来のロジック。skills/ 変更は実エージェントの
+    挙動に直接影響するため、テストファイルだけでなく実動作の確認を促す。
+    """
+    normalized = file_path.replace('\\', '/')
+    if '.claude/skills/' not in normalized:
         return
 
-    if payload.get('tool_name') not in ('Write', 'Edit'):
-        return
+    skill_name = os.path.basename(file_path)
+    skill_name = re.sub(r'[^\x20-\x7e　-鿿]', '', skill_name)
+    print(f'[C3] .claude/skills/{skill_name} を変更しました。実際のエージェント動作で確認してください。')
 
-    file_path = payload.get('tool_input', {}).get('file_path', '')
-    if not isinstance(file_path, str) or not file_path:
-        return
 
+def _check_quality_patterns(file_path: str) -> None:
+    """ファイル内のデバッグ出力 / TODO 等を stderr に警告する."""
     findings = _scan_file(file_path)
     if not findings:
         return
@@ -112,6 +122,23 @@ def main():
             f'[C3 quality] {safe_name}:{line_no} {pattern_name} を検出: {safe_excerpt}',
             file=sys.stderr,
         )
+
+
+def main():
+    try:
+        payload = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        return
+
+    if payload.get('tool_name') not in ('Write', 'Edit'):
+        return
+
+    file_path = payload.get('tool_input', {}).get('file_path', '')
+    if not isinstance(file_path, str) or not file_path:
+        return
+
+    _check_skills_change(file_path)
+    _check_quality_patterns(file_path)
 
 
 if __name__ == '__main__':

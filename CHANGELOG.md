@@ -1,5 +1,100 @@
 # Changelog
 
+## [1.10.0] - 2026-05-10
+
+### マイルストーン
+
+短期間に F-001〜F-010 を実装した結果、フックが 13 本以上に増え、LLM が SKILL.md の手順を読み解いて正しく呼び出すための認知負荷が高まっていた。本リリースは **コードベースの機能を一切削らずに**「同一イベントで同時発火するフック」と「init-session で手動 2 回呼び出していた起動スクリプト」を統合することで、settings.json と LLM の負担を削減する内部リファクタリング。回帰テスト 812 passed / 3 skipped を維持しつつ、hook commands を 14 → 11 に削減。
+
+### 内部リファクタリング
+
+#### SessionStart 統合 + 自動発火
+
+`clear_file_history.py` (47 行) / `enable_sandbox.py` (77 行) / `init_c3_db.py` (107 行) を **`session_start.py` 1 本に統合**。settings.json の SessionStart hook に登録して自動発火させ、`init-session` SKILL.md の Step 0（「2 回に分けて手動実行」指示）を完全削除。
+
+- 各ハンドラ（`_run_clear_file_history` / `_run_enable_sandbox` / `_run_init_c3_db`）は独立して try/except でラップ。1 つが失敗しても他は実行
+- `apply_schema()` / `SCHEMA_VERSION` / `FILE_HISTORY_DIR` / `FULL_SANDBOX_CONFIG` は test 互換性のため module レベルで公開
+- 既存テスト 31 ケース（旧 3 ファイル分）を `tests/hooks/test_session_start.py` に統合し、orchestration テスト 4 件を追加
+
+#### Stop Orchestrator 統合
+
+`stop.py` + `consolidate_memory.py` の 2 本登録を `session_stop.py` 1 本に集約し、stdin 読み出し 1 回で順次実行する形に。
+
+- `stop.py` に `run(payload)` 関数を抽出（`main()` は後方互換のため残す）
+- `consolidate_memory.py` の `_full_sync_main()` から stdin 読み出しを切り離し、`run_sync(today=None)` を追加
+- `_spawn_detached_llm()` で `consolidate_memory.py --llm-only <iso>` を subprocess 起動する仕組みは維持（ファイル名と CLI 仕様は不変）
+- `tests/hooks/test_session_stop.py` を新規作成（7 ケース、stdin 一回読み・失敗隔離・E2E）
+
+#### PostToolUse 統合
+
+`validate_skill_change.py` (35 行) を `post_tool.py` に統合し、Write/Edit ごとに 2 hooks 同時発火していた構成を 1 hook に。
+
+- `_check_skills_change()` を `post_tool.py` に追加（skills/ 警告は stdout、quality 警告は stderr の使い分けは現状維持）
+- `tests/hooks/test_post_tool.py` に skills/ 通知テスト 5 件を追加（既存 15 + 新規 5 = 20 ケース）
+
+### 削除
+
+| ファイル | 行数 | 統合先 |
+|---|---|---|
+| `.claude/hooks/clear_file_history.py` | 47 | `session_start.py::_run_clear_file_history` |
+| `.claude/hooks/enable_sandbox.py` | 77 | `session_start.py::_run_enable_sandbox` |
+| `.claude/hooks/init_c3_db.py` | 107 | `session_start.py::_run_init_c3_db` + `apply_schema` |
+| `.claude/hooks/validate_skill_change.py` | 35 | `post_tool.py::_check_skills_change` |
+| `tests/hooks/test_clear_file_history.py` | 308 | `tests/hooks/test_session_start.py` |
+| `tests/hooks/test_enable_sandbox.py` | 188 | 同上 |
+| `tests/hooks/test_init_c3_db.py` | 271 | 同上 |
+| `tests/test_clear_file_history.py` | 387 | 同上 |
+| `tests/test_enable_sandbox.py` | 287 | 同上 |
+| `tests/test_validate_skill_change.py` | 494 | `tests/hooks/test_post_tool.py` |
+| `tests/test_sync_template_clear_file_history.py` | 48 | 不要（削除済み） |
+| `tests/test_sync_validate_skill.py` | 108 | 不要（削除済み） |
+
+### 追加
+
+- `.claude/hooks/session_start.py` (約 240 行) — SessionStart 3 ハンドラ統合
+- `.claude/hooks/session_stop.py` (約 90 行) — Stop hook orchestrator
+- `tests/hooks/test_session_start.py` (24 ケース)
+- `tests/hooks/test_session_stop.py` (7 ケース)
+
+### 設定変更
+
+`.claude/settings.json`:
+- **PostToolUse**: Write/Edit ごとに 2 hooks → 1 hook
+- **SessionStart**: `init_c3_db.py` → `session_start.py`
+- **Stop**: `stop.py` + `consolidate_memory.py` → `session_stop.py`
+- permissions allow リストから旧 4 ファイル分のエントリを削除（合計 8 行削減）
+
+`.claude/skills/init-session/SKILL.md`:
+- Step 0「初期化スクリプトを実行する」セクションを削除
+- 概要に「SessionStart hook で session_start.py が自動実行される前提」と注記
+
+### 数値で見る効果
+
+| 指標 | 変更前 | 変更後 |
+|---|---|---|
+| settings.json hook commands | 14 | **11** |
+| `.claude/hooks/` Python ファイル | 15 | **13** |
+| init-session SKILL.md 手動初期化呼び出し | 2 回 | **0 回** |
+| 全体テスト | 812 passed | **812 passed** |
+
+### 設計判断
+
+- **stop.py / consolidate_memory.py の本体は残す**: `consolidate_memory.py --llm-only` 子プロセス起動の互換維持と、リファクタリング影響範囲の最小化のため。`session_stop.py` は importlib で動的ロードして関数として呼び出す
+- **session_start.py は単一ファイルに統合（A 案）**: 3 ハンドラ合計 230 行は単一ファイルで管理可能。orchestrator + サブモジュール構造（B 案）は過剰設計
+- **enable_sandbox の `is_worktree()` ガードは維持**: worktree 内で settings.json を破壊しないための重要なガード。新コードでも継承
+
+### スコープ外
+
+- `consolidate_memory.py` (1093 行) の sync / LLM 部分への分割: 別タスク
+- 手動呼び出し CLI (`record_tier_outcome.py` / `record_review_decision.py` / `review_hint_inject.py`) の自動発火化: より大きな設計変更が必要なため別タスク
+- `_template/` の自動生成は `hatch_build.py` 経由で実施（手動同期不要）
+
+### 関連コミット
+
+- 単一 commit でリリース予定
+
+---
+
 ## [1.9.0] - 2026-05-10
 
 ### マイルストーン

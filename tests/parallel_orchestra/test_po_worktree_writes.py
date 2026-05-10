@@ -31,7 +31,7 @@ from parallel_orchestra.manifest import Task
 
 WORKTREE_ROOT = Path(__file__).parents[2]
 SCHEMA_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "schema.sql"
-INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "init_c3_db.py"
+INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "session_start.py"
 PO_HEARTBEAT_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "po_heartbeat.py"
 SUBAGENT_LOG_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "subagent_log.py"
 
