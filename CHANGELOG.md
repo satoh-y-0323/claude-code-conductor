@@ -1,5 +1,62 @@
 # Changelog
 
+## [1.9.0] - 2026-05-10
+
+### マイルストーン
+
+F-005（Tier 自動ルーティング）の効果計測手段として `c3 tier stats` サブコマンドを追加する minor リリース。F-005 は MVP 後に Phase 2-A（PO 経由 model 動的切替）/ 2-B（Haiku 失敗時 Sonnet 昇格）/ 2-C（過去類似タスクからの complexity 補正）が順次実装されていたが、実コードと社内ドキュメント `.claude/docs/c3追加予定機能リスト.md` のステータス記述に乖離があり、棚卸し時に誤認していた。本リリースで両方を解消。`tier_bandit` / `tier_recent_outcomes` テーブルの内容を表形式 + JSON で可視化し、学習進捗（合計 N/30 試行）/ 期待成功率 / 直近 outcome 履歴を C3 ユーザーが直接確認できる。
+
+### 新機能
+
+#### `c3 tier stats` サブコマンド
+
+`src/c3/cli_tier.py` を新規追加し、`src/c3/cli.py` に登録。
+
+```
+c3 tier stats             # 全 complexity × tier の累積 + 直近 outcome を表形式表示
+c3 tier stats --json      # 機械可読 JSON 出力
+c3 tier stats --recent N  # 直近 outcome の表示件数（デフォルト 10）
+```
+
+表示内容:
+- 学習データ収集状況（X / 30 試行 + uniform / thompson モード判定）
+- Tier 別累積（complexity × tier × alpha / beta / trials / 期待成功率）
+- 直近 outcome 履歴（時系列降順、success/failure ラベル）
+- 学習データ記録チャネルの説明（dev-workflow フェーズ E の最終承認時のみ発火する設計）
+
+F-003 `c3 status` の CLI パターンを踏襲し、SQLite 直接参照で <100ms の応答。`locate_c3_db()` で c3.db を自動解決、不在時はエラー終了。期待成功率は Beta 分布の期待値 `alpha / (alpha + beta)` で計算。
+
+### 修正
+
+#### `.claude/docs/c3追加予定機能リスト.md` の F-005 ステータス訂正
+
+実コードでは Phase 2-A / 2-B / 2-C が完了していたが、ドキュメントは「完了（MVP）」のまま。これを「完了（Phase 2）」に更新し、各フェーズの実装履歴と関連コミットハッシュを議論履歴に追記。スコープ外記述を「実装済み (b)(c)、残課題は (a) 親 Claude Agent ツール経由の model 切替（公式 API 上不可能）と効果計測」に書き直し。
+
+### 内部
+
+- 新規テスト追加 **7 件**:
+  - `TestTierStatsCli::test_stats_empty_db_shows_collecting_message`
+  - `TestTierStatsCli::test_stats_with_bandit_data`
+  - `TestTierStatsCli::test_stats_recent_outcomes_displayed`
+  - `TestTierStatsCli::test_stats_recent_limit_respected`
+  - `TestTierStatsCli::test_stats_json_output_structure`
+  - `TestTierStatsCli::test_stats_db_missing_returns_error`
+  - `TestTierStatsCli::test_stats_threshold_reached_switches_mode`
+- 既存テスト全件 pass: **838 passed / 3 skipped / 0 failed**
+- escalation 発動回数の集計は専用テーブルがないため今回は表示なし（将来 `tier_escalations` テーブル追加時に拡張余地）
+
+### スコープ外
+
+- F-005 (a) 親 Claude Agent ツール経由の model 動的切替: 公式 API 上不可能（変更なし）
+- outcome 記録チャネル拡張（直接指示作業からの記録）: 慎重設計が必要なため保留
+- F-004 Phase 3: 別タスク
+
+### 関連コミット
+
+- 単一 commit でリリース予定
+
+---
+
 ## [1.8.0] - 2026-05-10
 
 ### マイルストーン
