@@ -40,6 +40,9 @@ dist/
 *.egg-info/
 src/c3/_template/
 
+# MkDocs build output (GitHub Pages デプロイは GitHub Actions で再ビルドする)
+site/
+
 # C3 founding documents (kept locally, not for distribution)
 .claude/docs/taxonomy.md
 .claude/docs/decisions.md

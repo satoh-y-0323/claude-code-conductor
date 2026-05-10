@@ -1,0 +1,56 @@
+site_name: Claude Code Conductor (C3)
+site_description: 複数エージェントのオーケストレーションを中心に据えた Claude Code フレームワーク
+site_url: https://satoh-y-0323.github.io/claude-code-conductor/
+repo_url: https://github.com/satoh-y-0323/claude-code-conductor
+repo_name: satoh-y-0323/claude-code-conductor
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: ja
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: ダークモードへ切替
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: ライトモードへ切替
+
+nav:
+  - ホーム: index.md
+  - はじめに: getting-started.md
+  - スキル一覧: skills.md
+  - CLI リファレンス: cli-reference.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/satoh-y-0323/claude-code-conductor
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/claude-code-conductor/

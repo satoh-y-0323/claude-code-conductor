@@ -1,6 +1,13 @@
 # Claude Code Conductor (C3)
 
+[![PyPI version](https://img.shields.io/pypi/v/claude-code-conductor.svg)](https://pypi.org/project/claude-code-conductor/)
+[![Python versions](https://img.shields.io/pypi/pyversions/claude-code-conductor.svg)](https://pypi.org/project/claude-code-conductor/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/LICENSE)
+[![Publish](https://github.com/satoh-y-0323/claude-code-conductor/actions/workflows/publish.yml/badge.svg)](https://github.com/satoh-y-0323/claude-code-conductor/actions/workflows/publish.yml)
+
 複数エージェントのオーケストレーションを中心に据えた Claude Code フレームワーク。
+
+📖 **公式ドキュメント**: [https://satoh-y-0323.github.io/claude-code-conductor/](https://satoh-y-0323.github.io/claude-code-conductor/)
 
 ---
 
