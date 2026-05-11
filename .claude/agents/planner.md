@@ -118,11 +118,27 @@ Stage 1: dev_a, dev_b, dev_c (並列)
 
 詳細な構造例は `.claude/docs/parallel-orchestra-manifest.md` の「並列・直列交互パターン」を参照。
 
+## 自動検査対象（PostToolUse hook）
+
+配布元では `.dev/hooks/_planner_check.py`（PostToolUse Write/Edit）が `.claude/reports/plan-report-*.md` の YAML frontmatter を機械検査する。以下 4 ルールに違反すると stderr に `[PlannerCheck WARN]` または `[PlannerCheck BLOCK]` が出る。planner は出力前に自己点検でこれらを潰すこと。
+
+- **R1 (tdd-develop writes 完備)** — `agent: tdd-develop` の task の `writes` に、(a) `tests/` で始まるテストファイルの具体的パス、(b) `.claude/reports/test-report-{任意}.md` の具体的パス、の両方を列挙する。glob (`*`) 入りは不可
+- **R2 (reviewer ファイル名は task_id ベース)** — `agent: code-reviewer` / `security-reviewer` の `writes` ファイル名は `task_id` を含む固定名にし、タイムスタンプ（`YYYYMMDD` / `YYYYMMDD-HHMMSS` 形式）を含めない。例: `.claude/reports/code-review-report-review1.md` ✓ / `.claude/reports/code-review-report-20260510.md` ✗。タイムスタンプを動的取得すると writes と実ファイル名が乖離して PO の auto-merge book-keeping が壊れる
+- **R3 (`src/c3/_template/` 直接 writes 禁止)** — どの task も `writes` に `src/c3/_template/` パスを含めない（hook が exit 2 でブロック）。`_template/` は `hatch_build.py` がビルド時に `.claude/` から再生成する配布物実体で、直接編集してもビルド時に消失する
+- **R4 (同一 writes パスの順序付け)** — 同じ `writes` パスを複数 task が宣言する場合は、後発 task の `depends_on` で先発 task を参照して順序付けする。順序付けがないと PO の `_check_writes_conflicts` が fail し dry-run が落ちる
+
+これらは hook により自動検出されるが、出力前の自己チェックリストにも追加して事前に潰すこと:
+- [ ] R1: tdd-develop の全 task で writes に test ファイルと test-report が両方含まれているか
+- [ ] R2: reviewer の writes ファイル名は task_id ベース・タイムスタンプなしか
+- [ ] R3: writes に `src/c3/_template/` パスが含まれていないか
+- [ ] R4: 同一 writes パスを宣言する task が depends_on で順序付けされているか
+
 ## Tools & Constraints
 制限:
 - ソースファイルの編集・書き込みは行わない
 - plan-report の YAML フロントマター内で `tasks[].id` の重複・未定義の `depends_on` 参照・エージェント名の typo を出力しない（`c3 po dry-run` で検証可能）
 - 上記「並列実行のための設計指針」のルール 1〜11 と自己チェックリストに違反した plan-report を出力しない
+- 自動検査対象 R1〜R4 に違反する plan-report を出力しない（`.dev/hooks/_planner_check.py` が PostToolUse で検出する）
 
 ## Related Agents
 - 上流: architect（architecture-report を受け取る）
