@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.10.3] - 2026-05-11
+
+### 概要
+
+v1.10.2 リリース直後の `c3_pip_test` での `c3 update --dry-run` 確認で、`.claude/memory/llm_summary.md` が wheel に混入し利用先環境の同名ファイルを上書きしていることを発見。配布元固有の LLM 要約（生成日時付きの作業状態スナップショット）が利用先に押し付けられる defect のため hotfix リリース。
+
+### 修正
+
+- `src/c3/_excludes.py` の `EXCLUDE_PATTERNS` に `memory/llm_summary.md` を追加
+- `hatch_build.py` の `EXCLUDE_PATTERNS` にも同じく追加（3 ファイル同期グループの duplicate 必須箇所）
+- `.gitignore` 側はもとから `.claude/memory/llm_summary.md` を除外しているため変更不要
+
+### 補足
+
+- 他の `memory/*` 個人状態ファイル（`patterns.json` / `agent-audit.log` / `consolidated_summary.md` / `promotion-candidates.md`）は v1.10.2 以前から既に除外されていたが、`llm_summary.md` だけ漏れていた
+- 今回も `phased_release_with_hotfix` パターン通り、minor/patch リリース直後の `c3_pip_test` 確認で wheel 混入 defect を即発見できた
+
+---
+
 ## [1.10.2] - 2026-05-11
 
 ### 概要
