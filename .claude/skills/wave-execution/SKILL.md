@@ -1,11 +1,24 @@
 ---
-description: PO（Parallel Orchestra）を用いた wave 単位の並列実装実行手順。dev-workflow がフェーズ D で条件付き参照する。
+description: PO（Parallel Orchestra）を用いた wave 単位の並列実装実行手順。v1.12.0 で deprecated。新規利用は parallel-agents skill を参照。
 user-invocable: false
 ---
 
 # Wave Execution
 
-`/develop` のフェーズ D で plan-report に YAML フロントマター（`po_plan_version: "0.1"`）が含まれるときに Read される手順。
+> ⚠️ **DEPRECATED（v1.12.0+）**
+>
+> 本 skill は **v1.12.0 で deprecated** となり、後継として `.claude/skills/parallel-agents/SKILL.md` が追加された。
+> v1.14.0 で `c3 po` CLI と本 skill 自体が削除される予定。
+>
+> **新規利用は `parallel-agents` を選択すること。** `develop` skill の D-0 から呼ばれるのは parallel-agents に切り替え済み。
+>
+> 廃止理由: 2026-05-11 の PoC で「permission チェッカー race」（Clade v1.19.0 で発見された PO 導入の主因）が Claude Code 本体で構造的に解決されていることを確認した（15 並列・101 tool 呼び出し 0 失敗）。公式 `isolation: "worktree"` フロントマターも利用可能になったため、独自レイヤとしての PO は不要になった。
+>
+> 詳細計画: `~/.claude/plans/atomic-foraging-sprout.md`
+
+---
+
+`/develop` のフェーズ D で plan-report に YAML フロントマター（`po_plan_version: "0.1"`）が含まれるときに Read される手順（v1.11.x 以前）。
 
 C3 の親 Claude が plan-report の DAG を **wave 単位**で歩く。
 - 単独 wave（タスク 1 件） → C3 が直接実行（Agent ツール起動 or ペルソナ採用）

@@ -1,5 +1,58 @@
 # Changelog
 
+## [1.12.0] - 2026-05-11
+
+### 概要
+
+PO（Parallel Orchestra）段階的廃止計画の **Step 2**。新 skill `parallel-agents` を追加し、`develop` skill のフェーズ D で参照する並列実装手順を PO から **親 Claude の Agent ツール並列起動 + 公式 `isolation: "worktree"`** に切り替えた。`wave-execution` skill は当面残置するが冒頭で deprecated 警告を明示し、v1.14.0 で削除予定。
+
+機能変更は skill 層のみで、Python パッケージ・CLI・hook には変更なし。利用先で `c3 update` するとフェーズ D の挙動が parallel-agents 経由に切り替わる。
+
+### 追加
+
+| パス | 役割 |
+|---|---|
+| `.claude/skills/parallel-agents/SKILL.md` | wave 単位で親 Claude が Agent ツールを 1 ターン並列起動し、各 Agent が `isolation: "worktree"` で隔離 worktree 内に実装。親が wave 完了後に各 worktree から成果物を取り込み一括コミット |
+
+### 変更
+
+| パス | 内容 |
+|---|---|
+| `.claude/skills/develop/SKILL.md` | D-0 で po_plan_version 検出時の参照先を `wave-execution` → `parallel-agents` に切り替え。description も更新 |
+| `.claude/skills/wave-execution/SKILL.md` | 冒頭に deprecated 警告ブロックを追加。description も「v1.12.0 で deprecated」と明示 |
+
+### parallel-agents skill の核心
+
+1. plan-report の YAML フロントマター（`po_plan_version`）を Step 0 で妥当性チェック、Step 1 で wave 分解（v1.14.0 まで `c3 po waves` 出力を流用）
+2. Step 2 で各 wave をループ:
+   - **並列化可能**な agent（`developer` / `tester` / `code-reviewer` / `security-reviewer` 等）は 1 ターン内で複数 Agent ツール並列起動（デフォルト 5、上限 15）
+   - 各 Agent に `isolation: "worktree"` を指定して隔離
+   - 子 Agent は **コミット禁止**、worktree path / writes / status を親に返す
+   - **並列化不可**な `tdd-develop` は depth 1 制限により親 Claude のペルソナ採用で逐次実行
+3. wave 完了後、親 Claude が各 worktree から成果物を `git checkout` で取り込み、一括コミット、worktree を `git worktree remove -f -f` で削除
+
+### 重要な技術的制約: depth 1
+
+Claude Code 公式仕様により**サブエージェントは更にサブエージェントを spawn できない**。これにより `tdd-develop`（内部で tester / developer を Agent ツールで spawn する設計）は Agent ツール並列起動の対象外。planner は plan-report 生成時に「tdd-develop を含む wave は 1 タスクのみ」と粒度を制御することが望ましい。
+
+### PoC 検証根拠（再掲）
+
+2026-05-11 PoC: 15 並列・101 tool 呼び出しで失敗 0 件。permission チェッカー race（Clade v1.19.0 当時の 76% DENIED defect）の構造的修正を確認済み。
+
+### 検証
+
+- `pytest tests/` 全体: **888 passed / 3 skipped**（regression なし）
+- `c3 doctor` exit 0
+- skill 一覧で `parallel-agents` 新規登場、`wave-execution` の description が deprecated 表記に更新確認
+
+### 補足
+
+- 旧 `wave-execution` skill 経由の PO 委譲（case B）は引き続き動作するが、新規利用は `parallel-agents` を選択すること
+- v1.14.0 で `c3 po dry-run` / `c3 po waves` が削除されると、`parallel-agents` skill 内の Step 0 / Step 1 を「親 Claude が plan-report YAML を直接読んで DAG 分解」するロジックに切り替える
+- 詳細計画: `~/.claude/plans/atomic-foraging-sprout.md`
+
+---
+
 ## [1.11.1] - 2026-05-11
 
 ### 概要

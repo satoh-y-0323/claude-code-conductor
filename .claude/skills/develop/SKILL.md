@@ -1,5 +1,5 @@
 ---
-description: plan-report に基づいて実装フェーズ（フェーズ D）を実行する。po_plan_version があれば PO 並列モード、なければ逐次 TDD を実行する。
+description: plan-report に基づいて実装フェーズ（フェーズ D）を実行する。po_plan_version があれば parallel-agents（Agent ツール並列起動 + isolation:worktree）、なければ逐次 TDD を実行する。
 ---
 
 # develop
@@ -11,5 +11,9 @@ plan-report に基づいて実装フェーズを実行する。
 1. **最初に必ず** `.claude/skills/dev-workflow/SKILL.md` を Read する。記憶・推測で進めない
 2. **フェーズ D（実装）** から実行する
 3. `.claude/skills/dev-workflow/SKILL.md` の AskUserQuestion・Edit・セッションファイル更新の手順を省略しない
-4. D-0 で plan-report に YAML フロントマター（`po_plan_version`）が検出された場合は、続けて **必ず** `.claude/skills/wave-execution/SKILL.md` を Read してその手順に従う（C3 メイン + PO スポット並列モード）
+4. D-0 で plan-report に YAML フロントマター（`po_plan_version`）が検出された場合は、続けて **必ず** `.claude/skills/parallel-agents/SKILL.md` を Read してその手順に従う（親 Claude の Agent ツール並列起動 + 公式 `isolation:worktree`）
 5. フロントマターが無い場合は legacy の D-1〜D-5 ceremony（tester→developer→tester の TDD 逐次実行）にフォールバックする
+
+## 移行注意（v1.12.0+）
+
+v1.12.0 で並列実行レイヤを PO（Parallel Orchestra）から `parallel-agents` skill に切り替えた。旧 `wave-execution.md` 経由の PO 委譲は v1.14.0 で削除予定。詳細は `~/.claude/plans/atomic-foraging-sprout.md`。
