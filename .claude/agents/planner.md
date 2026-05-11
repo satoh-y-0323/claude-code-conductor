@@ -63,11 +63,15 @@ plan-report の YAML フロントマターは `parallel-agents` skill（親 Clau
 
 v2.1.0 で `tdd-develop` エージェントを廃止した。TDD を伴う機能実装は、planner が以下の **3 タスクペア**に分解する:
 
-| 役割 | agent | 順序 | writes 例 |
+| 役割 | agent (plan-report に書く名前) | 順序 | writes 例 |
 |---|---|---|---|
-| Red: 失敗するテストを書く | `tester` | 先行 | `tests/skills/test_foo.py`, `.claude/reports/test-report-test-foo.md` |
-| Green: 最小実装でテストを通す | `developer` | Red に depends_on | `src/c3/foo.py` |
-| Green 確認: 全テスト合格を確認 | `tester` | Green に depends_on | `.claude/reports/test-report-confirm-foo.md` |
+| Red: 失敗するテストを書く | `wt_tester` | 先行 | `tests/skills/test_foo.py`, `.claude/reports/test-report-test-foo.md` |
+| Green: 最小実装でテストを通す | `wt_developer` | Red に depends_on | `src/c3/foo.py` |
+| Green 確認: 全テスト合格を確認 | `wt_tester` | Green に depends_on | `.claude/reports/test-report-confirm-foo.md` |
+
+> **v2.2.0+**: 並列実行（`parallel-agents` skill 経由）では `wt_*` プレフィックス agent を使う。`wt_tester` / `wt_developer` / `wt_systematic-debugger` は frontmatter に `permissionMode: bypassPermissions` を持ち、worktree 内で permission プロンプトをスキップする。reviewer 系（`code-reviewer` / `security-reviewer`）はそのままの名前を使用（元 agent に `permissionMode` 付き）。
+>
+> 直接起動経路（`dev-workflow` フェーズ D-1〜D-5 の単発 TDD 等）では元の `tester` / `developer` / `systematic-debugger` を使う。これにより main リポジトリでの bypassPermissions を防ぐ。
 
 これにより:
 

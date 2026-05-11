@@ -1,5 +1,72 @@
 # Changelog
 
+## [2.2.0] - 2026-05-12
+
+### 概要
+
+並列サブエージェントが Bash / Write の permission チェックで詰まる問題を解決するリリース。
+
+`parallel-agents` skill が `run_in_background: true` で並列起動する子サブエージェントは、公式仕様により「起動前に承認した permission のみ実行可、それ以外は auto-deny」という制約を受ける。任意のテスト・ビルドコマンドは事前承認できず、実行中に詰まっていた。
+
+**根本原因**: v2.1.0 までの skill は `subagent_type` を指定せず prompt 内で「.claude/agents/{name}.md を Read してペルソナ採用」と指示していた。これは built-in `general-purpose` subagent を起動し、agent frontmatter の `permissionMode` が読まれない設計だった。
+
+**修正**: 並列 worktree 専用の `wt_*` プレフィックス agent を新設し、`subagent_type` 明示指定 + worktree 限定で安全な `bypassPermissions` を実現。
+
+### 新規追加
+
+| パス | 内容 |
+|---|---|
+| `.claude/agents/wt_tester.md` | 並列 worktree 専用 tester。frontmatter に `permissionMode: bypassPermissions`。本文は tester.md と同一 |
+| `.claude/agents/wt_developer.md` | 並列 worktree 専用 developer。同上 |
+| `.claude/agents/wt_systematic-debugger.md` | 並列 worktree 専用 systematic-debugger。同上 |
+
+### 変更
+
+#### code-reviewer / security-reviewer
+- frontmatter に `permissionMode: bypassPermissions` 追加。Read 中心でソース編集なし（プロンプトで明記）のため、wt_ プレフィックスなしで元 agent に直接付与
+
+#### parallel-agents skill
+- depth 1 制限テーブルの「カスタム agent は subagent_type 不可」記述を訂正（公式仕様では指定可能）
+- 「subagent_type 明示指定と wt_* 名前空間」セクションを新設
+- 2-A wave 内容提示テーブルに「起動する subagent_type」列を追加（`wt_*` への変換を明示）
+- 2-C: `subagent_type: 指定しない` → `subagent_type: <wt_name>` 明示指定に変更
+- prompt から「Step 1: agents/{name}.md を Read してペルソナ採用」指示を削除（subagent_type で自動適用）
+- マッピング表追加（plan-report の agent 名 → 実際の subagent_type）
+
+#### planner.md
+- TDD 3-wave 設計指針の agent 名を `wt_tester` / `wt_developer` に更新
+- v2.2.0 注記を追加（並列実行では wt_*、直接起動では元 agent を使う旨）
+
+### 安全性
+
+| 起動経路 | isolation | 使用される agent | 結果 |
+|---|---|---|---|
+| `parallel-agents` skill (並列 wave) | `"worktree"` 付き | `wt_*` (`wt_tester` / `wt_developer` / `wt_systematic-debugger`) | worktree 内のみ。`worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) が main への書き込みブロック。安全 |
+| dev-workflow フェーズ D-1〜D-5 (単発 TDD) | なし | `tester` / `developer` (元 agent) | default mode。main で permission プロンプトあり。安全 |
+| security-audit (parallel-reviewer) | なし | `code-reviewer` / `security-reviewer` | bypassPermissions 付きだが Write は `.claude/reports/` のみ（プロンプトで「ソース編集不可」明記）、Bash も grep/log 系で実害低 |
+
+公式 circuit breaker (`rm -rf /` / `rm -rf ~` プロンプト) は引き続き全モードで機能する。
+
+### 移行ガイド
+
+利用先での対応:
+1. `pip install --upgrade claude-code-conductor`
+2. `c3 update` を実行 → `wt_tester.md` / `wt_developer.md` / `wt_systematic-debugger.md` が追加配布される
+3. 既存 plan-report は変更不要（`agent: tester` / `agent: developer` のまま動く。parallel-agents skill 内でマッピング）。ただし planner が新規生成する plan-report は `agent: wt_tester` 等の直接指定も推奨
+
+### 互換性
+
+- 利用先の plan-report YAML 仕様は無変更
+- 旧 agent (`tester` / `developer` / `systematic-debugger`) も維持。直接起動経路で使用継続
+- SemVer minor: 機能追加のみ（破壊的変更なし）
+
+### 検証
+
+- `pytest -x` 572 passed / 2 skipped
+- wheel に `wt_tester.md` / `wt_developer.md` / `wt_systematic-debugger.md` のエントリが含まれること
+
+---
+
 ## [2.1.0] - 2026-05-12
 
 ### 概要

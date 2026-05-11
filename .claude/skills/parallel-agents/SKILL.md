@@ -19,9 +19,21 @@ permission race の構造的修正（2026-05-11 PoC で 15 並列・101 tool 呼
 
 ## depth 1 制限について
 
-Claude Code のサブエージェントは **更にサブエージェントを spawn できない**（公式仕様 depth 1 制限）。v2.1.0 時点で配布されている全 agent（`developer` / `tester` / `code-reviewer` / `security-reviewer` / `architect` / `interviewer` / `planner` / `doc-writer` / `systematic-debugger` / `project-setup`）は内部で Agent ツールを使わない設計のため、**すべて並列起動可能**。
+Claude Code のサブエージェントは **更にサブエージェントを spawn できない**（公式仕様 depth 1 制限）。v2.2.0 時点で配布されている全 agent は内部で Agent ツールを使わない設計のため、**すべて並列起動可能**。
 
 将来的に「内部で Agent ツールを使う agent」を追加する場合は、その agent を含む wave のタスク数を 1 に絞る運用ガードが必要になる（v2.0.0 まで存在した `tdd-develop` agent はこのパターンだった）。
+
+## subagent_type 明示指定と wt_* 名前空間（v2.2.0+）
+
+`subagent_type` パラメータには **カスタム agent (`.claude/agents/*.md`) も指定可能**（公式仕様）。これにより frontmatter の `permissionMode` / `tools` / `model` / `memory` が subagent 起動レイヤーで自動適用される。
+
+並列実行で permission プロンプトに詰まらないよう、v2.2.0 から **worktree 専用の `wt_*` プレフィックス agent** を導入した:
+
+- `wt_tester` / `wt_developer` / `wt_systematic-debugger`: frontmatter に `permissionMode: bypassPermissions` を持つ並列専用バリアント
+- 内容はオリジナルの `tester` / `developer` / `systematic-debugger` と同一
+- worktree 内のみで動作するため、`worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) が worktree 外への書き込みをブロックする保護下にある
+
+直接起動経路（worktree なし）では元の agent を使い、main リポジトリでの bypass を防ぐ。
 
 ---
 
@@ -92,15 +104,15 @@ stdout の JSON 形式:
 
 ### 2-A: wave 内容を提示する
 
-親 Claude が wave のタスク一覧を Markdown 表で提示する:
+親 Claude が wave のタスク一覧を Markdown 表で提示する。plan-report の `agent` フィールドはそのまま表示し、実際に起動する subagent_type（並列専用バリアント）を補足する:
 
-| id | agent | read_only | writes |
-|---|---|---|---|
-| test-login | tester | false | tests/auth/test_login.py, .claude/reports/test-report-test-login.md |
-| impl-login | developer | false | src/auth/login.py |
-| confirm-login | tester | false | .claude/reports/test-report-confirm-login.md |
+| id | agent (plan-report 表記) | 起動する subagent_type | read_only | writes |
+|---|---|---|---|---|
+| test-login | tester | `wt_tester` | false | tests/auth/test_login.py, .claude/reports/test-report-test-login.md |
+| impl-login | developer | `wt_developer` | false | src/auth/login.py |
+| confirm-login | tester | `wt_tester` | false | .claude/reports/test-report-confirm-login.md |
 
-v2.1.0 以降、全 agent が並列起動可能のため `parallelizable` 列は省略する。
+v2.2.0 以降、全 agent が並列起動可能のため `parallelizable` 列は省略する。subagent_type マッピングは 2-C 参照。
 
 ### 2-B: 実行可否をユーザーに確認する
 
@@ -124,14 +136,23 @@ AskUserQuestion ツール:
 
 並列化可能タスクを **1 ターン内で複数 Agent ツール呼び出し** として発行する。並列度の上限は **デフォルト 5、上限 15**（PoC で検証済み）。タスク数がそれ以上なら 5 件ずつのバッチに分割する。
 
+**重要**: 各タスクの `agent` 名は plan-report で `tester` / `developer` 等と書かれているが、**Agent ツール呼び出し時の `subagent_type` には並列専用バリアント (`wt_*`) を指定する**。マッピング表:
+
+| plan-report の agent | 実際に指定する subagent_type | 補足 |
+|---|---|---|
+| `tester` | `wt_tester` | 並列 worktree 専用、`permissionMode: bypassPermissions` |
+| `developer` | `wt_developer` | 同上 |
+| `systematic-debugger` | `wt_systematic-debugger` | 同上 |
+| `code-reviewer` | `code-reviewer` | レビュー専用（ソース編集なし）、`permissionMode: bypassPermissions` を元 agent に直接付与 |
+| `security-reviewer` | `security-reviewer` | 同上 |
+
 各 Agent ツール呼び出しに以下を指定:
 
-- `subagent_type`: 指定しない（カスタム agent は subagent_type 不可、ペルソナ採用は prompt 経由）
+- `subagent_type`: 上記マッピング表の値
 - `isolation`: `"worktree"`
 - `run_in_background`: `true`
 - `description`: タスク id（5 単語以内）
-- `prompt`: 以下を含める
-  - 「**Step 1: `.claude/agents/{agent_name}.md` を Read してペルソナを採用すること**」
+- `prompt`: 以下を含める（ペルソナ採用は不要、frontmatter / system prompt で自動適用される）:
   - タスクの `prompt` 本文
   - 「**禁止事項: git add / git commit / git push を実行しないこと**。コミットは親 Claude がユーザー承認後に行う」
   - 「**返り値フォーマット厳守**:
@@ -257,10 +278,11 @@ checkpoint の summary には KEEP ルール（設計判断・決定事項・解
 
 ---
 
-## PO 廃止移行期の注意（v1.12.0〜v2.1.0）
+## PO 廃止移行期の注意（v1.12.0〜v2.2.0）
 
 - 本 skill は v1.12.0 で導入された
 - v1.13.0 で `po-status` skill / `c3 status` CLI を削除
 - v1.14.0 で `c3 po` CLI と `wave-execution` skill を削除し、Step 0/1 で `c3 plan validate` / `c3 plan waves`（純粋な YAML 検証 + DAG 分解、PO 非依存）に切り替えた
 - v2.0.0 で `parallel_orchestra` パッケージ本体を削除（互換破壊）
-- **v2.1.0 で `tdd-develop` agent と `worktree-tdd-workflow` skill を削除し、planner が 3-wave に分解する設計に統一**
+- v2.1.0 で `tdd-develop` agent と `worktree-tdd-workflow` skill を削除し、planner が 3-wave に分解する設計に統一
+- **v2.2.0 で並列 worktree 専用の `wt_*` プレフィックス agent (`wt_tester` / `wt_developer` / `wt_systematic-debugger`) を導入。frontmatter `permissionMode: bypassPermissions` で permission プロンプトをスキップ。直接起動経路では元 agent を維持して main の bypass を防ぐ**
