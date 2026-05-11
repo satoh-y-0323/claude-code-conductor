@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.10.2] - 2026-05-11
+
+### 概要
+
+`planner` エージェントが出力する `plan-report-*.md` を機械検査する hook を導入し、planner 側にも検査ルール (R1〜R4) と自己チェックリストを明記する。過去 v1.1.0 / v1.4.0 / v1.10.0 で再発した plan-report 起因の defect（test-report writes 漏れ・reviewer ファイル名タイムスタンプ・`src/c3/_template/` 直接 writes・writes 衝突の順序付け不足）を planner 出力時点と PostToolUse 時点の二段で検出する。
+
+**end user の wheel 挙動は version bump 以外不変**。`.dev/hooks/_planner_check.py` 本体は配布元限定（`.gitignore` + `_excludes.py` / `hatch_build.py` で配布除外）。配布物に入る差分は以下の 3 点:
+
+- `c3/__init__.py` の `__version__` を `1.10.1` → `1.10.2`
+- `.claude/agents/planner.md` に R1〜R4 の説明と自己チェックリストを追記
+- `tests/hooks/test_planner_check.py` を新規追加（32 ケース）
+
+### 追加（配布元限定）
+
+| パス | 役割 | hook イベント | 動作 |
+|---|---|---|---|
+| `.dev/hooks/_planner_check.py` | `.claude/reports/plan-report-*.md` の YAML frontmatter を機械検査 | PostToolUse (Write/Edit) | R3 違反は exit 2 でブロック、R1 / R2 / R4 は stderr 警告のみ |
+
+#### 検査ルール
+
+- **R1 (tdd-develop writes 完備)** — `agent: tdd-develop` の task の `writes` に、(a) `tests/` で始まるテストファイルの具体的パス、(b) `.claude/reports/test-report-{任意}.md` の具体的パス、の両方を列挙する。glob (`*`) 入りは不可
+- **R2 (reviewer ファイル名は task_id ベース)** — `code-reviewer` / `security-reviewer` の `writes` ファイル名にタイムスタンプ風パターン (`YYYYMMDD` / `YYYYMMDD-HHMMSS`) を含めない。task_id の数字 8 桁は前後の境界判定で誤検知回避
+- **R3 (`src/c3/_template/` 直接 writes 禁止)** — どの task も `writes` に `src/c3/_template/` パスを含めない（hook が exit 2 でブロック）
+- **R4 (writes 衝突 + depends_on 順序付け)** — 同一 `writes` パスを複数 task が宣言する場合は、後発 task の `depends_on` で先発 task を参照して推移閉包で順序付けする
+
+### 配布物への変更
+
+- `.claude/agents/planner.md`: 「自動検査対象（PostToolUse hook）」セクションを追加し、R1〜R4 の説明と planner 自己チェックリストを記述。`Tools & Constraints` にも違反防止を明記
+- `tests/hooks/test_planner_check.py`: 32 ケース（R1 9 件 / R2 7 件 / R3 3 件 / R4 3 件 / OutOfScope 9 件 / 境界 1 件）。E2E で過去 v1.1.0 defect plan-report (`plan-report-20260502-000001.md`) で R3 ブロック発火を再確認、正常 plan で false-positive ゼロ
+
+### 補足
+
+- 新知見: PostToolUse hook の `exit 2` (block) は LLM の system reminder へ block error として surface される（`exit 0` + stderr の warning は surface されない）。これにより planner が違反 plan-report を書いた瞬間にコンテキストへフィードバックが返り、自己修正できる動線が成立
+- `_template_guard.py` (PreToolUse) との二重防御: planner が plan-report に `src/c3/_template/` を書いた段階で `_planner_check.py` がブロックし、万一 plan-report が通っても tdd-develop 実行時に `_template_guard.py` が再度ブロックする
+
+---
+
 ## [1.10.1] - 2026-05-11
 
 ### 概要
