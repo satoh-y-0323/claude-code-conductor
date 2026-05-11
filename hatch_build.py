@@ -38,6 +38,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "docs/c3候補機能採用.md",
     "docs/c3追加予定機能リスト.md",
     "docs/ruflo_research_result.md",
+    "docs/codex対応/*",
     "hooks/subagent_log.py",
     "settings.local.json",
     "pytest_temp.ini",

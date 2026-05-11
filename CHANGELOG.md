@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.11.1] - 2026-05-11
+
+### 概要
+
+v1.11.0 リリース直後の `c3_pip_test` での `c3 update --dry-run` 確認で、`.claude/docs/codex対応/` 配下 4 ファイルが wheel に混入し利用先環境を上書きすることを発見。配布元固有の個人作業ノート（codex 対応調査メモ）が利用先に押し付けられる defect のため hotfix リリース。
+
+### 修正
+
+- `src/c3/_excludes.py` の `EXCLUDE_PATTERNS` に `docs/codex対応/*` を追加
+- `hatch_build.py` の `EXCLUDE_PATTERNS` にも同じく追加（3 ファイル同期グループの duplicate 必須箇所）
+- `.gitignore` 側は v1.11.0 リリース時点で既に `.claude/docs/codex対応/` を除外しているため変更不要
+
+### 補足
+
+- `phased_release_with_hotfix` パターン通り、minor リリース直後の `c3_pip_test` での確認で wheel 混入 defect を即発見できた（v1.10.3 と同型）
+- v1.10.3 の `memory/llm_summary.md` 混入 defect と同じく、`.gitignore` だけでなく `_excludes.py` / `hatch_build.py` の 3 箇所同期が必要であることが再演された
+- v1.11.0 の機能変更（c3.db ヘルパー移管）は本リリースに含まない（hotfix のみ）
+
+---
+
 ## [1.11.0] - 2026-05-11
 
 ### 概要
