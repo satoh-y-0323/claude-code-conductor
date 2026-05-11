@@ -3,7 +3,7 @@
 
 F-001: dev-workflow フェーズ E でユーザーが「対応 / 許容 / 保留」を選んだ
 判断を SQLite に記録するための薄い CLI ラッパー。実装本体は
-``parallel_orchestra.c3_db.insert_review_decision``。
+``c3.db.insert_review_decision`` (v1.11.0 以降。旧 ``parallel_orchestra.c3_db``)。
 
 Usage:
     python .claude/hooks/record_review_decision.py \
@@ -25,13 +25,6 @@ import sys
 from pathlib import Path
 
 
-def _ensure_src_on_path() -> None:
-    here = Path(__file__).resolve()
-    src = here.parents[2] / "src"
-    if src.is_dir():
-        sys.path.insert(0, str(src))
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Record a review decision in c3.db")
     parser.add_argument("--checklist-id", required=True,
@@ -51,11 +44,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    _ensure_src_on_path()
     try:
-        from parallel_orchestra.c3_db import insert_review_decision
+        from c3.db import insert_review_decision
     except ImportError as exc:
-        print(f"[record_review_decision] c3_db import failed: {exc}",
+        print(f"[record_review_decision] c3.db import failed: {exc}",
               file=sys.stderr)
         return 0  # 呼び出し元を止めない
 

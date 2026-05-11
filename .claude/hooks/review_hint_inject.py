@@ -48,19 +48,13 @@ CHECKLIST_ID_RE = re.compile(r"\[((?:CR|SR)-[A-Z]+-\d{3,})\]")
 
 
 def _ensure_c3_db_path_in_sys_path() -> None:
-    """parallel_orchestra.c3_db を import 可能にする。
+    """c3.db を import 可能にする。
 
-    `c3 init` で配布される利用先では `pip install claude-code-conductor` で
-    `parallel_orchestra` パッケージが入っているはずなので import 可能。
-    開発版ではリポジトリの src/ を sys.path に追加する。
+    v1.11.0 で parallel_orchestra.c3_db から c3.db に物理移動した。
+    c3 パッケージは pip install 済みのため sys.path 操作は不要。
+    関数自体は後方互換のため残置（呼び出し側のテストが参照する場合がある）。
     """
-    here = Path(__file__).resolve()
-    repo_root = here.parents[2]  # .claude/hooks/ の 2 つ上
-    src = repo_root / "src"
-    if src.is_dir():
-        src_str = str(src)
-        if src_str not in sys.path:
-            sys.path.insert(0, src_str)
+    return
 
 
 def extract_checklist_ids(report_text: str) -> list[str]:
@@ -183,9 +177,9 @@ def collect_decisions_for_report(report_text: str) -> dict[str, list[dict]]:
     """レポート内の checklist_id を全て抽出し、各 ID の過去判断を取得する。"""
     _ensure_c3_db_path_in_sys_path()
     try:
-        from parallel_orchestra import c3_db  # noqa: PLC0415
+        from c3 import db as c3_db  # noqa: PLC0415
     except ImportError as exc:
-        print(f"[review_hint_inject] c3_db import failed: {exc}", file=sys.stderr)
+        print(f"[review_hint_inject] c3.db import failed: {exc}", file=sys.stderr)
         return {}
 
     ids = extract_checklist_ids(report_text)

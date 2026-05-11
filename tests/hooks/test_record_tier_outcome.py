@@ -65,7 +65,7 @@ class TestRecordTierOutcome:
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
 
         # locate_c3_db を tmp_path 配下に向ける
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
 
         rc = mod.main(["--outcome", "success"])
@@ -86,7 +86,7 @@ class TestRecordTierOutcome:
         mod = _load_hook_module()
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
 
         rc = mod.main(["--outcome", "failure"])
@@ -128,7 +128,7 @@ class TestRecordTierOutcome:
         mod = _load_hook_module()
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: None)
 
         rc = mod.main(["--outcome", "success"])
@@ -180,7 +180,7 @@ class TestPromptHistoryAppend:
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
         monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
 
         rc = mod.main(["--outcome", "success"])
@@ -214,7 +214,7 @@ class TestPromptHistoryAppend:
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
         monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
 
         rc = mod.main(["--outcome", "failure"])
@@ -241,7 +241,7 @@ class TestPromptHistoryAppend:
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
         monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
 
         rc = mod.main(["--outcome", "success"])
@@ -280,7 +280,7 @@ class TestPromptHistoryAppend:
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
         monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
 
         rc = mod.main(["--outcome", "success"])

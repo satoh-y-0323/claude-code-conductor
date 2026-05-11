@@ -65,7 +65,7 @@ class TestRecentOutcomesHelpers:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         ok = c3_db.record_tier_recent_outcome(
             complexity="simple", tier="haiku", success=True, db_path=db_path,
         )
@@ -86,7 +86,7 @@ class TestRecentOutcomesHelpers:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         # 10 件: 6 失敗 / 4 成功
         for s in [True, True, True, True, False, False, False, False, False, False]:
             c3_db.record_tier_recent_outcome(
@@ -103,7 +103,7 @@ class TestRecentOutcomesHelpers:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         # 4 件のみ（最小 5 件未満）
         for _ in range(4):
             c3_db.record_tier_recent_outcome(
@@ -117,7 +117,7 @@ class TestRecentOutcomesHelpers:
         assert rate is None  # サンプル不足
 
     def test_failure_rate_db_not_found(self, tmp_path: Path) -> None:
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         rate, samples = c3_db.read_tier_failure_rate(
             "simple", "haiku", db_path=tmp_path / "missing.db",
         )
@@ -197,7 +197,7 @@ class TestMainEscalationIntegration:
         _create_c3_db(db_path)
 
         # haiku 失敗を 6 件積む
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         for _ in range(6):
             c3_db.record_tier_recent_outcome(
                 complexity="simple", tier="haiku", success=False, db_path=db_path,

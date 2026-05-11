@@ -73,7 +73,7 @@ class TestC3DbReviewHelpers:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
 
         ok = c3_db.insert_review_decision(
             checklist_id="CR-Q-001",
@@ -96,7 +96,7 @@ class TestC3DbReviewHelpers:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
 
         old = datetime(2026, 1, 1, tzinfo=timezone.utc)
         new = datetime(2026, 5, 1, tzinfo=timezone.utc)
@@ -118,7 +118,7 @@ class TestC3DbReviewHelpers:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
 
         for i in range(5):
             c3_db.insert_review_decision(
@@ -133,7 +133,7 @@ class TestC3DbReviewHelpers:
         assert len(rows) == 2
 
     def test_aggregate_decisions(self) -> None:
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
 
         rows = [
             {"decision": "fixed"},
@@ -276,7 +276,7 @@ class TestMainE2E:
         db_path.parent.mkdir(parents=True)
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         c3_db.insert_review_decision(
             checklist_id="CR-Q-001",
             finding_text="関数が長すぎる",
@@ -323,7 +323,7 @@ class TestMainE2E:
         db_path.parent.mkdir(parents=True)
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
 
         mod = _load_hook_module()

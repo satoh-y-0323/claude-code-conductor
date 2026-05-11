@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import IO, Any, Literal, TextIO
 
 from ._exceptions import ParallelOrchestraError
-from .c3_db import READ_ONLY_WORKTREE_ID, locate_c3_db
+from c3.db import READ_ONLY_WORKTREE_ID, locate_c3_db
 from .manifest import Manifest, Task, load_manifest
 
 # ---------------------------------------------------------------------------
@@ -481,7 +481,7 @@ def _heartbeat_po_status_loop(
     - 初回は即座に発火、その後 ``interval`` 秒間隔で発火する。
     - ``stop_event.wait(interval)`` で停止可能（ブロックせず返る）。
     """
-    from .c3_db import upsert_po_status  # noqa: PLC0415 - 遅延 import で循環回避
+    from c3.db import upsert_po_status  # noqa: PLC0415 - 遅延 import で循環回避
 
     while True:
         try:
@@ -1824,7 +1824,7 @@ def run_manifest(
         # 最終状態を即座に反映するため、heartbeat スレッドが寝ている可能性に
         # 関わらず明示的に upsert を 1 回実行する
         try:
-            from .c3_db import upsert_po_status  # noqa: PLC0415
+            from c3.db import upsert_po_status  # noqa: PLC0415
 
             for s in dashboard.snapshot_states():
                 if s.status == "waiting":
@@ -1860,7 +1860,7 @@ def run_manifest(
     # DB が無い環境（C3 利用先で session_start.py が走っていない等）や記録エラー時は
     # 静かにスキップする（PO 本体を止めない）。session_id は F-003 と共通。
     try:
-        from .c3_db import record_task_results  # noqa: PLC0415
+        from c3.db import record_task_results  # noqa: PLC0415
 
         record_task_results(
             task_results,

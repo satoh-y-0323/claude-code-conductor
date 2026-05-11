@@ -252,8 +252,8 @@ def maybe_escalate(
         return chosen_tier, None
 
     if failure_rate_fn is None:
-        # 既定の DB ヘルパーを呼ぶ（C3 開発版なら parallel_orchestra.c3_db、
-        # 配布版でも同モジュールが import 可能）。
+        # 既定の DB ヘルパーを呼ぶ（v1.11.0 以降は c3.db、それより前は
+        # parallel_orchestra.c3_db、いずれも shim で透過的に解決される）。
         c3_db = _load_c3_db_module()
         if c3_db is None:
             return chosen_tier, None
@@ -355,15 +355,13 @@ def build_additional_context(
 
 
 def _load_c3_db_module():
-    """parallel_orchestra.c3_db を import 可能にして返す。"""
-    here = Path(__file__).resolve()
-    src = here.parents[2] / "src"
-    if src.is_dir():
-        src_str = str(src)
-        if src_str not in sys.path:
-            sys.path.insert(0, src_str)
+    """c3.db helper モジュールを返す。
+
+    v1.11.0 で parallel_orchestra.c3_db から c3.db に物理移動した。
+    c3 パッケージは pip install 済みのため sys.path 操作は不要。
+    """
     try:
-        from parallel_orchestra import c3_db  # type: ignore[import-not-found]
+        from c3 import db as c3_db  # type: ignore[import-not-found]
         return c3_db
     except ImportError as exc:
         print(f"[select_tier] c3_db import failed: {exc}", file=sys.stderr)

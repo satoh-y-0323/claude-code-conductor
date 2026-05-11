@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from parallel_orchestra import runner
-from parallel_orchestra.c3_db import READ_ONLY_WORKTREE_ID
+from c3.db import READ_ONLY_WORKTREE_ID
 from parallel_orchestra.manifest import Task
 
 WORKTREE_ROOT = Path(__file__).parents[2]
@@ -406,7 +406,7 @@ class TestPoHeartbeatUnit:
         monkeypatch.delenv("C3_PO_DB_PATH", raising=False)
 
         # parallel_orchestra.c3_db を mock 化
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         upsert_calls: list[dict] = []
 
         def _fake_upsert(**kwargs):
@@ -437,7 +437,7 @@ class TestPoHeartbeatUnit:
         monkeypatch.delenv("C3_PO_WORKTREE_ID", raising=False)
         monkeypatch.delenv("C3_PO_DB_PATH", raising=False)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         upsert_calls: list[dict] = []
 
         def _fake_upsert(**kwargs):

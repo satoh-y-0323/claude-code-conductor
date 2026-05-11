@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from c3._terminal import sanitize_terminal_text, strip_ansi, supports_color
-from parallel_orchestra import c3_db
+from c3 import db as c3_db
 
 
 logger = logging.getLogger(__name__)

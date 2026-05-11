@@ -28,13 +28,6 @@ import sys
 from pathlib import Path
 
 
-def _ensure_src_on_path() -> None:
-    here = Path(__file__).resolve()
-    src = here.parents[2] / "src"
-    if src.is_dir():
-        sys.path.insert(0, str(src))
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Emit a PO heartbeat to c3.db.po_status",
@@ -70,11 +63,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    _ensure_src_on_path()
     try:
-        from parallel_orchestra.c3_db import upsert_po_status
+        from c3.db import upsert_po_status
     except ImportError as exc:
-        print(f"[po_heartbeat] c3_db import failed: {exc}", file=sys.stderr)
+        print(f"[po_heartbeat] c3.db import failed: {exc}", file=sys.stderr)
         return 0  # 呼び出し元を止めない
 
     ok = upsert_po_status(

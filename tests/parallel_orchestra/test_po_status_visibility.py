@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from parallel_orchestra import c3_db
+from c3 import db as c3_db
 from parallel_orchestra.runner import (
     _Dashboard,
     _heartbeat_po_status_loop,
@@ -314,7 +314,7 @@ class TestHeartbeatLoop:
         _create_c3_db(db_path)
 
         # locate_c3_db を tmp_path 配下に向ける
-        import parallel_orchestra.c3_db as c3_db_mod
+        import c3.db as c3_db_mod
         original_locate = c3_db_mod.locate_c3_db
         c3_db_mod.locate_c3_db = lambda start=None: db_path  # type: ignore[assignment]
         try:
@@ -352,7 +352,7 @@ class TestHeartbeatLoop:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        import parallel_orchestra.c3_db as c3_db_mod
+        import c3.db as c3_db_mod
         original_locate = c3_db_mod.locate_c3_db
         c3_db_mod.locate_c3_db = lambda start=None: db_path  # type: ignore[assignment]
         try:

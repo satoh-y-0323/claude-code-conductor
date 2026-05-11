@@ -76,7 +76,7 @@ class TestC3DbTierBandit:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         params = c3_db.read_tier_params("medium", db_path=db_path)
         assert set(params.keys()) == {"haiku", "sonnet", "opus"}
         for tier, (alpha, beta, trials) in params.items():
@@ -88,7 +88,7 @@ class TestC3DbTierBandit:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         ok = c3_db.update_tier_params(
             "simple", "haiku", success=True, db_path=db_path,
         )
@@ -101,7 +101,7 @@ class TestC3DbTierBandit:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         c3_db.update_tier_params(
             "complex", "opus", success=False, db_path=db_path,
         )
@@ -113,7 +113,7 @@ class TestC3DbTierBandit:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         for _ in range(3):
             c3_db.update_tier_params(
                 "medium", "sonnet", success=True, db_path=db_path,
@@ -128,7 +128,7 @@ class TestC3DbTierBandit:
 
     def test_db_not_found_returns_initial(self, tmp_path: Path) -> None:
         db_path = tmp_path / "missing" / "c3.db"
-        from parallel_orchestra import c3_db
+        from c3 import db as c3_db
         params = c3_db.read_tier_params("medium", db_path=db_path)
         # defaults
         assert all(p == (1.0, 1.0, 0) for p in params.values())

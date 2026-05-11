@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from c3 import cli_tier
-from parallel_orchestra import c3_db
+from c3 import db as c3_db
 
 
 WORKTREE_ROOT = Path(__file__).parents[1]

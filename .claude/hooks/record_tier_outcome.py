@@ -41,14 +41,13 @@ PROMPT_HISTORY_PATH = os.path.join(_CLAUDE_DIR, "logs", "prompt-history.jsonl")
 
 
 def _load_c3_db_module():
-    here = Path(__file__).resolve()
-    src = here.parents[2] / "src"
-    if src.is_dir():
-        src_str = str(src)
-        if src_str not in sys.path:
-            sys.path.insert(0, src_str)
+    """c3.db helper モジュールを返す。
+
+    v1.11.0 で parallel_orchestra.c3_db から c3.db に物理移動した。
+    c3 パッケージは pip install 済みのため sys.path 操作は不要。
+    """
     try:
-        from parallel_orchestra import c3_db  # type: ignore[import-not-found]
+        from c3 import db as c3_db  # type: ignore[import-not-found]
         return c3_db
     except ImportError as exc:
         print(

@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.11.0] - 2026-05-11
+
+### 概要
+
+PO（Parallel Orchestra）段階的廃止計画の **Step 1**（非破壊）。Claude Code 本体で並列 subagent 起動時に発生していた permission チェッカー race（Clade v1.19.0 で発見）が構造的に解決されたことを 2026-05-11 の PoC で確認した（15 並列・101 tool 呼び出しで失敗 0 件）。これに伴い PO の存在意義が消失したため、v1.11.0〜v2.0.0 で段階的に PO を廃止する。本リリースはその第 1 段で、`parallel_orchestra.c3_db`（741 LOC）を `c3.db` に物理移動するのみ。**配布物・利用先環境への挙動変化はない**（shim で後方互換維持）。
+
+### 移管（後方互換）
+
+| 対象 | 変更 |
+|---|---|
+| `src/parallel_orchestra/c3_db.py` | 内容を `src/c3/db.py` に移動。元ファイルは `from c3.db import *` の薄い shim として残置（v2.0.0 で削除予定） |
+| `src/c3/db.py` | 新規。F-001 `review_decisions` / F-002 `po_results` / F-003 `po_status` / F-005 `tier_bandit` ヘルパーの新しい単一ソース |
+
+### 内部 import 切り替え（配布元のみ、利用先挙動は不変）
+
+| ファイル | 変更前 | 変更後 |
+|---|---|---|
+| `src/parallel_orchestra/runner.py` | `from .c3_db import ...` | `from c3.db import ...` |
+| `src/c3/cli_status.py` | `from parallel_orchestra import c3_db` | `from c3 import db as c3_db` |
+| `src/c3/cli_tier.py` | 同上 | 同上 |
+| `.claude/hooks/select_tier.py` | `_load_c3_db_module()` 内で `from parallel_orchestra import c3_db` | `from c3 import db as c3_db` (sys.path 操作削除) |
+| `.claude/hooks/record_tier_outcome.py` | 同上 | 同上 |
+| `.claude/hooks/record_review_decision.py` | `from parallel_orchestra.c3_db import insert_review_decision` | `from c3.db import insert_review_decision` (`_ensure_src_on_path` 削除) |
+| `.claude/hooks/review_hint_inject.py` | `from parallel_orchestra import c3_db` | `from c3 import db as c3_db` |
+| `.claude/hooks/po_heartbeat.py` | `from parallel_orchestra.c3_db import upsert_po_status` | `from c3.db import upsert_po_status` |
+| `.claude/hooks/subagent_log.py` | 同上 | 同上 |
+| `tests/hooks/*.py` (4 ファイル) | `from parallel_orchestra import c3_db` | `from c3 import db as c3_db` |
+| `tests/parallel_orchestra/*.py` (3 ファイル) | 同上 + `import parallel_orchestra.c3_db as c3_db_mod` | `from c3 import db as c3_db` + `import c3.db as c3_db_mod` |
+| `tests/test_cli_status.py` / `tests/test_cli_tier.py` | 同上 | 同上 |
+
+### 検証
+
+- `pytest tests/` 全体: 888 passed / 3 skipped（regression なし）
+- `c3 doctor` exit 0
+- `parallel_orchestra.c3_db` shim 経由の import も継続動作（既存利用者の互換性確保）
+
+### 補足
+
+- 次の Step 2 (v1.12.0) では新 skill `parallel-agents` を追加し、wave-execution の並列実装を親 Claude の Agent ツール並列起動 + 公式 `isolation: worktree` で代替する設計に移行する
+- `parallel_orchestra` パッケージ本体の削除は v2.0.0（互換破壊）まで先送り
+- PoC 結果と PO 廃止計画の詳細は `~/.claude/plans/atomic-foraging-sprout.md` および `~/.claude/projects/.../memory/feedback_parallel_subagent_race_resolved.md` を参照
+
+---
+
 ## [1.10.3] - 2026-05-11
 
 ### 概要

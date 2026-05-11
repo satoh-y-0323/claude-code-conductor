@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 # テスト対象モジュール
-from parallel_orchestra import c3_db
+from c3 import db as c3_db
 from parallel_orchestra.runner import TaskResult
 
 # F-009 で作成済みの schema.sql を使う（DB 初期化）

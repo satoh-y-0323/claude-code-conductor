@@ -206,13 +206,9 @@ def _maybe_upsert_po_status(payload: dict) -> None:
     current_step = raw_step[:_MAX_CURRENT_STEP_LEN] if raw_step else None
 
     try:
-        # parallel_orchestra.c3_db を src/ から動的 import する。
-        # po_heartbeat.py と同じ Path(__file__).resolve().parents[2] / "src"
-        # 表現で統一する（保守上の一貫性）。
-        src = Path(__file__).resolve().parents[2] / 'src'
-        if src.is_dir() and str(src) not in sys.path:
-            sys.path.insert(0, str(src))
-        from parallel_orchestra.c3_db import upsert_po_status  # noqa: PLC0415
+        # v1.11.0 で parallel_orchestra.c3_db から c3.db に物理移動した。
+        # c3 パッケージは pip install 済みのため sys.path 操作は不要。
+        from c3.db import upsert_po_status  # noqa: PLC0415
 
         upsert_po_status(
             session_id=session_id,

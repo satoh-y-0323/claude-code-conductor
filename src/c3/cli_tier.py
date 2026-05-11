@@ -22,7 +22,7 @@ import sqlite3
 import sys
 from typing import Any
 
-from parallel_orchestra import c3_db
+from c3 import db as c3_db
 
 
 logger = logging.getLogger(__name__)
