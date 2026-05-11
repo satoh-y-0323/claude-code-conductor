@@ -1,5 +1,77 @@
 # Changelog
 
+## [1.14.0] - 2026-05-12
+
+### 概要
+
+PO（Parallel Orchestra）段階的廃止計画の **Step 4**。`c3 po` CLI と `wave-execution` skill を削除し、`parallel-agents` skill から PO への依存を断ち切った。新 CLI `c3 plan validate` / `c3 plan waves` を導入し、`parallel-agents` skill の Step 0/1 を `c3 po dry-run` / `c3 po waves` から `c3 plan validate` / `c3 plan waves` へ切り替えた。
+
+これにより並列実装機能は **PO の Python パッケージに一切依存しない** 状態になった。`parallel_orchestra` パッケージ本体は v2.0.0 まで残置されるが、`develop` / `parallel-agents` skill の実行経路からは完全に外れた。
+
+### 追加
+
+| パス | 役割 |
+|---|---|
+| `src/c3/plan_validator.py` | plan-report YAML 検証 + DAG 分解の純粋関数（`extract_frontmatter` / `compute_waves` / `validate_plan_report` / `split_waves`）。`parallel_orchestra` 非依存 |
+| `src/c3/cli_plan.py` | `c3 plan validate <path>` / `c3 plan waves <path>` サブコマンド |
+| `tests/test_plan_validator.py` | 上記モジュールの単体テスト（20 ケース） |
+| `tests/test_cli_plan.py` | 新 CLI の動作テスト（6 ケース） |
+
+### 削除
+
+| パス | 理由 |
+|---|---|
+| `src/c3/po/__init__.py` / `manifest.py` / `run.py` (合計 414 LOC) | C3 → PO の薄いラッパー層。`plan_validator.py` が機能を引き継ぐ |
+| `src/c3/cli_po.py` (184 LOC) | `c3 po` サブコマンド。`cli_plan.py` で置換 |
+| `.claude/skills/wave-execution/SKILL.md` | v1.12.0 で deprecated 化されていた旧並列実行 skill。`parallel-agents` skill で完全置換 |
+| `tests/test_cli_po*.py` / `test_po_*.py` / `test_manifest_fixes.py` / `test_manifest_yaml_escape.py` (7 ファイル) | 削除されたモジュールのテスト |
+
+### 変更
+
+| パス | 内容 |
+|---|---|
+| `src/c3/cli.py` | `cli_po` の import / `register(sub)` を解除、代わりに `cli_plan` を追加。サブコマンド `po` が消え `plan` が追加 |
+| `.claude/skills/parallel-agents/SKILL.md` | Step 0/1 を `c3 po dry-run` / `c3 po waves` から `c3 plan validate` / `c3 plan waves` に切り替え。移行期注意セクションも v1.14.0 完了状態に更新 |
+
+### 移行ガイド
+
+**旧コマンドからの移行:**
+| 旧 (v1.13.x まで) | 新 (v1.14.0+) |
+|---|---|
+| `c3 po dry-run <plan-report>` | `c3 plan validate <plan-report>` |
+| `c3 po waves <plan-report>` | `c3 plan waves <plan-report>` |
+| `c3 po run <manifest>` | （直接代替なし。`parallel-agents` skill 経由で親 Claude が並列起動） |
+| `c3 po run-wave <manifest> --wave-index N` | （同上） |
+
+`c3 po` を呼び出していたスクリプト / hook / skill がある場合は `c3 plan` に書き換えること。本 リリースから `c3 po` は `invalid choice` で失敗する。
+
+### 影響範囲
+
+- `parallel-agents` skill: PO 非依存になり、`c3 plan` 経由で動作（並列起動・worktree 隔離・一括コミットの中核ロジックは変更なし）
+- 利用先テンプレート (`c3 init` / `c3 update`): `wave-execution/SKILL.md` が消え、`c3 po` サブコマンドが廃止
+- `parallel_orchestra` パッケージ本体: 影響なし。`c3.db` 経由で読み書きは継続動作（v2.0.0 で削除）
+- F-001 (review_decisions) / F-005 (tier_bandit) / F-008 (agent_runs): 影響なし
+
+### 検証
+
+- `pytest tests/` 全体: **830 passed / 3 skipped**（v1.13.0 の 880 - 旧 PO テスト 76 件 + 新規 plan_validator/cli_plan テスト 26 件）
+- `c3 plan validate` 動作確認: 正常 → exit 0、agent file 不在 → exit 2 で `task 't1': agent ... not found` エラー
+- `c3 plan waves` 動作確認: 2-task plan-report で 2-wave JSON 出力
+- `c3 po` 動作確認: `invalid choice: 'po' (choose from 'init', 'update', 'list-agents', 'list-skills', 'list-commands', 'doctor', 'plan', 'tier')`
+- `c3 doctor` exit 0
+
+### 次のステップ
+
+- **Step 5 (v2.0.0)**: `parallel_orchestra` パッケージ本体の削除（互換破壊）。`pyproject.toml` の `parallel-orchestra` console script・wheel package 解除、`po_results` / `po_status` テーブル DROP、`.claude/docs/parallel-orchestra-manifest.md` / `po-worktree-writes.md` 削除、`planner.md` の PO 言及を `parallel-agents` 向けに最終調整
+- v1.14.x を最低 1 ヶ月 LTS として維持してから v2.0.0 へ移行
+
+### 参考
+
+- 廃止計画: `~/.claude/plans/atomic-foraging-sprout.md`
+- PoC 結果: `~/.claude/projects/.../memory/feedback_parallel_subagent_race_resolved.md`
+
+---
+
 ## [1.13.0] - 2026-05-11
 
 ### 概要

@@ -47,26 +47,25 @@ planner エージェントが plan-report を生成する時点で「tdd-develop
 
 1. Glob で `.claude/reports/plan-report-*.md` の最新ファイルパスを取得
 2. Read で内容（フロントマター含む）を確認
-3. Bash で以下を実行する（v1.14.0 まで PO の dry-run を流用、v1.14.0 以降は親 Claude が直接 YAML 検証）:
+3. Bash で以下を実行する:
 
    ```
-   c3 po dry-run <plan-report-path>
+   c3 plan validate <plan-report-path>
    ```
 
    | exit | 意味 | 次のアクション |
    |---|---|---|
    | `0` | マニフェスト妥当 | Step 1 へ |
-   | `2` | フロントマター不正 | stderr を整形して提示、`/start` フェーズ C 再実行を案内、スキル終了 |
-   | `3` | 環境エラー | stderr を提示してスキル終了 |
+   | `2` | フロントマター不正・agent ファイル不在・循環依存等 | stderr を整形して提示、`/start` フェーズ C 再実行を案内、スキル終了 |
 
 ---
 
 ## Step 1: wave 分解
 
-Bash で以下を実行する（v1.14.0 まで PO の wave 分解を流用）:
+Bash で以下を実行する:
 
 ```
-c3 po waves <plan-report-path>
+c3 plan waves <plan-report-path>
 ```
 
 stdout の JSON 形式:
@@ -282,9 +281,10 @@ checkpoint の summary には KEEP ルール（設計判断・決定事項・解
 
 ---
 
-## PO 廃止移行期の注意（v1.12.0〜v1.14.0）
+## PO 廃止移行期の注意（v1.12.0〜v2.0.0）
 
-- 本 skill は v1.12.0 で導入された。`wave-execution.md` は当面残るが case B（複数 wave / PO 委譲）は deprecated 扱い
-- v1.14.0 で `c3 po dry-run` / `c3 po waves` が削除される予定。その時点で Step 0 / Step 1 を「親 Claude が plan-report の YAML フロントマターを直接読んで DAG 分解」するロジックに置き換える
-- v2.0.0 で `parallel_orchestra` パッケージ本体が削除される。本 skill の Step 0/1 を完全に PO 非依存に切り替えるのは v1.14.0 のタイミング
+- 本 skill は v1.12.0 で導入された
+- v1.13.0 で `po-status` skill / `c3 status` CLI を削除
+- **v1.14.0 で `c3 po` CLI と `wave-execution` skill を削除し、Step 0/1 で `c3 plan validate` / `c3 plan waves`（純粋な YAML 検証 + DAG 分解、PO 非依存）に切り替えた**
+- v2.0.0 で `parallel_orchestra` パッケージ本体を削除（互換破壊）
 - 詳細計画: `~/.claude/plans/atomic-foraging-sprout.md`
