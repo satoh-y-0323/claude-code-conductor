@@ -1,7 +1,7 @@
 """Tests for F-005 Phase 2-B: failure rate ベースの Tier escalation。
 
 検証対象:
-  - src/parallel_orchestra/c3_db.py の record_tier_recent_outcome / read_tier_failure_rate
+  - src/c3/db.py の record_tier_recent_outcome / read_tier_failure_rate
   - .claude/hooks/select_tier.py の maybe_escalate / main 統合
   - schema.sql の tier_recent_outcomes テーブル
 

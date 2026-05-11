@@ -319,14 +319,17 @@ class TestInitC3Db:
         expected = {
             'schema_version',
             'review_decisions',
-            'po_results',
-            'po_status',
             'tier_bandit',
             'tier_recent_outcomes',
             'agent_runs',
         }
         missing = expected - tables
         assert not missing, f"作られていないテーブル: {missing}"
+        # v2.0.0 で削除済みのテーブルが復活していないこと
+        legacy_dropped = {'po_results', 'po_status'}
+        assert not (legacy_dropped & tables), (
+            f"v2.0.0 で削除されたはずのテーブルが残っている: {legacy_dropped & tables}"
+        )
 
     def test_wal_mode_is_enabled(self, tmp_path: Path):
         module = _load_hook_module()

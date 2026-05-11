@@ -12,6 +12,14 @@
 -- 表現できない変更が必要になった場合の備え）。
 
 -- ---------------------------------------------------------------------------
+-- v2.0.0 マイグレーション: PO（Parallel Orchestra）廃止に伴うテーブル削除
+-- ---------------------------------------------------------------------------
+-- v1.x で作成された po_results / po_status テーブルは v2.0.0 で不要になった。
+-- 利用先 DB から削除する。テーブル不在でもエラーにしない。
+DROP TABLE IF EXISTS po_results;
+DROP TABLE IF EXISTS po_status;
+
+-- ---------------------------------------------------------------------------
 -- F-009 自身: スキーマバージョン管理
 -- ---------------------------------------------------------------------------
 
@@ -42,41 +50,6 @@ CREATE INDEX IF NOT EXISTS idx_review_decisions_checklist
 
 -- ---------------------------------------------------------------------------
 -- F-002: PO 集約レイヤ
--- ---------------------------------------------------------------------------
--- Parallel Orchestra の各 worktree の完了結果を集約する。
--- 親 Claude が SELECT で結果を集約できるようにする。
-
-CREATE TABLE IF NOT EXISTS po_results (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id      TEXT NOT NULL,
-    worktree_id     TEXT NOT NULL,
-    task_id         TEXT NOT NULL,
-    status          TEXT NOT NULL,         -- 'success' | 'failure' | 'cancelled'
-    started_at      TEXT,                  -- ISO8601
-    completed_at    TEXT,                  -- ISO8601
-    output_summary  TEXT,
-    error_message   TEXT,
-    UNIQUE(session_id, worktree_id, task_id)
-);
-CREATE INDEX IF NOT EXISTS idx_po_results_session
-    ON po_results(session_id, completed_at DESC);
-
--- ---------------------------------------------------------------------------
--- F-003: PO 並列処理の状況可視化
--- ---------------------------------------------------------------------------
--- 各 worktree の現在状況を heartbeat で記録する。親 Claude は SELECT で
--- 並列処理の進捗を確認できる。
-
-CREATE TABLE IF NOT EXISTS po_status (
-    session_id      TEXT NOT NULL,
-    worktree_id     TEXT NOT NULL,
-    state           TEXT NOT NULL,         -- 'starting' | 'running' | 'completed' | 'failed'
-    current_step    TEXT,
-    progress_pct    INTEGER,
-    last_heartbeat  TEXT NOT NULL,         -- ISO8601
-    PRIMARY KEY (session_id, worktree_id)
-);
-
 -- ---------------------------------------------------------------------------
 -- F-005: Tier 自動ルーティング（Thompson Sampling 学習データ）
 -- ---------------------------------------------------------------------------

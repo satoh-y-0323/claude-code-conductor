@@ -43,7 +43,6 @@ PROMPT_HISTORY_PATH = os.path.join(_CLAUDE_DIR, "logs", "prompt-history.jsonl")
 def _load_c3_db_module():
     """c3.db helper モジュールを返す。
 
-    v1.11.0 で parallel_orchestra.c3_db から c3.db に物理移動した。
     c3 パッケージは pip install 済みのため sys.path 操作は不要。
     """
     try:

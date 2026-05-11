@@ -149,7 +149,7 @@ def _run_enable_sandbox() -> None:
 
 # 現行スキーマバージョン。schema.sql に破壊的変更を入れたら +1 して
 # マイグレーションロジックを apply_schema() に追加する。
-SCHEMA_VERSION = 2  # F-005 Phase 2-B で tier_recent_outcomes を追加
+SCHEMA_VERSION = 3  # v2.0.0 で PO 廃止に伴い po_results / po_status を削除
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)

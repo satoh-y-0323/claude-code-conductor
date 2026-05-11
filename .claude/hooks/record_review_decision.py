@@ -3,7 +3,7 @@
 
 F-001: dev-workflow フェーズ E でユーザーが「対応 / 許容 / 保留」を選んだ
 判断を SQLite に記録するための薄い CLI ラッパー。実装本体は
-``c3.db.insert_review_decision`` (v1.11.0 以降。旧 ``parallel_orchestra.c3_db``)。
+``c3.db.insert_review_decision``。
 
 Usage:
     python .claude/hooks/record_review_decision.py \

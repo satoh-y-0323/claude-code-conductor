@@ -21,12 +21,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Run diagnostics on the local C3 setup",
     )
     parser.add_argument(
-        "--check",
-        choices=["all", "po-only"],
-        default="all",
-        help="Limit checks to a subset (default: all)",
-    )
-    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Print only failures and warnings",
@@ -38,13 +32,9 @@ def handle(args: argparse.Namespace) -> int:
     color = _supports_color()
     findings: list[tuple[str, str, str]] = []  # (status, label, detail)
 
-    if args.check == "po-only":
-        findings.append(_check_po())
-    else:
-        findings.append(_check_claude_dir())
-        findings.append(_check_settings_json())
-        findings.append(_check_claude_binary())
-        findings.append(_check_po())
+    findings.append(_check_claude_dir())
+    findings.append(_check_settings_json())
+    findings.append(_check_claude_binary())
 
     exit_code = 0
     for status, label, detail in findings:
@@ -88,18 +78,9 @@ def _check_claude_binary() -> tuple[str, str, str]:
         return (
             _WARN,
             "claude binary",
-            "not on PATH; install Claude Code CLI before running parallel-orchestra",
+            "not on PATH; install Claude Code CLI before invoking c3 skills",
         )
     return _OK, "claude binary", path
-
-
-def _check_po() -> tuple[str, str, str]:
-    try:
-        import parallel_orchestra  # type: ignore[import-not-found]
-    except ImportError as exc:
-        return _ERR, "parallel-orchestra", f"bundled package failed to import: {exc}"
-    ver = getattr(parallel_orchestra, "__version__", "unknown")
-    return _OK, "parallel-orchestra", f"{ver} (bundled)"
 
 
 def _format(status: str, label: str, detail: str, *, color: bool) -> str:

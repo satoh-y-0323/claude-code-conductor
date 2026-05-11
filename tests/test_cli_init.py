@@ -87,7 +87,7 @@ def test_init_excludes_personal_files(tmp_path: Path, monkeypatch):
     (dirty_template / "reports" / "plan-report-x.md").write_text("plan", encoding="utf-8")
     (dirty_template / "docs").mkdir()
     (dirty_template / "docs" / "decisions.md").write_text("local", encoding="utf-8")
-    (dirty_template / "docs" / "parallel-orchestra-manifest.md").write_text(
+    (dirty_template / "docs" / "settings.json.md").write_text(
         "spec", encoding="utf-8"
     )
 
@@ -100,7 +100,7 @@ def test_init_excludes_personal_files(tmp_path: Path, monkeypatch):
     dest = target / ".claude"
     # Framework files are copied
     assert (dest / "agents" / "architect.md").is_file()
-    assert (dest / "docs" / "parallel-orchestra-manifest.md").is_file()
+    assert (dest / "docs" / "settings.json.md").is_file()
     # .gitkeep stubs survive
     assert (dest / "memory" / ".gitkeep").is_file()
     assert (dest / "reports" / ".gitkeep").is_file()

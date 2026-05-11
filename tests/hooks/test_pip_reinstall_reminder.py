@@ -84,8 +84,8 @@ class TestNoWarn:
         assert result.stderr == ""
 
     def test_no_warn_on_other_init(self) -> None:
-        """parallel_orchestra/__init__.py 等は対象外（dynamic 取得のため）。"""
-        result = _run_hook(_payload("Edit", "src/parallel_orchestra/__init__.py"))
+        """src/c3/db.py のような hook 対象外ファイルでは warn しない。"""
+        result = _run_hook(_payload("Edit", "src/c3/db.py"))
         assert result.returncode == 0
         assert result.stderr == ""
 

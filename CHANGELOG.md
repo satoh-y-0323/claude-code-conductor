@@ -1,5 +1,102 @@
 # Changelog
 
+## [2.0.0] - 2026-05-12
+
+### 概要（互換破壊リリース）
+
+PO（Parallel Orchestra）段階的廃止計画の **Step 5（最終）**。`parallel_orchestra` パッケージ本体を削除し、PO 関連の全アセット（hook / docs / DB テーブル定義 / console script / planner ドキュメント言及）を取り除いた。
+
+**本リリースは v1.x との互換性を保証しない**。v1.x で `parallel-orchestra` console script や `from parallel_orchestra import ...` を直接使っていた外部コードは動作しなくなる。利用先テンプレートからも PO 関連スキル・hook が消える。
+
+### 廃止計画 全体サマリ
+
+| Step | Version | 内容 |
+|---|---|---|
+| 1 | v1.11.0 | `parallel_orchestra.c3_db` を `c3.db` に物理移動（非破壊） |
+| 1.5 | v1.11.1 | `docs/codex対応/` 配布除外 hotfix |
+| 2 | v1.12.0 | 新 skill `parallel-agents` 追加、`develop` 参照先切替、`wave-execution` deprecated 化 |
+| 3 | v1.13.0 | `po-status` skill / `c3 status` CLI 削除 |
+| 4 | v1.14.0 | `c3 po` CLI / `src/c3/po/` / `wave-execution` skill 削除、`c3 plan` 新設 |
+| **5** | **v2.0.0** | **`parallel_orchestra` パッケージ削除、関連アセット全削除** |
+
+廃止の根拠は 2026-05-11 の PoC で「並列 subagent 起動時の permission チェッカー race」（前身 Clade v1.19.0 で発見、PO 導入の主因）が Claude Code 本体で構造的に修正されたことを確認したこと（15 並列・101 tool 呼び出しで失敗 0 件）。詳細は `feedback_parallel_subagent_race_resolved.md` を参照。
+
+### 削除（互換破壊）
+
+#### Python パッケージ
+| パス | LOC | 用途 |
+|---|---|---|
+| `src/parallel_orchestra/__init__.py` / `_exceptions.py` / `cli.py` / `manifest.py` / `report.py` / `runner.py` | ~3,000 | PO 本体（runner / heartbeat / auto-merge / dashboard 含む） |
+| `tests/parallel_orchestra/` (16 ファイル) | ~2,000 | PO 単体テスト |
+
+#### console script
+- `parallel-orchestra = "parallel_orchestra.cli:main"` を `pyproject.toml` から削除
+
+#### Hook / Docs
+| パス | 理由 |
+|---|---|
+| `.claude/hooks/po_heartbeat.py` | PO 進捗 heartbeat hook（PO 廃止により呼び出し元消失） |
+| `.claude/docs/parallel-orchestra-manifest.md` / `po-worktree-writes.md` | PO 仕様ドキュメント |
+
+#### DB スキーマ
+| 対象 | 変更 |
+|---|---|
+| `po_results` / `po_status` テーブル | `schema.sql` から CREATE 文を削除し、`DROP TABLE IF EXISTS` マイグレーションを追加。利用先で次回 session-start hook 実行時に自動 DROP |
+| `SCHEMA_VERSION` | 2 → 3 にバンプ |
+
+#### コード内 PO 連動コード
+| ファイル | 削除内容 |
+|---|---|
+| `src/c3/db.py` | `_task_status_str` / `record_task_results` / `_PO_STATUS_VALID_STATES` / `upsert_po_status` / `fetch_po_status` / `fetch_po_results` を削除（PO 専用ヘルパー）。`TYPE_CHECKING` の `from parallel_orchestra.runner import TaskResult` も削除 |
+| `src/c3/cli_doctor.py` | `_check_po()` 関数および `c3 doctor --check po-only` オプション削除。`parallel-orchestra` チェック行が doctor 出力から消える |
+| `.claude/hooks/subagent_log.py` | `_maybe_upsert_po_status()` 関数および main() からの呼び出し削除。`C3_PO_WORKTREE_ID` / `C3_PO_SESSION_ID` の env 連動を削除 |
+
+#### ドキュメント / hook の文言整理
+- `.claude/agents/planner.md`: PO 言及を `parallel-agents` skill 向けに全面書き換え、`c3 po dry-run` → `c3 plan validate`、`_check_writes_conflicts` 言及を除去、**depth 1 制限の注意（tdd-develop を含む wave は 1 タスク推奨）を追記**
+- `.claude/hooks/worktree_guard.py`: docstring から PO 言及削除（hook 自体は TDD ワークフロー用に残置）
+- `.claude/hooks/select_tier.py` / `record_tier_outcome.py` / `record_review_decision.py` / `review_hint_inject.py`: docstring の旧 import 移行履歴コメントを整理
+
+### 環境変数の rename
+
+`locate_c3_db()` の探索順序が変更:
+1. `C3_DB_PATH` (新規、v2.0.0 で導入)
+2. `C3_PO_DB_PATH` (旧名、deprecated 警告付きで継続サポート)
+3. cwd 上方向探索
+
+`C3_PO_DB_PATH` は次の major バージョンで削除予定。新規利用は `C3_DB_PATH` を使うこと。
+
+### 移行ガイド
+
+#### v1.x 利用者向け
+
+1. **pip パッケージ**: `pip install --upgrade claude-code-conductor` で v2.0.0 に上げると `parallel-orchestra` console script が site-packages から消える。`parallel-orchestra` を直接呼んでいたシェルスクリプト・CI ジョブは廃止か `claude` 直叩きに書き換え
+2. **Python import**: `from parallel_orchestra import ...` / `from parallel_orchestra.c3_db import ...` を使っていれば `from c3.db import ...` に書き換え（v1.11.0 で shim 化、v2.0.0 で shim も削除）
+3. **C3 利用先テンプレート**: `c3 update` で利用先環境のスキル・hook が v2.0.0 ベースに更新される。`po-status` / `wave-execution` skill は消え、`parallel-agents` が並列実装の単一窓口になる
+4. **DB**: `c3.db` の `po_results` / `po_status` テーブルは次回セッション開始時に自動 DROP される（`session_start.py` の `apply_schema` 経由）。データ参照が必要なら事前にエクスポートしておくこと
+5. **env 変数**: `C3_PO_DB_PATH` は使い続けられるが、v3.0.0 で削除予定。`C3_DB_PATH` への移行を推奨
+
+### 検証
+
+- `pytest tests/` 全体: **581 passed / 2 skipped**（v1.14.0 の 830 から `tests/parallel_orchestra/` 削除分の純減）
+- `c3 doctor` exit 0、出力から `parallel-orchestra` 行が消滅
+- `c3 plan validate` / `c3 plan waves` 正常動作（v1.14.0 で新設、PO 非依存）
+- `c3 po` → `invalid choice` で失敗（v1.14.0 と同じ）
+- wheel **74 entries**（v1.14.0 の 84 から -10）
+- wheel 内に `parallel_orchestra` / `wave-execution` / `po-status` / `cli_po` のエントリ 0 件
+- wheel の console scripts は `c3` のみ
+
+### LTS について
+
+v1.14.x は v2.0.0 リリース後も **最低 1 ヶ月の LTS 期間** を設定する。v1.x からの移行に時間が必要な利用者は `pip install "claude-code-conductor>=1.14,<2"` で固定可能。
+
+### 参考
+
+- 廃止計画: `~/.claude/plans/atomic-foraging-sprout.md`
+- PoC 結果メモリ: `feedback_parallel_subagent_race_resolved.md`
+- セマンティックバージョニング: 互換破壊リリースのため MAJOR 版（v1.x → v2.0.0）
+
+---
+
 ## [1.14.0] - 2026-05-12
 
 ### 概要

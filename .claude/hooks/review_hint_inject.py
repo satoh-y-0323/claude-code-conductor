@@ -50,7 +50,6 @@ CHECKLIST_ID_RE = re.compile(r"\[((?:CR|SR)-[A-Z]+-\d{3,})\]")
 def _ensure_c3_db_path_in_sys_path() -> None:
     """c3.db を import 可能にする。
 
-    v1.11.0 で parallel_orchestra.c3_db から c3.db に物理移動した。
     c3 パッケージは pip install 済みのため sys.path 操作は不要。
     関数自体は後方互換のため残置（呼び出し側のテストが参照する場合がある）。
     """

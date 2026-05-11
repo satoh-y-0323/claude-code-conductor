@@ -252,8 +252,7 @@ def maybe_escalate(
         return chosen_tier, None
 
     if failure_rate_fn is None:
-        # 既定の DB ヘルパーを呼ぶ（v1.11.0 以降は c3.db、それより前は
-        # parallel_orchestra.c3_db、いずれも shim で透過的に解決される）。
+        # 既定の DB ヘルパーを呼ぶ。
         c3_db = _load_c3_db_module()
         if c3_db is None:
             return chosen_tier, None
@@ -357,7 +356,6 @@ def build_additional_context(
 def _load_c3_db_module():
     """c3.db helper モジュールを返す。
 
-    v1.11.0 で parallel_orchestra.c3_db から c3.db に物理移動した。
     c3 パッケージは pip install 済みのため sys.path 操作は不要。
     """
     try:

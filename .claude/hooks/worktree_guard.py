@@ -2,7 +2,8 @@
 """PreToolUse hook: worktree boundary guardrail.
 
 PO_WORKTREE_GUARD=1 が設定されている場合のみ動作する。
-parallel-orchestra が read_only:false タスクを起動するときに自動セットする。
+worktree 内で実装タスクを実行するワークフロー（tdd-develop など）が
+事前にこの env を設定して有効化する。
 Write / Edit ツールの対象パスが CWD（worktree ルート）外であればブロックする。
 """
 

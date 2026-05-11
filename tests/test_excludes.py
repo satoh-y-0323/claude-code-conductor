@@ -13,7 +13,7 @@ def test_keeps_framework_files():
     assert not should_skip("rules/code-review-checklist.md")
     assert not should_skip("settings.json")
     assert not should_skip("CLAUDE.md")
-    assert not should_skip("docs/parallel-orchestra-manifest.md")
+    assert not should_skip("docs/settings.json.md")
 
 
 def test_excludes_personal_files():
