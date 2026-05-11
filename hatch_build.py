@@ -44,6 +44,9 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "pytest_temp.ini",
     "logs/*",
     "state/*",
+    # v2.1.0: tdd-develop / worktree-tdd-workflow 廃止（planner が TDD を 3-wave に分解する設計に統一）
+    "agents/tdd-develop.md",
+    "skills/worktree-tdd-workflow/*",
 )
 
 KEEP_PATTERNS: tuple[str, ...] = (

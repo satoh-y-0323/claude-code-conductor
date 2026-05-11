@@ -1,5 +1,126 @@
 # Changelog
 
+## [2.1.0] - 2026-05-12
+
+### 概要
+
+v2.0.0 直後の機能整理リリース。**`tdd-develop` agent と `worktree-tdd-workflow` skill を廃止**し、TDD を planner が **3-wave（Red tester 並列 → Green developer 並列 → Green 確認 tester 並列）に分解する**設計に統一した。これにより depth 1 制限で逐次実行に縛られていた TDD タスクが独立機能間で完全並列化される。
+
+v2.0.0 で残っていた PO / `wave-execution` / `c3 po` 言及の移行漏れ（`task-routing` / `start` / `dev-workflow` / `develop` / `promote-pattern` 各 skill、`docs/skills.md` / `docs/cli-reference.md` / `docs/index.md` / `docs/getting-started.md` / `README.md`、`worktree_guard.py` / `session_utils.py` の docstring）も併せて修正した。
+
+### 削除（minor、利用先での手動 cleanup 必要）
+
+| パス | 代替 |
+|---|---|
+| `.claude/agents/tdd-develop.md` | planner が 3-wave に分解して `tester` / `developer` を並列起動 |
+| `.claude/skills/worktree-tdd-workflow/SKILL.md` | `parallel-agents` skill が直接 tester / developer を起動 |
+
+### 変更
+
+#### planner エージェント
+- 「並列実行のための設計指針」を 3-wave 分解指針に書き換え（旧ルール「TDD は 1 タスクにまとめる」を削除）
+- 命名規約 `test-` / `impl-` / `confirm-` を推奨（強制ではない）
+- `writes` の test-report ファイル名は `.claude/reports/test-report-{task_id}.md` のように task_id ベースを推奨
+- depth 1 制限の tdd-develop 言及を削除
+- R1 自動検査の説明を削除（hook 本体も削除）
+
+#### parallel-agents skill
+- depth 1 制限テーブルから tdd-develop 行削除し、全 agent 並列起動可能になった旨を明記
+- 「2-C-1 tdd-develop ペルソナ採用」ブロック削除し、並列起動を単一手順に統合
+- tester / developer 向けのプロンプト注入を強化
+
+#### 自動検査 hook（配布元）
+- `.dev/hooks/_planner_check.py`: R1（tdd-develop writes 検査）を削除。R2/R3/R4 は維持
+- `tests/hooks/test_planner_check.py`: R1 系テストクラスを削除、R3 テストの tdd-develop 依存を除去
+
+#### 配布除外（3 ファイル同期）
+- `src/c3/_excludes.py` / `hatch_build.py` / `.gitignore` に `agents/tdd-develop.md` と `skills/worktree-tdd-workflow/*` を追加
+
+#### v2.0.0 移行漏れの hotfix
+- `task-routing/SKILL.md`: refactor 編成の `c3 po run` / PO 推奨を `parallel-agents` skill に置換、`wave-execution` 参照を更新、tdd-develop 行削除、feature の TDD 表記を 3-wave に更新
+- `start/SKILL.md`: PO 並列実行 / wave-execution.md 参照を `parallel-agents` に置換
+- `dev-workflow/SKILL.md`: description / 本文の `wave-execution` 参照を `parallel-agents` に修正、tdd-develop 言及削除
+- `develop/SKILL.md`: PO 廃止履歴と v2.1.0 の tdd-develop 廃止を追記
+- `promote-pattern/SKILL.md`: description 例文の tdd-develop 言及を別例に差し替え
+- `worktree_guard.py` / `session_utils.py`: docstring から tdd-develop / wave-execution 言及を更新
+- `docs/skills.md` / `docs/cli-reference.md` / `docs/index.md` / `docs/getting-started.md` / `README.md`: PO / wave-execution / tdd-develop / `c3 po` の陳腐化記述を削除・修正
+
+### 移行ガイド
+
+#### 利用先プロジェクトでの手動 cleanup
+
+`c3 update` は **ファイル削除を検出しない**ため、利用先で以下を手動実行する:
+
+```bash
+rm -f .claude/agents/tdd-develop.md
+rm -rf .claude/skills/worktree-tdd-workflow
+```
+
+#### 既存 plan-report の書き換え
+
+`agent: tdd-develop` を含む plan-report は `c3 plan validate` が `agent file not found` で失敗するため、以下のように 3 タスクに展開する:
+
+**Before（v2.0.0）:**
+```yaml
+tasks:
+  - id: tdd-login
+    agent: tdd-develop
+    writes:
+      - tests/auth/test_login.py
+      - src/auth/login.py
+      - .claude/reports/test-report-tdd-login.md
+    prompt: "ログイン機能を TDD で実装する"
+```
+
+**After（v2.1.0+）:**
+```yaml
+tasks:
+  - id: test-login
+    agent: tester
+    writes:
+      - tests/auth/test_login.py
+      - .claude/reports/test-report-test-login.md
+    prompt: |
+      Red フェーズ。ログイン機能の失敗テストを書き、機能未実装で正しく失敗することを確認する。
+      writes 宣言と一致するファイル名で test-report を Write すること。
+  - id: impl-login
+    agent: developer
+    depends_on: [test-login]
+    writes:
+      - src/auth/login.py
+    prompt: |
+      Green フェーズ。test-login の test-report の不合格テストを通す最小実装を行う。
+      テストコードは編集しない。
+  - id: confirm-login
+    agent: tester
+    depends_on: [impl-login]
+    writes:
+      - .claude/reports/test-report-confirm-login.md
+    prompt: |
+      Green 確認。全テストを実行して合格を確認する。
+      writes 宣言と一致するファイル名で test-report を Write すること。
+```
+
+3-wave 化により、独立した複数機能（auth / payment 等）の Red を 1 wave で並列起動できる。
+
+#### Green wave 失敗時の運用
+
+`impl-*` タスクが失敗した場合は `parallel-agents` skill の 2-E（リトライ / スキップ / 中断）で吸収する。developer 内の Stuck Signal（`.claude/reports/debug-needed-*.md` 出力）は引き続き機能する。リトライ時に親 Claude が後続 wave で `systematic-debugger` を呼ぶ運用に統一。
+
+### LTS / 互換性
+
+- v1.x からのアップグレードは引き続き v2.0.0 経由で行う（v1.x → v2.1.0 直接は未検証）
+- v2.0.x 系を維持したい場合は `pip install "claude-code-conductor>=2.0,<2.1"`
+- SemVer minor: agent / skill 削除はあるが、利用先 API（CLI / Python import）は無変更
+
+### 検証
+
+- `pytest -x` 572 passed / 2 skipped
+- wheel に `agents/tdd-develop.md` / `skills/worktree-tdd-workflow/` のエントリ 0 件
+- `_planner_check.py` が 3-wave plan-report に対して R1 警告を出さない（R1 自体が削除されている）
+
+---
+
 ## [2.0.0] - 2026-05-12
 
 ### 概要（互換破壊リリース）

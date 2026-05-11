@@ -16,4 +16,7 @@ plan-report に基づいて実装フェーズを実行する。
 
 ## 移行注意（v1.12.0+）
 
-v1.12.0 で並列実行レイヤを PO（Parallel Orchestra）から `parallel-agents` skill に切り替えた。旧 `wave-execution.md` 経由の PO 委譲は v1.14.0 で削除予定。詳細は `~/.claude/plans/atomic-foraging-sprout.md`。
+- v1.12.0 で並列実行レイヤを PO（Parallel Orchestra）から `parallel-agents` skill に切り替えた
+- v1.14.0 で旧 `wave-execution.md` 経由の PO 委譲を削除
+- v2.0.0 で `parallel_orchestra` パッケージ本体を削除
+- v2.1.0 で `tdd-develop` agent と `worktree-tdd-workflow` skill を廃止し、planner が TDD を 3-wave (Red tester / Green developer / Green 確認 tester) に分解する設計に統一

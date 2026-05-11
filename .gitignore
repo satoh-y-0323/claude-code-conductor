@@ -52,9 +52,16 @@ site/
 .claude/docs/c3追加予定機能リスト.md
 .claude/docs/ruflo_research_result.md
 
+# codex 対応調査メモ (個人作業ノート、配布・コミット対象外)
+.claude/docs/codex対応/
+
 # C3 distributor-only (配布元固有の開発支援、配布されない)
 .dev/
 /CLAUDE.md
+
+# v2.1.0: tdd-develop / worktree-tdd-workflow 廃止後の復活防止
+.claude/agents/tdd-develop.md
+.claude/skills/worktree-tdd-workflow/
 
 # Personal Claude Code overrides (per-user / per-worktree, never committed)
 # wheel からは _excludes.py / hatch_build.py で既に除外済み。git でも tracking しない方針。

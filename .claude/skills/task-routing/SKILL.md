@@ -74,22 +74,22 @@ AskUserQuestion ツール:
 | 1 | `interviewer` | A: ヒアリング |
 | 2 | `architect` | B: 設計 |
 | 3 | `planner` | C: 計画 |
-| 4 | `tester` → `developer` → `tester` → `developer` → `tester` | D: TDD |
+| 4 | `tester` (Red 並列) → `developer` (Green 並列) → `tester` (Green 確認 並列) | D: TDD |
 | 5 | `code-reviewer` → `security-reviewer` | E: レビュー |
 
 意図: 新機能追加は要件定義から計画まで全フェーズが必要。
 **この場合は `/start` を直接呼ぶ方がシンプル。** 本 skill は提示のみ。
 
-### refactor（並列・PO 推奨）
+### refactor（並列・parallel-agents skill 推奨）
 
 | 役割 | エージェント | 並列 |
 |---|---|---|
 | タスク分解 | `planner` | — |
-| 各リファクタタスク | `developer` + `tester` | PO で並列 |
+| 各リファクタタスク | `developer` + `tester` | `parallel-agents` skill で並列 |
 | 最終レビュー | `code-reviewer` | — |
 
 意図: 動作を変えないため、各リファクタを worktree で並列化できる。
-PO（Parallel Orchestra）の `c3 po run` で時間短縮を狙う。
+`parallel-agents` skill（親 Claude の Agent ツール並列起動 + 公式 `isolation: "worktree"`）で時間短縮を狙う。
 最終レビューは `code-reviewer` のみ（リファクタは動作変更を伴わないため新たな攻撃面が生まれにくく、security-reviewer は省略可）。
 
 ### security-audit（並列・レビュアー 2 体）
@@ -148,7 +148,7 @@ AskUserQuestion ツール:
   - `args` 指定なし/`from_start=false` のとき: `.claude/skills/start/SKILL.md` を Read して `/start` フローに合流する
 - **bug-fix**: `systematic-debugger` → `developer` → `tester` の順に Agent ツールで順次起動し、完了後に `code-reviewer` と `security-reviewer` を 1 メッセージ内で並列起動する
 - **docs**: Agent ツールで `doc-writer` を起動する
-- **refactor**: planner で `po_plan_version` 付き plan-report を生成 → `.claude/skills/wave-execution/SKILL.md` を Read して PO 並列実行に合流する
+- **refactor**: planner で `po_plan_version` 付き plan-report を生成 → `.claude/skills/parallel-agents/SKILL.md` を Read して並列実行に合流する
 - **security-audit**: code-reviewer と security-reviewer を **1 メッセージ内で並列起動**（複数 Agent ツール呼び出し）
 
 各エージェント完了後は通常の Approval Flow（AskUserQuestion で承認 / 否認・修正依頼 / 否認・自分で修正）に従う。
@@ -193,7 +193,6 @@ AskUserQuestion ツール:
 - `project-setup` — プロジェクト初期設定
 - `security-reviewer` — セキュリティ診断
 - `systematic-debugger` — デバッグ調査
-- `tdd-develop` — ヘッドレス TDD コンダクター（PO 専用）
 - `tester` — テスト設計・実行
 
 新しいエージェントが `.claude/agents/` に追加された場合は、この skill の編成

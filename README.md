@@ -145,11 +145,9 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | `c3 init` | 利用先プロジェクトに `.claude/` を展開する |
 | `c3 update` | `.claude/` をパッケージ最新版へ更新する（個人ファイルはスキップ） |
 | `c3 list-agents` / `list-skills` | 設置済みアセットを一覧表示 |
-| `c3 doctor` | 環境診断（`.claude/`・settings.json・claude バイナリ・parallel-orchestra） |
-| `c3 po dry-run <plan-report>` | plan-report をマニフェストとして検証 |
-| `c3 po waves <plan-report>` | plan-report の wave 分解結果を JSON で出力 |
-| `c3 po run <plan-report>` | plan-report を parallel-orchestra で全 wave 並列実行 |
-| `c3 po run-wave <plan-report> --wave-index N` | 指定 wave のみ実行 |
+| `c3 doctor` | 環境診断（`.claude/`・settings.json・claude バイナリ） |
+| `c3 plan validate <plan-report>` | plan-report の YAML フロントマターと agent 存在を検証 |
+| `c3 plan waves <plan-report>` | plan-report の wave 分解結果を JSON で出力 |
 
 ### 基本的な使い方
 
@@ -174,7 +172,6 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | planner | opus | plan-report | 親 Claude がペルソナ採用 |
 | developer | sonnet | 実装コード | Agent ツールで起動 |
 | tester | sonnet | テスト・test-report | Agent ツールで起動 |
-| tdd-develop | sonnet | - | Agent ツールで起動（PO 並列時のみ）|
 | code-reviewer | sonnet | code-review-report | Agent ツールで起動 |
 | security-reviewer | sonnet | security-review-report | Agent ツールで起動 |
 | doc-writer | sonnet | ドキュメント各種 | Agent ツールで起動 |
@@ -300,19 +297,19 @@ Copy-Item -Recurse claude-code-conductor\.claude your-project\
 
 ---
 
-## 並列実行 (parallel-orchestra)
+## 並列実行 (parallel-agents skill)
 
-計画フェーズで生成した plan-report を YAML フロントマター付きマニフェストとして parallel-orchestra (PO) に渡し、独立タスクを git worktree で並列実行できます。
+計画フェーズで生成した plan-report を YAML フロントマター付きマニフェストとして読み込み、独立タスクを親 Claude の Agent ツール並列起動 + 公式 `isolation: "worktree"` で並列実行できます（v2.0.0 以降は外部プロセス不要）。
 
-PO は C3 に同梱されているため、`pip install claude-code-conductor` だけで利用可能です。別途のインストールは不要。要件は Python ≥ 3.10、PATH に `claude` バイナリ、PyYAML（C3 の依存として自動インストール）。
+要件は Python ≥ 3.10、PATH に `claude` バイナリ、PyYAML（C3 の依存として自動インストール）。
 
 **使い方:**
 
-1. `/start` で要件→設計→計画フェーズを完走させる（planner が plan-report の先頭に PO 用 YAML フロントマターを自動付与します）
-2. `/develop` を起動 → **D-0** で plan-report のフロントマターを自動検出し PO 並列モードへ切り替わる
-3. C3 が `c3 po dry-run` でマニフェスト妥当性を検証、wave ごとにユーザー承認を取りながら `c3 po run-wave` で実行します
+1. `/start` で要件→設計→計画フェーズを完走させる（planner が plan-report の先頭に YAML フロントマターを自動付与します）
+2. `/develop` を起動 → **D-0** で plan-report のフロントマターを自動検出し `parallel-agents` skill へ切り替わる
+3. C3 が `c3 plan validate` でマニフェスト妥当性を検証、wave ごとにユーザー承認を取りながら Agent ツールで並列実行します
 
-マニフェスト仕様の詳細は `.claude/docs/parallel-orchestra-manifest.md` を参照してください。
+TDD を伴う機能実装は、planner が「test- → impl- → confirm-」の 3 タスクペアに分解し、各 wave 内で独立機能間で並列起動されます（v2.1.0+、旧 `tdd-develop` agent はこのリリースで廃止）。
 
 ---
 

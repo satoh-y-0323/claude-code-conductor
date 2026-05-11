@@ -54,48 +54,22 @@ c3 doctor
 - `.claude/` ディレクトリの存在
 - `settings.json` の有効性
 - `claude` バイナリのパス
-- `parallel-orchestra` のインポート可否
 
-## `c3 po` — Parallel Orchestra
+## `c3 plan` — plan-report 検証 / wave 分解
 
-PO（Parallel Orchestra）の各種コマンド。詳細は [スキル一覧 / 並列実行](skills.md#parallel-orchestra) 参照。
+YAML フロントマター付き `plan-report-*.md` の検証と wave 分解を行う。`parallel-agents` skill が内部で利用する純粋ユーティリティ。
 
 ```bash
-c3 po dry-run <plan-report>           # マニフェスト妥当性検証
-c3 po waves   <plan-report>           # wave 分解結果を JSON 出力
-c3 po run     <plan-report>           # 全 wave を並列実行
-c3 po run-wave <plan-report> --wave-index N
-                                       # 指定 wave のみ実行
+c3 plan validate <plan-report>        # YAML フロントマターと agent 存在確認
+c3 plan waves    <plan-report>        # wave 分解結果を JSON 出力
 ```
 
-| オプション | 対象 | 内容 |
+| サブコマンド | exit code | 内容 |
 |---|---|---|
-| `--wave-index N` | run-wave | 実行する wave のインデックス（0 始まり） |
+| `validate` | 0 / 2 | 0=妥当、2=不正（フロントマター・agent ファイル不在・循環依存等） |
+| `waves` | 0 | 標準出力に wave ごとのタスク配列を JSON で出力 |
 
-## `c3 status` — PO ダッシュボード
-
-F-003 で追加。`.claude/state/c3.db` の `po_status` テーブルから PO 並列実行の状況を表示する。
-
-```bash
-c3 status                     # 最新 session の active worktree
-c3 status --all               # 直近 5 session を横断表示
-c3 status --watch             # リアルタイム再描画（30 秒間隔）
-c3 status --json              # 機械可読 JSON 出力
-c3 status --state failed --verbose
-                              # 失敗 worktree の error_message 全文表示
-```
-
-| オプション | 内容 |
-|---|---|
-| `--session SESSION_ID` | session_id でフィルタ |
-| `--state {starting,running,completed,failed,waiting}` | state でフィルタ |
-| `--worktree GLOB` | worktree_id を glob でフィルタ（例: `po/*-task-*`） |
-| `--watch` | 自動再描画モード |
-| `--interval N` | --watch の間隔（秒、デフォルト 30） |
-| `--stale-threshold N` | heartbeat N 秒超で stale 判定（デフォルト 90） |
-| `--limit N` | 表示件数上限（デフォルト 50） |
-| `--json` | JSON 出力 |
-| `--verbose` | error_message を全文表示 |
+> v1.14.0 までの `c3 po dry-run` / `c3 po waves` は `c3 plan validate` / `c3 plan waves` で置き換えられた。v2.0.0 で `c3 po` サブコマンド全体を削除。
 
 ## `c3 tier stats` — Tier ルーティング統計
 

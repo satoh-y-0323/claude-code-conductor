@@ -191,8 +191,8 @@ new: TASK_TYPE: {task_type}
     "question": "refactor の作業をどこから始めますか？",
     "header": "開始地点",
     "options": [
-      { "label": "計画", "description": "planner で po_plan_version 付き plan-report を生成して PO 並列実行に備える" },
-      { "label": "実装", "description": "既存 po_plan_version 付き plan-report を使って wave-execution に直接入る" }
+      { "label": "計画", "description": "planner で po_plan_version 付き plan-report を生成して parallel-agents skill 並列実行に備える" },
+      { "label": "実装", "description": "既存 po_plan_version 付き plan-report を使って parallel-agents skill に直接入る" }
     ]
   }]
 }
@@ -243,8 +243,8 @@ new: TASK_TYPE: {task_type}
 | bug-fix | systematic-debugger 直起動 | Agent ツールで `systematic-debugger` を起動 → `developer` → `tester` 完了後、`code-reviewer` と `security-reviewer` を 1 メッセージ内で並列起動 |
 | bug-fix | 計画から | `.claude/skills/dev-workflow/SKILL.md` を Read してフェーズ C から（既存 plan-report を利用） |
 
-| refactor | 計画 | Agent ツールで `planner` を起動して `po_plan_version` 付き plan-report を生成 → `.claude/skills/wave-execution/SKILL.md` を Read |
-| refactor | 実装 | `.claude/skills/wave-execution/SKILL.md` を Read して PO 並列実行に直接入る |
+| refactor | 計画 | Agent ツールで `planner` を起動して `po_plan_version` 付き plan-report を生成 → `.claude/skills/parallel-agents/SKILL.md` を Read |
+| refactor | 実装 | `.claude/skills/parallel-agents/SKILL.md` を Read して並列実行に直接入る |
 | security-audit | 即実行 | Agent ツールで `code-reviewer` と `security-reviewer` を **1 メッセージ内で並列起動** |
 | security-audit | 承認後 | Step 3（フェーズ F/G/H）へ進む（自動遷移） |
 | docs | 即実行 | Agent ツールで `doc-writer` を単独起動 |

@@ -84,7 +84,7 @@ trust_score: {スコア}
 ```markdown
 ---
 name: promoted-YYYYMMDD-{id}
-description: {昇格理由と期待効果を1文で。例: "wave 実行でのペルソナ採用パターン。tdd-develop を単独 wave で実行する際に自動適用される"}
+description: {昇格理由と期待効果を1文で。例: "security-audit における code-reviewer / security-reviewer の並列起動パターン。2 体のレビュアーを 1 メッセージで同時に当てる"}
 promoted_from: {pattern id}
 promoted_date: YYYY-MM-DD
 trust_score: {スコア}

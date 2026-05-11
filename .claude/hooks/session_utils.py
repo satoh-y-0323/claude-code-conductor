@@ -86,7 +86,7 @@ def extract_section(content: str, heading: str) -> str:
 def append_checkpoint(session_file: str, label: str, summary: str) -> None:
     """Append a checkpoint block to the session file.
 
-    Used by wave-execution (milestone snapshots) and pre_compact.py
+    Used by parallel-agents skill (wave milestone snapshots) and pre_compact.py
     (compaction markers). Checkpoint blocks are append-only — they record
     the state at a point in time and never overwrite earlier entries.
 

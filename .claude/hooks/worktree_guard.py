@@ -2,8 +2,8 @@
 """PreToolUse hook: worktree boundary guardrail.
 
 PO_WORKTREE_GUARD=1 が設定されている場合のみ動作する。
-worktree 内で実装タスクを実行するワークフロー（tdd-develop など）が
-事前にこの env を設定して有効化する。
+worktree 内で実装タスクを実行するワークフロー（parallel-agents skill が
+isolation:"worktree" 付きで起動する agent など）が事前にこの env を設定して有効化する。
 Write / Edit ツールの対象パスが CWD（worktree ルート）外であればブロックする。
 """
 

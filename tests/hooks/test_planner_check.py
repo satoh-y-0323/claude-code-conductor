@@ -4,25 +4,22 @@ PostToolUse hook（配布元専用）の挙動を検証する。
 plan-report-*.md の YAML frontmatter を機械検査し、planner の記述ミスを早期検出する。
 
 検査ルール:
-  R1: tdd-develop task の writes に具体的なテストファイルと test-report パスが含まれているか
   R2: code-reviewer / security-reviewer の writes ファイル名に task_id を含み・タイムスタンプを含まないか
   R3: writes に src/c3/_template/ パスが 1 つでも含まれていたらブロック（exit 2）
   R4: 同一 writes パスを複数 task が宣言し、depends_on で順序付けされていない場合に警告
 
+廃止ルール:
+  R1 (tdd-develop writes 完備): v2.1.0 で `tdd-develop` agent 廃止に伴い削除。
+
 テストケース:
-  1. R1 正常: 正しい tdd-develop writes → 警告なし
-  2. R1 違反 (3 サブケース):
-     - テストファイルパス欠落 → [PlannerCheck WARN]
-     - test-report パス欠落 → [PlannerCheck WARN]
-     - glob (*) 混入 → [PlannerCheck WARN]
-  3. R2 正常: code-reviewer の writes がタスクID含み・タイムスタンプなし → 警告なし
-  4. R2 違反 (2 サブケース):
+  1. R2 正常: code-reviewer の writes がタスクID含み・タイムスタンプなし → 警告なし
+  2. R2 違反 (2 サブケース):
      - code-reviewer writes にタイムスタンプ入り → [PlannerCheck WARN]
      - security-reviewer writes にタイムスタンプ入り → [PlannerCheck WARN]
-  5. R3 違反: writes に _template/ パスを含む → exit 2 + [PlannerCheck BLOCK]
-  6. R4 違反: 同一 writes パスを 2 task が宣言・depends_on なし → [PlannerCheck WARN]
+  3. R3 違反: writes に _template/ パスを含む → exit 2 + [PlannerCheck BLOCK]
+  4. R4 違反: 同一 writes パスを 2 task が宣言・depends_on なし → [PlannerCheck WARN]
      R4 正常: depends_on で順序付けあり → 警告なし
-  7. 対象外動作:
+  5. 対象外動作:
      - plan-report 以外のファイルへの Write → exit 0・stderr 空
      - tool_name が Read → exit 0・stderr 空
      - file_path 空 → exit 0・stderr 空
@@ -82,207 +79,7 @@ def _write_plan_report(tmp_path: Path, name: str, frontmatter_body: str) -> Path
 
 
 # ---------------------------------------------------------------------------
-# Group 1: R1 正常 — 正しい tdd-develop task は警告なし
-# ---------------------------------------------------------------------------
-
-class TestR1Pass:
-    """tdd-develop task の writes が要件を満たす場合、警告は発生しない。"""
-
-    def test_valid_tdd_develop_task_no_warn(self, tmp_path: Path) -> None:
-        """tests/ で始まるテストファイルと test-report パスが両方 writes に含まれる場合。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "valid-tdd",
-            """
-            po_plan_version: "0.1"
-            name: "valid plan"
-            tasks:
-              - id: t1
-                agent: tdd-develop
-                writes:
-                  - tests/skills/test_foo.py
-                  - .claude/reports/test-report-t1.md
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck" not in result.stderr
-
-    def test_tdd_develop_with_multiple_test_files_no_warn(self, tmp_path: Path) -> None:
-        """tests/ で始まるパスが複数含まれていても問題ない。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "multi-tests",
-            """
-            po_plan_version: "0.1"
-            name: "multi test plan"
-            tasks:
-              - id: t1
-                agent: tdd-develop
-                writes:
-                  - tests/hooks/test_bar.py
-                  - tests/hooks/test_baz.py
-                  - .claude/reports/test-report-t1.md
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck" not in result.stderr
-
-    def test_non_tdd_develop_agent_not_checked_for_r1(self, tmp_path: Path) -> None:
-        """tdd-develop 以外の agent は R1 チェック対象外なので警告しない。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "developer-only",
-            """
-            po_plan_version: "0.1"
-            name: "developer plan"
-            tasks:
-              - id: t1
-                agent: developer
-                writes:
-                  - src/foo.py
-                prompt: "implement"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck" not in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# Group 2: R1 違反 — tdd-develop writes の不備を検出する
-# ---------------------------------------------------------------------------
-
-class TestR1Violation:
-    """tdd-develop task の writes が要件を満たさない場合、[PlannerCheck WARN] を出す。"""
-
-    def test_missing_test_file_path(self, tmp_path: Path) -> None:
-        """tests/ で始まるパスがなく test-report のみの場合。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "missing-test-path",
-            """
-            po_plan_version: "0.1"
-            name: "missing test file"
-            tasks:
-              - id: t1
-                agent: tdd-develop
-                writes:
-                  - .claude/reports/test-report-t1.md
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck WARN]" in result.stderr
-
-    def test_missing_test_report_path(self, tmp_path: Path) -> None:
-        """テストファイルパスはあるが test-report が writes に含まれない場合。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "missing-test-report",
-            """
-            po_plan_version: "0.1"
-            name: "missing test report"
-            tasks:
-              - id: t1
-                agent: tdd-develop
-                writes:
-                  - tests/hooks/test_something.py
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck WARN]" in result.stderr
-
-    def test_glob_in_test_file_path(self, tmp_path: Path) -> None:
-        """glob (*) を含む writes パスはエラー扱い。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "glob-in-writes",
-            """
-            po_plan_version: "0.1"
-            name: "glob in writes"
-            tasks:
-              - id: t1
-                agent: tdd-develop
-                writes:
-                  - tests/hooks/test_*.py
-                  - .claude/reports/test-report-t1.md
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck WARN]" in result.stderr
-
-    def test_glob_in_test_report_path(self, tmp_path: Path) -> None:
-        """test-report パスに glob (*) が混入している場合もエラー扱い。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "glob-in-report",
-            """
-            po_plan_version: "0.1"
-            name: "glob in report"
-            tasks:
-              - id: t1
-                agent: tdd-develop
-                writes:
-                  - tests/hooks/test_something.py
-                  - .claude/reports/test-report-*.md
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck WARN]" in result.stderr
-
-    def test_empty_writes_list(self, tmp_path: Path) -> None:
-        """tdd-develop task の writes が空リストの場合。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "empty-writes",
-            """
-            po_plan_version: "0.1"
-            name: "empty writes"
-            tasks:
-              - id: t1
-                agent: tdd-develop
-                writes: []
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck WARN]" in result.stderr
-
-    def test_null_writes_field(self, tmp_path: Path) -> None:
-        """tdd-develop task の writes が null (キーのみ存在) の場合。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "null-writes",
-            """
-            po_plan_version: "0.1"
-            name: "null writes"
-            tasks:
-              - id: t1
-                agent: tdd-develop
-                writes: null
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 0
-        assert "[PlannerCheck WARN]" in result.stderr
-        assert "R1:" in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# Group 3: R2 正常 — code-reviewer/security-reviewer の writes がタスクID付き・タイムスタンプなし
+# Group 1: R2 正常 — code-reviewer/security-reviewer の writes がタスクID付き・タイムスタンプなし
 # ---------------------------------------------------------------------------
 
 class TestR2Pass:
@@ -373,7 +170,7 @@ class TestR2Pass:
 
 
 # ---------------------------------------------------------------------------
-# Group 4: R2 違反 — タイムスタンプ入りファイル名を検出する
+# Group 2: R2 違反 — タイムスタンプ入りファイル名を検出する
 # ---------------------------------------------------------------------------
 
 class TestR2Violation:
@@ -441,7 +238,7 @@ class TestR2Violation:
 
 
 # ---------------------------------------------------------------------------
-# Group 5: R3 違反 — _template/ パスを含む writes はブロック（exit 2）
+# Group 3: R3 違反 — _template/ パスを含む writes はブロック（exit 2）
 # ---------------------------------------------------------------------------
 
 class TestR3Block:
@@ -467,17 +264,17 @@ class TestR3Block:
         assert result.returncode == 2
         assert "[PlannerCheck BLOCK]" in result.stderr
 
-    def test_block_template_path_in_any_task(self, tmp_path: Path) -> None:
-        """tdd-develop task の writes でも _template/ があれば exit 2。"""
+    def test_block_template_path_in_tester_task(self, tmp_path: Path) -> None:
+        """tester task の writes でも _template/ があれば exit 2。"""
         report_path = _write_plan_report(
             tmp_path,
-            "tdd-template",
+            "tester-template",
             """
             po_plan_version: "0.1"
-            name: "tdd with template path"
+            name: "tester with template path"
             tasks:
               - id: t1
-                agent: tdd-develop
+                agent: tester
                 writes:
                   - tests/test_foo.py
                   - .claude/reports/test-report-t1.md
@@ -511,7 +308,7 @@ class TestR3Block:
 
 
 # ---------------------------------------------------------------------------
-# Group 6: R4 正常・違反 — 同一 writes パスを複数 task が宣言する場合
+# Group 4: R4 正常・違反 — 同一 writes パスを複数 task が宣言する場合
 # ---------------------------------------------------------------------------
 
 class TestR4:
@@ -606,7 +403,7 @@ class TestR4:
 
 
 # ---------------------------------------------------------------------------
-# Group 7: 対象外動作 — 検査をスキップして exit 0・stderr 空になるケース
+# Group 5: 対象外動作 — 検査をスキップして exit 0・stderr 空になるケース
 # ---------------------------------------------------------------------------
 
 class TestOutOfScope:

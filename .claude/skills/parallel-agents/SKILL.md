@@ -17,21 +17,11 @@ permission race の構造的修正（2026-05-11 PoC で 15 並列・101 tool 呼
 
 ---
 
-## 重要な制約: depth 1 制限
+## depth 1 制限について
 
-Claude Code のサブエージェントは **更にサブエージェントを spawn できない**（公式仕様 depth 1 制限）。これにより:
+Claude Code のサブエージェントは **更にサブエージェントを spawn できない**（公式仕様 depth 1 制限）。v2.1.0 時点で配布されている全 agent（`developer` / `tester` / `code-reviewer` / `security-reviewer` / `architect` / `interviewer` / `planner` / `doc-writer` / `systematic-debugger` / `project-setup`）は内部で Agent ツールを使わない設計のため、**すべて並列起動可能**。
 
-| agent 種別 | 並列起動可否 | 理由 |
-|---|---|---|
-| `developer` / `tester` / `code-reviewer` / `security-reviewer` 等 | **可** | 内部で Agent ツールを使わない |
-| `tdd-develop` | **不可** | 内部で tester / developer を Agent ツールで spawn する設計 |
-
-`tdd-develop` を含むタスクは次のいずれかで実行する:
-
-- **ペルソナ採用パターン**: 親 Claude が `.claude/agents/tdd-develop.md` を Read して直接実行（並列度 1）
-- **PO 委譲フォールバック**: `c3 po run-wave` で claude -p --agent 起動（v1.14.0 までの暫定）
-
-planner エージェントが plan-report を生成する時点で「tdd-develop を含む wave は 1 タスクのみ」と粒度を制御することが望ましい。
+将来的に「内部で Agent ツールを使う agent」を追加する場合は、その agent を含む wave のタスク数を 1 に絞る運用ガードが必要になる（v2.0.0 まで存在した `tdd-develop` agent はこのパターンだった）。
 
 ---
 
@@ -92,7 +82,7 @@ stdout の JSON 形式:
 
 セッションファイル（`.claude/memory/sessions/YYYYMMDD.tmp`）に未登録の場合のみ以下を追記:
 - 各 wave につき `- [ ] Wave {N} ({task_count} tasks, parallel={M})` を 1 行ずつ
-  - `M` は wave 内で `tdd-develop` 以外の並列化可能タスク数
+  - `M` は wave 内のタスク数（全 agent が並列起動可能）
 
 ---
 
@@ -104,15 +94,13 @@ stdout の JSON 形式:
 
 親 Claude が wave のタスク一覧を Markdown 表で提示する:
 
-| id | agent | parallelizable | read_only | writes |
-|---|---|---|---|---|
-| dev-login | developer | yes | false | src/auth/login.py |
-| dev-logout | developer | yes | false | src/auth/logout.py |
-| tdd-mfa | tdd-develop | **no (depth 1)** | false | src/auth/mfa.py |
+| id | agent | read_only | writes |
+|---|---|---|---|
+| test-login | tester | false | tests/auth/test_login.py, .claude/reports/test-report-test-login.md |
+| impl-login | developer | false | src/auth/login.py |
+| confirm-login | tester | false | .claude/reports/test-report-confirm-login.md |
 
-`parallelizable` は agent 名で判定:
-- `tdd-develop` → `no (depth 1)`
-- それ以外 → `yes`
+v2.1.0 以降、全 agent が並列起動可能のため `parallelizable` 列は省略する。
 
 ### 2-B: 実行可否をユーザーに確認する
 
@@ -121,7 +109,7 @@ AskUserQuestion ツール:
 ```json
 {
   "questions": [{
-    "question": "Wave {N} を実行してよいですか？並列度 {M}、tdd-develop {K} 件は逐次実行。",
+    "question": "Wave {N} を実行してよいですか？並列度 {M}。",
     "options": [
       { "label": "承認・進む", "description": "この wave を実行する" },
       { "label": "中断", "description": "ここで wave 実行を停止する。完了済みの wave はそのまま残る" }
@@ -132,20 +120,7 @@ AskUserQuestion ツール:
 
 「中断」の場合、セッションファイルの `## 試みたが失敗したアプローチ` に中断理由を追記してスキル終了。
 
-### 2-C: タスクを実行する
-
-タスクごとに分岐:
-
-#### 2-C-1: `agent == "tdd-develop"` のとき（ペルソナ採用パターン、並列度 1）
-
-depth 1 制限により Agent ツール起動不可。親 Claude が直接実行する:
-
-1. `.claude/agents/tdd-develop.md` を Read してペルソナを採用する
-2. `.claude/skills/worktree-tdd-workflow/SKILL.md` を Read して TDD ループ手順（tester→developer→tester）を取得する
-3. タスクの `prompt` を実装内容として、worktree-tdd-workflow/SKILL.md の Step 1〜4 を **親 Claude が直接** 実行する。tester / developer は Agent ツールでスポーン可能（親 Claude depth 0 から depth 1 として完結）
-4. ループ完了後、結果を 2-D の集約に渡す
-
-#### 2-C-2: それ以外（並列化対象、Agent ツール並列起動）
+### 2-C: タスクを実行する（並列起動）
 
 並列化可能タスクを **1 ターン内で複数 Agent ツール呼び出し** として発行する。並列度の上限は **デフォルト 5、上限 15**（PoC で検証済み）。タスク数がそれ以上なら 5 件ずつのバッチに分割する。
 
@@ -168,6 +143,8 @@ depth 1 制限により Agent ツール起動不可。親 Claude が直接実行
     - error_summary: {失敗時のエラー要約、無ければ「なし」}
     ```
     」
+  - **tester タスクの場合の追加注入**: 「`.claude/reports/test-report-{task_id}.md` を Write し、writes 宣言と一致させること」
+  - **developer タスクの場合の追加注入**: 「`.claude/reports/debug-needed-*.md` 出力で Stuck Signal を返してよい。systematic-debugger は親 Claude が後続 wave で呼ぶ」
 
 全タスクを 1 メッセージ内で発行したあと、各 Agent の完了通知が `<task-notification>` で順次届く。全件揃うまで待つ。
 
@@ -184,7 +161,7 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 
 ### 2-E: 失敗があったら方針を確認する
 
-並列タスクで 1 件以上失敗した場合（2-C-1 の tdd-develop が不合格の場合も含む）、AskUserQuestion で次を確認する:
+並列タスクで 1 件以上失敗した場合、AskUserQuestion で次を確認する（Green wave の失敗もここで吸収する）:
 
 ```json
 {
@@ -220,7 +197,6 @@ git checkout worktree-agent-{id2} -- src/auth/logout.py
 注意:
 - `writes` フィールドに列挙されたファイルのみを取り込む
 - worktree が touch したが本タスクの責務でない周辺ファイル（`CLAUDE.md` / `package.json` / `.claude/settings.local.json` / `.claude/reports/` 配下）は取り込まない
-- `tdd-develop` の場合は worktree-tdd-workflow.md 内で既に作業ツリーで実装されているため、追加の checkout は不要
 
 #### 2-F-2: 親 Claude が一括コミット
 
@@ -281,10 +257,10 @@ checkpoint の summary には KEEP ルール（設計判断・決定事項・解
 
 ---
 
-## PO 廃止移行期の注意（v1.12.0〜v2.0.0）
+## PO 廃止移行期の注意（v1.12.0〜v2.1.0）
 
 - 本 skill は v1.12.0 で導入された
 - v1.13.0 で `po-status` skill / `c3 status` CLI を削除
-- **v1.14.0 で `c3 po` CLI と `wave-execution` skill を削除し、Step 0/1 で `c3 plan validate` / `c3 plan waves`（純粋な YAML 検証 + DAG 分解、PO 非依存）に切り替えた**
+- v1.14.0 で `c3 po` CLI と `wave-execution` skill を削除し、Step 0/1 で `c3 plan validate` / `c3 plan waves`（純粋な YAML 検証 + DAG 分解、PO 非依存）に切り替えた
 - v2.0.0 で `parallel_orchestra` パッケージ本体を削除（互換破壊）
-- 詳細計画: `~/.claude/plans/atomic-foraging-sprout.md`
+- **v2.1.0 で `tdd-develop` agent と `worktree-tdd-workflow` skill を削除し、planner が 3-wave に分解する設計に統一**
