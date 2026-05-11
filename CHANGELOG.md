@@ -1,5 +1,57 @@
 # Changelog
 
+## [1.13.0] - 2026-05-11
+
+### 概要
+
+PO（Parallel Orchestra）段階的廃止計画の **Step 3**。`po-status` skill と `c3 status` CLI を削除し、PO 観測系の利用先導線を切る。`po_results` / `po_status` テーブル本体は schema.sql に残置 deprecation し、v2.0.0 で書き込み元（runner.py）が削除されるまでテーブル定義は残す（利用先 DB ファイルへの破壊的変更を回避するため）。
+
+`parallel-agents` skill（v1.12.0 で導入）は引き続き利用可能。本リリースは観測系の廃止のみで、並列実装機能には影響しない。
+
+### 削除
+
+| パス | 役割 |
+|---|---|
+| `.claude/skills/po-status/SKILL.md` | DuckDB の sqlite_scanner で `po_status` テーブルを参照していたリアルタイム可視化 skill。PO 廃止に伴い表示するものが無くなるため削除 |
+| `src/c3/cli_status.py` (395 LOC) | `c3 status` サブコマンド。`po_status` / `po_results` テーブルを ANSI 整形で表示していた |
+| `tests/test_cli_status.py` (8 ケース) | 上記 CLI の単体テスト |
+
+### 変更
+
+| パス | 内容 |
+|---|---|
+| `src/c3/cli.py` | `cli_status` の import / `register(sub)` 呼び出しを削除。サブコマンド一覧から `status` が消失 |
+
+### 残置（deprecation only）
+
+| 対象 | 理由 |
+|---|---|
+| `po_results` / `po_status` テーブル（schema.sql） | 利用先の既存 DB ファイルを破壊的変更しない方針。v1.14.0 までは `runner.py` の `record_task_results` / `upsert_po_status` 呼び出しが残り書き込みが続くため schema 定義も残す。v2.0.0 で `parallel_orchestra` パッケージ削除と同時にテーブル定義も削除予定 |
+
+### 影響範囲
+
+- `c3 status` を実行していたユーザー: `invalid choice: 'status' (choose from 'init', 'update', 'list-agents', 'list-skills', 'list-commands', 'doctor', 'po', 'tier')` で失敗する。PO 自体が廃止予定（v1.14.0）のため、後続のステップで `c3 po` も同様に削除される
+- po-status skill を呼び出していたユーザー: 該当 skill が `/agents` インターフェースに出なくなる。代替なし（PO 廃止に伴う観測対象消失のため）
+- DuckDB 経由で `c3.db` の `po_status` / `po_results` を直接クエリしていた外部ツール: テーブルは v2.0.0 まで残るので継続動作
+
+### 検証
+
+- `pytest tests/` 全体: **880 passed / 3 skipped**（v1.12.0 の 888 から `test_cli_status.py` 8 ケース削除分の減）
+- `c3 status` → `invalid choice` エラー（exit code 2、廃止確認）
+- `c3 doctor` exit 0、`parallel-orchestra: 1.13.0 (bundled)`
+- skill 一覧で `po-status` が消滅していることを確認
+
+### 次のステップ
+
+- **Step 4 (v1.14.0)**: `c3 po` CLI / `cli_po.py` / `src/c3/po/` 廃止、`wave-execution` skill 削除、`parallel-agents` Step 0/1 を親 Claude 自前ロジックに切り替え
+- **Step 5 (v2.0.0)**: `parallel_orchestra` パッケージ本体の削除（互換破壊）
+
+### 参考
+
+- 廃止計画: `~/.claude/plans/atomic-foraging-sprout.md`
+
+---
+
 ## [1.12.0] - 2026-05-11
 
 ### 概要
