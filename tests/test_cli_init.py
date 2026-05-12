@@ -8,12 +8,12 @@ from pathlib import Path
 from c3 import cli_init, cli_update
 
 
-def _run_init(target: Path, *, force: bool = False) -> int:
-    return cli_init.handle(argparse.Namespace(target=target, force=force))
+def _run_init(target: Path, *, force: bool = False, platform: str = "claude") -> int:
+    return cli_init.handle(argparse.Namespace(target=target, force=force, platform=platform))
 
 
-def _run_update(target: Path, *, dry_run: bool = False) -> int:
-    return cli_update.handle(argparse.Namespace(target=target, dry_run=dry_run))
+def _run_update(target: Path, *, dry_run: bool = False, platform: str = "claude") -> int:
+    return cli_update.handle(argparse.Namespace(target=target, dry_run=dry_run, platform=platform))
 
 
 def test_init_scaffolds_claude_dir(tmp_path: Path, capsys):
@@ -111,3 +111,84 @@ def test_init_excludes_personal_files(tmp_path: Path, monkeypatch):
     assert not (dest / "docs" / "decisions.md").exists()
     # The empty sessions/ dir is dropped (no .gitkeep was provided)
     assert not (dest / "memory" / "sessions").exists()
+
+
+def test_init_codex_scaffolds_adapter_without_moving_claude(tmp_path: Path):
+    rc = _run_init(tmp_path, platform="codex")
+    assert rc == 0
+
+    assert (tmp_path / ".claude" / "skills" / "start" / "SKILL.md").is_file()
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8").startswith(
+        "<!-- BEGIN C3 CODEX ADAPTER -->"
+    )
+    skill_text = (tmp_path / ".agents" / "skills" / "start" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "c3_ask_user_question" in skill_text
+    assert "subagents and the generated custom agents" in skill_text
+    assert "Get-Content -Encoding UTF8" in skill_text
+    assert (tmp_path / ".codex" / "agents" / "developer.toml").is_file()
+    config_text = (tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert 'args = ["-m", "c3.mcp_server"]' in config_text
+    assert "PYTHONPATH" in config_text
+
+
+def test_init_cursor_scaffolds_rule_and_mcp(tmp_path: Path):
+    rc = _run_init(tmp_path, platform="cursor")
+    assert rc == 0
+
+    assert (tmp_path / ".claude").is_dir()
+    rule = tmp_path / ".cursor" / "rules" / "c3-core.mdc"
+    assert "AskUserQuestion" in rule.read_text(encoding="utf-8")
+    mcp = tmp_path / ".cursor" / "mcp.json"
+    mcp_text = mcp.read_text(encoding="utf-8")
+    assert "c3.mcp_server" in mcp_text
+    assert "PYTHONPATH" in mcp_text
+
+
+def test_init_all_uses_existing_claude_when_adding_adapters(tmp_path: Path):
+    _run_init(tmp_path)
+    marker = tmp_path / ".claude" / "local.txt"
+    marker.write_text("local", encoding="utf-8")
+
+    rc = _run_init(tmp_path, platform="all")
+
+    assert rc == 0
+    assert marker.read_text(encoding="utf-8") == "local"
+    assert (tmp_path / "AGENTS.md").is_file()
+    assert (tmp_path / ".cursor" / "mcp.json").is_file()
+
+
+def test_update_codex_dry_run_reports_adapter_diff(tmp_path: Path, capsys):
+    _run_init(tmp_path)
+
+    rc = _run_update(tmp_path, platform="codex", dry_run=True)
+
+    assert rc == 0
+    assert "adapter file(s) would change" in capsys.readouterr().out
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_init_codex_refuses_unmanaged_existing_c3_mcp_table(tmp_path: Path, capsys):
+    _run_init(tmp_path)
+    config = tmp_path / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text("[mcp_servers.c3]\ncommand = \"custom\"\n", encoding="utf-8")
+
+    rc = _run_init(tmp_path, platform="codex")
+
+    assert rc == 1
+    assert "already defines [mcp_servers.c3]" in capsys.readouterr().err
+
+
+def test_update_codex_preserves_escaped_backslashes_in_managed_config(tmp_path: Path):
+    _run_init(tmp_path, platform="codex")
+    config = tmp_path / ".codex" / "config.toml"
+    original = config.read_text(encoding="utf-8")
+    assert "\\\\" in original
+
+    rc = _run_update(tmp_path, platform="codex")
+
+    assert rc == 0
+    updated = config.read_text(encoding="utf-8")
+    assert "\\\\" in updated

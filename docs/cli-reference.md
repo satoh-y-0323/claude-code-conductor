@@ -11,27 +11,29 @@ c3 --help       # サブコマンド一覧
 
 ## `c3 init`
 
-利用先プロジェクトに `.claude/` を展開する。
+利用先プロジェクトに `.claude/` を展開する。Codex/Cursor adapter を指定した場合も、`.claude/` は C3 の canonical source として展開される。
 
 ```bash
-c3 init [--force]
+c3 init [--force] [--platform claude|codex|cursor|all]
 ```
 
 | オプション | 内容 |
 |---|---|
 | `--force` | 既存ファイルを上書きする（通常はスキップ） |
+| `--platform` | 生成対象。既定は `claude`。`codex` は `AGENTS.md` / `.agents/skills/` / `.codex/`、`cursor` は `.cursor/` を追加 |
 
 ## `c3 update`
 
-`.claude/` をパッケージ最新版へ更新する。個人ファイル（`reports/`, `memory/sessions/` 等）はスキップ。
+`.claude/` と adapter 生成物をパッケージ最新版へ更新する。個人ファイル（`reports/`, `memory/sessions/` 等）はスキップ。
 
 ```bash
-c3 update [--dry-run]
+c3 update [--dry-run] [--platform claude|codex|cursor|all]
 ```
 
 | オプション | 内容 |
 |---|---|
 | `--dry-run` | 変更内容のプレビューのみ（実際には更新しない） |
+| `--platform` | 更新対象。既定は `claude` |
 
 ## `c3 list-agents` / `c3 list-skills`
 
@@ -47,13 +49,30 @@ c3 list-skills
 環境診断を実行する。
 
 ```bash
-c3 doctor
+c3 doctor [--platform claude|codex|cursor|all]
 ```
 
 確認項目:
 - `.claude/` ディレクトリの存在
 - `settings.json` の有効性
 - `claude` バイナリのパス
+- Codex adapter: `AGENTS.md`, `.agents/skills/`, `.codex/config.toml`, `.codex/agents/`
+- Cursor adapter: `.cursor/rules/c3-core.mdc`, `.cursor/mcp.json`
+
+## `c3 ask`
+
+Claude Code の `AskUserQuestion` 互換 schema を、Codex/Cursor adapter やターミナル fallback から利用する。
+
+```bash
+c3 ask --file question.json
+c3 ask --json '{"questions":[...]}' --response 1,3
+```
+
+| オプション | 内容 |
+|---|---|
+| `--file` / `--json` | `AskUserQuestion` と同じ `{ "questions": [...] }` 形式 |
+| `--response` | 非対話実行用。ラベルまたは 1 始まりの番号を指定。複数質問は `;` で区切る |
+| `--pretty` | JSON 出力を整形 |
 
 ## `c3 plan` — plan-report 検証 / wave 分解
 
@@ -95,6 +114,8 @@ c3 tier stats --recent N      # 直近 outcome の表示件数（デフォルト
 
 - `/init-session` / `/setup` / `/start` / `/develop` / `/code-review` / `/promote-pattern` / `/doc` / `/mcp-config` / `/extract-lib`
 - 詳細は [スキル一覧](skills.md) を参照
+
+Codex では `.agents/skills/` に生成された `$start` などの skills と `.codex/agents/` の custom agents を使う。Cursor では `.cursor/rules/c3-core.mdc` が `.claude/skills/` と `.claude/agents/` を参照する。
 
 ## 次に読むページ
 

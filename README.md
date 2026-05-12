@@ -143,9 +143,11 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | コマンド | 役割 |
 |---|---|
 | `c3 init` | 利用先プロジェクトに `.claude/` を展開する |
+| `c3 init --platform codex|cursor|all` | `.claude/` を canonical source にしたまま Codex/Cursor adapter を追加 |
 | `c3 update` | `.claude/` をパッケージ最新版へ更新する（個人ファイルはスキップ） |
 | `c3 list-agents` / `list-skills` | 設置済みアセットを一覧表示 |
-| `c3 doctor` | 環境診断（`.claude/`・settings.json・claude バイナリ） |
+| `c3 doctor` | 環境診断（`.claude/`・settings.json・claude バイナリ・adapter 生成物） |
+| `c3 ask` | Claude Code 以外で `AskUserQuestion` 互換の単一選択・複数選択を実行 |
 | `c3 plan validate <plan-report>` | plan-report の YAML フロントマターと agent 存在を検証 |
 | `c3 plan waves <plan-report>` | plan-report の wave 分解結果を JSON で出力 |
 
@@ -206,6 +208,15 @@ c3 init
 ```
 
 `c3 init` がパッケージに同梱された `.claude/` テンプレートをカレントディレクトリへコピーします。後日テンプレート側を更新したい場合は `c3 update` で差分のみ反映できます（`reports/` や `memory/sessions/` 等の個人ファイルは保持されます）。
+
+Codex/Cursor でも同じ C3 workflow を使う場合は、`.claude/` を動かさず adapter を追加します。
+
+```bash
+c3 init --platform codex   # AGENTS.md / .agents/skills / .codex を生成
+c3 init --platform cursor  # .cursor/rules / .cursor/mcp.json を生成
+```
+
+Codex/Cursor adapter は `.claude/skills` と `.claude/agents` を参照元にします。`AskUserQuestion` は MCP tool `c3_ask_user_question`、または fallback の `c3 ask` で単一選択・複数選択を維持します。Claude Code の `Agent` / `Skill` tool 前提は、Codex では `.codex/agents/` と `.agents/skills/`、Cursor では `.cursor/rules/c3-core.mdc` で読み替えます。
 
 **3. プロジェクトを Claude Code で開き、初期設定を行う**
 

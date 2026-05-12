@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "claude-code-conductor"
 dynamic = ["version"]
-description = "Multi-agent orchestration framework for Claude Code (C3)"
+description = "Multi-agent orchestration framework for Claude Code with Codex/Cursor adapters (C3)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
     { name = "satoh-y-0323" }
 ]
-keywords = ["claude", "claude-code", "agents", "orchestration", "tdd"]
+keywords = ["claude", "claude-code", "codex", "cursor", "agents", "orchestration", "tdd"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

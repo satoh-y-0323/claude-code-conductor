@@ -8,7 +8,9 @@ import sys
 from pathlib import Path
 
 from c3._excludes import should_skip
+from c3.adapters import print_adapter_actions, scaffold_adapters
 from c3.paths import templates_dir
+from c3.platforms import PLATFORM_CHOICES, expand_platforms
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -32,14 +34,25 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Destination directory (defaults to the current working directory)",
     )
+    parser.add_argument(
+        "--platform",
+        choices=PLATFORM_CHOICES,
+        default="claude",
+        help=(
+            "Target host adapter to initialize. Defaults to claude. "
+            "codex/cursor/all also scaffold .claude/ as the canonical C3 source."
+        ),
+    )
     parser.set_defaults(handler=handle)
 
 
 def handle(args: argparse.Namespace) -> int:
     target_root: Path = (args.target or Path.cwd()).resolve()
     dest = target_root / ".claude"
+    platforms = expand_platforms(args.platform)
+    adapter_platforms = tuple(p for p in platforms if p != "claude")
 
-    if dest.exists() and not args.force:
+    if dest.exists() and not args.force and platforms == ("claude",):
         print(
             f"refusing to overwrite existing directory: {dest}\n"
             "Pass --force to overwrite or run `c3 update` for a diff-aware merge.",
@@ -48,12 +61,23 @@ def handle(args: argparse.Namespace) -> int:
         return 1
 
     template = templates_dir()
-    if dest.exists() and args.force:
+    if dest.exists() and args.force and "claude" in platforms:
         shutil.rmtree(dest)
 
     target_root.mkdir(parents=True, exist_ok=True)
-    copied = _copytree(template, dest)
-    print(f"initialized {dest} ({copied} files copied)")
+    if not dest.exists():
+        copied = _copytree(template, dest)
+        print(f"initialized {dest} ({copied} files copied)")
+    elif "claude" in platforms:
+        print(f"using existing {dest}")
+
+    if adapter_platforms:
+        try:
+            actions = scaffold_adapters(target_root, adapter_platforms)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"adapter init failed: {exc}", file=sys.stderr)
+            return 1
+        print_adapter_actions(actions)
     return 0
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from c3._terminal import supports_color as _supports_color
 from c3.paths import claude_root_for
+from c3.platforms import PLATFORM_CHOICES, expand_platforms
 
 _OK = "OK"
 _WARN = "WARN"
@@ -25,16 +26,28 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Print only failures and warnings",
     )
+    parser.add_argument(
+        "--platform",
+        choices=PLATFORM_CHOICES,
+        default="claude",
+        help="Target host diagnostics to run. Defaults to claude.",
+    )
     parser.set_defaults(handler=handle)
 
 
 def handle(args: argparse.Namespace) -> int:
     color = _supports_color()
     findings: list[tuple[str, str, str]] = []  # (status, label, detail)
+    platforms = expand_platforms(args.platform)
 
     findings.append(_check_claude_dir())
-    findings.append(_check_settings_json())
-    findings.append(_check_claude_binary())
+    if "claude" in platforms:
+        findings.append(_check_settings_json())
+        findings.append(_check_claude_binary())
+    if "codex" in platforms:
+        findings.extend(_check_codex_adapter())
+    if "cursor" in platforms:
+        findings.extend(_check_cursor_adapter())
 
     exit_code = 0
     for status, label, detail in findings:
@@ -81,6 +94,56 @@ def _check_claude_binary() -> tuple[str, str, str]:
             "not on PATH; install Claude Code CLI before invoking c3 skills",
         )
     return _OK, "claude binary", path
+
+
+def _check_codex_adapter() -> list[tuple[str, str, str]]:
+    root = claude_root_for(Path.cwd())
+    if root is None:
+        return [(_WARN, "codex adapter", "skipped (.claude/ not found)")]
+    findings = []
+    agents = root / "AGENTS.md"
+    skills = root / ".agents" / "skills"
+    config = root / ".codex" / "config.toml"
+    custom_agents = root / ".codex" / "agents"
+    findings.append(_file_or_warn("AGENTS.md", agents, "run `c3 init --platform codex`"))
+    findings.append(_dir_or_warn(".agents/skills", skills, "run `c3 init --platform codex`"))
+    findings.append(_file_or_warn(".codex/config.toml", config, "run `c3 init --platform codex`"))
+    findings.append(_dir_or_warn(".codex/agents", custom_agents, "run `c3 init --platform codex`"))
+    codex = shutil.which("codex")
+    if codex is None:
+        findings.append((_WARN, "codex binary", "not on PATH; install Codex CLI to use the adapter"))
+    else:
+        findings.append((_OK, "codex binary", codex))
+    return findings
+
+
+def _check_cursor_adapter() -> list[tuple[str, str, str]]:
+    root = claude_root_for(Path.cwd())
+    if root is None:
+        return [(_WARN, "cursor adapter", "skipped (.claude/ not found)")]
+    findings = []
+    rule = root / ".cursor" / "rules" / "c3-core.mdc"
+    mcp = root / ".cursor" / "mcp.json"
+    findings.append(_file_or_warn(".cursor/rules/c3-core.mdc", rule, "run `c3 init --platform cursor`"))
+    findings.append(_file_or_warn(".cursor/mcp.json", mcp, "run `c3 init --platform cursor`"))
+    cursor = shutil.which("cursor-agent") or shutil.which("cursor")
+    if cursor is None:
+        findings.append((_WARN, "cursor binary", "not on PATH; install Cursor CLI/editor to use the adapter"))
+    else:
+        findings.append((_OK, "cursor binary", cursor))
+    return findings
+
+
+def _file_or_warn(label: str, path: Path, hint: str) -> tuple[str, str, str]:
+    if path.is_file():
+        return _OK, label, str(path)
+    return _WARN, label, f"missing at {path}; {hint}"
+
+
+def _dir_or_warn(label: str, path: Path, hint: str) -> tuple[str, str, str]:
+    if path.is_dir():
+        return _OK, label, str(path)
+    return _WARN, label, f"missing at {path}; {hint}"
 
 
 def _format(status: str, label: str, detail: str, *, color: bool) -> str:

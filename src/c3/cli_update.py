@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 
 from c3._excludes import should_skip
+from c3.adapters import print_adapter_actions, scaffold_adapters
 from c3.paths import templates_dir
+from c3.platforms import PLATFORM_CHOICES, expand_platforms
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -34,11 +36,18 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Destination directory (defaults to the current working directory)",
     )
+    parser.add_argument(
+        "--platform",
+        choices=PLATFORM_CHOICES,
+        default="claude",
+        help="Target host adapter to update. Defaults to claude.",
+    )
     parser.set_defaults(handler=handle)
 
 
 def handle(args: argparse.Namespace) -> int:
     target_root: Path = (args.target or Path.cwd()).resolve()
+    platforms = expand_platforms(args.platform)
     dest = target_root / ".claude"
     if not dest.is_dir():
         print(
@@ -48,27 +57,46 @@ def handle(args: argparse.Namespace) -> int:
         )
         return 1
 
-    template = templates_dir()
-    actions = list(_walk_diff(template, dest))
-    if not actions:
+    changed = 0
+    if "claude" in platforms:
+        template = templates_dir()
+        actions = list(_walk_diff(template, dest))
+        changed += len(actions)
+
+        if args.dry_run:
+            if actions:
+                print(f"{len(actions)} file(s) would change:")
+                for action, path in actions:
+                    print(f"  {action}: {path.relative_to(dest)}")
+            else:
+                print("claude template up to date")
+        else:
+            for action, abs_path in actions:
+                rel = abs_path.relative_to(dest)
+                src = template / rel
+                if action == "add" or action == "update":
+                    abs_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, abs_path)
+                    print(f"  {action}: {rel}")
+
+    adapter_platforms = tuple(p for p in platforms if p != "claude")
+    if adapter_platforms:
+        try:
+            adapter_actions = scaffold_adapters(
+                target_root,
+                adapter_platforms,
+                dry_run=args.dry_run,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"adapter update failed: {exc}", file=sys.stderr)
+            return 1
+        changed += len(adapter_actions)
+        print_adapter_actions(adapter_actions, dry_run=args.dry_run)
+
+    if changed == 0:
         print("up to date")
-        return 0
-
-    if args.dry_run:
-        print(f"{len(actions)} file(s) would change:")
-        for action, path in actions:
-            print(f"  {action}: {path.relative_to(dest)}")
-        return 0
-
-    for action, abs_path in actions:
-        rel = abs_path.relative_to(dest)
-        src = template / rel
-        if action == "add" or action == "update":
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, abs_path)
-            print(f"  {action}: {rel}")
-
-    print(f"{len(actions)} file(s) updated")
+    elif not args.dry_run:
+        print(f"{changed} file(s) updated")
     return 0
 
 
