@@ -309,7 +309,7 @@ Copy-Item -Recurse claude-code-conductor\.claude your-project\
 2. `/develop` を起動 → **D-0** で plan-report のフロントマターを自動検出し `parallel-agents` skill へ切り替わる
 3. C3 が `c3 plan validate` でマニフェスト妥当性を検証、wave ごとにユーザー承認を取りながら Agent ツールで並列実行します
 
-TDD を伴う機能実装は、planner が「test- → impl- → confirm-」の 3 タスクペアに分解し、各 wave 内で独立機能間で並列起動されます（v2.1.0+、旧 `tdd-develop` agent はこのリリースで廃止）。
+TDD を伴う機能実装は、planner が「test- → impl- → confirm-」の 3 タスクペアに分解し、各 wave 内で独立機能間で並列起動されます。並列実行時は worktree 専用の `wt_tester` / `wt_developer` / `wt_systematic-debugger` agent が使用され、レポートは `task_id` ベースのファイル名で出力されます。
 
 ---
 
