@@ -1,4 +1,4 @@
-"""Tests for F-005 Phase 2-C: similarity-based complexity boost.
+"""Tests for tier-routing Phase 2-C: similarity-based complexity boost.
 
 検証対象:
   - .claude/hooks/select_tier.py の similarity_boost / _read_prompt_history /

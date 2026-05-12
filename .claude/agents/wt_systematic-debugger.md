@@ -3,7 +3,7 @@ name: wt_systematic-debugger
 model: sonnet
 memory: project
 permissionMode: bypassPermissions
-description: 並列 worktree 専用 systematic-debugger。parallel-agents skill が isolation:"worktree" 付きで起動する用途。本文は systematic-debugger.md と同一。permission プロンプトを worktree 内でスキップする。
+description: 並列 worktree 専用 systematic-debugger。parallel-agents skill が isolation:"worktree" 付きで起動する用途。debug-analysis のファイル名を task_id ベースにし、permission プロンプトを worktree 内でスキップする。
 tools:
   - Read
   - Write
@@ -85,9 +85,9 @@ developer が詰まった問題の根本原因を調査し、debug-analysis-repo
 
 ### Step 4: debug-analysis-report の出力
 
-Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得する。
+**必ず** プロンプトで指定された `task_id` をもとに `.claude/reports/debug-analysis-{task_id}.md` に Write する。これは `parallel-agents` skill の `writes` 宣言と一致させ、並列実行時のファイル名衝突を避けるために必須。
 
-`.claude/reports/debug-analysis-{timestamp}.md` を Write する。
+保険（task_id がプロンプトから読み取れない異常系のみ）: Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、`.claude/reports/debug-analysis-{timestamp}.md` を Write する。通常運用ではこの経路に入ってはいけない。
 
 レポートの構成:
 

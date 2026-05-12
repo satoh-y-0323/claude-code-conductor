@@ -13,10 +13,3 @@ plan-report に基づいて実装フェーズを実行する。
 3. `.claude/skills/dev-workflow/SKILL.md` の AskUserQuestion・Edit・セッションファイル更新の手順を省略しない
 4. D-0 で plan-report に YAML フロントマター（`po_plan_version`）が検出された場合は、続けて **必ず** `.claude/skills/parallel-agents/SKILL.md` を Read してその手順に従う（親 Claude の Agent ツール並列起動 + 公式 `isolation:worktree`）
 5. フロントマターが無い場合は legacy の D-1〜D-5 ceremony（tester→developer→tester の TDD 逐次実行）にフォールバックする
-
-## 移行注意（v1.12.0+）
-
-- v1.12.0 で並列実行レイヤを PO（Parallel Orchestra）から `parallel-agents` skill に切り替えた
-- v1.14.0 で旧 `wave-execution.md` 経由の PO 委譲を削除
-- v2.0.0 で `parallel_orchestra` パッケージ本体を削除
-- v2.1.0 で `tdd-develop` agent と `worktree-tdd-workflow` skill を廃止し、planner が TDD を 3-wave (Red tester / Green developer / Green 確認 tester) に分解する設計に統一

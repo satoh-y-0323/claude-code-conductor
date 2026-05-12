@@ -38,7 +38,7 @@ def _is_rm_rf(tokens: list[str], rm_idx: int) -> bool:
     return has_r and has_f
 
 
-# 秘密情報パターン (F-006)
+# 秘密情報パターン (secret-scan)
 # 検出値そのものは警告に含めない（二次漏洩防止）。パターン名のみを返す。
 # 初期パターンは「= で続く値」を必須とすることで、シェルコメント
 # （# password reset 等）の誤爆を回避する。
@@ -104,7 +104,7 @@ def main():
                 print(f'[PreToolUse BLOCK] 危険なコマンドをブロックしました: {cmd_preview}', file=sys.stderr)
                 sys.exit(2)
 
-    # 秘密情報の代入を検出: ブロック (F-006)
+    # 秘密情報の代入を検出: ブロック (secret-scan)
     # bypass: C3_SKIP_SECRET_CHECK=1 で検出をスキップ（誤爆時の逃げ道）
     if os.environ.get('C3_SKIP_SECRET_CHECK') != '1':
         is_secret, pattern_name = _contains_secret(cmd)

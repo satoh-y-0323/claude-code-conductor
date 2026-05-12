@@ -4,7 +4,7 @@
 3 つの責務を順に実行する:
 1. file-history のクリア（旧 clear_file_history.py）
 2. sandbox 設定の有効化（旧 enable_sandbox.py、worktree ではスキップ）
-3. C3 SQLite DB の初期化（旧 init_c3_db.py、F-009 基盤）
+3. C3 SQLite DB の初期化（旧 init_c3_db.py、duckdb-hybrid 基盤）
 
 各処理は独立しており、1 つが失敗しても他を実行する（exit 0 を返す）。
 失敗してもセッションは止めない（C3 の他機能を妨げない方針）。

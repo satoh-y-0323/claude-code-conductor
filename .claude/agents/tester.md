@@ -59,7 +59,6 @@ tools:
 
 ## Tools & Constraints
 制限: プロダクションコードのソースファイルを編集・書き込みしない
-必須: Skill ツールで `report-timestamp` を呼び出しタイムスタンプを取得し、test-report を `.claude/reports/test-report-{timestamp}.md` に Write すること（出力なしでの終了は不可）
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）

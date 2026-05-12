@@ -1,6 +1,6 @@
 """Tests for .claude/hooks/record_tier_outcome.py
 
-F-005 MVP: Tier outcome 記録 CLI の検証。
+tier-routing MVP: Tier outcome 記録 CLI の検証。
 
 テストケース:
   1. tier_selection.json があり、--outcome success で α+=1、json は削除される

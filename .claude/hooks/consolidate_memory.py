@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stop hook: consolidate the last N days of session memory into a summary.
 
-F-004 MVP: 過去 N 日分の `.claude/memory/sessions/YYYYMMDD.tmp` から
+memory-consolidation MVP: 過去 N 日分の `.claude/memory/sessions/YYYYMMDD.tmp` から
 - ``## うまくいったアプローチ``
 - ``## 試みたが失敗したアプローチ``
 の各セクションを集約し、`.claude/memory/consolidated_summary.md` に出力する。
@@ -47,7 +47,7 @@ except AttributeError:
 # 集約ウィンドウ（直近何日分の session ファイルを対象にするか）
 DEFAULT_WINDOW_DAYS = 7
 
-# F-004 Phase 2-A: archive 機能の生存期間（日）。
+# memory-consolidation Phase 2-A: archive 機能の生存期間（日）。
 # DEFAULT_WINDOW_DAYS の 3 倍。要約ウィンドウから外れた直後すぐに archive せず、
 # 過去サマリ再生成のための猶予を確保する。
 # 環境変数 ``C3_CONSOLIDATE_ARCHIVE_TTL_DAYS`` で上書き可能。
@@ -56,7 +56,7 @@ DEFAULT_ARCHIVE_TTL_DAYS = DEFAULT_WINDOW_DAYS * 3
 # 出力先（プロジェクトローカル）
 OUTPUT_FILE_NAME = "consolidated_summary.md"
 
-# F-004 Phase 2-B: 半自動 promotion 候補ログの出力ファイル名
+# memory-consolidation Phase 2-B: 半自動 promotion 候補ログの出力ファイル名
 PROMOTION_CANDIDATES_FILE_NAME = "promotion-candidates.md"
 
 # 候補ログの description 列の最大文字数（表セルの可読性確保）
@@ -65,7 +65,7 @@ _PROMOTION_DESC_MAX_LEN = 80
 # 候補ログの ID 列の最大文字数（表セル幅を抑える、id が極端に長い場合の保険）
 _PROMOTION_CID_MAX_LEN = 60
 
-# F-004 Phase 2-C: LLM 要約パラメータ
+# memory-consolidation Phase 2-C: LLM 要約パラメータ
 # LLM プロンプトに渡す入力テキストの最大文字数（「うまくいった」「失敗した」各セクション合計）
 _LLM_INPUT_MAX_CHARS = 6000
 # LLM 応答の最大文字数（超過時は末尾を切り詰めマーカーで上書き）
@@ -97,7 +97,7 @@ LOCK_STALE_SEC = 120
 # `--llm-only` モードのフラグ
 LLM_ONLY_FLAG = "--llm-only"
 
-# F-004 消費側: CLAUDE.md @include 用の小ファイル（LLM 要約セクションのみ抽出）。
+# memory-consolidation 消費側: CLAUDE.md @include 用の小ファイル（LLM 要約セクションのみ抽出）。
 # 毎セッション開始時に Claude のコンテキストに自動注入されるため、
 # サイズを LLM 要約の最大 4KB 程度に抑える。
 LLM_SUMMARY_FILE_NAME = "llm_summary.md"
@@ -232,11 +232,11 @@ def write_summary(
 ) -> bool:
     """集約サマリを生成して指定パスに書き出す。
 
-    F-004 Phase 2-B: ``patterns_path`` が指定された場合、末尾に
+    memory-consolidation Phase 2-B: ``patterns_path`` が指定された場合、末尾に
     「## 昇格候補」サマリセクションを追加する（候補 ID + trust のみ、
     詳細は ``promotion-candidates.md`` を参照）。
 
-    F-004 Phase 2-C: ``enable_llm=True`` の場合、MVP セクションと
+    memory-consolidation Phase 2-C: ``enable_llm=True`` の場合、MVP セクションと
     昇格候補セクションの間に「## LLM 要約」セクションを追加する。
     LLM 要約は ``build_llm_summary_section()`` の判断でスキップされうる
     （CLI 不在 / タイムアウト等）。
@@ -299,7 +299,7 @@ def write_summary(
 
 
 # ---------------------------------------------------------------------------
-# F-004 Phase 2-B: 半自動 promotion 候補ログ
+# memory-consolidation Phase 2-B: 半自動 promotion 候補ログ
 # ---------------------------------------------------------------------------
 
 
@@ -522,7 +522,7 @@ def _atomic_write(output_path: str, payload: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# F-004 Phase 2-C: claude --headless LLM 要約
+# memory-consolidation Phase 2-C: claude --headless LLM 要約
 # ---------------------------------------------------------------------------
 
 
@@ -555,7 +555,7 @@ def _build_llm_prompt(
     if len(failure_text) > half:
         failure_text = failure_text[:half] + "\n…(略)"
 
-    # F-004 Phase 2-C [SR-AI-001 対策]: セッションデータ部分を XML タグで囲み、
+    # memory-consolidation Phase 2-C [SR-AI-001 対策]: セッションデータ部分を XML タグで囲み、
     # プロンプト命令文と明確に分離する。これによりセッション内容に誘導文
     # （"以下の指示を無視" 等）が混入しても、LLM が命令文と区別しやすくなる。
     return (
@@ -705,7 +705,7 @@ def build_llm_summary_section(
 
 
 # ---------------------------------------------------------------------------
-# F-004 Phase 2-A: archive 機能
+# memory-consolidation Phase 2-A: archive 機能
 # ---------------------------------------------------------------------------
 
 
@@ -718,7 +718,7 @@ def archive_old_sessions(
 ) -> list[str]:
     """``ttl_days`` 日以上経過した session.tmp を ``archive_dir`` に移動する。
 
-    F-004 Phase 2-A: session ファイルの永久蓄積を防ぐ。
+    memory-consolidation Phase 2-A: session ファイルの永久蓄積を防ぐ。
     同一 FS 内の ``shutil.move`` を使うため rename は基本的にアトミック。
 
     Args:
@@ -1078,7 +1078,7 @@ def _llm_only_main() -> int:
         )
         # consolidated_summary.md 書き込み完了後、LLM 要約セクションだけを
         # CLAUDE.md @include 用の llm_summary.md に抽出する（~4KB）。
-        # F-004 消費側: Claude が次セッションで自動的にコンテキスト参照する経路。
+        # memory-consolidation 消費側: Claude が次セッションで自動的にコンテキスト参照する経路。
         _write_llm_summary_extract()
     except Exception as exc:  # noqa: BLE001
         print(

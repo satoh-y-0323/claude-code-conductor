@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI: record a review decision in c3.db.review_decisions.
 
-F-001: dev-workflow フェーズ E でユーザーが「対応 / 許容 / 保留」を選んだ
+review-hint: dev-workflow フェーズ E でユーザーが「対応 / 許容 / 保留」を選んだ
 判断を SQLite に記録するための薄い CLI ラッパー。実装本体は
 ``c3.db.insert_review_decision``。
 

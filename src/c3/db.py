@@ -1,13 +1,13 @@
 """C3 SQLite write/read helpers.
 
-F-001: review_decisions の INSERT / SELECT ヘルパー（review_hint_inject.py から利用）。
-F-005: tier_bandit / tier_recent_outcomes ヘルパー（select_tier.py / record_tier_outcome.py から）。
+review-hint: review_decisions の INSERT / SELECT ヘルパー（review_hint_inject.py から利用）。
+tier-routing: tier_bandit / tier_recent_outcomes ヘルパー（select_tier.py / record_tier_outcome.py から）。
 
 DB が見つからない場合・書き込みエラー時は静かにスキップし、呼び出し側の本体は
 止めない（観測機能の失敗で全体を止めない方針）。
 
 書き込みは Python 標準の `sqlite3` で行う（WAL モード）。
-読み・分析は別途 DuckDB の sqlite_scanner で ATTACH する想定（F-009 と整合）。
+読み・分析は別途 DuckDB の sqlite_scanner で ATTACH する想定（duckdb-hybrid と整合）。
 
 履歴: v1.11.0 までは `src/parallel_orchestra/c3_db.py` に置かれていたが、
 PO 廃止計画（plan: atomic-foraging-sprout）の Step 1 で本ファイルに物理移動し、
@@ -77,7 +77,7 @@ def locate_c3_db(start: Path | None = None) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# F-001: review_decisions ヘルパー
+# review-hint: review_decisions ヘルパー
 # ---------------------------------------------------------------------------
 
 
@@ -211,7 +211,7 @@ def aggregate_decisions(rows: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# F-005: tier_bandit ヘルパー（Tier 自動ルーティング Thompson Sampling）
+# tier-routing: tier_bandit ヘルパー（Tier 自動ルーティング Thompson Sampling）
 # ---------------------------------------------------------------------------
 
 # 学習対象の Tier 一覧（schema.sql のコメントと整合）

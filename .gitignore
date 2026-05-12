@@ -15,9 +15,6 @@
 # Agent-individual memory (personal, populated at runtime)
 .claude/agent-memory/
 
-# Workflow test sandbox (not for distribution)
-examples/
-
 # Temporary files
 .claude/tmp/
 

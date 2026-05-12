@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI: record the outcome of the previously-selected tier in tier_bandit.
 
-F-005 MVP: dev-workflow フェーズ E の承認/否認シグナルを受けて、
+tier-routing MVP: dev-workflow フェーズ E の承認/否認シグナルを受けて、
 ``select_tier.py`` が直近に書いた ``.claude/state/tier_selection.json`` を
 読み、対応する Tier の (alpha, beta, trials) を ``tier_bandit`` テーブルで
 更新する。
@@ -119,7 +119,7 @@ def _append_prompt_history(selection: dict, success: bool) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Record tier outcome for F-005 Thompson Sampling"
+        description="Record tier outcome for tier-routing Thompson Sampling"
     )
     parser.add_argument(
         "--outcome",

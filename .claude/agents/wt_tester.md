@@ -3,7 +3,7 @@ name: wt_tester
 model: sonnet
 memory: project
 permissionMode: bypassPermissions
-description: 並列 worktree 専用 tester。parallel-agents skill が isolation:"worktree" 付きで起動する用途。本文は tester.md と同一。permission プロンプトを worktree 内でスキップする。
+description: 並列 worktree 専用 tester。parallel-agents skill が isolation:"worktree" 付きで起動する用途。test-report のファイル名を task_id ベースにし、permission プロンプトを worktree 内でスキップする。
 tools:
   - Read
   - Write
@@ -58,13 +58,13 @@ tools:
 - テスト結果は合格・不合格・スキップの件数を記録する
 
 **After:**
-- **必ず** Skill ツールで `report-timestamp` を呼び出しタイムスタンプを取得し、`.claude/reports/test-report-YYYYMMDD-HHMMSS.md` に Write して出力する
+- **必ず** プロンプトで指定された `task_id` をもとに `.claude/reports/test-report-{task_id}.md` に Write して出力する。これは `parallel-agents` skill の `writes` 宣言と一致させ、並列実行時のファイル名衝突を避けるために必須
+- 保険（task_id がプロンプトから読み取れない異常系のみ）: Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、`.claude/reports/test-report-{timestamp}.md` に Write する。通常運用ではこの経路に入ってはいけない
 - test-report を Write せずにターンを終了することは禁止
 - Red フェーズの test-report には失敗理由（機能未実装による失敗であること）を明記する
 
 ## Tools & Constraints
 制限: プロダクションコードのソースファイルを編集・書き込みしない
-必須: Skill ツールで `report-timestamp` を呼び出しタイムスタンプを取得し、test-report を `.claude/reports/test-report-{timestamp}.md` に Write すること（出力なしでの終了は不可）
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）

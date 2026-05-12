@@ -73,7 +73,7 @@ c3 plan waves    <plan-report>        # wave 分解結果を JSON 出力
 
 ## `c3 tier stats` — Tier ルーティング統計
 
-F-005 の効果計測用 CLI。`.claude/state/c3.db` の `tier_bandit` / `tier_recent_outcomes` を可視化。
+tier-routing の効果計測用 CLI。`.claude/state/c3.db` の `tier_bandit` / `tier_recent_outcomes` を可視化。
 
 ```bash
 c3 tier stats                 # 累積 + 直近 outcome を表形式表示

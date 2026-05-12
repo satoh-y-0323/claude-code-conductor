@@ -115,7 +115,7 @@ class TestCreateSessionTemplate:
         assert "<!-- C3:SESSION:JSON" in result
 
     def test_contains_task_type_line(self):
-        """返り値に TASK_TYPE: 行（空欄）が含まれる。F-010 Phase 2: /start Step 0.5 で埋める。"""
+        """返り値に TASK_TYPE: 行（空欄）が含まれる。task-routing Phase 2: /start Step 0.5 で埋める。"""
         module = _load_module()
         result = module.create_session_template("20260505")
         assert "TASK_TYPE: \n" in result

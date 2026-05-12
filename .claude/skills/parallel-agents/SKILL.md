@@ -30,7 +30,7 @@ Claude Code のサブエージェントは **更にサブエージェントを s
 並列実行で permission プロンプトに詰まらないよう、v2.2.0 から **worktree 専用の `wt_*` プレフィックス agent** を導入した:
 
 - `wt_tester` / `wt_developer` / `wt_systematic-debugger`: frontmatter に `permissionMode: bypassPermissions` を持つ並列専用バリアント
-- 内容はオリジナルの `tester` / `developer` / `systematic-debugger` と同一
+- 本体ロジックはオリジナルの `tester` / `developer` / `systematic-debugger` と同等。差分はレポート出力のファイル名規約のみで、並列専用 agent は `test-report-{task_id}.md` / `debug-needed-{task_id}.md` / `debug-analysis-{task_id}.md` を主経路とする（タイムスタンプ形式は task_id 不在時の保険）
 - worktree 内のみで動作するため、`worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) が worktree 外への書き込みをブロックする保護下にある
 
 直接起動経路（worktree なし）では元の agent を使い、main リポジトリでの bypass を防ぐ。
@@ -165,7 +165,8 @@ AskUserQuestion ツール:
     ```
     」
   - **tester タスクの場合の追加注入**: 「`.claude/reports/test-report-{task_id}.md` を Write し、writes 宣言と一致させること」
-  - **developer タスクの場合の追加注入**: 「`.claude/reports/debug-needed-*.md` 出力で Stuck Signal を返してよい。systematic-debugger は親 Claude が後続 wave で呼ぶ」
+  - **developer タスクの場合の追加注入**: 「Stuck Signal を返す場合は `.claude/reports/debug-needed-{task_id}.md` を Write する（task_id を含めることで親 Claude が後続 wave で systematic-debugger を呼ぶ際に対象 task を特定できる）。systematic-debugger は親 Claude が後続 wave で呼ぶ」
+  - **systematic-debugger タスクの場合の追加注入**: 「`.claude/reports/debug-analysis-{task_id}.md` を Write し、writes 宣言と一致させること」
 
 全タスクを 1 メッセージ内で発行したあと、各 Agent の完了通知が `<task-notification>` で順次届く。全件揃うまで待つ。
 
@@ -276,13 +277,3 @@ checkpoint の summary には KEEP ルール（設計判断・決定事項・解
 - agent ツール並列起動の `<task-notification>` の到着順序は保証されないため、結果集約の表は task_id でソートして提示する
 - worktree クリーンアップを忘れると `.claude/worktrees/` に dead worktree が積もる。`-f -f` フラグの必要性は PoC で実証済み
 
----
-
-## PO 廃止移行期の注意（v1.12.0〜v2.2.0）
-
-- 本 skill は v1.12.0 で導入された
-- v1.13.0 で `po-status` skill / `c3 status` CLI を削除
-- v1.14.0 で `c3 po` CLI と `wave-execution` skill を削除し、Step 0/1 で `c3 plan validate` / `c3 plan waves`（純粋な YAML 検証 + DAG 分解、PO 非依存）に切り替えた
-- v2.0.0 で `parallel_orchestra` パッケージ本体を削除（互換破壊）
-- v2.1.0 で `tdd-develop` agent と `worktree-tdd-workflow` skill を削除し、planner が 3-wave に分解する設計に統一
-- **v2.2.0 で並列 worktree 専用の `wt_*` プレフィックス agent (`wt_tester` / `wt_developer` / `wt_systematic-debugger`) を導入。frontmatter `permissionMode: bypassPermissions` で permission プロンプトをスキップ。直接起動経路では元 agent を維持して main の bypass を防ぐ**

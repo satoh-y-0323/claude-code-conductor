@@ -1,4 +1,4 @@
-"""Tests for F-005 Phase 2-B: failure rate ベースの Tier escalation。
+"""Tests for tier-routing Phase 2-B: failure rate ベースの Tier escalation。
 
 検証対象:
   - src/c3/db.py の record_tier_recent_outcome / read_tier_failure_rate

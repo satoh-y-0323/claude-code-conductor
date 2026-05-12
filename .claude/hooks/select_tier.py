@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: recommend an LLM Tier (haiku/sonnet/opus) for the prompt.
 
-F-005 MVP: タスクの複雑度を簡易ヒューリスティックで推定し、Thompson Sampling
+tier-routing MVP: タスクの複雑度を簡易ヒューリスティックで推定し、Thompson Sampling
 （または学習データ収集期は uniform random）で推奨 Tier を決定して
 ``additionalContext`` で親 Claude に伝える。
 
@@ -288,11 +288,11 @@ def write_tier_selection(
     record_tier_outcome.py がこの json を読んで α/β を更新する。
     既存ファイルは上書きされる（最新 1 件のみ保持）。
 
-    F-005 Phase 2-A: ``suggested_model`` も併せて書く。runner.py がこれを読んで
+    tier-routing Phase 2-A: ``suggested_model`` も併せて書く。runner.py がこれを読んで
     PO 経由のサブエージェント起動時に ``claude --agents`` で動的に上書きする。
     tier 名と model の短縮名は同一とする。
 
-    F-005 Phase 2-B: ``escalated`` / ``escalation_reason`` を任意で含める。
+    tier-routing Phase 2-B: ``escalated`` / ``escalation_reason`` を任意で含める。
     failure rate に基づく昇格が起きた場合のみ True / 文字列が入る。
     """
     os.makedirs(os.path.dirname(TIER_SELECTION_PATH), exist_ok=True)
@@ -345,7 +345,7 @@ def build_additional_context(
         suffix += f" [複雑度判定: {complexity_source}]"
 
     return (
-        f"[F-005 Tier 推奨] 複雑度: {complexity} / 推奨 Tier: {tier}（{confidence}）。"
+        f"[tier-routing 推奨] 複雑度: {complexity} / 推奨 Tier: {tier}（{confidence}）。"
         f"PO 経由のサブエージェント起動時はこの推奨が claude --agents JSON で"
         f" 自動適用されます（Phase 2-A）。親 Claude の Agent ツール経由は依然"
         f" frontmatter 指定が優先されるため、コスト最適化したい場合は手動切替"

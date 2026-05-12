@@ -49,16 +49,16 @@ _MAX_SCAN_LINES = 10_000
 _EVENT_START = "SubagentStart"
 _EVENT_STOP = "SubagentStop"
 
-# F-002 Phase 2-B: SubagentStop の status 値の正常終了マーカー（仕様変更時の単一窓口）。
+# po-sqlite Phase 2-B: SubagentStop の status 値の正常終了マーカー（仕様変更時の単一窓口）。
 _STATUS_SUCCESS = "success"
 
-# F-002 Phase 2-B: po_status.current_step の最大文字数 [SR-V-001]。
+# po-sqlite Phase 2-B: po_status.current_step の最大文字数 [SR-V-001]。
 # payload.agent_type / agent_id は任意文字列のため DB 容量保護のため切り詰める。
 _MAX_CURRENT_STEP_LEN = 200
 
 # payload のホワイトリスト対象フィールド (sec-M-1)
-# F-008: total_tokens / status / token_usage / model を追加。
-# Tier 自動ルーティング (F-005) の学習データ収集の前提となる。
+# subagent-metrics: total_tokens / status / token_usage / model を追加。
+# Tier 自動ルーティング (tier-routing) の学習データ収集の前提となる。
 # result 系（応答本文・コード断片混入リスク）は意図的に除外。
 _SAFE_PAYLOAD_FIELDS = frozenset({
     'hook_event_name',

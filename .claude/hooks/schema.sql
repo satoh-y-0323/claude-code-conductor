@@ -1,4 +1,4 @@
--- C3 SQLite schema (F-009: DuckDB ハイブリッド構成の基盤)
+-- C3 SQLite schema (duckdb-hybrid: DuckDB ハイブリッド構成の基盤)
 --
 -- このファイルは session_start.py の _run_init_c3_db ハンドラから読まれ、
 -- `.claude/state/c3.db` に対して冪等に CREATE TABLE IF NOT EXISTS で適用される。
@@ -20,7 +20,7 @@ DROP TABLE IF EXISTS po_results;
 DROP TABLE IF EXISTS po_status;
 
 -- ---------------------------------------------------------------------------
--- F-009 自身: スキーマバージョン管理
+-- スキーマバージョン管理
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 -- ---------------------------------------------------------------------------
--- F-001: レビュー判断ヒント機能
+-- review-hint: レビュー判断ヒント機能
 -- ---------------------------------------------------------------------------
 -- code-reviewer / security-reviewer の指摘に対して、人間が下した判断
 -- （対応 / 許容 / 保留）と理由を蓄積する。次回以降のレビュー時に過去判断を
@@ -49,9 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_review_decisions_checklist
     ON review_decisions(checklist_id, decided_at DESC);
 
 -- ---------------------------------------------------------------------------
--- F-002: PO 集約レイヤ
--- ---------------------------------------------------------------------------
--- F-005: Tier 自動ルーティング（Thompson Sampling 学習データ）
+-- tier-routing: Tier 自動ルーティング（Thompson Sampling 学習データ）
 -- ---------------------------------------------------------------------------
 -- タスク複雑度ごとに各 Tier の Beta(α, β) 事前分布を保持する。
 -- α / β は完了ごとに更新され、サンプリングで次の Tier を選ぶ。
@@ -66,7 +64,7 @@ CREATE TABLE IF NOT EXISTS tier_bandit (
     PRIMARY KEY (task_complexity, tier)
 );
 
--- F-005 Phase 2-B: 直近 N 件の outcome を保持して failure rate を計算する。
+-- tier-routing Phase 2-B: 直近 N 件の outcome を保持して failure rate を計算する。
 -- tier_bandit が「累積 α/β」の集約を持つのに対し、こちらは個別 event の履歴。
 -- select_tier.py が直近 5 件以上で failure rate ≥ 0.5 を検出したら 1 段昇格する。
 CREATE TABLE IF NOT EXISTS tier_recent_outcomes (
@@ -80,10 +78,10 @@ CREATE INDEX IF NOT EXISTS idx_tier_recent
     ON tier_recent_outcomes(task_complexity, tier, ts DESC);
 
 -- ---------------------------------------------------------------------------
--- F-008: SubagentStop メトリクス（既存 JSONL と並行運用）
+-- subagent-metrics: SubagentStop メトリクス（既存 JSONL と並行運用）
 -- ---------------------------------------------------------------------------
 -- subagent_log.py が JSONL に追記している記録を SQLite にも保存する。
--- F-005 の学習データ収集の前提。
+-- tier-routing の学習データ収集の前提。
 -- 既存 .claude/logs/agent-runs.jsonl は移行までの間並行運用する。
 
 CREATE TABLE IF NOT EXISTS agent_runs (

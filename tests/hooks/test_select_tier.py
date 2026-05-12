@@ -1,6 +1,6 @@
 """Tests for .claude/hooks/select_tier.py and c3_db tier_bandit helpers.
 
-F-005 MVP: Tier 自動ルーティングの検証。
+tier-routing MVP: Tier 自動ルーティングの検証。
 
 テストケース:
  c3_db ヘルパー（read_tier_params / update_tier_params）:
@@ -264,7 +264,7 @@ class TestContextAndStateFile:
         mod.write_tier_selection("complex", "opus", "thompson")
         assert target.is_file()
         data = json.loads(target.read_text(encoding="utf-8"))
-        # F-005 Phase 2-A: suggested_model フィールドが tier と同じ値で追加されている
+        # tier-routing Phase 2-A: suggested_model フィールドが tier と同じ値で追加されている
         assert data == {
             "complexity": "complex",
             "tier": "opus",

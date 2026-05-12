@@ -380,7 +380,7 @@ AskUserQuestion で確認する:
 
 Agent ツールで `code-reviewer` エージェントを起動する。
 
-**F-001 過去判断ヒント注入（レポート生成後）:**
+**review-hint 過去判断ヒント注入（レポート生成後）:**
 code-reviewer がレポートを Write し終えたら、Bash で `.claude/hooks/review_hint_inject.py` を呼んで過去判断ヒントをレポート末尾に追記する:
 
 ```bash
@@ -438,7 +438,7 @@ AskUserQuestion で確認する:
 ```
 1. 対応する指摘に `> **[対応予定]**` を追記する
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-3. **F-001 判断記録**: 各指摘について Bash で c3.db に記録する（`[CR-XX-NNN]` を含むもののみ）:
+3. **review-hint 判断記録**: 各指摘について Bash で c3.db に記録する（`[CR-XX-NNN]` を含むもののみ。`[CR-NEW]` は記録対象外、チェックリスト追加候補として別途扱う）:
    ```bash
    python .claude/hooks/record_review_decision.py \
      --checklist-id CR-Q-001 \
@@ -460,7 +460,7 @@ AskUserQuestion で許容理由を確認する:
 }
 ```
 1. 全指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-2. **F-001 判断記録**: 全 `[CR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
+2. **review-hint 判断記録**: 全 `[CR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
 3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 4. セッションファイルの `- [ ] code-review` を `- [x]` に Edit して E-2 へ。
 
@@ -474,7 +474,7 @@ AskUserQuestion で許容理由を確認する:
 
 Agent ツールで `security-reviewer` エージェントを起動する。
 
-**F-001 過去判断ヒント注入（レポート生成後）:**
+**review-hint 過去判断ヒント注入（レポート生成後）:**
 security-reviewer がレポートを Write し終えたら、Bash で `.claude/hooks/review_hint_inject.py` に **両レポートのパス** を渡して呼ぶ。両方渡すことで重複指摘フラグ（同じ checklist_id を CR と SR が指摘）が判定される:
 
 ```bash
@@ -503,7 +503,7 @@ AskUserQuestion で確認する:
 ```
 
 承認後 → セッションファイルの `- [ ] security-review` を `- [x]` に Edit する。続けて **「引き継ぎバックログの照合」**（後述の共通ステップ）を実行してからコミットを提案する。
-**F-005 結果記録**: フェーズ E の最終承認時のみ Bash で記録する（多重カウント防止のため E-1 では記録しない）:
+**tier-routing 結果記録**: フェーズ E の最終承認時のみ Bash で記録する（多重カウント防止のため E-1 では記録しない）:
 ```bash
 python .claude/hooks/record_tier_outcome.py --outcome success
 ```
@@ -538,7 +538,7 @@ python .claude/hooks/record_tier_outcome.py --outcome success
 ```
 1. 対応する指摘に `> **[対応予定]**` を追記する
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-3. **F-001 判断記録**: 各指摘について Bash で c3.db に記録する（`[SR-XX-NNN]` を含むもののみ）:
+3. **review-hint 判断記録**: 各指摘について Bash で c3.db に記録する（`[SR-XX-NNN]` を含むもののみ。`[SR-NEW]` は記録対象外、チェックリスト追加候補として別途扱う）:
    ```bash
    python .claude/hooks/record_review_decision.py \
      --checklist-id SR-K-002 \
@@ -560,10 +560,10 @@ AskUserQuestion で許容理由を確認する:
 }
 ```
 1. 全指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-2. **F-001 判断記録**: 全 `[SR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
+2. **review-hint 判断記録**: 全 `[SR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
 3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 4. セッションファイルの `- [ ] security-review` を `- [x]` に Edit する。続けて **「引き継ぎバックログの照合」**（後述の共通ステップ）を実行してからコミットを提案する。
-5. **F-005 結果記録**: 全許容で完了するのも「成功」としてカウント:
+5. **tier-routing 結果記録**: 全許容で完了するのも「成功」としてカウント:
    ```bash
    python .claude/hooks/record_tier_outcome.py --outcome success
    ```
@@ -571,13 +571,13 @@ AskUserQuestion で許容理由を確認する:
 **「否認・再診断を依頼する」の場合:**
 追加の AskUserQuestion でフィードバックを確認し再実行する。
 セッションファイルの `## 試みたが失敗したアプローチ` に教訓をルール形式で追記し `patterns` に追加する。
-**F-005 結果記録**: 否認は「失敗」としてカウント:
+**tier-routing 結果記録**: 否認は「失敗」としてカウント:
 ```bash
 python .claude/hooks/record_tier_outcome.py --outcome failure
 ```
 
 **「全て対応する」「対応する指摘を選ぶ」の場合（フェーズ C へ戻る）:**
-これらも tier の選択がコスト最適でなかったとみなし、**F-005 結果記録**で失敗をカウントしてからフェーズ C へ:
+これらも tier の選択がコスト最適でなかったとみなし、**tier-routing 結果記録**で失敗をカウントしてからフェーズ C へ:
 ```bash
 python .claude/hooks/record_tier_outcome.py --outcome failure
 ```

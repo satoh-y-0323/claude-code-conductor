@@ -9,7 +9,7 @@ PreToolUse hook の挙動を検証する。
   3. Bash 以外の tool_name → exit 0
   4. 不正な JSON → exit 0
 
- F-006 秘密情報検出:
+ secret-scan 秘密情報検出:
   5. password=xxx を含む → exit 2、stderr に警告（パターン名: password）
   6. api_key=xxx → exit 2
   7. Bearer xxxxxxxx → exit 2
@@ -72,7 +72,7 @@ def _bash_payload(command: str) -> dict:
 
 
 class TestExistingBehavior:
-    """F-006 追加後も既存ブロック・通過判定が変わらないことを確認する。"""
+    """secret-scan 追加後も既存ブロック・通過判定が変わらないことを確認する。"""
 
     def test_rm_rf_is_blocked(self) -> None:
         """rm -rf 系コマンドは引き続き exit 2 でブロックされる。"""
@@ -106,12 +106,12 @@ class TestExistingBehavior:
 
 
 # ---------------------------------------------------------------------------
-# F-006: 秘密情報検出
+# secret-scan: 秘密情報検出
 # ---------------------------------------------------------------------------
 
 
 class TestF006SecretDetection:
-    """F-006: 秘密情報パターンの検出と bypass 機構。"""
+    """secret-scan: 秘密情報パターンの検出と bypass 機構。"""
 
     @pytest.mark.parametrize("command,expected_pattern", [
         ("echo password=hunter2", "password"),

@@ -1,5 +1,93 @@
 # Changelog
 
+## [2.3.0] - 2026-05-12
+
+### 概要
+
+PO（Parallel Orchestra）完全廃止後の DX 整理リリース。配布先ユーザーが意味を理解できなかった内部 ID（`F-XXX`）を機能名に全置換し、並列専用 wt_* agent 3 つのレポート出力規約を `task_id` ベースで統一。さらに、PO 関連の死蔵ディレクトリ・skill 内の歴史的経緯記述を一掃した。
+
+### 変更
+
+#### 内部 ID `F-XXX` を機能名へ全置換（DX 改善）
+
+`.claude/docs/c3追加予定機能リスト.md` は `.gitignore` 対象のため、配布先ユーザーが `F-001` 等のコードの意味を解読できない問題があった。全 32 ファイル 146 箇所を以下のマッピングで置換:
+
+| 旧 ID | 新名称 |
+|---|---|
+| F-001 | `review-hint` |
+| F-002 | `po-sqlite` (廃止済み) |
+| F-003 | `po-status` (廃止済み) |
+| F-004 | `memory-consolidation` |
+| F-005 | `tier-routing` |
+| F-006 | `secret-scan` |
+| F-007 | `post-edit-scan` |
+| F-008 | `subagent-metrics` |
+| F-009 | `duckdb-hybrid` |
+| F-010 | `task-routing` |
+
+ユーザー目視メッセージ（UserPromptSubmit hook の `[F-005 Tier 推奨]`）も `[tier-routing 推奨]` に変更。CHANGELOG.md は歴史的記録として F-XXX を保持。
+
+#### code-reviewer / security-reviewer に `[CR-NEW]` / `[SR-NEW]` マーカー追加
+
+チェックリスト未収載の指摘を強引に既存 ID へマッピングする問題を回避するため、該当 ID がない指摘を `[CR-NEW]` / `[SR-NEW]` で出すルールを追加。`review-hint` (旧 F-001) の照合精度を保ち、チェックリストの成長候補として扱える。
+
+#### 並列 wt_* agent 3 つの task_id ベース出力統一
+
+`parallel-agents` skill 経由で並列起動される 3 つの worktree 専用 agent (`wt_tester` / `wt_developer` / `wt_systematic-debugger`) のレポート出力規約を統一:
+
+| Agent | 主経路 | 保険経路 |
+|---|---|---|
+| wt_tester | `test-report-{task_id}.md` | `test-report-{timestamp}.md` |
+| wt_developer (Stuck Signal) | `debug-needed-{task_id}.md` | `debug-needed-{timestamp}.md` |
+| wt_systematic-debugger | `debug-analysis-{task_id}.md` | `debug-analysis-{timestamp}.md` |
+
+`parallel-agents/SKILL.md` の prompt 注入にも systematic-debugger 用注入を追加（従来は tester のみ）。これにより `plan-report` の `writes` 宣言と実出力ファイル名の不一致による取り込み破綻リスクを解消。
+
+#### tester / wt_tester の重複指示削除
+
+`Workflow After` と `Tools & Constraints` の `必須:` 行で同内容のレポート出力指示が重複していたのを After 側に一本化。
+
+#### skill ファイルから歴史的経緯記述を削除
+
+`develop/SKILL.md` の「移行注意（v1.12.0+）」セクションと `parallel-agents/SKILL.md` 末尾の「PO 廃止移行期の注意（v1.12.0〜v2.2.0）」セクションを削除。SKILL ファイルは LLM の操作手順書であり、変遷情報は CHANGELOG.md に集約する方針に統一。
+
+### 削除（死蔵ディレクトリ整理）
+
+PO 廃止に伴い不要になったディレクトリを物理削除（いずれも git 追跡外）:
+
+| パス | 状態 |
+|---|---|
+| `.po-worktrees/` | 空ディレクトリ |
+| `examples/` | PO 検証用 task_manager のみ含む sandbox |
+| `src/c3/po/` | `__pycache__/` のみ（v1.14.0 で削除済みパッケージの残骸） |
+| `src/parallel_orchestra/` | `__pycache__/` のみ（v2.0.0 で削除済みパッケージの残骸） |
+| `tests/parallel_orchestra/` | `__pycache__/` のみ |
+
+`.gitignore` から `examples/` エントリも削除（対応するディレクトリが存在しないため）。
+
+### 互換性
+
+- 利用先の plan-report YAML 仕様は無変更
+- 既存 plan-report の `agent: tester` / `agent: developer` 表記はそのまま動作（parallel-agents skill 内でマッピング）
+- ユーザー向けメッセージのプレフィックスのみ変更（`[F-005 Tier 推奨]` → `[tier-routing 推奨]`）
+- SemVer minor: 機能追加と整理のみ、破壊的変更なし
+
+### 利用先での対応
+
+```bash
+pip install --upgrade claude-code-conductor
+c3 update
+```
+
+`c3 update` で `.claude/` 配下の agent / skill / hook が最新版に更新される。配布物の削除は `c3 update` では検出されないが、本リリースは新規追加・変更のみで配布物削除はないため手動クリーンアップは不要。
+
+### 検証
+
+- `pytest -x` 572 passed / 2 skipped
+- wheel 再ビルドで `_template/` 内の F-XXX 参照 0 件を確認
+
+---
+
 ## [2.2.0] - 2026-05-12
 
 ### 概要

@@ -901,13 +901,13 @@ class TestAppendLogTypeErrorTolerance:
 
 
 # ---------------------------------------------------------------------------
-# F-008: メトリクスフィールド拡張
+# subagent-metrics: メトリクスフィールド拡張
 # ---------------------------------------------------------------------------
 
 
 class TestF008MetricsFieldsExtended:
-    """F-008: total_tokens / status / token_usage / model がホワイトリストに含まれ、
-    payload に存在すれば記録される。Tier 自動ルーティング (F-005) の学習データ前提。
+    """subagent-metrics: total_tokens / status / token_usage / model がホワイトリストに含まれ、
+    payload に存在すれば記録される。Tier 自動ルーティング (tier-routing) の学習データ前提。
     result 系（応答本文混入リスク）は引き続き除外されること。
     """
 
@@ -961,7 +961,7 @@ class TestF008MetricsFieldsExtended:
 
     def test_result_field_is_still_excluded(self, tmp_path: Path) -> None:
         """ホワイトリスト外フィールド（result / last_assistant_message 等）は
-        F-008 拡張後も引き続き除外される。応答本文・コード断片の混入を防ぐ。
+        subagent-metrics 拡張後も引き続き除外される。応答本文・コード断片の混入を防ぐ。
         """
         module = _load_hook_module(HOOK_PATH)
         stop_payload = _make_stop_payload(last_message="some private response")

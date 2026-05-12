@@ -1,6 +1,6 @@
 """Tests for .claude/hooks/review_hint_inject.py and c3_db review helpers.
 
-F-001: レビュー判断ヒント機能の検証。
+review-hint: レビュー判断ヒント機能の検証。
 
 テストケース:
  c3_db ヘルパー:

@@ -1,6 +1,6 @@
 """Tests for .claude/hooks/post_tool.py
 
-PostToolUse hook（F-007）の挙動を検証する。
+PostToolUse hook（post-edit-scan）の挙動を検証する。
 
 テストケース:
  各パターン検出:

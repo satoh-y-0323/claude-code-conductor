@@ -7,7 +7,7 @@
    `.claude/skills/` 配下のファイルを Write / Edit したとき「実際のエージェント
    動作で確認してください」というリマインダを stdout に出す。
 
-2. デバッグ出力検出（F-007）:
+2. デバッグ出力検出（post-edit-scan）:
    Write / Edit 完了後に対象ファイルへ console.log / print( / TODO /
    FIXME / XXX を検出して stderr に警告する。code-review-checklist.md の
    「不要なデバッグ出力が残っていないか」項目を自動化する位置付け。

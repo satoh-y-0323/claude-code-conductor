@@ -1,6 +1,6 @@
 """Tests for .claude/hooks/consolidate_memory.py
 
-F-004: MemoryConsolidation MVP の検証。
+memory-consolidation: MemoryConsolidation MVP の検証。
 
 テストケース:
  list_recent_session_files:
@@ -322,7 +322,7 @@ class _StubStdin:
 
 
 # ---------------------------------------------------------------------------
-# F-004 Phase 2-A: archive_old_sessions
+# memory-consolidation Phase 2-A: archive_old_sessions
 # ---------------------------------------------------------------------------
 
 
@@ -477,7 +477,7 @@ class TestArchive:
 
 
 # ---------------------------------------------------------------------------
-# F-004 Phase 2-B: 半自動 promotion 候補ログ
+# memory-consolidation Phase 2-B: 半自動 promotion 候補ログ
 # ---------------------------------------------------------------------------
 
 
@@ -627,7 +627,7 @@ class TestPromotionCandidates:
 
 
 # ---------------------------------------------------------------------------
-# F-004 Phase 2-C: claude --headless LLM 要約
+# memory-consolidation Phase 2-C: claude --headless LLM 要約
 # ---------------------------------------------------------------------------
 
 
@@ -1314,7 +1314,7 @@ class TestMainDispatch:
 
 
 # ---------------------------------------------------------------------------
-# F-004 消費側: LLM 要約抽出 + プレースホルダ
+# memory-consolidation 消費側: LLM 要約抽出 + プレースホルダ
 # ---------------------------------------------------------------------------
 
 

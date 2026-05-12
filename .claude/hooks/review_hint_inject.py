@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Inject past review decisions as hints into a review report.
 
-F-001: レビュー判断ヒント機能。code-reviewer / security-reviewer が
+review-hint: レビュー判断ヒント機能。code-reviewer / security-reviewer が
 生成したレビューレポート（`.claude/reports/code-review-report-*.md` /
 `security-review-report-*.md`）に、過去の許容例外・対応履歴を後付けで追記する。
 

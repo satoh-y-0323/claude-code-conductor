@@ -1,6 +1,6 @@
-"""``c3 tier stats`` - F-005 Tier 自動ルーティングの学習データ可視化 CLI。
+"""``c3 tier stats`` - tier-routing Tier 自動ルーティングの学習データ可視化 CLI。
 
-F-005 (Phase 2 完成) の効果計測用ダッシュボード。
+tier-routing (Phase 2 完成) の効果計測用ダッシュボード。
 
 主な機能:
 - ``c3 tier stats``: 全 complexity × tier の累積（tier_bandit）と直近 outcome を表形式表示
@@ -8,7 +8,7 @@ F-005 (Phase 2 完成) の効果計測用ダッシュボード。
 - ``c3 tier stats --recent N``: 直近 outcome の表示件数を変更（デフォルト 10）
 
 設計判断:
-- F-003 ``c3 status`` の CLI パターン（`cli_status.py`）を踏襲
+- po-status ``c3 status`` の CLI パターン（`cli_status.py`）を踏襲
 - データがゼロでも「収集中」と分かる表示にする
 - escalation 発動回数は専用テーブルがないため今回は表示なし（将来拡張余地）
 """
@@ -38,7 +38,7 @@ _COMPLEXITIES = ("simple", "medium", "complex")
 def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "tier",
-        help="Tier 自動ルーティング統計（F-005）",
+        help="Tier 自動ルーティング統計（tier-routing）",
     )
     sub = parser.add_subparsers(dest="tier_command", metavar="<subcommand>")
     sub.required = True

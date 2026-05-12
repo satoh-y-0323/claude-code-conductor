@@ -60,7 +60,7 @@ def ensure_session_initialized(path: str, date_str: str) -> None:
 def extract_section(content: str, heading: str) -> str:
     """セッションファイル本文から ``## {heading}`` セクションの内容を抽出する。
 
-    F-004（MemoryConsolidation）と restore_session.py で共通利用される。
+    memory-consolidation（MemoryConsolidation）と restore_session.py で共通利用される。
     ``## {heading}\\n`` から次の ``\\n## `` または ``\\n<!--`` または末尾までを返す。
     見つからない場合は空文字列を返す。
 

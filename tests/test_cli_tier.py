@@ -1,4 +1,4 @@
-"""Tests for src/c3/cli_tier.py (F-005 効果計測 CLI)."""
+"""Tests for src/c3/cli_tier.py (tier-routing 効果計測 CLI)."""
 
 from __future__ import annotations
 
