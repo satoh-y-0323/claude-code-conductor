@@ -3,3 +3,12 @@
 *.md text eol=lf
 *.json text eol=lf
 *.sh text eol=lf
+*.toml text eol=lf
+
+# Codex / Cursor adapter generated files (LF on all platforms)
+# c3 init --platform で生成されるファイル。Windows の core.autocrlf=true
+# 環境でも LF を維持して _write_file_if_changed の比較を安定させる。
+AGENTS.md text eol=lf
+.codex/**/* text eol=lf
+.cursor/**/* text eol=lf
+*.mdc text eol=lf

@@ -50,6 +50,18 @@
 `.claude/docs/` は人間向けリファレンスのためエージェントは読まなくてよい。
 詳細は `.claude/docs/taxonomy.md` を参照。
 
+## Platform Compatibility
+
+このファイルは Claude Code / Codex / Cursor から canonical source として読まれる。
+他プラットフォームでの動作差分は以下の通り:
+
+- **`AskUserQuestion`** への参照は、Codex/Cursor では MCP tool `c3_ask_user_question` に読み替える（MCP elicitation 非対応時の fallback は `c3 ask --file <json>`）
+- **`Agent` ツール** の参照は、Codex では `.codex/agents/<name>.toml` 経由のサブエージェント、Cursor では現行 runtime のサブエージェント機構（無い場合は同一 agent 内でフェーズ実行しレポート契約のみ維持）に読み替える
+- **`Skill` ツール / `/<skill>`** の参照は、Codex では `.agents/skills/<name>/SKILL.md`、Cursor では `.claude/skills/<name>/SKILL.md` を直接読み込む（スラッシュコマンド自動展開は Claude Code 専用機能）
+- **`isolation: worktree`** / **`permissionMode`** / **`tools` 制限** など agent フロントマターの一部キーは Claude Code 仕様。adapter 側では読み替え不能なものは無視される
+
+レポート（`.claude/reports/`）・state（`.claude/state/`）・memory（`.claude/agent-memory/`）のファイル名と書き込み先は全プラットフォーム共通。adapter 生成物の詳細は `c3 init --platform codex|cursor` で出力される `AGENTS.md` / `.cursor/rules/c3-core.mdc` を参照。
+
 ---
 
 ## C3 Managed

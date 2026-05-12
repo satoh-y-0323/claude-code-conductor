@@ -187,10 +187,17 @@ class C3MCPServer:
     def _read_skill(self, skill: str) -> str | None:
         if not skill or any(part in {".", ".."} for part in Path(skill).parts):
             return None
-        path = self.project_root / ".claude" / "skills" / skill / "SKILL.md"
-        if not path.is_file():
+        skills_root = (self.project_root / ".claude" / "skills").resolve()
+        path = skills_root / skill / "SKILL.md"
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError):
             return None
-        return path.read_text(encoding="utf-8")
+        if skills_root not in resolved.parents:
+            return None
+        if not resolved.is_file():
+            return None
+        return resolved.read_text(encoding="utf-8")
 
     def _text_result(self, msg_id: Any, text: str) -> dict[str, Any]:
         return {

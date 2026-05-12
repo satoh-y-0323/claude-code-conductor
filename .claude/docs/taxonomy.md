@@ -55,17 +55,43 @@ Claude Code Conductor（C3）における各ファイルタイプの意味を定
 
 **`memory` スコープの保存場所:**
 
-| スコープ | 場所 |
-|---|---|
-| `user` | `~/.claude/agent-memory/<agent-name>/` |
-| `project` | `.claude/agent-memory/<agent-name>/` |
-| `local` | `.claude/agent-memory-local/<agent-name>/` |
+| スコープ | 場所 | コミット対象 |
+|---|---|---|
+| `user` | `~/.claude/agent-memory/<agent-name>/` | × (個人) |
+| `project` | `.claude/agent-memory/<agent-name>/` | × (`.gitignore` で除外) |
+| `local` | `.claude/agent-memory-local/<agent-name>/` | × (個人) |
 
 メモリが有効な場合、`MEMORY.md` の最初の 200 行（最大 25KB）がシステムプロンプトに自動注入される。
+
+**運用ルール:**
+
+- **配布除外**: `.claude/agent-memory/` は `.gitignore` / `_excludes.py` / `hatch_build.py` の 3 ファイルで除外済み。wheel にも含まれない（プロジェクト固有・個人作業）
+- **書き込みタイミング**: agent が `memory:` frontmatter を持つ場合、Claude Code がエージェント停止時に自動更新する
+- **手動編集**: `MEMORY.md` は index ファイル（150 文字/行 × 200 行が注入対象）。個別の memory ファイルは別ファイルとして同ディレクトリ配置
+- **chat / Codex / Cursor 共通**: `.claude/agent-memory/` は canonical source として全プラットフォームで参照される
+- **削除タイミング**: 不要になった agent-memory はディレクトリごと削除して問題ない（次回起動時に空から再構築）
 
 **`tools` での Agent 生成制限:**
 
 `Agent(worker, researcher)` のように書くと、指定したサブエージェントのみ生成できる許可リストになる。括弧なしの `Agent` は制限なし。`Agent` を省略するとサブエージェント生成不可。
+
+**Codex / Cursor での扱い:**
+
+上記のフロントマターキーは **Claude Code 公式仕様**。`c3 init --platform codex|cursor` で生成される adapter 経由で動かす場合、以下のように読み替え・無視される:
+
+| キー | Codex | Cursor |
+|---|---|---|
+| `name` / `description` | TOML `name` / `description` に反映 | `.cursor/rules/c3-core.mdc` の参照対象 |
+| `tools` / `disallowedTools` | Codex の subagent ツール制限に読み替え（一部キー差あり） | 反映されない（rule 内テキストで補完） |
+| `model` | Codex 側のモデル選択に従う（adapter は値を保持しない） | Cursor 側のモデル選択に従う |
+| `permissionMode` | 概念が存在しないため無視 | 同左 |
+| `isolation: worktree` | Codex の subagent runtime に worktree 機構があれば適用、なければ無視 | 反映されない |
+| `mcpServers` | 別途 `.codex/config.toml` で MCP 設定 | `.cursor/mcp.json` で MCP 設定 |
+| `hooks` | Claude Code lifecycle hook のため無視 | 同左 |
+| `memory` | `.claude/agent-memory/` を共通参照（パスは Claude Code と同じ） | 同左 |
+| `background` / `effort` / `maxTurns` | Codex 側の対応機能に従う | 反映されない |
+
+adapter 生成物の詳細仕様は [`platform-adapters.md`](platform-adapters.md) を参照。
 
 ---
 

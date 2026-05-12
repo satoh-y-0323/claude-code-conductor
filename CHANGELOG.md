@@ -1,5 +1,83 @@
 # Changelog
 
+## [2.4.0] - 2026-05-12
+
+### 概要
+
+Codex / Cursor adapter 追加（v2.3.0 系列）の整合性監査の結果見つかった問題を一括修正。MCP server の path traversal を symlink 経由まで防御し、adapter 内部関数のユニットテストを 22 ケース新設。Claude Code 専用機能の Codex/Cursor 読み替えを `taxonomy.md` と新規 `platform-adapters.md` で明示し、CRLF/LF の取り扱いを `.gitattributes` で固定化した。
+
+### 変更（セキュリティ強化）
+
+#### MCP `_read_skill` の path traversal 防御強化 (M2)
+
+`src/c3/mcp_server.py:_read_skill` を以下のように変更:
+
+- `.` / `..` の文字列マッチに加え、`Path.resolve(strict=True)` で symlink を解決
+- 解決後のパスが `.claude/skills/` 配下にあるかを `skills_root in resolved.parents` で検証
+- 範囲外の場合は `None` を返す（エラー出さずサイレントに拒否）
+
+これにより悪意ある symlink を `.claude/skills/<name>/SKILL.md` として配置しても、project_root 外のファイルが読まれなくなる。脅威モデル: 悪意あるリポジトリを clone した利用者を巻き込むシナリオ。
+
+### 変更（ドキュメント / 整合性）
+
+#### Codex / Cursor 動作差分の明文化 (H3, M3, M4)
+
+3 つのドキュメントを更新:
+
+- **`.claude/CLAUDE.md`**: `Platform Compatibility` セクション追加。`AskUserQuestion` / `Agent` / `Skill` / agent フロントマターの Codex/Cursor 読み替え方針を整理
+- **`.claude/docs/taxonomy.md`**: agents セクション末尾に「Codex / Cursor での扱い」表を追加。`permissionMode` / `isolation` / `hooks` 等の Claude Code 専用キーの取り扱いを記述。memory スコープ表に運用ルール（配布除外・書き込みタイミング・手動編集・削除）を追加 (L3)
+- **`.claude/docs/platform-adapters.md`** (新規): `c3 init --platform` の選択肢、生成物、MCP server (`c3_ask_user_question` / `c3_list_skills` / `c3_read_skill`)、`c3 ask` CLI fallback、managed block の仕様、動作差分マトリックスを 1 ファイルでまとめた利用先向け技術文書
+
+#### README に PO 撤去履歴を明示 (L4)
+
+`並列実行 (parallel-agents skill)` セクションに v2.0.0 で PO (Parallel Orchestra) 完全撤去された旨を追記。利用先で「PO」「外部プロセス」という単語が CHANGELOG に登場する理由を新規ユーザーが追跡できるようにした。
+
+### 変更（テスト追加）
+
+#### `tests/test_adapters.py` 新設 (M1, L1)
+
+`src/c3/adapters.py` の内部関数と MCP `_read_skill` をカバーする 23 ケース（うち 1 ケースは Windows で skip）を追加:
+
+- `_toml_escape` / `_toml_multiline_escape` のエッジケース（backslash, quote, triple quote, 改行保持）
+- `_convert_skill` の frontmatter あり/なし/heading なしの分岐
+- `_codex_agent_toml` の特殊文字・改行保持
+- `_replace_managed_block` の単一/複数 block ケース（`count=1` 契約を回帰防止）
+- `_write_cursor_mcp` の merge / 新規作成 / 不正 JSON 拒否 / 非 object 拒否
+- `scaffold_adapters` の `.claude/` 不在エラー / 冪等性
+- MCP `_read_skill` の正常系 / `..` 拒否 / 空文字拒否 / 不在 / symlink 経由のアクセス拒否 (POSIX 限定)
+
+### 変更（環境整理）
+
+#### `.gitignore` に adapter 生成物追加 (H2)
+
+`c3 init --platform codex|cursor|all` で生成される `/AGENTS.md` / `/.codex/` / `/.cursor/` / `/.agents/` を配布元リポジトリでの git commit 混入から保護。wheel 同梱は `src/c3/_template/.claude/` 配下に限定されるため構造的に wheel には入らないが、開発者が adapter を試生成した時の事故防止のため明示除外。
+
+#### `.gitattributes` 拡張 (M5)
+
+`*.toml` / `*.mdc` を `text eol=lf` に。さらに `AGENTS.md` / `.codex/**/*` / `.cursor/**/*` も `eol=lf` で固定。Windows の `core.autocrlf=true` 環境でも adapter ファイルが CRLF 化されず、`_write_file_if_changed` の完全一致比較が安定する。
+
+#### `.claude/settings.local.json` の PO 遺物削除 (H1)
+
+`Bash(c3 po *)` と `python -m pytest tests/parallel_orchestra/...` の許可ルールを削除。`c3 po` コマンドと parallel_orchestra テストは v2.0.0 で撤去済みのため、これらルールは空回りしていた。
+
+### 削除
+
+なし（破壊的変更なし）。
+
+### 互換性
+
+- v2.3.x からの後方互換: **完全互換**（API 変更なし、振る舞い変更なし、削除なし）
+- adapter 生成ファイル: 改行コードが CRLF だった環境では LF に正規化される。`git diff` 上で改行差が出るが内容差はない
+- セキュリティ修正: MCP `_read_skill` の戻り値挙動が **拒否時に `None`** で変わらず。symlink を悪用していたケース（通常用途では存在しない）のみ拒否される
+
+### 検証
+
+- 全テスト: 613 passed / 3 skipped (Windows 環境)
+- wheel build: `claude_code_conductor-2.4.0-py3-none-any.whl` (81 entries) — adapter 生成物 (`.codex/` / `.cursor/` / `.agents/` / `AGENTS.md`) の混入なし、機密ファイル混入なし、新規 `platform-adapters.md` は配布対象に含まれる
+- `c3 doctor`: 全項目 OK
+
+---
+
 ## [2.3.0] - 2026-05-12
 
 ### 概要

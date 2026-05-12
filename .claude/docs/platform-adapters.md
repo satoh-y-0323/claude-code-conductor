@@ -1,0 +1,167 @@
+# Platform Adapters
+
+C3 は **Claude Code** を canonical platform として設計されているが、
+`c3 init --platform` で Codex / Cursor 向けの adapter を生成し、同じ `.claude/`
+ツリーを共通の source of truth として利用できる。
+
+本ドキュメントは:
+- `c3 init --platform` の選択肢と生成物
+- MCP server と `c3 ask` CLI fallback
+- managed block の仕様と手動編集の取り扱い
+- 動作差分のまとめ
+
+を一箇所にまとめたリファレンス。実装は `src/c3/adapters.py` / `src/c3/mcp_server.py` /
+`src/c3/cli_ask.py` / `src/c3/platforms.py` を参照。
+
+---
+
+## 1. `c3 init --platform` の選択肢
+
+| 値 | 生成物 | 用途 |
+|---|---|---|
+| `claude` (デフォルト) | `.claude/` のみ | Claude Code ネイティブ |
+| `codex` | `.claude/` + `AGENTS.md` + `.codex/` + `.agents/` | Codex CLI / 職場 Codex |
+| `cursor` | `.claude/` + `.cursor/` | Cursor IDE |
+| `all` | 上記すべて | マルチプラットフォーム共存 |
+
+`c3 init --platform claude` 以外でも `.claude/` は canonical source として残り、
+adapter は派生ファイルを生成するのみ（`.claude/` の中身を変更しない）。
+
+`c3 update --platform <p>` で adapter を再生成できる。`.claude/` 側の skill / agent
+を編集したら adapter も再生成して整合を取る。
+
+---
+
+## 2. 生成される具体的ファイル
+
+### `codex` 選択時
+
+| パス | 内容 | 生成ロジック |
+|---|---|---|
+| `AGENTS.md` | プロジェクト直下。Codex に C3 workflow の存在と adapter を伝える | `_codex_agents_section` を managed block で挿入 |
+| `.codex/config.toml` | Codex CLI の MCP 設定 | `[mcp_servers.c3]` セクションを managed block で挿入 |
+| `.codex/agents/<name>.toml` | `.claude/agents/<name>.md` から生成した Codex subagent 定義 | `_codex_agent_toml` で TOML 化 |
+| `.agents/skills/<name>/SKILL.md` | `.claude/skills/<name>/SKILL.md` を Codex 向けに変換コピー | `_convert_skill` で frontmatter 正規化 + adapter note 追加 |
+| `.agents/skills/<name>/<その他>` | `.claude/skills/<name>/` 配下の非 `SKILL.md` ファイルをそのまま複製 | `_copy_file_if_changed` |
+
+### `cursor` 選択時
+
+| パス | 内容 | 生成ロジック |
+|---|---|---|
+| `.cursor/rules/c3-core.mdc` | Cursor の rule。`alwaysApply: true` で C3 workflow を常時参照 | `_cursor_core_rule` の静的テキスト |
+| `.cursor/mcp.json` | Cursor の MCP サーバー設定。`mcpServers.c3` のみ管理対象 | `_write_cursor_mcp` で既存 JSON にマージ |
+
+---
+
+## 3. MCP server (`c3.mcp_server`)
+
+stdio MCP サーバー。Codex / Cursor から `.codex/config.toml` / `.cursor/mcp.json`
+経由で起動される。プロトコル: JSON-RPC 2.0 (`2025-11-25`)。
+
+### 提供ツール
+
+| ツール名 | 用途 | 入力 |
+|---|---|---|
+| `c3_ask_user_question` | `AskUserQuestion` 互換の単一/複数選択。MCP elicitation を使用 | `payload`: `AskUserQuestion` の JSON |
+| `c3_list_skills` | `.claude/skills/` 配下のスキル一覧を返す | なし |
+| `c3_read_skill` | `.claude/skills/<name>/SKILL.md` を読み込む | `name`: skill 名 |
+
+### セキュリティ
+
+- `c3_read_skill` は `.claude/skills/` 外への symlink を `resolved.parents` チェックで拒否
+- パス区切りに `.` / `..` を含む name は弾く
+- skill ファイル名は `SKILL.md` で固定（任意ファイル読み出しはできない）
+
+### 起動コマンド
+
+```bash
+python -m c3.mcp_server
+```
+
+`C3_PROJECT_ROOT` 環境変数でプロジェクトルートを指定可能（adapter 生成時に自動設定）。
+ソースインストール時は `PYTHONPATH` も adapter が `<repo>/src` に設定する。
+
+---
+
+## 4. `c3 ask` CLI fallback
+
+MCP elicitation が使えない環境（CI / 非対応 host）向けの fallback。
+
+```bash
+# ファイルから AskUserQuestion JSON を読み、対話で回答
+c3 ask --file question.json
+
+# JSON を直接渡す
+c3 ask --json '{"questions":[...]}'
+
+# 非対話実行（CI 用）
+c3 ask --file question.json --response "Plan,Review"
+```
+
+回答は JSON で stdout に出力されるため、シェルパイプで次のステップに渡せる。
+
+---
+
+## 5. managed block
+
+adapter は **管理範囲を明示するマーカー** で囲んだブロックのみを書き換え、
+ユーザーが追記した他の部分には触らない。
+
+### Markdown (`AGENTS.md`)
+
+```
+<!-- BEGIN C3 CODEX ADAPTER -->
+... (adapter が管理する内容)
+<!-- END C3 CODEX ADAPTER -->
+```
+
+### TOML (`.codex/config.toml`)
+
+```
+# BEGIN C3 CODEX ADAPTER
+[mcp_servers.c3]
+...
+# END C3 CODEX ADAPTER
+```
+
+### JSON (`.cursor/mcp.json`)
+
+managed block は使わず、`mcpServers.c3` キーだけを上書き。他のサーバー定義は保持。
+
+### 手動編集の取り扱い
+
+- **managed block の外は自由に編集 OK**: adapter は触らない
+- **managed block の中は再生成で上書き**: `c3 update --platform codex` で `.claude/` 側の変更が反映される
+- **managed block を削除した場合**: 次回 adapter 生成時にファイル末尾に追加される
+- **managed block を残したまま中身を書き換えた場合**: `c3 update --platform codex` で上書きされる
+- **`[mcp_servers.c3]` を managed block の外で定義した場合**: 競合検出して `ValueError` を投げる（`adapters.py:_write_codex_config`）
+
+---
+
+## 6. 動作差分まとめ
+
+| 機能 | Claude Code | Codex | Cursor |
+|---|---|---|---|
+| `AskUserQuestion` | ネイティブツール | MCP `c3_ask_user_question` / fallback `c3 ask` | 同左 |
+| `Agent` ツール | ネイティブ subagent | `.codex/agents/<name>.toml` 経由の subagent | runtime に subagent 機構があれば使用、無ければ同一 agent 内でフェーズ実行 |
+| `Skill` ツール / `/<skill>` | ネイティブ | `.agents/skills/<name>/SKILL.md` を読む | `.claude/skills/<name>/SKILL.md` を rule から指示 |
+| `isolation: worktree` | サポート | 一部 Codex runtime で対応、不可時は同一 worktree 実行 | 反映されない |
+| `permissionMode` | サポート | 概念なし（無視） | 概念なし（無視） |
+| `tools` 制限 | サポート | Codex subagent のツール制限に部分対応 | rule テキスト内で補完 |
+| `hooks` (lifecycle) | サポート | 非対応（無視） | 非対応（無視） |
+| `memory` (`MEMORY.md` 注入) | サポート | `.claude/agent-memory/` を共通参照 | 同左 |
+| パターン昇格 (`/promote-pattern`) | ネイティブ | `c3 init --platform codex` 後は `.agents/skills/promote-pattern/SKILL.md` を読んで実行 | rule から `.claude/skills/promote-pattern/SKILL.md` を指示 |
+| レポート (`.claude/reports/`) | 共通 | 共通 | 共通 |
+| state (`.claude/state/`) | 共通 | 共通 | 共通 |
+
+レポート・state・memory のファイル名と書き込み先は全プラットフォーム共通。これにより
+Claude Code / Codex / Cursor が同じプロジェクトを行き来しても workflow 状態が保たれる。
+
+---
+
+## 7. 既知の制限
+
+- **`AskUserQuestion` の `multiSelect: true`**: MCP elicitation の仕様上、ホストが multi-select UI に対応していない場合は単一選択に degrade される。`c3 ask --file` の fallback は multi-select に対応
+- **Cursor の subagent**: 2026-05 時点で Cursor は dedicated subagent 機構が限定的。adapter は「同一 agent でフェーズ実行・レポート契約を維持」を方針とする
+- **Codex の `isolation: worktree`**: Codex 側の subagent runtime に依存。worktree 非対応の場合は無視される
+- **改行コード**: adapter 生成ファイルは LF 改行で書き出す（`newline="\n"`）。`.gitattributes` で `eol=lf` を固定済み

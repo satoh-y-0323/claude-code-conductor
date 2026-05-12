@@ -310,7 +310,9 @@ Copy-Item -Recurse claude-code-conductor\.claude your-project\
 
 ## 並列実行 (parallel-agents skill)
 
-計画フェーズで生成した plan-report を YAML フロントマター付きマニフェストとして読み込み、独立タスクを親 Claude の Agent ツール並列起動 + 公式 `isolation: "worktree"` で並列実行できます（v2.0.0 以降は外部プロセス不要）。
+計画フェーズで生成した plan-report を YAML フロントマター付きマニフェストとして読み込み、独立タスクを親 Claude の Agent ツール並列起動 + 公式 `isolation: "worktree"` で並列実行できます。
+
+> **アーキテクチャ移行履歴:** v1.x までは外部プロセス制御の **PO (Parallel Orchestra)** が並列実行を担っていましたが、v2.0.0 で完全撤去されました。現在は Claude Code 公式の subagent 並列起動機能に統一されており、追加プロセス・追加デーモン・追加スキーマは不要です。
 
 要件は Python ≥ 3.10、PATH に `claude` バイナリ、PyYAML（C3 の依存として自動インストール）。
 
