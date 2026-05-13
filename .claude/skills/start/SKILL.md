@@ -124,9 +124,11 @@ Skill(skill="task-routing", args="from_start=true")
 ```
 
 task-routing は args に `from_start=true` が含まれていることをコンテキストから読み取り、
-Step 1（種別の 5 択）のみ実行して種別を返す。Step 2〜4 はスキップされる。
+Step 1（種別の 5 択）のみ実行して終了する。Step 2〜4 はスキップされる。
 
-戻ってきた種別を `task_type` とする。
+上記 Skill 呼び出しが完了したら、ユーザーへの追加メッセージを出力せずに即 Step 0.5-D へ進む。
+task-routing の出力から確定した種別（`feature` / `bug-fix` / `refactor` / `security-audit` / `docs` のいずれか）を `task_type` とする。
+種別が取得できなかった場合（空値・読み取り不能）は、task-routing を再呼び出しする。
 
 ### 0.5-D: TASK_TYPE 行の書き込み
 

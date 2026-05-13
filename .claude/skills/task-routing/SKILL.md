@@ -15,11 +15,12 @@ Ruflo の「タスク種別 → エージェント編成テンプレ」発想を
 呼び出し元は Skill ツールの `args` パラメータで動作モードを指定する。
 LLM はこの skill が起動された際、文脈や呼び出し情報から `from_start=true` の有無を判定する。
 
-- **/start 経由（args に `from_start=true`）**: Step 1 で種別を確定したら
-  そのまま終了し、種別を `/start` 側に返却する。Step 2〜4 はスキップする。
-  TASK_TYPE 書き込みも `/start` 側で行うため、本 skill では行わない。
-  編成詳細は `/start` 後段（Step 1 開始地点選択 / Step 2 フェーズ遷移）で
-  扱うため、ここでは出さない。
+- **/start 経由（args に `from_start=true`）**: Step 1 で種別を確定したら、
+  **確定した種別名（例: `feature`）を1行のみ出力して** task-routing を終了する。
+  Step 2〜4 はスキップする。案内文・「/start へ移行」のような説明文は **絶対に出力しない**。
+  TASK_TYPE 書き込みは `/start` 側（Step 0.5-D）が行うため、本 skill では行わない。
+  start スキルの Step 0.5-D が自動的に続きを実行する。
+  （この制約は LLM のコンテキスト読み飛ばし対策として Step 1 にも記載されている）
 - **単独利用（args 指定なし、または `from_start=false`）**: 従来通り Step 1 → 2 → 3 → 4 を
   順に実行する。Step 4 完了時に TASK_TYPE 書き込みも本 skill が行う。
 
@@ -28,8 +29,9 @@ LLM はこの skill が起動された際、文脈や呼び出し情報から `f
 ## Step 1: タスク種別を選択する
 
 Skill ツールの `args` に `from_start=true` が含まれているときは「/start 経由モード」とみなし、
-Step 1 で種別を確定したら **Step 2〜4 はスキップ** して種別を呼び出し元（/start）に
-返却する（編成詳細は /start 側で表示するため）。
+Step 1 で種別を確定したら **確定した種別名（例: `feature`）を1行のみ出力して** task-routing を終了する。
+Step 2〜4 はスキップ。案内文・「/start へ移行します」などの文言は **絶対に出力しない**。
+（この制約は動作モードセクションにも記載されている）
 
 AskUserQuestion ツール:
 
@@ -144,8 +146,8 @@ AskUserQuestion ツール:
 その後、選択された種別に応じて以下を実行する:
 
 - **feature**:
-  - `args` に `from_start=true` が含まれているとき: 種別を返却するのみ（制御を /start に返す。再帰呼び出しを避ける）
   - `args` 指定なし/`from_start=false` のとき: `.claude/skills/start/SKILL.md` を Read して `/start` フローに合流する
+  - `args` に `from_start=true` が含まれているとき: このケースは Step 1 で処理済みのため Step 4 に到達しない
 - **bug-fix**: `systematic-debugger` → `developer` → `tester` の順に Agent ツールで順次起動し、完了後に `code-reviewer` と `security-reviewer` を 1 メッセージ内で並列起動する
 - **docs**: Agent ツールで `doc-writer` を起動する
 - **refactor**: planner で `po_plan_version` 付き plan-report を生成 → `.claude/skills/parallel-agents/SKILL.md` を Read して並列実行に合流する
