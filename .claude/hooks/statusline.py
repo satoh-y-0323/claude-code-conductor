@@ -23,11 +23,6 @@ ORANGE = '\x1b[38;5;208m'
 DIM    = '\x1b[2m'
 RESET  = '\x1b[0m'
 
-# Gauge characters
-BLOCK       = '█'
-BLOCK_EMPTY = '░'
-TOTAL_CELLS = 10
-
 
 def pct_color(pct: int) -> str:
     if pct > 90:
@@ -40,16 +35,12 @@ def pct_color(pct: int) -> str:
         return GREEN
 
 
-def build_gauge(pct: int) -> str:
-    filled = min(pct // 10, TOTAL_CELLS)
-    empty  = TOTAL_CELLS - filled
-    color  = pct_color(pct)
-    return (
-        DIM + '[' + RESET +
-        color + BLOCK * filled + RESET +
-        DIM + BLOCK_EMPTY * empty + RESET +
-        DIM + ']' + RESET
-    )
+def format_context_size(size: int) -> str:
+    if size >= 900_000:
+        return '1M'
+    elif size >= 100_000:
+        return '200K'
+    return str(size)
 
 
 def format_reset_time(resets_at) -> str:
@@ -88,15 +79,32 @@ def render_output(raw: str) -> None:
     except Exception:
         pass
 
+    header: list[str] = []
+    metrics: list[str] = []
+
+    # [model display name]  context_size  effort  — スペース区切り
+    model = data.get('model') or {}
+    display_name = model.get('display_name', '')
+    if display_name:
+        header.append(f'[{display_name}]')
+
+    # context window size: 200K / 1M
     ctx_window = data.get('context_window') or {}
+    ctx_size = ctx_window.get('context_window_size')
+    if ctx_size:
+        header.append(format_context_size(int(ctx_size)))
+
+    # effort level
+    effort = data.get('effort') or {}
+    effort_level = effort.get('level', '')
+    if effort_level:
+        header.append(effort_level)
+
+    # ctx usg %
     ctx_pct = round(ctx_window.get('used_percentage') or 0)
+    metrics.append('ctx used ' + pct_color(ctx_pct) + str(ctx_pct) + '%' + RESET)
 
-    parts = [
-        DIM + 'context usage:' + RESET + ' ' +
-        build_gauge(ctx_pct) + ' ' +
-        pct_color(ctx_pct) + str(ctx_pct) + '%' + RESET
-    ]
-
+    # rate limits
     rate_limits = data.get('rate_limits')
     if rate_limits:
         five_hour = (
@@ -107,14 +115,10 @@ def render_output(raw: str) -> None:
         if five_hour:
             pct = round(five_hour.get('used_percentage') or 0)
             reset_str = format_reset_time(five_hour.get('resets_at'))
-            part = (
-                DIM + '5hour limits:' + RESET + ' ' +
-                build_gauge(pct) + ' ' +
-                pct_color(pct) + str(pct) + '%' + RESET
-            )
+            part = '5h lim ' + pct_color(pct) + str(pct) + '%' + RESET
             if reset_str:
-                part += ' ' + DIM + reset_str + RESET
-            parts.append(part)
+                part += ' ' + DIM + '(' + reset_str + ')' + RESET
+            metrics.append(part)
 
         seven_day = (
             rate_limits.get('seven_day') or
@@ -124,16 +128,16 @@ def render_output(raw: str) -> None:
         if seven_day:
             pct = round(seven_day.get('used_percentage') or 0)
             reset_str = format_reset_time(seven_day.get('resets_at'))
-            part = (
-                DIM + '7day limits:' + RESET + ' ' +
-                build_gauge(pct) + ' ' +
-                pct_color(pct) + str(pct) + '%' + RESET
-            )
+            part = '7d lim ' + pct_color(pct) + str(pct) + '%' + RESET
             if reset_str:
-                part += ' ' + DIM + reset_str + RESET
-            parts.append(part)
+                part += ' ' + DIM + '(' + reset_str + ')' + RESET
+            metrics.append(part)
 
-    sys.stdout.write('  '.join(parts) + '\n')
+    output_parts: list[str] = []
+    if header:
+        output_parts.append(' '.join(header))
+    output_parts.extend(metrics)
+    sys.stdout.write(' | '.join(output_parts) + '\n')
     sys.stdout.flush()
 
 
