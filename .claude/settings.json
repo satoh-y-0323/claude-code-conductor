@@ -45,6 +45,7 @@
       "Bash(git push origin v*)",
       "Bash(gh release create v*)",
       "Bash(gh release view v*)",
+      "Bash(codex exec*)",
       "WebSearch"
     ],
     "deny": [

@@ -47,13 +47,26 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def handle(args: argparse.Namespace) -> int:
+    if args.response is None and not sys.stdin.isatty():
+        print("c3 ask: --response is required in non-interactive mode", file=sys.stderr)
+        return 1
+
     try:
-        source = args.file if args.file is not None else args.json_text
+        if args.file is not None:
+            source: Path | dict = args.file
+        else:
+            source = json.loads(args.json_text)
         questions = load_questions(source)
         result = answer_questions(questions, response=args.response)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         print(f"c3 ask: {exc}", file=sys.stderr)
         return 1
+    except EOFError:
+        print("\nc3 ask: input aborted", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("", file=sys.stderr)
+        return 130
 
     indent = 2 if args.pretty else None
     print(json.dumps(result, ensure_ascii=False, indent=indent))

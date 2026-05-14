@@ -11,6 +11,7 @@ import platform
 import re
 import subprocess
 import sys
+from urllib.parse import urlparse
 
 try:
     sys.stdin.reconfigure(encoding='utf-8')
@@ -24,13 +25,17 @@ _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 RULES_PATH = os.path.join(_CLAUDE_DIR, 'permission_rules.json')
 
 DEFAULT_RULES: dict = {'auto_allow': [], 'notify_on_auto': True}
+_CREATE_NO_WINDOW = 0x08000000
+# p_arg 付きパターンに対してシェル制御文字を含むコマンドの自動承認を防ぐ
+_SHELL_INJECTION_RE = re.compile(r';|&&|\|\||`|\$\(')
 
 
 def notify(message: str) -> None:
     system = platform.system()
     try:
         if system == 'Darwin':
-            safe = message.replace('\\', '\\\\').replace('"', '\\"')
+            safe = message.replace('\n', ' ').replace('\r', ' ')
+            safe = safe.replace('\\', '\\\\').replace('"', '\\"')
             subprocess.run(
                 ['osascript', '-e', f'display notification "{safe}" with title "Claude Code"'],
                 capture_output=True, timeout=5
@@ -41,21 +46,22 @@ def notify(message: str) -> None:
                 capture_output=True, timeout=5
             )
         elif system == 'Windows':
-            safe = re.sub(r'[`$(){}\r\n]', '', message)
-            safe = safe.replace('"', '`"')
-            ps = (
+            import base64
+            safe_msg = re.sub(r"['\r\n\x00-\x1f\x7f]", '', message)[:200]
+            ps_script = (
                 'Add-Type -AssemblyName System.Windows.Forms; '
                 '$n = New-Object System.Windows.Forms.NotifyIcon; '
                 '$n.Icon = [System.Drawing.SystemIcons]::Information; '
                 '$n.Visible = $true; '
-                f'$n.ShowBalloonTip(4000, "Claude Code", "{safe}", '
+                f"$n.ShowBalloonTip(4000, 'Claude Code', '{safe_msg}', "
                 '[System.Windows.Forms.ToolTipIcon]::Info); '
                 'Start-Sleep -Milliseconds 4500; '
                 '$n.Dispose()'
             )
+            encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
             subprocess.Popen(
-                ['powershell', '-WindowStyle', 'Hidden', '-Command', ps],
-                creationflags=0x08000000  # CREATE_NO_WINDOW
+                ['powershell', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded],
+                creationflags=_CREATE_NO_WINDOW
             )
     except Exception as e:
         print(f'[permission_handler] 通知エラー: {e}', file=sys.stderr)
@@ -97,14 +103,21 @@ def matches_pattern(tool_name: str, tool_input: dict, pattern: str) -> bool:
 
     # ツール別に照合対象を決定
     if tool_name == 'Bash':
-        subject = tool_input.get('command', '')
+        command = tool_input.get('command', '')
+        if _SHELL_INJECTION_RE.search(command):
+            return False
+        subject = command
     elif tool_name in ('Write', 'Edit', 'Read', 'Glob'):
         subject = tool_input.get('file_path', tool_input.get('pattern', ''))
     elif tool_name == 'WebFetch':
         url = tool_input.get('url', '')
         if p_arg.startswith('domain:'):
             domain = p_arg[len('domain:'):]
-            return domain in url
+            try:
+                host = urlparse(url).hostname or ''
+                return host == domain or host.endswith('.' + domain)
+            except Exception:
+                return False
         subject = url
     else:
         subject = str(tool_input)
@@ -132,6 +145,8 @@ def main() -> None:
 
     tool_name = payload.get('tool_name', '')
     tool_input = payload.get('tool_input', {})
+    if not isinstance(tool_input, dict):
+        tool_input = {}
     rules = load_rules()
     description = describe_tool(tool_name, tool_input)
 
