@@ -789,3 +789,222 @@ class TestNotifyOnAutoFalse:
         notify_mock.assert_called_once()
         call_args = notify_mock.call_args[0][0]
         assert "自動承認" in call_args, f"notify の引数に '自動承認' が含まれない: {call_args!r}"
+
+
+# ---------------------------------------------------------------------------
+# TestSuggestPattern: suggest_pattern() のロジック検証
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestPattern:
+    """tool_name + tool_input から auto_allow 用ワイルドカードを推定するロジック."""
+
+    def test_bash_two_tokens(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("Bash", {"command": "git status -s"})
+        assert result == "Bash(git status*)"
+
+    def test_bash_one_token(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("Bash", {"command": "pwd"})
+        assert result == "Bash(pwd*)"
+
+    def test_bash_with_shell_injection_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern(
+            "Bash", {"command": "echo hi; rm -rf /"}
+        )
+        assert result is None
+
+    def test_bash_empty_command_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        assert module.suggest_pattern("Bash", {"command": ""}) is None
+        assert module.suggest_pattern("Bash", {"command": "   "}) is None
+
+    def test_write_with_parent_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern(
+            "Write", {"file_path": ".claude/reports/foo.md"}
+        )
+        assert result == "Write(.claude/reports/**)"
+
+    def test_edit_with_absolute_posix_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("Edit", {"file_path": "/etc/hosts"})
+        assert result == "Edit(/etc/**)"
+
+    def test_read_at_repo_root(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        # ファイル名のみ（親ディレクトリ無し） → tool_name(*)
+        result = module.suggest_pattern("Read", {"file_path": "README.md"})
+        assert result == "Read(*)"
+
+    def test_webfetch_extracts_domain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern(
+            "WebFetch", {"url": "https://github.com/foo/bar"}
+        )
+        assert result == "WebFetch(domain:github.com)"
+
+    def test_webfetch_invalid_url_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        assert module.suggest_pattern("WebFetch", {"url": ""}) is None
+
+    def test_unknown_tool_returns_toolname_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("WebSearch", {})
+        assert result == "WebSearch"
+
+    def test_empty_toolname_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        assert module.suggest_pattern("", {}) is None
+
+
+# ---------------------------------------------------------------------------
+# TestIsPatternAlreadyInAutoAllow: 既存パターンの重複検出
+# ---------------------------------------------------------------------------
+
+
+class TestIsPatternAlreadyInAutoAllow:
+    def test_pattern_in_rules_returns_true(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(
+            json.dumps({"auto_allow": ["Bash(git *)"]}), encoding="utf-8"
+        )
+        module = _load_module(monkeypatch, rules_file)
+        assert module._is_pattern_already_in_auto_allow("Bash(git *)") is True
+
+    def test_pattern_not_in_rules_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(
+            json.dumps({"auto_allow": ["Bash(git *)"]}), encoding="utf-8"
+        )
+        module = _load_module(monkeypatch, rules_file)
+        assert module._is_pattern_already_in_auto_allow("Bash(npm *)") is False
+
+    def test_empty_rules_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(json.dumps({}), encoding="utf-8")
+        module = _load_module(monkeypatch, rules_file)
+        assert module._is_pattern_already_in_auto_allow("Bash(git *)") is False
+
+
+# ---------------------------------------------------------------------------
+# TestNotifyWithAction: notify_with_action() の挙動検証（subprocess.Popen を mock）
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyWithAction:
+    def test_none_pattern_falls_back_to_notify(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        popen_mock = MagicMock()
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+
+        module.notify_with_action("msg", None)
+
+        notify_mock.assert_called_once_with("msg")
+        popen_mock.assert_not_called()
+
+    def test_non_windows_falls_back_to_notify(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        popen_mock = MagicMock()
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Linux")
+
+        module.notify_with_action("msg", "Bash(git *)")
+
+        notify_mock.assert_called_once_with("msg")
+        popen_mock.assert_not_called()
+
+    def test_pattern_already_in_auto_allow_falls_back_to_notify(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        rules_file = tmp_path / "rules.json"
+        rules_file.write_text(
+            json.dumps({"auto_allow": ["Bash(git *)"]}), encoding="utf-8"
+        )
+        module = _load_module(monkeypatch, rules_file)
+        notify_mock = MagicMock()
+        popen_mock = MagicMock()
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        module.notify_with_action("msg", "Bash(git *)")
+
+        notify_mock.assert_called_once_with("msg")
+        popen_mock.assert_not_called()
+
+    def test_windows_with_new_pattern_spawns_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # 実 hooks ディレクトリの permission_handler_toast.py を参照させるため
+        # _HOOKS_DIR をパッチせず module 既定のままにする
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        popen_mock = MagicMock()
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        module.notify_with_action("msg", "Bash(npm install*)")
+
+        # subprocess.Popen は呼ばれる（toast script が存在する前提）
+        popen_mock.assert_called_once()
+        call_args = popen_mock.call_args
+        argv = call_args.args[0]
+        assert "--message" in argv
+        assert "msg" in argv
+        assert "--pattern" in argv
+        assert "Bash(npm install*)" in argv
+        assert "--rules-file" in argv
+        # detach 系フラグが OR で結合されているかを確認
+        assert call_args.kwargs.get("close_fds") is True
+        # 通常の notify は呼ばれない
+        notify_mock.assert_not_called()
+
+    def test_windows_popen_failure_falls_back_to_notify(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        popen_mock = MagicMock(side_effect=OSError("spawn failed"))
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        module.notify_with_action("msg", "Bash(npm install*)")
+
+        notify_mock.assert_called_once_with("msg")

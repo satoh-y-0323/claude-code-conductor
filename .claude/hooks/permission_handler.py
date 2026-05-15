@@ -141,6 +141,119 @@ def describe_tool(tool_name: str, tool_input: dict) -> str:
     return f"{tool_name}({str(tool_input)[:60]})"
 
 
+def suggest_pattern(tool_name: str, tool_input: dict) -> str | None:
+    """tool_name と tool_input から auto_allow 用のワイルドカードパターンを推定する。
+
+    返り値の例:
+      Bash + 'git status -s'           → 'Bash(git status*)'
+      Bash + 'npm install'             → 'Bash(npm install*)'
+      Bash + 'pwd'                     → 'Bash(pwd*)'
+      Write + '.claude/reports/x.md'   → 'Write(.claude/reports/**)'
+      WebFetch + 'https://github.com/' → 'WebFetch(domain:github.com)'
+      WebSearch + 任意                  → 'WebSearch'
+    返り値が None の場合は推定不能（呼び出し側はボタン表示をスキップする）。
+    """
+    if not tool_name:
+        return None
+
+    if tool_name == 'Bash':
+        cmd = tool_input.get('command', '').strip()
+        if not cmd:
+            return None
+        # シェル制御文字を含むコマンドは安全にワイルドカード化できない
+        if _SHELL_INJECTION_RE.search(cmd):
+            return None
+        tokens = cmd.split()
+        if not tokens:
+            return None
+        if len(tokens) >= 2:
+            head = f"{tokens[0]} {tokens[1]}"
+        else:
+            head = tokens[0]
+        return f"Bash({head}*)"
+
+    if tool_name in ('Write', 'Edit', 'Read'):
+        path = tool_input.get('file_path', '')
+        if not path:
+            return None
+        # 親ディレクトリを取り出し、posix 区切り（/）に正規化
+        parent = os.path.dirname(path).replace(os.sep, '/')
+        if not parent or parent in ('.', '/'):
+            return f"{tool_name}(*)"
+        return f"{tool_name}({parent}/**)"
+
+    if tool_name == 'Glob':
+        pat = tool_input.get('pattern', '')
+        if not pat:
+            return f"{tool_name}"
+        return f"{tool_name}({pat})"
+
+    if tool_name == 'WebFetch':
+        url = tool_input.get('url', '')
+        if not url:
+            return None
+        try:
+            host = urlparse(url).hostname or ''
+        except Exception:
+            return None
+        if not host:
+            return None
+        return f"WebFetch(domain:{host})"
+
+    # その他のツールはツール名のみで auto_allow に登録
+    return tool_name
+
+
+def _is_pattern_already_in_auto_allow(pattern: str, rules: dict | None = None) -> bool:
+    """指定パターンが既に auto_allow 配列に存在するかチェックする。"""
+    if rules is None:
+        rules = load_rules()
+    return pattern in (rules.get('auto_allow') or [])
+
+
+def notify_with_action(message: str, pattern: str | None) -> None:
+    """ボタン付き通知を detached subprocess で起動する。
+
+    pattern が None / 既に auto_allow に存在 / Windows 以外なら通常の notify() で fallback。
+    Windows でも windows-toasts が import 失敗するなら toast subprocess 側で fallback。
+    """
+    if pattern is None or platform.system() != 'Windows':
+        notify(message)
+        return
+    if _is_pattern_already_in_auto_allow(pattern):
+        notify(message)
+        return
+
+    toast_script = os.path.join(_HOOKS_DIR, 'permission_handler_toast.py')
+    if not os.path.isfile(toast_script):
+        notify(message)
+        return
+
+    creationflags = (
+        _CREATE_NO_WINDOW
+        | getattr(subprocess, 'DETACHED_PROCESS', 0x00000008)
+        | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x00000200)
+    )
+    try:
+        subprocess.Popen(
+            [
+                sys.executable,
+                toast_script,
+                '--message', message,
+                '--pattern', pattern,
+                '--rules-file', RULES_PATH,
+            ],
+            creationflags=creationflags,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as e:
+        print(f'[permission_handler] toast subprocess 起動失敗: {e}', file=sys.stderr)
+        notify(message)
+
+
 def main() -> None:
     try:
         payload = json.loads(sys.stdin.read())
@@ -166,8 +279,9 @@ def main() -> None:
             }))
             return
 
-    # マッチなし → ダイアログが出る前に通知
-    notify(f'⚠ 承認が必要: {description}')
+    # マッチなし → ダイアログが出る前に通知（ボタン付き、可能なら）
+    pattern = suggest_pattern(tool_name, tool_input)
+    notify_with_action(f'⚠ 承認が必要: {description}', pattern)
 
 
 if __name__ == '__main__':

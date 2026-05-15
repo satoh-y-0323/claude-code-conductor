@@ -28,6 +28,10 @@ dependencies = [
     "duckdb>=0.10",
 ]
 
+[project.optional-dependencies]
+# Windows でボタン付き通知（permission_handler の「自動承認に追加」UI）を有効化する
+notify = ["windows-toasts>=1.0; sys_platform == 'win32'"]
+
 [project.scripts]
 c3 = "c3.cli:main"
 
