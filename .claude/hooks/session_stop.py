@@ -75,6 +75,15 @@ def _has_recent_sessions(sessions_dir: str, window_days: int = 7) -> bool:
     return False
 
 
+def _llm_summary_recently_updated(claude_dir: str, cooldown_minutes: int = 60) -> bool:
+    """llm_summary.md が cooldown_minutes 分以内に更新されていれば True を返す."""
+    summary_path = os.path.join(claude_dir, "memory", "llm_summary.md")
+    if not os.path.isfile(summary_path):
+        return False
+    mtime = datetime.fromtimestamp(os.path.getmtime(summary_path), tz=timezone.utc)
+    return (datetime.now(timezone.utc) - mtime).total_seconds() < cooldown_minutes * 60
+
+
 def _create_flag(flag_path: str) -> None:
     """flag_path の親ディレクトリを作成してから空ファイルを touch する."""
     os.makedirs(os.path.dirname(flag_path), exist_ok=True)
@@ -142,6 +151,10 @@ def main() -> int:
         # 直近 7 日に session ファイルがあるか確認
         sessions_dir = os.path.join(_CLAUDE_DIR, "memory", "sessions")
         if not _has_recent_sessions(sessions_dir):
+            return 0
+
+        # llm_summary.md が直近 60 分以内に更新済みならスキップ（連続発火防止）
+        if _llm_summary_recently_updated(_CLAUDE_DIR):
             return 0
 
         # フラグ作成 + stderr に Agent 起動指示
