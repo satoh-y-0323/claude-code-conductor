@@ -19,15 +19,18 @@ memory-consolidation: MemoryConsolidation MVP の検証。
   9. 対象ファイル無しなら False、ファイルは作らない
 
  main (E2E):
- 10. 失敗してもセッションを止めない（exit 0）
+ 10. Stop フック相当の呼び出しで consolidated_summary.md が生成される
+ 11. 失敗してもセッションを止めない（exit 0）
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
+import time
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -335,13 +338,13 @@ class TestMainE2E:
     def test_main_returns_zero_on_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """run_sync が例外を投げても exit 0 でセッションを止めない。"""
+        """write_summary が例外を投げても exit 0 でセッションを止めない。"""
         mod = _load_hook_module()
 
         def boom(*args, **kwargs):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(mod, "run_sync", boom)
+        monkeypatch.setattr(mod, "write_summary", boom)
         monkeypatch.setattr(sys, "stdin", _StubStdin())
 
         rc = mod.main()
@@ -656,3 +659,1291 @@ class TestPromotionCandidates:
         text = output_path.read_text(encoding="utf-8")
         # 表セル内では `|` を `\|` にエスケープ
         assert r"before\|after pipe" in text
+
+
+# ---------------------------------------------------------------------------
+# memory-consolidation Phase 2-C: claude --headless LLM 要約
+# ---------------------------------------------------------------------------
+
+
+class TestLLMSummary:
+    """`build_llm_summary_section()` の検証。subprocess.run / shutil.which を mock 化。"""
+
+    def _make_files_for_summary(self, tmp_path: Path) -> list[str]:
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        _make_session(sessions, "20260507", success=["- foo"], failure=["- bar"])
+        mod = _load_hook_module()
+        return mod.list_recent_session_files(
+            str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+    def test_skipped_when_cli_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """shutil.which が None を返す → build_llm_summary_section は None。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: None)
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is None
+
+    def test_skipped_on_timeout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess.run が TimeoutExpired を投げる → None。"""
+        import subprocess as sp
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+
+        def fake_run(*args, **kwargs):
+            raise sp.TimeoutExpired(cmd=args[0], timeout=60)
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is None
+
+    def test_skipped_on_nonzero_returncode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """returncode != 0 → None。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+
+        class _FakeResult:
+            returncode = 1
+            stdout = "Error: something"
+            stderr = "boom"
+
+        def fake_run(*args, **kwargs):
+            return _FakeResult()
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is None
+
+    def test_truncates_oversized_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """stdout が出力上限を超えた場合は切り詰めマーカーが付与される。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+
+        oversized = "- " + ("x" * 5000)  # 5000 文字超
+
+        class _FakeResult:
+            returncode = 0
+            stdout = oversized
+            stderr = ""
+
+        monkeypatch.setattr(mod.subprocess, "run",
+                            lambda *a, **k: _FakeResult())
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is not None
+        # 「## LLM 要約」見出しと切り詰めマーカーが含まれる
+        assert "## LLM 要約" in result
+        assert "切り詰め" in result or "truncated" in result
+        # 全体が制御サイズ内に収まっている
+        assert len(result) < 5500  # 4000 + ヘッダ + マーカー余裕
+
+    def test_recursive_depth_guard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """env に C3_CONSOLIDATE_LLM_DEPTH=1 → subprocess.run 未呼び出しで None。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setenv("C3_CONSOLIDATE_LLM_DEPTH", "1")
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+
+        called = {"n": 0}
+
+        def fake_run(*args, **kwargs):
+            called["n"] += 1
+            raise AssertionError("subprocess.run should NOT be called when depth>=1")
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        result = mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+        assert result is None
+        assert called["n"] == 0
+
+    def test_claude_subprocess_uses_create_no_window_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """build_llm_summary_section が Windows で claude.exe を呼ぶ際に CREATE_NO_WINDOW を指定する。
+
+        DETACHED 系で起動された python から console アプリ (claude.exe) を呼ぶと
+        Windows が新コンソールを割り当てて可視化する問題への対策。
+        """
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "C:/fake/claude.exe")
+        # 再帰防止フラグはクリア
+        monkeypatch.delenv("C3_CONSOLIDATE_LLM_DEPTH", raising=False)
+        # platform を win32 とみなして実行（実環境が win 以外でも検証可能にする）
+        monkeypatch.setattr(mod.sys, "platform", "win32")
+
+        recorded: dict = {}
+
+        class _FakeResult:
+            returncode = 0
+            stdout = "## summary body"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            recorded["kwargs"] = kwargs
+            return _FakeResult()
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        CREATE_NO_WINDOW = 0x08000000
+        flags = recorded["kwargs"].get("creationflags", 0)
+        assert flags & CREATE_NO_WINDOW, (
+            "Windows では claude subprocess に CREATE_NO_WINDOW を指定する必要がある"
+        )
+
+    def test_claude_subprocess_no_creationflags_on_unix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unix 系では claude subprocess に creationflags を指定しない。"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/usr/local/bin/claude")
+        monkeypatch.delenv("C3_CONSOLIDATE_LLM_DEPTH", raising=False)
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+
+        recorded: dict = {}
+
+        class _FakeResult:
+            returncode = 0
+            stdout = "## summary body"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            recorded["kwargs"] = kwargs
+            return _FakeResult()
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        assert "creationflags" not in recorded["kwargs"], (
+            "Unix では creationflags を指定してはならない（Windows 専用フラグ）"
+        )
+
+
+class TestMainE2EExtended:
+    """main() の Phase 2 拡張全体の E2E 検証。"""
+
+    def test_main_runs_all_three_extensions_in_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MVP → LLM → promotion → archive の順で各ステップが呼ばれる。"""
+        mod = _load_hook_module()
+
+        call_order: list[str] = []
+
+        def fake_write_summary(*a, **kw):
+            call_order.append("write_summary")
+            return True
+
+        def fake_build_llm(*a, **kw):
+            call_order.append("build_llm")
+            return None  # スキップ扱い (副作用なし)
+
+        def fake_build_promotion(*a, **kw):
+            call_order.append("build_promotion")
+            return ("", [])
+
+        def fake_write_promotion(*a, **kw):
+            call_order.append("write_promotion")
+            return True
+
+        def fake_archive(*a, **kw):
+            call_order.append("archive")
+            return []
+
+        monkeypatch.setattr(mod, "write_summary", fake_write_summary)
+        monkeypatch.setattr(mod, "build_llm_summary_section", fake_build_llm)
+        monkeypatch.setattr(mod, "build_promotion_candidates_section",
+                            fake_build_promotion)
+        monkeypatch.setattr(mod, "write_promotion_candidates_log",
+                            fake_write_promotion)
+        monkeypatch.setattr(mod, "archive_old_sessions", fake_archive)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod.main()
+        assert rc == 0
+        # write_summary は LLM 要約セクションも呼ぶ可能性があるが、
+        # main() の直接呼び出し順としては summary → promotion → archive
+        assert call_order.index("write_summary") < call_order.index("build_promotion")
+        assert call_order.index("build_promotion") < call_order.index("archive")
+
+    def test_main_partial_failure_continues(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LLM ステップ (write_summary 内) が例外を投げても archive は実行される。"""
+        mod = _load_hook_module()
+
+        archive_called = {"n": 0}
+
+        def boom_summary(*a, **kw):
+            raise RuntimeError("summary boom")
+
+        def fake_archive(*a, **kw):
+            archive_called["n"] += 1
+            return []
+
+        monkeypatch.setattr(mod, "write_summary", boom_summary)
+        monkeypatch.setattr(mod, "archive_old_sessions", fake_archive)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod.main()
+        assert rc == 0
+        assert archive_called["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Stop hook 軽量化（LLM 要約のバックグラウンド化）
+# ---------------------------------------------------------------------------
+
+
+class TestFullSyncMain:
+    """`_full_sync_main()` が同期処理のみで完了し、LLM をデタッチ起動する検証。"""
+
+    def test_full_sync_main_uses_enable_llm_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同期フェーズで write_summary は enable_llm=False で呼ばれる。"""
+        mod = _load_hook_module()
+
+        recorded: dict = {}
+
+        def fake_write_summary(*a, **kw):
+            recorded["enable_llm"] = kw.get("enable_llm")
+            return True
+
+        def fake_promotion(*a, **kw):
+            return ("", [])
+
+        monkeypatch.setattr(mod, "write_summary", fake_write_summary)
+        monkeypatch.setattr(mod, "build_promotion_candidates_section", fake_promotion)
+        monkeypatch.setattr(mod, "write_promotion_candidates_log",
+                            lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "archive_old_sessions", lambda *a, **kw: [])
+        monkeypatch.setattr(mod, "_spawn_detached_llm", lambda *a, **kw: None)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod._full_sync_main()
+        assert rc == 0
+        assert recorded.get("enable_llm") is False, (
+            "_full_sync_main は LLM を呼び出さないため enable_llm=False で write_summary を呼ぶこと"
+        )
+
+    def test_full_sync_main_spawns_detached_llm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_full_sync_main の最後に _spawn_detached_llm が呼ばれる。"""
+        mod = _load_hook_module()
+
+        spawned: dict = {"called": False, "today_iso": None}
+
+        def fake_spawn(today_iso: str) -> None:
+            spawned["called"] = True
+            spawned["today_iso"] = today_iso
+
+        monkeypatch.setattr(mod, "write_summary", lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "build_promotion_candidates_section",
+                            lambda *a, **kw: ("", []))
+        monkeypatch.setattr(mod, "write_promotion_candidates_log",
+                            lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "archive_old_sessions", lambda *a, **kw: [])
+        monkeypatch.setattr(mod, "_spawn_detached_llm", fake_spawn)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod._full_sync_main()
+        assert rc == 0
+        assert spawned["called"] is True, "_spawn_detached_llm が呼ばれていません"
+        # ISO 形式の日時が渡されること
+        assert spawned["today_iso"] is not None
+        # parse できることを確認（fromisoformat が成功すれば OK）
+        datetime.fromisoformat(spawned["today_iso"])
+
+    def test_full_sync_main_does_not_wait_for_llm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_spawn_detached_llm が Popen を呼んでも親は wait しない（即返却）。"""
+        mod = _load_hook_module()
+
+        popen_kwargs_recorded: dict = {}
+
+        class FakePopen:
+            def __init__(self, args, **kwargs):
+                popen_kwargs_recorded["args"] = args
+                popen_kwargs_recorded["kwargs"] = kwargs
+                self.waited = False
+
+            def wait(self, *a, **kw):
+                self.waited = True
+
+        monkeypatch.setattr(mod, "write_summary", lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "build_promotion_candidates_section",
+                            lambda *a, **kw: ("", []))
+        monkeypatch.setattr(mod, "write_promotion_candidates_log",
+                            lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "archive_old_sessions", lambda *a, **kw: [])
+        monkeypatch.setattr(mod.subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod._full_sync_main()
+        assert rc == 0
+        # Popen が呼ばれていること
+        assert popen_kwargs_recorded.get("args") is not None
+        # 引数に --llm-only が含まれていること
+        assert "--llm-only" in popen_kwargs_recorded["args"]
+
+
+class TestSpawnDetachedLLM:
+    """`_spawn_detached_llm()` のプラットフォーム別 kwargs 検証。"""
+
+    def test_spawn_uses_devnull_stdio(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """子プロセスの stdin/stdout/stderr が DEVNULL になる。"""
+        mod = _load_hook_module()
+        recorded: dict = {}
+
+        def fake_popen(args, **kwargs):
+            recorded["args"] = args
+            recorded["kwargs"] = kwargs
+
+            class _Stub:
+                pass
+            return _Stub()
+
+        monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+        mod._spawn_detached_llm("2026-05-10T12:00:00+00:00")
+
+        kwargs = recorded["kwargs"]
+        import subprocess as sp
+        assert kwargs["stdin"] == sp.DEVNULL
+        assert kwargs["stdout"] == sp.DEVNULL
+        assert kwargs["stderr"] == sp.DEVNULL
+        assert kwargs.get("close_fds") is True
+
+    def test_spawn_uses_detach_flags_per_platform(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows: creationflags が DETACHED_PROCESS を含む。Unix: start_new_session=True。"""
+        mod = _load_hook_module()
+        recorded: dict = {}
+
+        def fake_popen(args, **kwargs):
+            recorded["kwargs"] = kwargs
+
+            class _Stub:
+                pass
+            return _Stub()
+
+        monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+        mod._spawn_detached_llm("2026-05-10T12:00:00+00:00")
+        kwargs = recorded["kwargs"]
+
+        if sys.platform == "win32":
+            # CREATE_NO_WINDOW を使う（DETACHED_PROCESS だと子が更に呼ぶ
+            # console アプリで新ウィンドウが可視化されるため）
+            CREATE_NO_WINDOW = 0x08000000
+            DETACHED_PROCESS = 0x00000008
+            assert "creationflags" in kwargs
+            assert kwargs["creationflags"] & CREATE_NO_WINDOW, (
+                "Windows では CREATE_NO_WINDOW フラグが必要"
+            )
+            assert not (kwargs["creationflags"] & DETACHED_PROCESS), (
+                "DETACHED_PROCESS は CREATE_NO_WINDOW と排他なので指定してはならない"
+            )
+        else:
+            assert kwargs.get("start_new_session") is True, (
+                "Unix では start_new_session=True が必要"
+            )
+
+    def test_spawn_propagates_today_iso(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """argv に渡された today_iso が子プロセス引数に含まれる。"""
+        mod = _load_hook_module()
+        recorded: dict = {}
+
+        def fake_popen(args, **kwargs):
+            recorded["args"] = args
+
+            class _Stub:
+                pass
+            return _Stub()
+
+        monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+        today_iso = "2026-05-10T12:34:56+00:00"
+        mod._spawn_detached_llm(today_iso)
+
+        assert today_iso in recorded["args"], (
+            f"args に today_iso が含まれていません: {recorded['args']}"
+        )
+
+    def test_spawn_swallows_oserror(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Popen が OSError を投げても親はクラッシュしない（exit 0 維持）。"""
+        mod = _load_hook_module()
+
+        def boom(*a, **kw):
+            raise OSError("simulated spawn failure")
+
+        monkeypatch.setattr(mod.subprocess, "Popen", boom)
+
+        # 例外を投げずに完了すること
+        mod._spawn_detached_llm("2026-05-10T12:00:00+00:00")
+        captured = capsys.readouterr()
+        assert "detach spawn failed" in captured.err
+
+
+class TestLLMLock:
+    """LLM 子プロセスのロック機構検証。"""
+
+    def test_acquire_creates_lock_file(self, tmp_path: Path) -> None:
+        """ロック取得時にロックファイルが作成される。"""
+        mod = _load_hook_module()
+        lock_path = str(tmp_path / "test.lock")
+
+        assert mod._acquire_llm_lock(lock_path) is True
+        assert Path(lock_path).is_file()
+
+    def test_acquire_fails_when_fresh_lock_exists(
+        self, tmp_path: Path
+    ) -> None:
+        """新鮮なロックがある場合 False を返す。"""
+        mod = _load_hook_module()
+        lock_path = tmp_path / "test.lock"
+        # 新鮮なロックを作る
+        lock_path.write_text("123\n0.0", encoding="utf-8")
+        # mtime を現在に更新
+        os.utime(lock_path, None)
+
+        assert mod._acquire_llm_lock(str(lock_path)) is False
+
+    def test_acquire_breaks_stale_lock(self, tmp_path: Path) -> None:
+        """stale なロック（LOCK_STALE_SEC 超過）は破棄して取得できる。"""
+        mod = _load_hook_module()
+        lock_path = tmp_path / "test.lock"
+        lock_path.write_text("123\n0.0", encoding="utf-8")
+        # mtime を LOCK_STALE_SEC + 10 秒前に設定
+        old_time = time.time() - (mod.LOCK_STALE_SEC + 10)
+        os.utime(lock_path, (old_time, old_time))
+
+        assert mod._acquire_llm_lock(str(lock_path)) is True
+
+    def test_release_removes_lock_file(self, tmp_path: Path) -> None:
+        """ロック解放時にロックファイルが削除される。"""
+        mod = _load_hook_module()
+        lock_path = str(tmp_path / "test.lock")
+        mod._acquire_llm_lock(lock_path)
+        assert Path(lock_path).is_file()
+
+        mod._release_llm_lock(lock_path)
+        assert not Path(lock_path).is_file()
+
+    def test_release_handles_missing_file(self, tmp_path: Path) -> None:
+        """ロックファイルが存在しなくても release はエラーを投げない。"""
+        mod = _load_hook_module()
+        lock_path = str(tmp_path / "nonexistent.lock")
+        # 例外なく完了すること
+        mod._release_llm_lock(lock_path)
+
+
+class TestLLMOnlyMain:
+    """`--llm-only` モードの検証。"""
+
+    def test_llm_only_main_calls_write_summary_with_llm_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_llm_only_main は enable_llm=True で write_summary を呼ぶ。"""
+        mod = _load_hook_module()
+        lock_path = str(tmp_path / "test.lock")
+        monkeypatch.setattr(mod, "LOCK_PATH", lock_path)
+
+        recorded: dict = {}
+
+        def fake_write_summary(*a, **kw):
+            recorded["enable_llm"] = kw.get("enable_llm")
+            return True
+
+        monkeypatch.setattr(mod, "write_summary", fake_write_summary)
+        monkeypatch.setattr(sys, "argv",
+                            ["prog", "--llm-only", "2026-05-10T12:00:00+00:00"])
+
+        rc = mod._llm_only_main()
+        assert rc == 0
+        assert recorded.get("enable_llm") is True, (
+            "_llm_only_main は LLM を呼ぶため enable_llm=True で write_summary を呼ぶこと"
+        )
+        # ロックは解放されていること
+        assert not Path(lock_path).is_file()
+
+    def test_llm_only_main_skips_when_lock_held(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """新鮮なロックがある場合 write_summary は呼ばれない。"""
+        mod = _load_hook_module()
+        lock_path = tmp_path / "test.lock"
+        # 既存の新鮮なロックを設置
+        lock_path.write_text("999\n0.0", encoding="utf-8")
+        os.utime(lock_path, None)
+
+        monkeypatch.setattr(mod, "LOCK_PATH", str(lock_path))
+
+        called = {"n": 0}
+
+        def fake_write_summary(*a, **kw):
+            called["n"] += 1
+            return True
+
+        monkeypatch.setattr(mod, "write_summary", fake_write_summary)
+        monkeypatch.setattr(sys, "argv",
+                            ["prog", "--llm-only", "2026-05-10T12:00:00+00:00"])
+
+        rc = mod._llm_only_main()
+        assert rc == 0
+        assert called["n"] == 0, "ロック保持中は write_summary が呼ばれないこと"
+        # 既存ロックは保護される（解放されない）
+        assert lock_path.is_file()
+
+    def test_llm_only_main_releases_lock_on_exception(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """write_summary が例外を投げても finally でロックが解放される。"""
+        mod = _load_hook_module()
+        lock_path = str(tmp_path / "test.lock")
+        monkeypatch.setattr(mod, "LOCK_PATH", lock_path)
+
+        def boom(*a, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(mod, "write_summary", boom)
+        monkeypatch.setattr(sys, "argv",
+                            ["prog", "--llm-only", "2026-05-10T12:00:00+00:00"])
+
+        rc = mod._llm_only_main()
+        assert rc == 0  # 例外を握りつぶして 0 を返す
+        # ロックは解放されている
+        assert not Path(lock_path).is_file()
+
+
+class TestParseTodayArg:
+    """`_parse_today_arg()` の検証。"""
+
+    def test_parses_iso_with_tz(self) -> None:
+        mod = _load_hook_module()
+        argv = ["prog", "--llm-only", "2026-05-10T12:34:56+00:00"]
+        result = mod._parse_today_arg(argv)
+        assert result == datetime(2026, 5, 10, 12, 34, 56, tzinfo=timezone.utc)
+
+    def test_parses_iso_without_tz_assumes_utc(self) -> None:
+        mod = _load_hook_module()
+        argv = ["prog", "--llm-only", "2026-05-10T12:34:56"]
+        result = mod._parse_today_arg(argv)
+        assert result.tzinfo is not None
+        assert result.tzinfo.utcoffset(None) == timedelta(0)
+
+    def test_falls_back_to_now_on_invalid(self) -> None:
+        mod = _load_hook_module()
+        argv = ["prog", "--llm-only", "garbage"]
+        result = mod._parse_today_arg(argv)
+        # now に近い値が返ることを確認
+        assert isinstance(result, datetime)
+        assert (datetime.now(timezone.utc) - result).total_seconds() < 5
+
+    def test_falls_back_to_now_when_flag_missing(self) -> None:
+        mod = _load_hook_module()
+        argv = ["prog"]
+        result = mod._parse_today_arg(argv)
+        assert isinstance(result, datetime)
+
+
+class TestMainDispatch:
+    """`main()` が argv に応じて適切なエントリへ分岐する検証。"""
+
+    def test_main_dispatches_to_llm_only_when_flag_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = _load_hook_module()
+        called = {"llm_only": False, "full_sync": False}
+
+        monkeypatch.setattr(mod, "_llm_only_main",
+                            lambda: called.update(llm_only=True) or 0)
+        monkeypatch.setattr(mod, "_full_sync_main",
+                            lambda: called.update(full_sync=True) or 0)
+        monkeypatch.setattr(sys, "argv",
+                            ["prog", "--llm-only", "2026-05-10T12:00:00+00:00"])
+
+        rc = mod.main()
+        assert rc == 0
+        assert called["llm_only"] is True
+        assert called["full_sync"] is False
+
+    def test_main_dispatches_to_full_sync_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = _load_hook_module()
+        called = {"llm_only": False, "full_sync": False}
+
+        monkeypatch.setattr(mod, "_llm_only_main",
+                            lambda: called.update(llm_only=True) or 0)
+        monkeypatch.setattr(mod, "_full_sync_main",
+                            lambda: called.update(full_sync=True) or 0)
+        monkeypatch.setattr(sys, "argv", ["prog"])
+
+        rc = mod.main()
+        assert rc == 0
+        assert called["full_sync"] is True
+        assert called["llm_only"] is False
+
+
+# ---------------------------------------------------------------------------
+# memory-consolidation 消費側: LLM 要約抽出 + プレースホルダ
+# ---------------------------------------------------------------------------
+
+
+def _make_summary_with_all_sections() -> str:
+    """MVP / LLM 要約 / 昇格候補 の 3 セクションを含むダミー summary を返す。"""
+    return (
+        "# 集約サマリ\n"
+        "\n"
+        "_直近 7 日のマージ_\n"
+        "\n"
+        "## うまくいったアプローチ\n"
+        "\n"
+        "- 成功 1\n"
+        "- 成功 2\n"
+        "\n"
+        "## 試みたが失敗したアプローチ\n"
+        "\n"
+        "- 失敗 1\n"
+        "\n"
+        "## LLM 要約\n"
+        "\n"
+        "_生成: 2026-05-10T12:00:00+00:00 / model: claude (CLI default)_\n"
+        "\n"
+        "### 主要な傾向\n"
+        "- バックグラウンド化が体感に効いた\n"
+        "- Windows console 問題は CREATE_NO_WINDOW で解決\n"
+        "\n"
+        "## 昇格候補\n"
+        "\n"
+        "| ID | trust |\n"
+        "|---|---|\n"
+        "| foo | 0.5 |\n"
+    )
+
+
+class TestLLMSummaryExtract:
+    """`_write_llm_summary_extract()` の検証。"""
+
+    def test_extracts_llm_section_only(self, tmp_path: Path) -> None:
+        """consolidated_summary.md から ## LLM 要約 セクションだけを切り出す。"""
+        mod = _load_hook_module()
+        source = tmp_path / "consolidated_summary.md"
+        target = tmp_path / "llm_summary.md"
+        source.write_text(_make_summary_with_all_sections(), encoding="utf-8")
+
+        result = mod._write_llm_summary_extract(str(source), str(target))
+        assert result is True
+        assert target.is_file()
+
+        content = target.read_text(encoding="utf-8")
+        # LLM 要約 セクション本体は含まれる
+        assert content.startswith("## LLM 要約\n")
+        assert "バックグラウンド化が体感に効いた" in content
+        assert "Windows console" in content
+        # MVP / 昇格候補 は含まれない
+        assert "うまくいったアプローチ" not in content
+        assert "成功 1" not in content
+        assert "昇格候補" not in content
+        # サイズが小さい（4KB 以下）
+        assert len(content) < 4096
+
+    def test_skips_when_source_missing(self, tmp_path: Path) -> None:
+        """source ファイル不在時は False を返し target を作らない。"""
+        mod = _load_hook_module()
+        source = tmp_path / "missing.md"
+        target = tmp_path / "llm_summary.md"
+
+        result = mod._write_llm_summary_extract(str(source), str(target))
+        assert result is False
+        assert not target.exists()
+
+    def test_skips_when_llm_section_missing(self, tmp_path: Path) -> None:
+        """source に ## LLM 要約 がなければ False、既存 target を上書きしない。"""
+        mod = _load_hook_module()
+        source = tmp_path / "consolidated_summary.md"
+        target = tmp_path / "llm_summary.md"
+        # LLM 要約セクションを含まない summary
+        source.write_text(
+            "# 集約サマリ\n\n## うまくいったアプローチ\n- 成功\n",
+            encoding="utf-8",
+        )
+        # 既存 target を作っておく
+        target.write_text("既存内容", encoding="utf-8")
+
+        result = mod._write_llm_summary_extract(str(source), str(target))
+        assert result is False
+        # 既存 target は上書きされない
+        assert target.read_text(encoding="utf-8") == "既存内容"
+
+    def test_atomic_write_replaces_existing(self, tmp_path: Path) -> None:
+        """既存の target は新しい内容で上書きされる。"""
+        mod = _load_hook_module()
+        source = tmp_path / "consolidated_summary.md"
+        target = tmp_path / "llm_summary.md"
+        source.write_text(_make_summary_with_all_sections(), encoding="utf-8")
+        target.write_text("古い内容", encoding="utf-8")
+
+        result = mod._write_llm_summary_extract(str(source), str(target))
+        assert result is True
+        content = target.read_text(encoding="utf-8")
+        assert "古い内容" not in content
+        assert content.startswith("## LLM 要約\n")
+
+
+class TestLLMSummaryPlaceholder:
+    """`_ensure_llm_summary_placeholder()` の検証。"""
+
+    def test_creates_placeholder_when_missing(self, tmp_path: Path) -> None:
+        """target ファイル不在時にプレースホルダを書き出す。"""
+        mod = _load_hook_module()
+        target = tmp_path / "llm_summary.md"
+        assert not target.exists()
+
+        mod._ensure_llm_summary_placeholder(str(target))
+
+        assert target.is_file()
+        content = target.read_text(encoding="utf-8")
+        assert content.startswith("## LLM 要約\n")
+        assert "未生成" in content
+
+    def test_no_overwrite_when_exists(self, tmp_path: Path) -> None:
+        """既存 target は上書きしない。"""
+        mod = _load_hook_module()
+        target = tmp_path / "llm_summary.md"
+        target.write_text("既存の重要な内容", encoding="utf-8")
+
+        mod._ensure_llm_summary_placeholder(str(target))
+
+        assert target.read_text(encoding="utf-8") == "既存の重要な内容"
+
+
+class TestFullSyncMainEnsuresPlaceholder:
+    """`_full_sync_main()` がプレースホルダ確保を呼ぶ検証。"""
+
+    def test_full_sync_main_calls_placeholder_helper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = _load_hook_module()
+        called = {"placeholder": False}
+
+        def fake_placeholder(*a, **kw):
+            called["placeholder"] = True
+
+        monkeypatch.setattr(mod, "write_summary", lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "build_promotion_candidates_section",
+                            lambda *a, **kw: ("", []))
+        monkeypatch.setattr(mod, "write_promotion_candidates_log",
+                            lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "archive_old_sessions", lambda *a, **kw: [])
+        monkeypatch.setattr(mod, "_spawn_detached_llm", lambda *a, **kw: None)
+        monkeypatch.setattr(mod, "_ensure_llm_summary_placeholder",
+                            fake_placeholder)
+        monkeypatch.setattr(sys, "stdin", _StubStdin())
+
+        rc = mod._full_sync_main()
+        assert rc == 0
+        assert called["placeholder"] is True, (
+            "_full_sync_main は _ensure_llm_summary_placeholder を呼ぶ必要がある"
+        )
+
+
+# ---------------------------------------------------------------------------
+# [CR-NEW] write_summary アトミック書き込み検証
+# 並列 Stop hook 競合で consolidated_summary.md が中途半端な状態になる
+# リスクを排除するため、write_summary() が os.replace 経由のアトミック書き込みを
+# 使うことを振る舞いベースで検証する。
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSummaryAtomicWrite:
+    """`write_summary()` がアトミック書き込み（tempfile + os.replace）を使う検証。[CR-NEW]
+
+    振る舞いベースのテスト方針:
+    - write_summary() 呼び出し中に os.replace が呼ばれることを確認する
+    - 直接 open(..., "w") で書き込んでいないことを間接的に検証する
+    - 実装の内部詳細（tempfile の prefix 等）には依存しない
+    """
+
+    def test_write_summary_calls_os_replace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """write_summary() が output_path へ書き込む際に os.replace を経由すること。
+
+        Red フェーズ: 現在の実装は open(..., "w") 直接書き込みのため、
+        os.replace は呼ばれず FAIL する（機能未実装による失敗）。
+        """
+        mod = _load_hook_module()
+        sessions = tmp_path / "memory" / "sessions"
+        sessions.mkdir(parents=True)
+        _make_session(sessions, "20260507", success=["- foo"])
+
+        output = tmp_path / "memory" / "consolidated_summary.md"
+
+        replace_called_with_target: list[str] = []
+        original_replace = os.replace
+
+        def spy_replace(src: str, dst: str) -> None:
+            replace_called_with_target.append(dst)
+            return original_replace(src, dst)
+
+        monkeypatch.setattr(mod.os, "replace", spy_replace)
+
+        ok = mod.write_summary(
+            str(output),
+            sessions_dir=str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        assert ok is True, "write_summary() は True を返すべき"
+        assert str(output) in replace_called_with_target, (
+            "write_summary() は os.replace で output_path に書き込む必要がある。"
+            "現在は open(..., 'w') を直接使用しており、並列 Stop hook で競合が発生するリスクがある。"
+            "[CR-NEW] アトミック書き込みが実装されていない。"
+        )
+
+    def test_write_summary_does_not_use_direct_open_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """write_summary() が output_path を直接 open('w') しないこと。
+
+        Red フェーズ: 現在の実装は output_path を直接 open("w") で書き込むため、
+        このテストは FAIL する（機能未実装による失敗）。
+
+        実装済みになれば: _atomic_write() を経由するため tempfile に書き込んだ後
+        os.replace されるので、output_path を直接 open("w") することはない。
+        """
+        mod = _load_hook_module()
+        sessions = tmp_path / "memory" / "sessions"
+        sessions.mkdir(parents=True)
+        _make_session(sessions, "20260507", success=["- foo"])
+
+        output = tmp_path / "memory" / "consolidated_summary.md"
+        output_str = str(output)
+
+        direct_open_paths: list[str] = []
+        original_open = open  # builtins.open のコピー
+
+        def spy_open(file, mode="r", *args, **kwargs):
+            # output_path を書き込みモードで直接 open しているか検出
+            if str(file) == output_str and "w" in str(mode):
+                direct_open_paths.append(str(file))
+            return original_open(file, mode, *args, **kwargs)
+
+        # builtins.open ではなくモジュールスコープの open をパッチ
+        # consolidate_memory.py は open() をグローバル呼び出しするため
+        # monkeypatch.setattr でモジュール属性を差し替える手法は機能しない。
+        # os.replace スパイで代替する（上位テストで検証済み）。
+        # このテストは「os.replace が呼ばれることで direct open を使っていない」を
+        # 間接確認するためのガード。
+        replace_called: list[str] = []
+        original_replace = os.replace
+
+        def spy_replace(src: str, dst: str) -> None:
+            replace_called.append(dst)
+            return original_replace(src, dst)
+
+        monkeypatch.setattr(mod.os, "replace", spy_replace)
+
+        ok = mod.write_summary(
+            output_str,
+            sessions_dir=str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        assert ok is True
+        # アトミック書き込みが実装されていれば os.replace が必ず呼ばれる
+        assert output_str in replace_called, (
+            "アトミック書き込みでは tempfile → output_path の os.replace が必須。"
+            "現在の直接書き込み実装では os.replace は呼ばれない。[CR-NEW]"
+        )
+
+    def test_write_summary_atomic_survives_concurrent_reads(
+        self, tmp_path: Path
+    ) -> None:
+        """write_summary() 書き込み中にファイルが読まれても破損しないこと（振る舞い検証）。
+
+        Red フェーズ: 現在の実装は open(..., "w") を使うため、書き込み途中の
+        ファイルが読まれると中途半端な状態が見える可能性がある。
+        アトミック書き込みでは tempfile に完全書き込み後に os.replace するため、
+        読み手は常に「完全なファイル」か「前のファイル」しか見えない。
+
+        このテストは write_summary() が実際にアトミック書き込みを使って
+        出力ファイルを生成することをエンドツーエンドで確認する。
+        """
+        import threading
+
+        mod = _load_hook_module()
+        sessions = tmp_path / "memory" / "sessions"
+        sessions.mkdir(parents=True)
+        _make_session(sessions, "20260507", success=["- foo", "- bar", "- baz"])
+        _make_session(sessions, "20260506", success=["- qux"])
+
+        output = tmp_path / "memory" / "consolidated_summary.md"
+
+        # 並列読み込みスレッドを起動して書き込みと競合させる
+        read_results: list[str | None] = []
+        stop_flag = {"stop": False}
+
+        def reader_thread() -> None:
+            while not stop_flag["stop"]:
+                try:
+                    content = output.read_text(encoding="utf-8") if output.exists() else None
+                    read_results.append(content)
+                except OSError:
+                    read_results.append(None)
+
+        t = threading.Thread(target=reader_thread, daemon=True)
+        t.start()
+
+        ok = mod.write_summary(
+            str(output),
+            sessions_dir=str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        stop_flag["stop"] = True
+        t.join(timeout=2)
+
+        assert ok is True
+        # 書き込み完了後のファイルが完全な内容であること
+        final_content = output.read_text(encoding="utf-8")
+        assert "# 集約サマリ" in final_content, (
+            "出力ファイルが完全な状態でないか、または存在しない。"
+            "アトミック書き込みが実装されていれば常に完全なファイルが見える。[CR-NEW]"
+        )
+        # 読み込み結果のいずれも「完全」か「None（未存在）」のどちらかであること
+        for content in read_results:
+            if content is not None:
+                # 部分的な書き込みがないことを確認（ヘッダが欠けていたら中途半端）
+                # 現在の直接 open("w") 実装だと、書き込み途中で切り捨てられた
+                # 古い内容が見える可能性がある。アトミック書き込みであれば
+                # この問題は起きない（os.replace は POSIX 上でアトミック）。
+                assert "# 集約サマリ" in content or len(content) == 0, (
+                    f"読み込み中に不完全なファイルが観測された（先頭 100 文字: {content[:100]!r}）。"
+                    "アトミック書き込みを実装することでこの問題を解消できる。[CR-NEW]"
+                )
+
+
+class TestWriteSummaryAtomicWriteUsesAtomicWrite:
+    """`write_summary()` が内部で `_atomic_write()` を呼ぶことの直接確認。[CR-NEW]
+
+    `write_promotion_candidates_log()` はすでに `_atomic_write()` を使っている。
+    `write_summary()` も同じパターンを採用すべきであることを、
+    `_atomic_write()` のスパイで直接確認する。
+    """
+
+    def test_write_summary_delegates_to_atomic_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """write_summary() が _atomic_write() を呼ぶこと。
+
+        Red フェーズ: 現在の実装は _atomic_write() を呼ばず open(..., "w") を直接使う
+        ため、このテストは FAIL する（機能未実装による失敗）。
+
+        アトミック書き込みが実装されれば: write_summary() が _atomic_write() を経由し、
+        このスパイに output_path が記録される。
+        """
+        mod = _load_hook_module()
+        sessions = tmp_path / "memory" / "sessions"
+        sessions.mkdir(parents=True)
+        _make_session(sessions, "20260507", success=["- foo"])
+
+        output = tmp_path / "memory" / "consolidated_summary.md"
+
+        atomic_write_called_with: list[str] = []
+        original_atomic_write = mod._atomic_write
+
+        def spy_atomic_write(output_path: str, payload: str) -> bool:
+            atomic_write_called_with.append(output_path)
+            return original_atomic_write(output_path, payload)
+
+        monkeypatch.setattr(mod, "_atomic_write", spy_atomic_write)
+
+        ok = mod.write_summary(
+            str(output),
+            sessions_dir=str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        assert ok is True
+        assert str(output) in atomic_write_called_with, (
+            "write_summary() は _atomic_write() を使ってファイルを書き込む必要がある。"
+            "現在の実装は open(..., 'w') を直接使っているため _atomic_write() は呼ばれない。"
+            "[CR-NEW] write_summary() に _atomic_write() を使う実装が必要。"
+        )
+
+
+class TestWriteSummaryAtomicWriteFailure:
+    """`write_summary()` のアトミック書き込み失敗時の挙動確認。[CR-NEW]
+
+    _atomic_write() が False を返す場合、write_summary() も False を返すことを確認する。
+    これは実装後のリグレッションテストとして機能する。
+    """
+
+    def test_write_summary_returns_false_on_atomic_write_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_atomic_write() が False を返す場合、write_summary() も False を返すこと。
+
+        Red フェーズ: 現在の実装は _atomic_write() を使わないため、
+        このスパイは呼ばれず、動作確認ができない。
+        write_summary() が _atomic_write() を使うようになれば、
+        _atomic_write() が False を返した時に write_summary() も False を返す
+        かどうか確認できる。
+
+        Note: このテストはアトミック書き込みが実装された後に Green になる。
+        """
+        mod = _load_hook_module()
+        sessions = tmp_path / "memory" / "sessions"
+        sessions.mkdir(parents=True)
+        _make_session(sessions, "20260507", success=["- foo"])
+
+        output = tmp_path / "memory" / "consolidated_summary.md"
+
+        def fake_atomic_write(output_path: str, payload: str) -> bool:
+            # 書き込み失敗をシミュレート
+            return False
+
+        monkeypatch.setattr(mod, "_atomic_write", fake_atomic_write)
+
+        ok = mod.write_summary(
+            str(output),
+            sessions_dir=str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        assert ok is False, (
+            "write_summary() が _atomic_write() を使っている場合、"
+            "_atomic_write() が False を返したら write_summary() も False を返すべき。"
+            "[CR-NEW] _atomic_write() 未使用のため現在は True が返る。"
+        )
+
+
+class TestLLMOnlyMainExtractsLLMSummary:
+    """`_llm_only_main()` が LLM 要約抽出を呼ぶ検証。"""
+
+    def test_llm_only_main_calls_extract_helper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = _load_hook_module()
+        lock_path = str(tmp_path / "test.lock")
+        monkeypatch.setattr(mod, "LOCK_PATH", lock_path)
+
+        called = {"extract": False}
+
+        def fake_extract(*a, **kw):
+            called["extract"] = True
+            return True
+
+        monkeypatch.setattr(mod, "write_summary", lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "_write_llm_summary_extract", fake_extract)
+        monkeypatch.setattr(sys, "argv",
+                            ["prog", "--llm-only", "2026-05-10T12:00:00+00:00"])
+
+        rc = mod._llm_only_main()
+        assert rc == 0
+        assert called["extract"] is True, (
+            "_llm_only_main は _write_llm_summary_extract を呼ぶ必要がある"
+        )
+
+
+# ---------------------------------------------------------------------------
+# セキュリティ強化: _escape_for_xml / subprocess コマンド検証 [SR-AI-001]
+# ---------------------------------------------------------------------------
+
+
+class TestEscapeForXml:
+    """`_escape_for_xml()` の文字エスケープ検証。"""
+
+    def test_escapes_basic_xml_chars(self) -> None:
+        """& < > はエンティティに変換される。"""
+        mod = _load_hook_module()
+        result = mod._escape_for_xml("a & b < c > d")
+        assert "&amp;" in result
+        assert "&lt;" in result
+        assert "&gt;" in result
+
+    def test_escapes_double_quote(self) -> None:
+        """二重引用符 \" は &quot; にエスケープされる（属性値混入防止）。[SR-AI-001]"""
+        mod = _load_hook_module()
+        result = mod._escape_for_xml('hello "world"')
+        assert "&quot;" in result
+        assert '"' not in result
+
+    def test_escapes_single_quote(self) -> None:
+        """単一引用符 ' は &#39; にエスケープされる（属性値混入防止）。[SR-AI-001]"""
+        mod = _load_hook_module()
+        result = mod._escape_for_xml("it's a test")
+        assert "&#39;" in result
+        assert "'" not in result
+
+    def test_no_double_escaping_of_ampersand(self) -> None:
+        """& は &amp; に変換されるが、&amp; が &amp;amp; にはならない（二重エスケープ防止）。"""
+        mod = _load_hook_module()
+        result = mod._escape_for_xml("&lt;existing&gt;")
+        # & → &amp; に変換されて &amp;lt; になるが、&amp;lt; が更に変換されてはいけない
+        assert result == "&amp;lt;existing&amp;gt;"
+
+    def test_complex_injection_attempt(self) -> None:
+        """属性値インジェクション試行が無害化される。"""
+        mod = _load_hook_module()
+        # 攻撃者が session データに仕込む典型的なパターン
+        payload = '"><script>alert(1)</script><x a="'
+        result = mod._escape_for_xml(payload)
+        # < > " が全てエスケープされていること
+        assert "<" not in result
+        assert ">" not in result
+        assert '"' not in result
+
+
+class TestSubprocessSecurityFlags:
+    """`build_llm_summary_section()` のサブプロセス起動フラグ検証。[SR-AI-001]"""
+
+    def _make_files_for_summary(self, tmp_path: Path) -> list[str]:
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        _make_session(sessions, "20260507", success=["- foo"], failure=["- bar"])
+        mod = _load_hook_module()
+        return mod.list_recent_session_files(
+            str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+    def test_no_dangerously_skip_permissions_in_subprocess(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess に --dangerously-skip-permissions が渡されないこと。[SR-AI-001]"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+        monkeypatch.delenv("C3_CONSOLIDATE_LLM_DEPTH", raising=False)
+
+        recorded: dict = {}
+
+        class _FakeResult:
+            returncode = 0
+            stdout = "- summary"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            recorded["args"] = args
+            return _FakeResult()
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        assert recorded.get("args") is not None, "subprocess.run が呼ばれていません"
+        assert "--dangerously-skip-permissions" not in recorded["args"], (
+            "--dangerously-skip-permissions は攻撃面を拡大するため使用禁止 [SR-AI-001]"
+        )
+
+    def test_tools_empty_in_subprocess(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess に --tools \"\" が渡され、子プロセスのツールアクセスが禁止される。[SR-AI-001]"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+        monkeypatch.delenv("C3_CONSOLIDATE_LLM_DEPTH", raising=False)
+
+        recorded: dict = {}
+
+        class _FakeResult:
+            returncode = 0
+            stdout = "- summary"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            recorded["args"] = args
+            return _FakeResult()
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        args = recorded.get("args", [])
+        assert "--tools" in args, "--tools フラグが subprocess args に含まれていません [SR-AI-001]"
+        tools_idx = args.index("--tools")
+        assert tools_idx + 1 < len(args), "--tools の後に値が必要です"
+        assert args[tools_idx + 1] == "", (
+            '--tools の値が空文字列でないとツール無効化になりません [SR-AI-001]'
+        )

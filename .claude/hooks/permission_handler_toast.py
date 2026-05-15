@@ -18,7 +18,6 @@ import os
 import sys
 import tempfile
 import threading
-import time
 
 try:
     sys.stdin.reconfigure(encoding='utf-8')

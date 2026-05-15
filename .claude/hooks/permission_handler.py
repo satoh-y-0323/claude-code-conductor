@@ -152,6 +152,13 @@ def suggest_pattern(tool_name: str, tool_input: dict) -> str | None:
       WebFetch + 'https://github.com/' → 'WebFetch(domain:github.com)'
       WebSearch + 任意                  → 'WebSearch'
     返り値が None の場合は推定不能（呼び出し側はボタン表示をスキップする）。
+
+    セキュリティ設計メモ:
+      Bash コマンドに対して _SHELL_INJECTION_RE（; && || ` $( を検出）を適用し、
+      シェル制御文字を含む場合は None を返してパターン推定を中断する。
+      この同一フィルタは matches_pattern() 内でも再度適用されるため、
+      仮に制御文字を含むパターンが permission_rules.json に混入しても
+      自動承認されない二重防御になっている。
     """
     if not tool_name:
         return None
