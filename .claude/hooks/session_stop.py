@@ -22,7 +22,7 @@ import json
 import os
 import sys
 import types
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 try:
     sys.stdin.reconfigure(encoding="utf-8")
@@ -37,49 +37,44 @@ _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 _FLAG_PATH = os.path.join(_CLAUDE_DIR, "state", "llm_summary_agent_requested.flag")
 
 _AGENT_INSTRUCTION = """\
-直近 7 日のセッションファイルが蓄積されています。
-`summarize-memory` スキルをバックグラウンドで実行して
-`.claude/memory/llm_summary.md` を更新してください。
+直近のセッションファイルが llm_summary.md より新しいため要約が必要です。
+Agent ツールを以下のパラメータで起動してください（**必ず run_in_background: true**）:
 
-手順:
-1. `.claude/skills/summarize-memory/SKILL.md` を Read で読み込む
-2. その手順に従って要約を生成し `.claude/memory/llm_summary.md` に Write する
-3. 完了後 `.claude/state/llm_summary_agent_requested.flag` を削除する
+  subagent_type: "summarize-memory"
+  description: "Summarize recent session memory (background)"
+  run_in_background: true
+
+ユーザーをブロックしないよう、起動後すぐに次の入力を受け付けてください。
 """
 
 
-def _has_recent_sessions(
-    sessions_dir: str, window_days: int = 7, today: date | None = None
-) -> bool:
-    """sessions_dir 内に window_days 日以内の YYYYMMDD.tmp ファイルがあれば True を返す.
+def _needs_summary(claude_dir: str) -> bool:
+    """要約が必要か判定する.
 
-    循環依存回避のため consolidate_memory.py に依存せず独立実装する。
-    today は主にテスト注入用。省略時は date.today() を使う。
+    判定ロジック:
+      - sessions ディレクトリ不在 / *.tmp が 1 件もない → False
+      - llm_summary.md 不在 → True (初回生成)
+      - max(mtime of *.tmp) > mtime(llm_summary.md) → True (新規 session あり)
+      - それ以外 → False (要約済み)
+
+    タイムスタンプは os.path.getmtime() で取得する機械的判定。
     """
+    sessions_dir = os.path.join(claude_dir, "memory", "sessions")
     if not os.path.isdir(sessions_dir):
         return False
-    reference = today if today is not None else date.today()
-    cutoff = reference - timedelta(days=window_days)
-    for filename in os.listdir(sessions_dir):
-        if not filename.endswith(".tmp"):
-            continue
-        stem = filename[:-4]  # ".tmp" を除去
-        try:
-            file_date = datetime.strptime(stem, "%Y%m%d").date()
-        except ValueError:
-            continue
-        if file_date >= cutoff:
-            return True
-    return False
+    tmp_paths = [
+        os.path.join(sessions_dir, f)
+        for f in os.listdir(sessions_dir)
+        if f.endswith(".tmp")
+    ]
+    if not tmp_paths:
+        return False
+    latest_session_mtime = max(os.path.getmtime(p) for p in tmp_paths)
 
-
-def _llm_summary_recently_updated(claude_dir: str, cooldown_minutes: int = 60) -> bool:
-    """llm_summary.md が cooldown_minutes 分以内に更新されていれば True を返す."""
     summary_path = os.path.join(claude_dir, "memory", "llm_summary.md")
     if not os.path.isfile(summary_path):
-        return False
-    mtime = datetime.fromtimestamp(os.path.getmtime(summary_path), tz=timezone.utc)
-    return (datetime.now(timezone.utc) - mtime).total_seconds() < cooldown_minutes * 60
+        return True
+    return latest_session_mtime > os.path.getmtime(summary_path)
 
 
 def _create_flag(flag_path: str) -> None:
@@ -110,11 +105,11 @@ def main() -> int:
     stdin を 1 回読んで stop.run / consolidate_memory.run_sync を順に呼ぶ。
     片方が失敗しても他方は実行する。
 
-    Phase 3: Phase 1/2 完了後にフラグファイルを参照し、
+    Phase 3: Phase 1/2 完了後に「要約が必要か」を判定し、
     LLM 要約エージェントの起動指示を制御する。
-    - flag なし & 直近 7 日に session あり → exit 2 + flag 作成 + stderr に起動指示
-    - flag あり                            → exit 0 + flag 削除 (ループ防止)
-    - flag なし & session なし             → exit 0 (何もしない)
+    - flag あり                          → exit 0 + flag 削除 (実行中重複防止)
+    - _needs_summary == True             → exit 2 + flag 作成 + stderr に Agent 起動指示
+    - _needs_summary == False            → exit 0 (要約済み or session なし)
     """
     try:
         payload = json.loads(sys.stdin.read())
@@ -142,17 +137,12 @@ def main() -> int:
     try:
         flag_path = _FLAG_PATH
         if os.path.exists(flag_path):
-            # フラグあり → 削除して exit 0（exit 2 ループ防止）
+            # フラグあり → 削除して exit 0（実行中エージェント重複防止）
             os.unlink(flag_path)
             return 0
 
-        # 直近 7 日に session ファイルがあるか確認
-        sessions_dir = os.path.join(_CLAUDE_DIR, "memory", "sessions")
-        if not _has_recent_sessions(sessions_dir):
-            return 0
-
-        # llm_summary.md が直近 60 分以内に更新済みならスキップ（連続発火防止）
-        if _llm_summary_recently_updated(_CLAUDE_DIR):
+        # 要約が必要か（session mtime vs llm_summary.md mtime 比較）
+        if not _needs_summary(_CLAUDE_DIR):
             return 0
 
         # フラグ作成 + stderr に Agent 起動指示

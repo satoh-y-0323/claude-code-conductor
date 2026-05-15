@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import types
@@ -330,11 +331,12 @@ class TestStopHookExitCode:
 
         assert result == 2
         captured = capsys.readouterr()
-        keywords = ["Agent", "Skill", "summarize-memory"]
-        assert any(kw in captured.err for kw in keywords), (
-            f"stderr にキーワード {keywords} のいずれかが含まれること。"
-            f"実際の stderr: {captured.err!r}"
-        )
+        # stderr は Agent 起動指示で "Agent" / "summarize-memory" / "run_in_background" を含むべき
+        required = ["Agent", "summarize-memory", "run_in_background"]
+        for kw in required:
+            assert kw in captured.err, (
+                f"stderr に '{kw}' が含まれること。実際の stderr: {captured.err!r}"
+            )
 
     # ------------------------------------------------------------------
     # テスト 3: flag あり → exit 0 + flag 削除 + stderr 出力なし
@@ -373,19 +375,15 @@ class TestStopHookExitCode:
         tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ):
-        """直近 7 日に session ファイルがない場合: exit 0・flag 作成なし・stderr 出力なし.
+        """session ファイルが無い場合 / llm_summary.md が session より新しい場合: exit 0.
 
-        また、新仕様では session 検出ロジック (_has_recent_sessions 相当) が
-        main() モジュールに実装されること（新関数の存在確認）。
+        新仕様では _needs_summary() がタイムスタンプ比較で要約要否を判定する。
         """
         module = _load_module()
         _build_mocks_and_patch(monkeypatch, module, tmp_path)
 
         claude_dir = tmp_path / ".claude"
-        # sessions_dir を作るが 8 日前のファイルのみ置く（7 日外）
-        sessions_dir = claude_dir / "memory" / "sessions"
-        _make_fake_session_file(sessions_dir, days_ago=8)
-
+        # sessions_dir 自体を作らない（最もシンプルな「要約不要」シナリオ）
         flag_path = claude_dir / "state" / "llm_summary_agent_requested.flag"
         assert not flag_path.exists()
 
@@ -396,14 +394,9 @@ class TestStopHookExitCode:
         captured = capsys.readouterr()
         assert "summarize-memory" not in captured.err
 
-        # 新仕様では session 検索ロジックが module に追加される。
-        # 関数名は _has_recent_sessions または check_recent_sessions 相当。
-        # 実装前（Red）はこの属性が存在しないため失敗する。
-        assert hasattr(module, "_has_recent_sessions") or hasattr(
-            module, "_check_recent_sessions"
-        ), (
-            "新仕様では session 検索ロジック (_has_recent_sessions 等) が "
-            "session_stop.py に実装されること（Red フェーズ: 未実装のため失敗）"
+        # 新仕様では _needs_summary() がタイムスタンプ比較ロジックを担う
+        assert hasattr(module, "_needs_summary"), (
+            "新仕様では _needs_summary() が session_stop.py に実装されること"
         )
 
     # ------------------------------------------------------------------
@@ -435,10 +428,17 @@ class TestStopHookExitCode:
             "sys.stdin",
             type("S", (), {"read": staticmethod(lambda: "{}")})(),
         )
-        monkeypatch.setattr(module, "_CLAUDE_DIR", str(tmp_path / ".claude"), raising=False)
+        claude_dir = tmp_path / ".claude"
+        monkeypatch.setattr(module, "_CLAUDE_DIR", str(claude_dir), raising=False)
+        monkeypatch.setattr(
+            module,
+            "_FLAG_PATH",
+            str(claude_dir / "state" / "llm_summary_agent_requested.flag"),
+            raising=False,
+        )
 
         # session ファイルを作成して exit 2 コードパスを通す
-        sessions_dir = tmp_path / ".claude" / "memory" / "sessions"
+        sessions_dir = claude_dir / "memory" / "sessions"
         _make_fake_session_file(sessions_dir, days_ago=2)
 
         result = module.main()
@@ -507,3 +507,82 @@ class TestStopHookExitCode:
                 f"実際は exit {result}。実装が未完了（Red フェーズ正常）。"
                 f"flag の期待パス: {expected_flag}"
             )
+
+
+# ---------------------------------------------------------------------------
+# TestNeedsSummary: _needs_summary() のタイムスタンプ比較ロジックを直接検証する
+#
+# 新仕様: session ファイルの最新 mtime と llm_summary.md の mtime を比較し、
+# session が新しければ True、それ以外は False を返す。
+# ---------------------------------------------------------------------------
+
+
+class TestNeedsSummary:
+    """_needs_summary() の判定ロジック直接テスト."""
+
+    def test_returns_false_when_no_sessions_dir(self, tmp_path: Path):
+        """sessions ディレクトリが存在しない場合は False."""
+        module = _load_module()
+        # tmp_path 配下に sessions ディレクトリを作らない
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        assert module._needs_summary(str(claude_dir)) is False
+
+    def test_returns_false_when_no_session_files(self, tmp_path: Path):
+        """sessions ディレクトリに *.tmp が 1 件も無い場合は False."""
+        module = _load_module()
+        claude_dir = tmp_path / ".claude"
+        sessions_dir = claude_dir / "memory" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        # 非 .tmp ファイルを置いても影響しないことも確認
+        (sessions_dir / "README.md").write_text("ignore me", encoding="utf-8")
+        assert module._needs_summary(str(claude_dir)) is False
+
+    def test_returns_true_when_no_summary_but_sessions_exist(self, tmp_path: Path):
+        """*.tmp あり、llm_summary.md 不在 → True（初回生成）."""
+        module = _load_module()
+        claude_dir = tmp_path / ".claude"
+        sessions_dir = claude_dir / "memory" / "sessions"
+        _make_fake_session_file(sessions_dir, days_ago=0)
+        # llm_summary.md は作らない
+        assert module._needs_summary(str(claude_dir)) is True
+
+    def test_returns_true_when_session_newer_than_summary(self, tmp_path: Path):
+        """session の mtime > llm_summary.md の mtime → True."""
+        module = _load_module()
+        claude_dir = tmp_path / ".claude"
+        sessions_dir = claude_dir / "memory" / "sessions"
+        memory_dir = claude_dir / "memory"
+
+        # llm_summary.md を先に作成し、その後 session を作成して mtime 逆転
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = memory_dir / "llm_summary.md"
+        summary_path.write_text("old summary", encoding="utf-8")
+
+        session_path = _make_fake_session_file(sessions_dir, days_ago=0)
+
+        # 明示的に session を 100 秒新しくする
+        summary_mtime = os.path.getmtime(summary_path)
+        os.utime(session_path, (summary_mtime + 100, summary_mtime + 100))
+
+        assert module._needs_summary(str(claude_dir)) is True
+
+    def test_returns_false_when_summary_newer_than_session(self, tmp_path: Path):
+        """llm_summary.md の mtime > 最新 session の mtime → False."""
+        module = _load_module()
+        claude_dir = tmp_path / ".claude"
+        sessions_dir = claude_dir / "memory" / "sessions"
+        memory_dir = claude_dir / "memory"
+
+        # session を先に作成
+        session_path = _make_fake_session_file(sessions_dir, days_ago=0)
+
+        # llm_summary.md を session より明示的に新しい mtime で作成
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = memory_dir / "llm_summary.md"
+        summary_path.write_text("fresh summary", encoding="utf-8")
+
+        session_mtime = os.path.getmtime(session_path)
+        os.utime(summary_path, (session_mtime + 100, session_mtime + 100))
+
+        assert module._needs_summary(str(claude_dir)) is False
