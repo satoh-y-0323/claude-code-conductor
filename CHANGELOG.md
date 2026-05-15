@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.6.1] - 2026-05-15
+
+### 概要
+
+security-audit による定期監査の結果をフィックス。セキュリティ強化 3 件・コード品質修正 14 件を適用。API 変更なし。
+
+### 修正（セキュリティ）
+
+- **[SR-INJ-002] `permission_handler.py` Windows 通知を Base64 EncodedCommand 化**: `safe_msg` を f-string に直接埋め込んでいた方式を廃止し、`base64.b64encode` で変換してから `-EncodedCommand` に渡すよう変更。`'` / バッククォート / `$` を含むメッセージでもインジェクション不可能になった
+- **[SR-AI-001] `consolidate_memory.py` LLM 子プロセスの攻撃面縮小**: `_escape_for_xml` に引用符エスケープ（`"` → `&quot;`、`'` → `&#39;`）を追加。claude 子プロセスの `--dangerously-skip-permissions` を除去し `--tools ""` で全ツール無効化
+- **[SR-V-001] `select_tier.py` prompt_prefix の秘密情報マスク**: プロンプト先頭 200 文字を `.claude/logs/prompt-history.jsonl` に保存する前に、API キー・トークン・パスワード相当の 7 パターンを `***` でマスク
+
+### 修正
+
+- **[CR-Q-004] `db.py` / `cli_tier.py` `_BUSY_TIMEOUT_MS` を SSOT に統一**: `db.py` を SSOT として `cli_tier.py` の独立定義を削除。`read_recent_outcomes` ヘルパーを `db.py` に追加し `sqlite3.connect` 直接呼び出しを廃止
+- **[CR-M-002] `LEARNING_THRESHOLD` を `db.py` SSOT に統一**: `cli_tier.py` と `select_tier.py` の独立定義を削除。フックのスタンドアロン制約に対応するため `select_tier.py` はダイナミックインポート + フォールバック方式を採用
+- **[CR-M-001] `restore_session.py` の重複 `extract_section` を削除**: `session_utils.extract_section` をダイナミックインポートで参照し、内製実装を削除
+- **[CR-E-003] `review_hint_inject.py` レポート書き込みをアトミック化**: `write_text` を `tempfile.mkstemp` + `os.replace` パターンに変更し、書き込み途中での中断によるファイル破損を防止
+- **[CR-T-001] `mcp_server.py` `_elicit` に `json.JSONDecodeError` ハンドリング追加**: 不正 JSON 行を受信してもメソッドが例外で終了せず、ログ出力してスキップしてループ継続するよう修正
+- **[CR-CT-001] `question.py` `load_questions` の型分岐を明示化**: `isinstance(source, dict)` → `isinstance(source, (str, Path))` → `TypeError` の順に明示化し、`Path(str(dict))` の duck typing を排除
+- **[CR-N-004] `stop.py` `_parse_session_date` の `None` 返却化**: `date.min` センチネル値から `None` 返却に変更し意図を明示。呼び出し元 `count_sessions_since` に `None` フィルタを追加
+- **[CR-Q-002] `consolidate_memory.py` `build_summary_markdown` の today 型統一**: 関数冒頭で `datetime` 型に正規化し、`date` 型で `timespec` 引数が例外になるパスを排除
+- **[CR-M-003] `select_tier.py` `maybe_escalate` の引数上書きを解消**: `_db_failure_rate` をモジュールトップレベルへ抽出し、`effective_fn = failure_rate_fn or _db_failure_rate` で参照
+- **[CR-Q-005] `review_hint_inject.py` 空関数呼び出し削除**: `_ensure_c3_db_path_in_sys_path()` の呼び出しを削除（c3 パッケージは常にインストール済みのため不要）
+- **[CR-M-003] `adapters.py` `_dev_source_pythonpath` に docstring 追加**
+- **[CR-Q-007] `post_tool.py` print パターンスコープのコメント追加**
+
+### セキュリティ告知（環境依存）
+
+`pip <= 26.0.1` および `urllib3 <= 2.6.3` に既知脆弱性（CVE-2026-3219 / CVE-2026-6357 / CVE-2026-44431 / CVE-2026-44432）が報告されています。C3 パッケージ自体の直接依存ではありませんが、利用環境で `pip install --upgrade pip urllib3` の実行を推奨します。
+
+---
+
 ## [2.6.0] - 2026-05-15
 
 ### 概要
