@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_RECENT_LIMIT = 10
-_LEARNING_THRESHOLD = 30  # select_tier.py の LEARNING_THRESHOLD と一致
+_LEARNING_THRESHOLD = c3_db.LEARNING_THRESHOLD  # SSOT: db.py で一元管理（CR-M-002）
 _TIERS = ("haiku", "sonnet", "opus")
 _COMPLEXITIES = ("simple", "medium", "complex")
 

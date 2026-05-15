@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 BUSY_TIMEOUT_MS = 5000
 _BUSY_TIMEOUT_MS = BUSY_TIMEOUT_MS  # 内部互換エイリアス（既存コードへの影響なし）
 
+# tier-routing: 学習データ収集期の閾値（合計試行数がこの値未満なら uniform 選択）。
+# SSOT: cli_tier.py / select_tier.py はここから参照する（CR-M-002）。
+LEARNING_THRESHOLD = 30
+
 
 def locate_c3_db(start: Path | None = None) -> Path | None:
     """`.claude/state/c3.db` を探索する。

@@ -41,8 +41,13 @@ except AttributeError:
     pass
 
 
-# 学習データ収集期の閾値（合計試行数がこの値未満なら uniform 選択）
-LEARNING_THRESHOLD = 30
+# 学習データ収集期の閾値（合計試行数がこの値未満なら uniform 選択）。
+# SSOT: c3.db.LEARNING_THRESHOLD から取得し、import 失敗時はフォールバック値 30 を使う（CR-M-002）。
+try:
+    from c3 import db as _c3_db_const  # type: ignore[import-not-found]
+    LEARNING_THRESHOLD: int = _c3_db_const.LEARNING_THRESHOLD
+except ImportError:
+    LEARNING_THRESHOLD = 30
 
 # 複雑度推定のキーワード
 SIMPLE_KEYWORDS = frozenset({
