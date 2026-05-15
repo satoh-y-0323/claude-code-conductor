@@ -28,12 +28,14 @@ except AttributeError:
 
 
 _TIMEOUT_SEC = 60
+_AUTO_ALLOW_MAX_SIZE = 100
 
 
 def append_to_auto_allow(rules_path: str, pattern: str) -> bool:
     """permission_rules.json の auto_allow 配列に pattern を atomic に追加する。
 
     既に存在する場合は何もせず False を返す。追加に成功したら True。
+    上限（_AUTO_ALLOW_MAX_SIZE）に達している場合は stderr に警告を出力して False を返す。
     書き込み失敗（OSError 等）は False を返す。
     """
     rules: dict
@@ -52,6 +54,13 @@ def append_to_auto_allow(rules_path: str, pattern: str) -> bool:
     if not isinstance(auto_allow, list):
         auto_allow = []
     if pattern in auto_allow:
+        return False
+    if len(auto_allow) >= _AUTO_ALLOW_MAX_SIZE:
+        print(
+            f'[permission_handler_toast] auto_allow が上限 ({_AUTO_ALLOW_MAX_SIZE} 件) に達しています。'
+            ' パターンを追加できません。不要なパターンを permission_rules.json から削除してください。',
+            file=sys.stderr,
+        )
         return False
     auto_allow.append(pattern)
     rules['auto_allow'] = auto_allow

@@ -109,6 +109,47 @@ class TestAppendToAutoAllow:
         tmp_files = list(tmp_path.glob(".permission_rules.*.tmp"))
         assert tmp_files == [], f"一時ファイルが残存: {tmp_files}"
 
+    def test_returns_false_when_at_max_size(self, tmp_path: Path, capsys):
+        """上限 (_AUTO_ALLOW_MAX_SIZE) に達している場合は False を返し警告を出力する."""
+        module = _load_module()
+        rules_path = tmp_path / "permission_rules.json"
+        max_size = module._AUTO_ALLOW_MAX_SIZE
+        # 既に上限件数のパターンを設定する
+        existing_patterns = [f"Bash(pattern_{i} *)" for i in range(max_size)]
+        rules_path.write_text(
+            json.dumps({"auto_allow": existing_patterns}), encoding="utf-8"
+        )
+
+        added = module.append_to_auto_allow(str(rules_path), "Bash(new_pattern *)")
+
+        # 追加は失敗する
+        assert added is False
+        # ファイルは変更されていない
+        data = json.loads(rules_path.read_text(encoding="utf-8"))
+        assert len(data["auto_allow"]) == max_size
+        assert "Bash(new_pattern *)" not in data["auto_allow"]
+        # stderr に警告が出ている
+        captured = capsys.readouterr()
+        assert "上限" in captured.err
+
+    def test_succeeds_at_one_before_max_size(self, tmp_path: Path):
+        """上限より 1 件少ない状態では追加できる（境界値確認）."""
+        module = _load_module()
+        rules_path = tmp_path / "permission_rules.json"
+        max_size = module._AUTO_ALLOW_MAX_SIZE
+        # 上限より 1 件少ないパターンを設定する
+        existing_patterns = [f"Bash(pattern_{i} *)" for i in range(max_size - 1)]
+        rules_path.write_text(
+            json.dumps({"auto_allow": existing_patterns}), encoding="utf-8"
+        )
+
+        added = module.append_to_auto_allow(str(rules_path), "Bash(new_pattern *)")
+
+        assert added is True
+        data = json.loads(rules_path.read_text(encoding="utf-8"))
+        assert len(data["auto_allow"]) == max_size
+        assert "Bash(new_pattern *)" in data["auto_allow"]
+
 
 class TestShowToast:
     """show_toast() の挙動検証（windows-toasts が無い環境では skip）."""
