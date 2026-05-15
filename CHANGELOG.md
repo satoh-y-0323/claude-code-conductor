@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.7.0] - 2026-05-16
+
+### 概要
+
+Stop hook の background agent 化・permission_handler へのボタン付き通知追加・worktree 並列実行の取り込み修正など、オーケストレーション基盤の品質を大幅に向上。あわせて security-audit フルサイクルによる定期監査を実施し、セキュリティ・品質指摘 7 件を修正した。
+
+### 追加
+
+- **`summarize-memory` を skill から agent へ移行** (`.claude/agents/summarize-memory.md`): `Agent(run_in_background=True)` による非同期実行に変更。Stop hook が LLM 要約をブロッキングなしで起動できるようになった
+- **`permission_handler` にボタン付きトースト通知を追加** (`.claude/hooks/permission_handler_toast.py`): windows-toasts（optional-dependency）で「自動承認に追加: `Bash(...*)`」ワンクリック追記を実装。`permission_rules.json` の手動編集が不要になった
+- **`auto_allow` リストに上限 100 件を設定** [SR-K-003]: 意図しないパターン混入リスクを抑制するサイズ制限を追加
+
+### 修正
+
+- **Stop hook を timestamp 比較 + background agent 化** (`.claude/hooks/session_stop.py`): `claude -p` サブプロセスを廃止し `exit 2 + stderr` で Claude に agent 起動を指示する方式へ移行。クールダウン廃止により mtime 比較で要約の必要性を機械判定するシンプルな設計に統一
+- **並列実行時の worktree ファイル取り込みを構造的に修正** (`.claude/hooks/worktree_guard.py`、`.claude/skills/parallel-agents/SKILL.md`): `git check-ignore -q` による分岐ハイブリッド retrieval に統一。worktree 外への Write/Edit を `exit 2` でブロックする保護を CWD ベース自動有効化に変更
+
+### 修正（security-audit 定期監査）
+
+- **[CR-NEW] `consolidate_memory.write_summary()` をアトミック書き込みに統一**: 同ファイル内 `write_promotion_candidates_log` と同じ `_atomic_write()` 経由に変更し、Stop hook 競合時のファイル破損リスクを排除
+- **[CR-CC-002] `session_stop._needs_summary()` の TOCTOU 耐性を追加**: `os.path.getmtime()` を個別 `try/except OSError` でラップし、`listdir` と `getmtime` の間にファイルが削除されても例外が伝播しないよう修正
+- **[CR-Q-001] `permission_handler.suggest_pattern()` に設計メモを追記**: `_SHELL_INJECTION_RE` フィルタが `matches_pattern()` 内でも再適用される二重防御の説明を docstring に追記
+- **[CR-Q-005] `permission_handler_toast.py` の未使用 `import time` を削除**
+- **[SR-V-001] `worktree_guard.py` の CWD 判定をコンポーネント分割方式に変更**: `cwd.split(os.sep)` で `.claude` → `worktrees` の連続を検査するよう変更し、symlink 経由の guard 無効化リスクを低減
+- **[CR-NEW] `parallel-agents/SKILL.md` の `session_utils` パスを修正**: `--hooks-dir` オプション削除後に動作しなくなっていたサンプルコードを `(cd .claude/hooks && python -c "...")` 形式に修正
+
+---
+
 ## [2.6.1] - 2026-05-15
 
 ### 概要
