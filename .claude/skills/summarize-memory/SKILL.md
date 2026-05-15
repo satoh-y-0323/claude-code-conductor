@@ -118,7 +118,8 @@ Windows 環境（PowerShell）では以下を実行する:
 Remove-Item -Path ".claude/state/llm_summary_agent_requested.flag" -ErrorAction SilentlyContinue
 ```
 
-このステップは、Step 1 でファイルが 0 件だった場合でも必ず実行する。
+このステップは、Step 1 でファイルが 0 件だった場合でも、Step 4 の Write が失敗した場合でも、必ず実行する。
+Write 失敗時もフラグを削除することで、次回 Stop hook が再度 exit 2 + フラグ作成を行い、リトライの機会が生まれる。
 
 ---
 

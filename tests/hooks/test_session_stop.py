@@ -153,7 +153,7 @@ class TestFailureIsolation:
         consolidate_mock.run_sync.assert_called_once()
 
     def test_consolidate_failure_returns_zero(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ):
         module = _load_module()
 
@@ -164,6 +164,7 @@ class TestFailureIsolation:
             return {"stop": stop_mock, "consolidate_memory": consolidate_mock}[name]
 
         monkeypatch.setattr(module, "_load_module", _fake_load)
+        monkeypatch.setattr(module, "_CLAUDE_DIR", str(tmp_path))
         monkeypatch.setattr(
             "sys.stdin", type("S", (), {"read": staticmethod(lambda: "{}")})()
         )
@@ -225,12 +226,15 @@ _SESSIONS_RELPATH = ".claude/memory/sessions"
 
 
 def _make_fake_session_file(sessions_dir: Path, days_ago: int = 0) -> Path:
-    """days_ago 日前の日付を名前にもつ仮 session ファイルを作成して返す."""
+    """days_ago 日前の日付を名前にもつ仮 session ファイルを作成して返す.
+
+    実 session ファイルは YYYYMMDD.tmp 形式のため strftime("%Y%m%d") を使う。
+    """
     from datetime import date, timedelta
 
     target_date = date.today() - timedelta(days=days_ago)
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    session_file = sessions_dir / f"{target_date.isoformat()}.tmp"
+    session_file = sessions_dir / f"{target_date.strftime('%Y%m%d')}.tmp"
     session_file.write_text("{}", encoding="utf-8")
     return session_file
 
@@ -257,10 +261,16 @@ def _build_mocks_and_patch(
         "sys.stdin",
         type("S", (), {"read": staticmethod(lambda: "{}")})(),
     )
-    # _CLAUDE_DIR を tmp_path に差し替えることで state / sessions を隔離する。
+    # _CLAUDE_DIR / _FLAG_PATH を tmp_path に差し替えることで state / sessions を隔離する。
     # raising=False: 実装前は属性が存在しないが AttributeError でテストを止めない。
-    # 実装後に _CLAUDE_DIR が追加された時点でパッチが有効になる。
-    monkeypatch.setattr(module, "_CLAUDE_DIR", str(tmp_path / ".claude"), raising=False)
+    claude_dir = tmp_path / ".claude"
+    monkeypatch.setattr(module, "_CLAUDE_DIR", str(claude_dir), raising=False)
+    monkeypatch.setattr(
+        module,
+        "_FLAG_PATH",
+        str(claude_dir / "state" / "llm_summary_agent_requested.flag"),
+        raising=False,
+    )
     return stop_mock, consolidate_mock
 
 
@@ -469,6 +479,12 @@ class TestStopHookExitCode:
 
         claude_dir = tmp_path / ".claude"
         monkeypatch.setattr(module, "_CLAUDE_DIR", str(claude_dir), raising=False)
+        monkeypatch.setattr(
+            module,
+            "_FLAG_PATH",
+            str(claude_dir / "state" / "llm_summary_agent_requested.flag"),
+            raising=False,
+        )
 
         # session ファイルを作って flag 作成コードパスを通す
         sessions_dir = claude_dir / "memory" / "sessions"
