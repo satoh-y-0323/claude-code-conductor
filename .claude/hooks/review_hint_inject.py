@@ -183,7 +183,6 @@ def append_hints_to_report(
 
 def collect_decisions_for_report(report_text: str) -> dict[str, list[dict]]:
     """レポート内の checklist_id を全て抽出し、各 ID の過去判断を取得する。"""
-    _ensure_c3_db_path_in_sys_path()
     try:
         from c3 import db as c3_db  # noqa: PLC0415
     except ImportError as exc:

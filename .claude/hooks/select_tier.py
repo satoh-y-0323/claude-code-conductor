@@ -258,6 +258,17 @@ _ESCALATION_MAP: dict[str, str] = {
 ESCALATION_THRESHOLD = 0.5
 
 
+def _db_failure_rate(complexity: str, tier: str) -> tuple:
+    """DB から failure rate を読み取るデフォルト実装。
+
+    c3_db のインポートに失敗した場合は ``(None, 0)`` を返す。
+    """
+    c3_db = _load_c3_db_module()
+    if c3_db is None:
+        return None, 0
+    return c3_db.read_tier_failure_rate(complexity, tier)
+
+
 def maybe_escalate(
     complexity: str,
     chosen_tier: str,
@@ -271,7 +282,7 @@ def maybe_escalate(
         chosen_tier: select_tier が選んだ tier。
         failure_rate_fn: テスト用に注入可能な
             ``(complexity, tier) -> (rate_or_None, sample_count)``。
-            省略時は :func:`c3_db.read_tier_failure_rate` を使う。
+            省略時は :func:`_db_failure_rate` を使う。
 
     Returns:
         ``(effective_tier, escalation_reason)``。
@@ -281,17 +292,8 @@ def maybe_escalate(
     if chosen_tier not in _ESCALATION_MAP:
         return chosen_tier, None
 
-    if failure_rate_fn is None:
-        # 既定の DB ヘルパーを呼ぶ。
-        c3_db = _load_c3_db_module()
-        if c3_db is None:
-            return chosen_tier, None
-
-        def _db_failure_rate(complexity: str, tier: str) -> tuple:
-            return c3_db.read_tier_failure_rate(complexity, tier)
-        failure_rate_fn = _db_failure_rate
-
-    rate, samples = failure_rate_fn(complexity, chosen_tier)
+    effective_fn = failure_rate_fn or _db_failure_rate
+    rate, samples = effective_fn(complexity, chosen_tier)
     if rate is None or rate < ESCALATION_THRESHOLD:
         return chosen_tier, None
 

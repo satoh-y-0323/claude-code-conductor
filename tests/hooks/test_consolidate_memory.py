@@ -248,6 +248,41 @@ class TestBuildSummaryMarkdown:
         assert "直近 7 日" in summary
         assert "session ファイル 2 件" in summary
 
+    def test_date_type_does_not_raise(self, tmp_path: Path) -> None:
+        """today に date 型を渡しても TypeError にならず正常に動作する。
+
+        build_summary_markdown は冒頭で date を datetime に正規化するため、
+        isoformat(timespec='seconds') の呼び出しが date 型のまま到達しない。
+        """
+        from datetime import date
+        mod = _load_hook_module()
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        _make_session(sessions, "20260507", success=["- ok"])
+
+        files = mod.list_recent_session_files(
+            str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        spec = importlib.util.spec_from_file_location("su_t4", SESSION_UTILS_PATH)
+        assert spec is not None and spec.loader is not None
+        su = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(su)  # type: ignore[attr-defined]
+
+        # date 型を渡す（バグ再現ケース）
+        summary = mod.build_summary_markdown(
+            files,
+            window_days=7,
+            extract_fn=su.extract_section,
+            today=date(2026, 5, 8),  # date 型（datetime ではない）
+        )
+        # 例外なく完了し、タイムスタンプ行が含まれること
+        assert "最終更新:" in summary
+        assert "2026-05-08" in summary
+        assert "- ok" in summary
+
 
 # ---------------------------------------------------------------------------
 # write_summary

@@ -193,9 +193,12 @@ def build_summary_markdown(
     """集約結果の Markdown を組み立てる。"""
     if today is None:
         today = datetime.now(timezone.utc)
-    today_str = today.date().isoformat() if isinstance(today, datetime) else str(today)
-    start_str = (today.date() - timedelta(days=window_days - 1)).isoformat() \
-        if isinstance(today, datetime) else str(today)
+    elif not isinstance(today, datetime):
+        today = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+    if today.tzinfo is None:
+        today = today.replace(tzinfo=timezone.utc)
+    today_str = today.date().isoformat()
+    start_str = (today.date() - timedelta(days=window_days - 1)).isoformat()
 
     lines: list[str] = [
         "# 集約サマリ",
