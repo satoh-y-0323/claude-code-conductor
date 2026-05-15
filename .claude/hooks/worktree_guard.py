@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """PreToolUse hook: worktree boundary guardrail.
 
-PO_WORKTREE_GUARD=1 が設定されている場合のみ動作する。
-worktree 内で実装タスクを実行するワークフロー（parallel-agents skill が
-isolation:"worktree" 付きで起動する agent など）が事前にこの env を設定して有効化する。
+CWD が `.claude/worktrees/` 配下の場合のみ自動的に有効化される。
+parallel-agents skill が isolation:"worktree" 付きで起動する subagent の
+CWD は worktree root になるため、本 hook が自動的に防護を ON にする。
 Write / Edit ツールの対象パスが CWD（worktree ルート）外であればブロックする。
+
+main セッション（CWD が project root）では何もしないため既存挙動を破壊しない。
 """
 
 import json
@@ -15,6 +17,9 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
+# CWD が `.claude/worktrees/` を含む場合のみ有効化するためのマーカー
+_WORKTREES_MARKER = os.sep + ".claude" + os.sep + "worktrees" + os.sep
+
 
 def _sanitize(s: str) -> str:
     """ターミナルインジェクション対策: 制御文字（ANSI エスケープ含む）を除去する。"""
@@ -22,7 +27,9 @@ def _sanitize(s: str) -> str:
 
 
 def main():
-    if os.environ.get('PO_WORKTREE_GUARD') != '1':
+    cwd = os.path.realpath(os.getcwd())
+    # CWD が `.claude/worktrees/` 配下でなければスルー（main セッション等）
+    if _WORKTREES_MARKER not in cwd + os.sep:
         sys.exit(0)
 
     try:
@@ -38,7 +45,6 @@ def main():
     if not file_path:
         sys.exit(0)
 
-    cwd = os.path.realpath(os.getcwd())
     resolved = os.path.realpath(
         file_path if os.path.isabs(file_path) else os.path.join(cwd, file_path)
     )

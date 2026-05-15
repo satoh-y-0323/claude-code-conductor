@@ -154,7 +154,14 @@ AskUserQuestion ツール:
 - `description`: タスク id（5 単語以内）
 - `prompt`: 以下を含める（ペルソナ採用は不要、frontmatter / system prompt で自動適用される）:
   - タスクの `prompt` 本文
-  - 「**禁止事項: git add / git commit / git push を実行しないこと**。コミットは親 Claude がユーザー承認後に行う」
+  - 「**作業開始時に `pwd` で CWD が `.claude/worktrees/agent-{任意}` 配下であることを確認すること**。違う場合は worktree 隔離が機能していないため即 `status: failure` を返して停止する」
+  - 「**writes_files のパスは必ず相対パスで記述すること**（worktree CWD 起点）。絶対パス（`C:\\Users\\...` / `/Users/...`）は禁止。`worktree_guard.py` (PreToolUse hook) が worktree 外への Write/Edit を `exit 2` でブロックする」
+  - 「**writes_files の取り込み手順**: 作業完了後、writes に列挙した各ファイルについて以下を実行する:
+    1. `git check-ignore -q {path}` で gitignore 対象か判定
+    2. ignore 対象 **でない** ファイルのみ `git add {path}` でステージング
+    3. ステージしたファイルが 1 つでもあれば `git commit -m "{task_id}: {要約}"` で worktree-branch にコミット
+    4. `.claude/reports/**` 等の gitignore 対象ファイルは commit しない（working tree に残し、親 Claude が後で参照する）
+    5. **`git push` は禁止**（worktree-branch ローカルのみ）」
   - 「**返り値フォーマット厳守**:
     ```
     [Result]
@@ -206,19 +213,35 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 
 全タスク成功した wave に対して以下を順に実行する。
 
-#### 2-F-1: 成果物の取り込み
+#### 2-F-1: 成果物の取り込み（ハイブリッド方式）
 
-各 worktree の `writes` ファイルを main に取り込む。**親 Claude が一括で行う**:
+各 worktree の `writes` ファイルを main に取り込む。**親 Claude が一括で行う**。
+
+`writes` には 2 種類のファイルが混在する:
+- **トラッカブル**（`src/`・`tests/` 等）→ subagent が worktree-branch に commit 済み → `git checkout` で取り込み
+- **gitignored**（`.claude/reports/**` 等）→ subagent は commit していない → worktree filesystem から `cp` で取り込み
+
+判定は `git check-ignore -q {path}` で行う（exit 0 = ignored、exit 1 = trackable）。
 
 ```bash
-# 各 worktree ブランチから writes ファイルだけ checkout
-git checkout worktree-agent-{id} -- src/auth/login.py
-git checkout worktree-agent-{id2} -- src/auth/logout.py
+# writes 各ファイルについて分岐取り込み
+for write in src/auth/login.py .claude/reports/test-report-impl-login.md; do
+  if git check-ignore -q "$write"; then
+    # gitignored → worktree filesystem から cp
+    mkdir -p "$(dirname "$write")"
+    cp ".claude/worktrees/agent-{id}/$write" "$write"
+  else
+    # トラッカブル → worktree-branch の commit から取り込み
+    git checkout worktree-agent-{id} -- "$write"
+  fi
+done
 ```
 
 注意:
 - `writes` フィールドに列挙されたファイルのみを取り込む
-- worktree が touch したが本タスクの責務でない周辺ファイル（`CLAUDE.md` / `package.json` / `.claude/settings.local.json` / `.claude/reports/` 配下）は取り込まない
+- worktree が touch したが本タスクの責務でない周辺ファイル（`CLAUDE.md` / `package.json` / `.claude/settings.local.json` 等）は取り込まない
+- `cp` は `mkdir -p $(dirname ...)` で親ディレクトリを先に作る
+- Windows PowerShell では `cp` の代わりに `Copy-Item` を使う、または Read+Write 経由で取り込む
 
 #### 2-F-2: 親 Claude が一括コミット
 
