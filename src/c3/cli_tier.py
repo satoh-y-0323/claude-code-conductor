@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sqlite3
 import sys
 from typing import Any
 
@@ -28,7 +27,6 @@ from c3 import db as c3_db
 logger = logging.getLogger(__name__)
 
 
-_BUSY_TIMEOUT_MS = 5000
 _DEFAULT_RECENT_LIMIT = 10
 _LEARNING_THRESHOLD = 30  # select_tier.py の LEARNING_THRESHOLD と一致
 _TIERS = ("haiku", "sonnet", "opus")
@@ -74,7 +72,7 @@ def handle_stats(args: argparse.Namespace) -> int:
 
     try:
         snapshot = _collect_snapshot(db_path, recent_limit=args.recent)
-    except sqlite3.OperationalError as exc:
+    except Exception as exc:  # noqa: BLE001
         print(
             f"DB アクセスエラー: {exc}\n"
             "schema_version が古い可能性。新セッションで自動マイグレーションされます。",
@@ -111,29 +109,10 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
                 "expected_success_rate": expected,
             })
 
-    recent_outcomes: list[dict[str, Any]] = []
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-            rows = conn.execute(
-                "SELECT task_complexity, tier, success, ts "
-                "FROM tier_recent_outcomes "
-                "ORDER BY ts DESC LIMIT ?",
-                (recent_limit,),
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.OperationalError:
-        rows = []
-
-    for complexity, tier, success, ts in rows:
-        recent_outcomes.append({
-            "complexity": complexity,
-            "tier": tier,
-            "success": bool(success),
-            "ts": ts,
-        })
+    recent_outcomes: list[dict[str, Any]] = c3_db.read_recent_outcomes(
+        limit=recent_limit,
+        db_path=db_path,
+    )
 
     if total_trials < _LEARNING_THRESHOLD:
         mode = "uniform"

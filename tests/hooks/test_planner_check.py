@@ -168,6 +168,102 @@ class TestR2Pass:
         assert result.returncode == 0
         assert "[PlannerCheck WARN]" not in result.stderr
 
+    def test_task_id_prefix_8digits_no_false_positive(self, tmp_path: Path) -> None:
+        """task_id が 8 桁数字で始まる場合（例: 87654321abc）でも誤検知しない。
+
+        ファイル名: code-review-report-87654321abc.md
+        8 桁数字の直後が英字なので _TIMESTAMP_RE にはマッチしない。
+        """
+        report_path = _write_plan_report(
+            tmp_path,
+            "task-id-8digit-prefix",
+            """
+            po_plan_version: "0.1"
+            name: "task id starting with 8 digits"
+            tasks:
+              - id: 87654321abc
+                agent: code-reviewer
+                writes:
+                  - .claude/reports/code-review-report-87654321abc.md
+                prompt: "review"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert "[PlannerCheck WARN]" not in result.stderr
+
+    def test_task_id_suffix_8digits_no_false_positive(self, tmp_path: Path) -> None:
+        """task_id が英字の後に 8 桁数字で終わる場合（例: review87654321）でも誤検知しない。
+
+        ファイル名: code-review-report-review87654321.md
+        8 桁数字の直前が英字なので _TIMESTAMP_RE にはマッチしない。
+        """
+        report_path = _write_plan_report(
+            tmp_path,
+            "task-id-8digit-suffix",
+            """
+            po_plan_version: "0.1"
+            name: "task id ending with 8 digits"
+            tasks:
+              - id: review87654321
+                agent: code-reviewer
+                writes:
+                  - .claude/reports/code-review-report-review87654321.md
+                prompt: "review"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert "[PlannerCheck WARN]" not in result.stderr
+
+    def test_14digit_number_no_false_positive(self, tmp_path: Path) -> None:
+        """14 桁の連続数字（YYYYMMDDHHMMSS）はハイフンなしのため誤検知しない。
+
+        _TIMESTAMP_RE は YYYYMMDD-HHMMSS（ハイフン区切り）のみマッチする。
+        14 桁の連続数字は最初の 8 桁が境界なしの数字（後ろが数字）でマッチしない。
+        """
+        report_path = _write_plan_report(
+            tmp_path,
+            "task-id-14digits",
+            """
+            po_plan_version: "0.1"
+            name: "task id with 14 consecutive digits"
+            tasks:
+              - id: t1
+                agent: code-reviewer
+                writes:
+                  - .claude/reports/code-review-report-20260510021200.md
+                prompt: "review"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert "[PlannerCheck WARN]" not in result.stderr
+
+    def test_8digit_standalone_in_filename_triggers_warn(self, tmp_path: Path) -> None:
+        """8 桁数字がハイフンで区切られてファイル名中に現れる場合はタイムスタンプとして検知する。
+
+        ファイル名: code-review-report-20260510.md（ハイフン区切りで孤立した 8 桁数字）
+        _TIMESTAMP_RE の境界条件: 前後が非英数字（ハイフン・`.`）なのでマッチする。
+        """
+        report_path = _write_plan_report(
+            tmp_path,
+            "standalone-8digit",
+            """
+            po_plan_version: "0.1"
+            name: "8 digit standalone timestamp in filename"
+            tasks:
+              - id: t1
+                agent: code-reviewer
+                writes:
+                  - .claude/reports/code-review-report-20260510.md
+                prompt: "review"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert "[PlannerCheck WARN]" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # Group 2: R2 違反 — タイムスタンプ入りファイル名を検出する

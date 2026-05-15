@@ -375,7 +375,12 @@ def _toml_multiline_escape(value: str) -> str:
 
 
 def _dev_source_pythonpath() -> Path | None:
-    """Return ``<repo>/src`` when C3 is running from a source checkout."""
+    """Return ``<repo>/src`` when C3 is running from a source checkout.
+
+    ``src/c3/`` ディレクトリ構造（``__file__`` の親が ``c3``、その親が ``src``）が
+    前提。それ以外のディレクトリ構造の場合、または ``pyproject.toml`` が見つからない
+    場合は ``None`` を返す。
+    """
     here = Path(__file__).resolve()
     if here.parent.name != "c3" or here.parent.parent.name != "src":
         return None

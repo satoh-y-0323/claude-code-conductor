@@ -527,8 +527,19 @@ def _atomic_write(output_path: str, payload: str) -> bool:
 
 
 def _escape_for_xml(text: str) -> str:
-    """XML タグ境界突破を防ぐためタグ記号をエンティティに変換する。[SR-AI-001]"""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    """XML タグ境界突破を防ぐためタグ記号・引用符をエンティティに変換する。[SR-AI-001]
+
+    引用符 (" / ') もエスケープすることで、属性値混入による境界突破を防ぐ。
+    変換順: & を最初に変換してから他の文字を変換する（二重エスケープ防止）。
+    """
+    return (
+        text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
 
 
 def _build_llm_prompt(
@@ -649,8 +660,13 @@ def build_llm_summary_section(
         )
 
     try:
+        # セキュリティ設計 [SR-AI-001]:
+        # --dangerously-skip-permissions は全ツールへのフルアクセスを付与するため除去。
+        # LLM 要約生成はテキスト出力のみで十分なので --tools "" で全ツールを無効化する。
+        # これにより子 claude プロセスからのファイル読み書き・Bash 実行が完全にブロックされる。
+        # prompt は引数経由でのみ渡し、ファイル書き込みは親プロセス側で行う（職責分離）。
         result = subprocess.run(
-            [claude_exe, "-p", prompt, "--dangerously-skip-permissions"],
+            [claude_exe, "-p", prompt, "--tools", ""],
             **run_kwargs,
         )
     except subprocess.TimeoutExpired:

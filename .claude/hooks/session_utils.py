@@ -73,8 +73,7 @@ def extract_section(content: str, heading: str) -> str:
         セクション本文（前後の空白除去済み）、または空文字列。
 
     Notes:
-        restore_session.py には独自実装の同名関数があり、後方互換性のため
-        当面そのまま残す。新規コード（consolidate_memory.py 等）は本関数を使う。
+        新規コード（consolidate_memory.py 等）は本関数を使う。
     """
     pattern = rf'## {re.escape(heading)}\n(.*?)(?=\n## |\n<!--|\Z)'
     match = re.search(pattern, content, re.DOTALL)

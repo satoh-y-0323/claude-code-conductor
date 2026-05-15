@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -68,6 +69,33 @@ _PROMPT_PREFIX_MAX = 200
 SIMILARITY_STRONG_THRESHOLD = 0.8  # この値以上で complexity を上書き
 SIMILARITY_WEAK_THRESHOLD = 0.6    # この値以上で信頼度補強のみ
 
+# prompt 保存前のマスク処理: pre_tool.py の _SECRET_PATTERNS と同等のパターン。
+# 検出した値を *** に置換してから保存することで二次漏洩を防ぐ。
+# NOTE: ここで値をマスクすることで類似度推定の精度も若干下がる可能性があるが、
+#       セキュリティ優先として許容する（設計書に記載なし: SR-V-001 対応と判断）。
+_MASK_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r'(password=)\S+', re.IGNORECASE),
+    re.compile(r'(api[_-]?key=)\S+', re.IGNORECASE),
+    re.compile(r'(Bearer\s+)[\w\-\.]+', re.IGNORECASE),
+    re.compile(r'(\btoken=)\S+', re.IGNORECASE),
+    re.compile(r'(\bsecret=)\S+', re.IGNORECASE),
+    re.compile(r'(aws_secret_access_key=)\S+', re.IGNORECASE),
+    re.compile(r'(-----BEGIN [A-Z ]*PRIVATE KEY-----)[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----)'),
+]
+
+
+def _mask_secrets(text: str) -> str:
+    """秘密情報パターンにマッチする値部分を *** に置換して返す。
+
+    キー名やプレフィックスは残し、値のみを置換することで
+    「何が含まれていたか」は伝わらないようにする。
+    PEM ブロックは開始タグ〜終了タグ全体を ***  に置換する。
+    """
+    result = text
+    for pattern in _MASK_PATTERNS:
+        result = pattern.sub(lambda m: m.group(1) + "***", result)
+    return result
+
 # prompt-history.jsonl の末尾から読む最大行数（パフォーマンス対策）
 _PROMPT_HISTORY_SCAN_LINES = 1000
 
@@ -78,8 +106,10 @@ def _prompt_prefix_and_hash(prompt: str) -> tuple[str, str]:
     """prompt から (prefix, hash) を抽出する。
 
     Phase 2-C: prefix 200 文字 + SHA256 先頭 16 文字（プライバシー対策）。
+    SR-V-001: prefix に含まれる秘密情報パターンは *** にマスクしてから保存する。
+    hash はマスク前の原文から計算する（一意性を保つため）。
     """
-    prefix = prompt[:_PROMPT_PREFIX_MAX]
+    prefix = _mask_secrets(prompt[:_PROMPT_PREFIX_MAX])
     h = hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()[:16]
     return prefix, h
 

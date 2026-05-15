@@ -168,7 +168,15 @@ class C3MCPServer:
             line = sys.stdin.readline()
             if not line:
                 return {"action": "cancel"}
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                # Malformed JSON lines (e.g. partial writes) are logged and skipped.
+                print(
+                    f"[c3 mcp_server] _elicit: invalid JSON skipped: {exc}",
+                    file=sys.stderr,
+                )
+                continue
             if payload.get("id") == request_id and "result" in payload:
                 return payload["result"]
             # Notifications can arrive while waiting for elicitation. Ignore them.

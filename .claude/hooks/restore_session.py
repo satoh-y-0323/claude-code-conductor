@@ -5,7 +5,6 @@ restore_session.py: SessionStart(compact) hook.
 """
 
 import os
-import re
 import sys
 
 try:
@@ -20,6 +19,19 @@ _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
 
 
+def _load_session_utils():
+    """session_utils モジュールを動的にロードして返す（同階層）。"""
+    import importlib.util
+
+    util_path = os.path.join(_HOOKS_DIR, "session_utils.py")
+    spec = importlib.util.spec_from_file_location("session_utils", util_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"session_utils が見つかりません: {util_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+    return module
+
+
 def find_latest_session() -> str | None:
     if not os.path.isdir(SESSIONS_DIR):
         return None
@@ -29,14 +41,6 @@ def find_latest_session() -> str | None:
     return os.path.join(SESSIONS_DIR, max(files))
 
 
-def extract_section(content: str, heading: str) -> str:
-    pattern = rf'## {re.escape(heading)}\n(.*?)(?=\n## |\n<!--|\Z)'
-    match = re.search(pattern, content, re.DOTALL)
-    if not match:
-        return ''
-    return match.group(1).strip()
-
-
 def main():
     path = find_latest_session()
     if not path or not os.path.exists(path):
@@ -44,6 +48,9 @@ def main():
 
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read()
+
+    session_utils = _load_session_utils()
+    extract_section = session_utils.extract_section
 
     date_str = os.path.basename(path).replace('.tmp', '')
     todos = extract_section(content, '残タスク')

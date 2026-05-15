@@ -319,3 +319,99 @@ class TestMainE2E:
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": ""})))
         rc = mod.main()
         assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# _mask_secrets / _prompt_prefix_and_hash (SR-V-001)
+# ---------------------------------------------------------------------------
+
+
+class TestMaskSecrets:
+    """秘密情報マスク処理の検証。"""
+
+    @pytest.fixture
+    def mod(self):
+        return _load_hook_module()
+
+    @pytest.mark.parametrize("input_text,expected_masked", [
+        # password=
+        ("password=MyS3cr3t!", "password=***"),
+        ("PASSWORD=abc123", "PASSWORD=***"),
+        # api_key= / api-key=
+        ("api_key=sk-1234567890abcdef", "api_key=***"),
+        ("api-key=sk-abcdef", "api-key=***"),
+        # Bearer トークン
+        ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def", "Authorization: Bearer ***"),
+        # token=
+        ("token=ghp_xxxxxxxxxxxxx", "token=***"),
+        # secret=
+        ("secret=topsecret", "secret=***"),
+        # aws_secret_access_key=
+        ("aws_secret_access_key=wJalrXUtnFEMI/K7MDENG", "aws_secret_access_key=***"),
+    ])
+    def test_mask_replaces_value(self, mod, input_text: str, expected_masked: str) -> None:
+        result = mod._mask_secrets(input_text)
+        assert result == expected_masked
+
+    def test_mask_preserves_non_secret_text(self, mod) -> None:
+        text = "通常のプロンプトです。password とは関係ありません。"
+        result = mod._mask_secrets(text)
+        # "password" 単体（= が続かない）はマスクされない
+        assert result == text
+
+    def test_mask_pem_private_key(self, mod) -> None:
+        text = "-----BEGIN RSA PRIVATE KEY-----\nABCDEF\n-----END RSA PRIVATE KEY-----"
+        result = mod._mask_secrets(text)
+        assert "ABCDEF" not in result
+        assert "***" in result
+
+    def test_mask_multiple_patterns(self, mod) -> None:
+        text = "api_key=sk-abc password=pass123"
+        result = mod._mask_secrets(text)
+        assert "sk-abc" not in result
+        assert "pass123" not in result
+        assert "api_key=***" in result
+        assert "password=***" in result
+
+    def test_mask_keeps_key_names(self, mod) -> None:
+        """キー名（api_key= 等）は残り、値のみ *** になる。"""
+        text = "api_key=secretvalue"
+        result = mod._mask_secrets(text)
+        assert result.startswith("api_key=")
+        assert "secretvalue" not in result
+
+    def test_prompt_prefix_and_hash_masks_prefix(self, mod) -> None:
+        """_prompt_prefix_and_hash は prefix に含まれる秘密情報をマスクする。"""
+        prompt = "api_key=sk-super-secret このタスクをやってください"
+        prefix, h = mod._prompt_prefix_and_hash(prompt)
+        assert "sk-super-secret" not in prefix
+        assert "api_key=***" in prefix
+        # hash はマスク前の原文から計算されるため固定値と一致する
+        import hashlib
+        expected_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+        assert h == expected_hash
+
+    def test_prompt_prefix_and_hash_no_false_positive(self, mod) -> None:
+        """秘密情報を含まない通常プロンプトはマスクされない。"""
+        prompt = "新しい機能を追加してください。セキュリティを考慮した実装で。"
+        prefix, _ = mod._prompt_prefix_and_hash(prompt)
+        assert prefix == prompt[:200]
+
+    def test_main_masked_prefix_in_tier_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """main を通じて tier_selection.json に書かれる prompt_prefix がマスクされている。"""
+        mod = _load_hook_module()
+        monkeypatch.setattr(
+            mod, "TIER_SELECTION_PATH",
+            str(tmp_path / "tier_selection.json"),
+        )
+        prompt = "token=ghp_12345678abcdef この実装をリファクタリングしてください"
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": prompt})))
+
+        rc = mod.main()
+        assert rc == 0
+
+        data = json.loads((tmp_path / "tier_selection.json").read_text(encoding="utf-8"))
+        assert "ghp_12345678abcdef" not in data.get("prompt_prefix", "")
+        assert "token=***" in data.get("prompt_prefix", "")

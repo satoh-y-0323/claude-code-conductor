@@ -1502,3 +1502,136 @@ class TestLLMOnlyMainExtractsLLMSummary:
         assert called["extract"] is True, (
             "_llm_only_main は _write_llm_summary_extract を呼ぶ必要がある"
         )
+
+
+# ---------------------------------------------------------------------------
+# セキュリティ強化: _escape_for_xml / subprocess コマンド検証 [SR-AI-001]
+# ---------------------------------------------------------------------------
+
+
+class TestEscapeForXml:
+    """`_escape_for_xml()` の文字エスケープ検証。"""
+
+    def test_escapes_basic_xml_chars(self) -> None:
+        """& < > はエンティティに変換される。"""
+        mod = _load_hook_module()
+        result = mod._escape_for_xml("a & b < c > d")
+        assert "&amp;" in result
+        assert "&lt;" in result
+        assert "&gt;" in result
+
+    def test_escapes_double_quote(self) -> None:
+        """二重引用符 \" は &quot; にエスケープされる（属性値混入防止）。[SR-AI-001]"""
+        mod = _load_hook_module()
+        result = mod._escape_for_xml('hello "world"')
+        assert "&quot;" in result
+        assert '"' not in result
+
+    def test_escapes_single_quote(self) -> None:
+        """単一引用符 ' は &#39; にエスケープされる（属性値混入防止）。[SR-AI-001]"""
+        mod = _load_hook_module()
+        result = mod._escape_for_xml("it's a test")
+        assert "&#39;" in result
+        assert "'" not in result
+
+    def test_no_double_escaping_of_ampersand(self) -> None:
+        """& は &amp; に変換されるが、&amp; が &amp;amp; にはならない（二重エスケープ防止）。"""
+        mod = _load_hook_module()
+        result = mod._escape_for_xml("&lt;existing&gt;")
+        # & → &amp; に変換されて &amp;lt; になるが、&amp;lt; が更に変換されてはいけない
+        assert result == "&amp;lt;existing&amp;gt;"
+
+    def test_complex_injection_attempt(self) -> None:
+        """属性値インジェクション試行が無害化される。"""
+        mod = _load_hook_module()
+        # 攻撃者が session データに仕込む典型的なパターン
+        payload = '"><script>alert(1)</script><x a="'
+        result = mod._escape_for_xml(payload)
+        # < > " が全てエスケープされていること
+        assert "<" not in result
+        assert ">" not in result
+        assert '"' not in result
+
+
+class TestSubprocessSecurityFlags:
+    """`build_llm_summary_section()` のサブプロセス起動フラグ検証。[SR-AI-001]"""
+
+    def _make_files_for_summary(self, tmp_path: Path) -> list[str]:
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        _make_session(sessions, "20260507", success=["- foo"], failure=["- bar"])
+        mod = _load_hook_module()
+        return mod.list_recent_session_files(
+            str(sessions),
+            window_days=7,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+    def test_no_dangerously_skip_permissions_in_subprocess(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess に --dangerously-skip-permissions が渡されないこと。[SR-AI-001]"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+        monkeypatch.delenv("C3_CONSOLIDATE_LLM_DEPTH", raising=False)
+
+        recorded: dict = {}
+
+        class _FakeResult:
+            returncode = 0
+            stdout = "- summary"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            recorded["args"] = args
+            return _FakeResult()
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        assert recorded.get("args") is not None, "subprocess.run が呼ばれていません"
+        assert "--dangerously-skip-permissions" not in recorded["args"], (
+            "--dangerously-skip-permissions は攻撃面を拡大するため使用禁止 [SR-AI-001]"
+        )
+
+    def test_tools_empty_in_subprocess(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """subprocess に --tools \"\" が渡され、子プロセスのツールアクセスが禁止される。[SR-AI-001]"""
+        mod = _load_hook_module()
+        files = self._make_files_for_summary(tmp_path)
+
+        monkeypatch.setattr(mod.shutil, "which", lambda _: "/fake/claude")
+        monkeypatch.delenv("C3_CONSOLIDATE_LLM_DEPTH", raising=False)
+
+        recorded: dict = {}
+
+        class _FakeResult:
+            returncode = 0
+            stdout = "- summary"
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            recorded["args"] = args
+            return _FakeResult()
+
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        mod.build_llm_summary_section(
+            files,
+            today=datetime(2026, 5, 8, tzinfo=timezone.utc),
+        )
+
+        args = recorded.get("args", [])
+        assert "--tools" in args, "--tools フラグが subprocess args に含まれていません [SR-AI-001]"
+        tools_idx = args.index("--tools")
+        assert tools_idx + 1 < len(args), "--tools の後に値が必要です"
+        assert args[tools_idx + 1] == "", (
+            '--tools の値が空文字列でないとツール無効化になりません [SR-AI-001]'
+        )

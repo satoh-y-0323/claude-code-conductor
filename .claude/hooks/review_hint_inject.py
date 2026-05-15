@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -164,10 +165,18 @@ def append_hints_to_report(
         return False
 
     new_text = text.rstrip() + "\n\n" + hint_section
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", dir=report_path.parent)
     try:
-        report_path.write_text(new_text, encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp_path, report_path)
     except OSError as exc:
         print(f"[review_hint_inject] failed to write {report_path}: {exc}", file=sys.stderr)
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
         return False
     return True
 

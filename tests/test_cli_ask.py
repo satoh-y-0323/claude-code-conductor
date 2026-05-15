@@ -42,6 +42,75 @@ FREE_TEXT_QUESTION_JSON = json.dumps(
 )
 
 
+import pathlib
+import tempfile
+
+
+# ---------------------------------------------------------------------------
+# load_questions type-dispatch tests
+# ---------------------------------------------------------------------------
+
+SINGLE_QUESTION_DICT = {
+    "questions": [
+        {
+            "question": "Pick one",
+            "options": [{"label": "A"}, {"label": "B"}],
+        }
+    ]
+}
+SINGLE_QUESTION_JSON = json.dumps(SINGLE_QUESTION_DICT, ensure_ascii=False)
+
+
+def test_load_questions_accepts_dict():
+    questions = load_questions(SINGLE_QUESTION_DICT)
+
+    assert len(questions) == 1
+    assert questions[0].question == "Pick one"
+    assert questions[0].options[0].label == "A"
+
+
+def test_load_questions_dict_does_not_construct_path():
+    # dict 入力のとき Path(...) を経由しないことを間接的に確認する:
+    # キーが valid な file path になっていない dict を渡しても TypeError にならない
+    questions = load_questions(SINGLE_QUESTION_DICT)
+    assert questions[0].question == "Pick one"
+
+
+def test_load_questions_accepts_str_json():
+    questions = load_questions(SINGLE_QUESTION_JSON)
+
+    assert len(questions) == 1
+    assert questions[0].options[1].label == "B"
+
+
+def test_load_questions_accepts_str_path(tmp_path):
+    file = tmp_path / "q.json"
+    file.write_text(SINGLE_QUESTION_JSON, encoding="utf-8")
+
+    questions = load_questions(str(file))
+
+    assert questions[0].question == "Pick one"
+
+
+def test_load_questions_accepts_path_object(tmp_path):
+    file = tmp_path / "q.json"
+    file.write_text(SINGLE_QUESTION_JSON, encoding="utf-8")
+
+    questions = load_questions(file)
+
+    assert questions[0].question == "Pick one"
+
+
+def test_load_questions_raises_type_error_for_invalid_type():
+    import pytest
+
+    with pytest.raises(TypeError, match="str, Path, or dict"):
+        load_questions(12345)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+
+
 def test_cli_ask_response_supports_multiselect(capsys):
     rc = cli_ask.handle(
         argparse.Namespace(

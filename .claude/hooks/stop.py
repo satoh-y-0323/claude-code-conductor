@@ -141,10 +141,15 @@ def extract_session_patterns(date_str: str) -> list:
 
 
 def _parse_session_date(date_str: str):
+    """Parse a yyyymmdd date string and return a date object, or None if invalid.
+
+    Returns None (rather than a sentinel like date.min) so callers can explicitly
+    filter out unparseable entries instead of silently treating them as very old.
+    """
     try:
         return datetime.strptime(date_str, '%Y%m%d').date()
     except ValueError:
-        return date.min
+        return None
 
 
 def _build_sessions_by_date(sessions_dir: str) -> set[str]:
@@ -164,9 +169,14 @@ def count_sessions_since(registered_date_str: str, sessions_by_date: set[str] | 
             return 1
         sessions_by_date = _build_sessions_by_date(SESSIONS_DIR)
     registered = _parse_session_date(registered_date_str)
+    # If registered_date_str itself is unparseable, we cannot determine a baseline;
+    # fall back to counting all sessions rather than silently returning a wrong value.
+    if registered is None:
+        return max(len(sessions_by_date), 1)
     count = sum(
         1 for d in sessions_by_date
-        if _parse_session_date(d) >= registered
+        # Skip session entries whose date string is malformed (parsed as None).
+        if (parsed := _parse_session_date(d)) is not None and parsed >= registered
     )
     return max(count, 1)
 

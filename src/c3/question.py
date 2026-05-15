@@ -33,9 +33,13 @@ def load_questions(source: str | Path | dict[str, Any]) -> list[Question]:
     """Load one or more questions from a path, JSON string, or object."""
     if isinstance(source, dict):
         payload = source
+    elif isinstance(source, Path):
+        payload = json.loads(source.read_text(encoding="utf-8") if source.is_file() else str(source))
+    elif isinstance(source, str):
+        path = Path(source)
+        payload = json.loads(path.read_text(encoding="utf-8") if path.is_file() else source)
     else:
-        text = Path(source).read_text(encoding="utf-8") if Path(str(source)).is_file() else str(source)
-        payload = json.loads(text)
+        raise TypeError(f"source must be str, Path, or dict, got {type(source).__name__}")
 
     raw_questions = payload.get("questions") if isinstance(payload, dict) else None
     if raw_questions is None:

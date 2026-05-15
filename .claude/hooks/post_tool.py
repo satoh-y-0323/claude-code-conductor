@@ -43,6 +43,7 @@ _BINARY_SAMPLE_BYTES = 8 * 1024
 # applicable_extensions が None なら全対象拡張子に適用。
 _QUALITY_PATTERNS: list[tuple[str, "re.Pattern[str]", "frozenset[str] | None"]] = [
     ('console.log', re.compile(r'console\.log\('), frozenset({'.js', '.ts', '.tsx', '.jsx'})),
+    # Python の print() のみ対象。他言語の print は別パターン名で追加すること
     ('print', re.compile(r'^\s*print\('), frozenset({'.py'})),
     ('TODO', re.compile(r'\bTODO\b'), None),
     ('FIXME', re.compile(r'\bFIXME\b'), None),

@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 
 # SQLite ロック衝突待機時間（ms）。並列書き込み増加に備えて 5 秒に設定する。
 # 冪等に各書き込み関数で適用される。
-_BUSY_TIMEOUT_MS = 5000
+# 公開定数として export し、cli_tier.py 等の呼び出し側から参照できるようにする（SSOT）。
+BUSY_TIMEOUT_MS = 5000
+_BUSY_TIMEOUT_MS = BUSY_TIMEOUT_MS  # 内部互換エイリアス（既存コードへの影響なし）
 
 
 def locate_c3_db(start: Path | None = None) -> Path | None:
@@ -379,6 +381,54 @@ def record_tier_recent_outcome(
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to record tier_recent_outcome: %s", exc)
         return False
+
+
+def read_recent_outcomes(
+    *,
+    limit: int = 10,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """``tier_recent_outcomes`` から直近 ``limit`` 件を時系列降順で返す。
+
+    ``cli_tier._collect_snapshot`` の sqlite3 直接呼び出しを置き換えるヘルパー。
+    busy_timeout は BUSY_TIMEOUT_MS を冪等に適用する。
+
+    Args:
+        limit: 取得件数の上限（デフォルト 10）。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+
+    Returns:
+        各行を ``{"complexity", "tier", "success", "ts"}`` の dict にしたリスト。
+        DB 不在 / テーブル不在 / エラー時は空リストを返す（呼び出し側を止めない）。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+            rows = conn.execute(
+                "SELECT task_complexity, tier, success, ts "
+                "FROM tier_recent_outcomes "
+                "ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_recent_outcomes: table not found or inaccessible: %s", exc)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("read_recent_outcomes: unexpected error: %s", exc)
+        return []
+
+    return [
+        {"complexity": complexity, "tier": tier, "success": bool(success), "ts": ts}
+        for complexity, tier, success, ts in rows
+    ]
 
 
 def read_tier_failure_rate(

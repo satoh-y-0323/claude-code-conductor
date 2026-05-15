@@ -47,13 +47,17 @@ def notify(message: str) -> None:
             )
         elif system == 'Windows':
             import base64
-            safe_msg = re.sub(r"['\r\n\x00-\x1f\x7f]", '', message)[:200]
+            # メッセージを UTF-8 → Base64 に変換し、PowerShell スクリプト本文に
+            # 生のユーザーデータを含めない。Base64 文字列は英数字と +/= のみで
+            # PowerShell インジェクション ([SR-INJ-002]) が物理的に不可能。
+            msg_b64 = base64.b64encode(message.encode('utf-8')).decode('ascii')
             ps_script = (
                 'Add-Type -AssemblyName System.Windows.Forms; '
                 '$n = New-Object System.Windows.Forms.NotifyIcon; '
                 '$n.Icon = [System.Drawing.SystemIcons]::Information; '
                 '$n.Visible = $true; '
-                f"$n.ShowBalloonTip(4000, 'Claude Code', '{safe_msg}', "
+                f'$msg = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("{msg_b64}")); '
+                '$n.ShowBalloonTip(4000, \'Claude Code\', $msg, '
                 '[System.Windows.Forms.ToolTipIcon]::Info); '
                 'Start-Sleep -Milliseconds 4500; '
                 '$n.Dispose()'
