@@ -204,13 +204,13 @@ class TestSubprocessE2E:
 # 伝播してしまう問題を防ぐ。
 # ---------------------------------------------------------------------------
 
-# プロジェクトルートの session_stop.py を参照（_needs_summary が定義されている版）
-_ROOT_HOOKS_DIR = WORKTREE_ROOT.parent.parent.parent / ".claude" / "hooks"
+# worktree ルート起点の session_stop.py を参照（_needs_summary が定義されている版）
+_ROOT_HOOKS_DIR = WORKTREE_ROOT / ".claude" / "hooks"
 _ROOT_HOOK_PATH = _ROOT_HOOKS_DIR / "session_stop.py"
 
 
 def _load_root_module() -> types.ModuleType:
-    """プロジェクトルートの session_stop.py をロードする（_needs_summary 実装を含む版）."""
+    """worktree の session_stop.py をロードする（_needs_summary 実装を含む版）."""
     spec = importlib.util.spec_from_file_location("session_stop_root", _ROOT_HOOK_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -232,7 +232,6 @@ class TestNeedsSummaryTOCTOU:
         """全 tmp ファイルが listdir 後・getmtime 前に消失しても False を返すこと.
 
         期待する振る舞い: 全ファイルが消えた場合はセッションなしと同等なので False。
-        現状の実装: FileNotFoundError が max() の generator から伝播して例外が出る（Red）。
         """
         module = _load_root_module()
 
@@ -254,7 +253,7 @@ class TestNeedsSummaryTOCTOU:
         with patch("os.path.getmtime", side_effect=FileNotFoundError("file gone")):
             result = module._needs_summary(str(tmp_path))
 
-        # 全ファイルが消えた場合は False を返すべき（機能未実装のため現状は例外が出る）
+        # 全ファイルが消えた場合は False を返すべき
         assert result is False
 
     def test_partial_tmp_files_deleted_uses_remaining_files(
@@ -263,7 +262,6 @@ class TestNeedsSummaryTOCTOU:
         """一部の tmp ファイルが消失しても残ったファイルから正常に判定できること.
 
         期待する振る舞い: 残ったファイルの mtime で判定する。
-        現状の実装: 最初の FileNotFoundError で止まるため残りファイルが使われない（Red）。
         """
         module = _load_root_module()
 
@@ -302,10 +300,7 @@ class TestNeedsSummaryTOCTOU:
     def test_getmtime_error_does_not_propagate_as_exception(
         self, tmp_path: Path
     ):
-        """FileNotFoundError が _needs_summary() の外に伝播しないこと.
-
-        現状の実装: 例外を捕捉していないため伝播する（Red）。
-        """
+        """FileNotFoundError が _needs_summary() の外に伝播しないこと."""
         module = _load_root_module()
 
         sessions_dir = tmp_path / "memory" / "sessions"

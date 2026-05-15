@@ -58,6 +58,8 @@ def _needs_summary(claude_dir: str) -> bool:
       - それ以外 → False (要約済み)
 
     タイムスタンプは os.path.getmtime() で取得する機械的判定。
+    listdir と getmtime の間にファイルが削除される TOCTOU に対応するため、
+    各ファイルの getmtime を個別に try/except で囲む [CR-CC-002]。
     """
     sessions_dir = os.path.join(claude_dir, "memory", "sessions")
     if not os.path.isdir(sessions_dir):
@@ -69,7 +71,15 @@ def _needs_summary(claude_dir: str) -> bool:
     ]
     if not tmp_paths:
         return False
-    latest_session_mtime = max(os.path.getmtime(p) for p in tmp_paths)
+    mtimes = []
+    for p in tmp_paths:
+        try:
+            mtimes.append(os.path.getmtime(p))
+        except OSError:
+            continue
+    if not mtimes:
+        return False
+    latest_session_mtime = max(mtimes)
 
     summary_path = os.path.join(claude_dir, "memory", "llm_summary.md")
     if not os.path.isfile(summary_path):
