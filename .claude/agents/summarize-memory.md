@@ -1,12 +1,12 @@
 ---
 name: summarize-memory
-model: sonnet
-description: 直近 7 日分のセッションファイルを集約して .claude/memory/llm_summary.md を更新するバックグラウンド要約エージェント。Stop hook (.claude/hooks/session_stop.py) からの exit 2 + stderr 指示で起動される。Agent ツールから必ず run_in_background:true で呼び出すこと。
+model: haiku
+description: 直近 7 日分のセッションファイルを集約して `.claude/memory/llm_summary.md` を更新する要約エージェント。
+background: true
 tools:
   - Read
   - Glob
   - Write
-  - Bash
 ---
 
 # Summarize Memory
@@ -14,9 +14,6 @@ tools:
 直近 7 日分のセッションファイル (`.claude/memory/sessions/YYYYMMDD.tmp`) から
 「うまくいったアプローチ」「試みたが失敗したアプローチ」を抽出し、
 LLM 要約を生成して `.claude/memory/llm_summary.md` を上書きする。
-
-呼び出しは `Agent(subagent_type="summarize-memory", run_in_background=True)` で行われ、
-親 Claude をブロックせずに非同期で実行される。
 
 ---
 
@@ -107,23 +104,22 @@ print(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00"))
 
 ---
 
-## Step 5: フラグファイルを削除する
+## Step 5: フラグファイルに "DONE" を書き込む
 
-無限ループ防止フラグを削除する。Bash で以下を実行:
+Bash が sandbox でブロックされる環境向けに、削除の代わりに Write ツールで
+フラグファイルの内容を `DONE` に更新する。
+Stop hook はフラグ内容が "DONE" であることを確認してから削除する設計になっており、
+"DONE" でない（空のまま）はエージェント実行中とみなして重複起動を防ぐ。
 
-```bash
-rm -f .claude/state/llm_summary_agent_requested.flag
+Write ツールで `.claude/state/llm_summary_agent_requested.flag` に以下を書き込む:
+
 ```
-
-Windows 環境（PowerShell）の場合:
-
-```powershell
-Remove-Item -Path ".claude/state/llm_summary_agent_requested.flag" -ErrorAction SilentlyContinue
+DONE
 ```
 
 このステップは Step 1 でファイル 0 件・Step 4 の Write 失敗の場合でも必ず実行する。
-Write 失敗時もフラグを削除することで、次回 Stop hook が再度 exit 2 + フラグ作成を行い、
-リトライの機会が生まれる。
+Write 失敗時も "DONE" 書き込みを試みることで、次回 Stop hook がフラグ内容を確認して
+適切に処理できるようにする。
 
 ---
 
