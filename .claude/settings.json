@@ -79,7 +79,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/pre_tool.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_tool.py"]
           }
         ]
       },
@@ -89,7 +89,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/worktree_guard.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
           }
         ]
       },
@@ -99,7 +99,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/worktree_guard.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
           }
         ]
       }
@@ -111,7 +111,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/post_tool.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post_tool.py"]
           }
         ]
       },
@@ -121,7 +121,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/post_tool.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post_tool.py"]
           }
         ]
       }
@@ -133,7 +133,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/permission_handler.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/permission_handler.py"]
           }
         ]
       }
@@ -145,7 +145,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/select_tier.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/select_tier.py"]
           }
         ]
       }
@@ -157,7 +157,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/restore_session.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/restore_session.py"]
           }
         ]
       },
@@ -167,7 +167,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/session_start.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session_start.py"]
           }
         ]
       }
@@ -179,7 +179,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/pre_compact.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_compact.py"]
           }
         ]
       }
@@ -191,7 +191,7 @@
           {
             "type": "command",
             "command": "python",
-            "args": [".claude/hooks/session_stop.py"]
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session_stop.py"]
           }
         ]
       }
