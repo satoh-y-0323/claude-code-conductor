@@ -407,7 +407,9 @@ class TestFlagControlLogic:
     def test_done_flag_oserror_on_unlink_returns_0(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
-        """DONE フラグだが unlink が OSError → TOCTOU 対策で exit 0（重複起動防止）。"""
+        """DONE フラグだが unlink が OSError → TOCTOU 対策で exit 0（重複起動防止）。
+        フラグは変更されずに残る（unlink が失敗したため）。
+        """
         flag_path = tmp_path / "test.flag"
         flag_path.write_text("DONE", encoding="utf-8")
         module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=True)
@@ -416,6 +418,9 @@ class TestFlagControlLogic:
         result = module.main()
 
         assert result == 0
+        # unlink が失敗したためフラグは DONE のまま残る（次回 Stop hook が処理する）
+        assert flag_path.exists()
+        assert flag_path.read_text(encoding="utf-8") == "DONE"
 
     def test_no_flag_and_needs_summary_true_returns_2(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

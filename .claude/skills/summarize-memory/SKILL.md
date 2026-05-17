@@ -95,6 +95,9 @@ Write ツールで `.claude/state/llm_summary_agent_requested.flag` に以下を
 DONE
 ```
 
+注: この `"DONE"` という値は `session_stop.py` の `_FLAG_DONE_CONTENT` 定数と一致させること。
+変更する場合は両ファイルを同期すること。
+
 - このステップは Step 1 でファイル 0 件・Step 4 の Write 失敗の場合でも必ず実行する
 - フラグの状態機械（session_stop.py が管理）:
   - 空（""）= エージェント実行中。Stop hook は重複起動防止でスキップする

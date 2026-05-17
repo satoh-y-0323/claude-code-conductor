@@ -29,6 +29,9 @@ DEFAULT_RULES: dict = {'auto_allow': [], 'notify_on_auto': True}
 _CREATE_NO_WINDOW = 0x08000000
 # p_arg 付きパターンに対してシェル制御文字を含むコマンドの自動承認を防ぐ
 _SHELL_INJECTION_RE = re.compile(r';|&&|\|\||`|\$\(')
+# permission_handler_toast.py の exit code と一致させること（変更時は両ファイルを同期する）
+_TOAST_APPROVED_EXIT_CODE = 10    # ユーザーが許可ボタンをクリック
+_TOAST_UNAVAILABLE_EXIT_CODE = 2  # windows-toasts 未インストール
 
 
 def notify(message: str) -> None:
@@ -91,14 +94,36 @@ def _glob_to_regex(pattern: str) -> str:
     return '.*'.join(escaped)
 
 
+def _match_file_path(raw: str, p_arg: str) -> bool:
+    """Write/Edit/Read/Glob ツール用のパスマッチング。
+
+    絶対パスと相対パス（プロジェクトルート基準）の両方で照合する。
+    前提: ファイルパスは ASCII 文字のみを想定。
+    lower() 統一後の文字列でスライス長を計算し、大文字小文字差異によるずれを防ぐ。
+    """
+    subject_abs = raw.replace(os.sep, '/')
+    regex = _glob_to_regex(p_arg)
+    if re.fullmatch(regex, subject_abs):
+        return True
+    # 絶対パスにマッチしない場合、プロジェクトルート基準の相対パスでも照合する。
+    # settings.json の permissions.allow と同じ相対パス記法が permission_rules.json でも使える。
+    project_prefix_lower = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/').lower() + '/'
+    subject_abs_lower = subject_abs.lower()
+    if subject_abs_lower.startswith(project_prefix_lower):
+        subject_rel = subject_abs[len(project_prefix_lower):]
+        # ".." を含む相対パスはディレクトリトラバーサルのリスクがあるためスキップ
+        if '..' in subject_rel.split('/'):
+            return False
+        return bool(re.fullmatch(regex, subject_rel))
+    return False
+
+
 def matches_pattern(tool_name: str, tool_input: dict, pattern: str) -> bool:
     """
     "Bash(git *)" / "Write(.claude/**)" 形式のパターンとマッチするか判定する。
     ToolName のみ（引数なし）も許容する。
 
-    Write / Edit / Read / Glob は絶対パスと相対パスの両方でマッチを試みる。
-    相対パスはプロジェクトルート（_PROJECT_ROOT）を基準に算出するため、
-    settings.json の permissions.allow と同じ相対パス記法が permission_rules.json でも使える。
+    Write / Edit / Read / Glob は _match_file_path() で絶対・相対パスの両方を照合する。
     例: "Edit(.claude/**)" は "Edit(C:/project/.claude/**)" と等価に動作する。
     """
     m = re.match(r'^(\w+)(?:\((.+)\))?$', pattern.strip())
@@ -119,25 +144,7 @@ def matches_pattern(tool_name: str, tool_input: dict, pattern: str) -> bool:
         subject = command
     elif tool_name in ('Write', 'Edit', 'Read', 'Glob'):
         raw = tool_input.get('file_path', tool_input.get('pattern', ''))
-        # パス区切りを posix（/）に統一してから絶対パスで照合
-        subject_abs = raw.replace(os.sep, '/')
-        regex = _glob_to_regex(p_arg)
-        if re.fullmatch(regex, subject_abs):
-            return True
-        # 絶対パスにマッチしない場合、プロジェクトルート基準の相対パスでも照合する。
-        # lower() 統一後の文字列でスライス長を計算し、大文字小文字差異によるずれを防ぐ。
-        # 前提: Windows/macOS/Linux のファイルパスは ASCII 文字のみを想定。
-        # Unicode 文字（日本語ディレクトリ等）は lower() 前後で文字数が変わる可能性があるが
-        # Python の lower() は UTF-8 範囲では文字数を変えないため実用上は問題ない。
-        project_prefix_lower = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/').lower() + '/'
-        subject_abs_lower = subject_abs.lower()
-        if subject_abs_lower.startswith(project_prefix_lower):
-            subject_rel = subject_abs[len(project_prefix_lower):]
-            # ".." を含む相対パスはディレクトリトラバーサルのリスクがあるためスキップ
-            if '..' in subject_rel.split('/'):
-                return False
-            return bool(re.fullmatch(regex, subject_rel))
-        return False
+        return _match_file_path(raw, p_arg)
     elif tool_name == 'WebFetch':
         url = tool_input.get('url', '')
         if p_arg.startswith('domain:'):
@@ -275,9 +282,9 @@ def notify_with_action(message: str, pattern: str | None) -> bool:
         # これはユーザーが「追加して許可」or「今回だけ許可」を選択するための意図的な待機であり
         # フリーズではない（選択後は即座に再開する）。
         result = subprocess.run(cmd, timeout=70, capture_output=True)
-        if result.returncode == 10:  # _APPROVED_EXIT_CODE
+        if result.returncode == _TOAST_APPROVED_EXIT_CODE:
             return True
-        if result.returncode == 2:   # _UNAVAILABLE_EXIT_CODE
+        if result.returncode == _TOAST_UNAVAILABLE_EXIT_CODE:
             # windows-toasts 未インストール → バルーン通知にフォールバック
             notify(message)
         return False

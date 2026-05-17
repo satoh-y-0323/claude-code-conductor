@@ -15,6 +15,7 @@ windows-toasts が見つからない場合は _UNAVAILABLE_EXIT_CODE(2) で exit
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import sys
@@ -31,6 +32,7 @@ except AttributeError:
 
 _TIMEOUT_SEC = 60
 _AUTO_ALLOW_MAX_SIZE = 100
+# permission_handler.py の _TOAST_*_EXIT_CODE 定数と一致させること（変更時は両ファイルを同期する）
 _APPROVED_EXIT_CODE = 10   # ユーザーが許可ボタンをクリック
 _UNAVAILABLE_EXIT_CODE = 2  # windows-toasts 未インストール
 
@@ -137,7 +139,9 @@ def show_toast(message: str, pattern: str | None, rules_path: str) -> bool:
 
     toaster = InteractableWindowsToaster('Claude Code')
     toast = Toast()
-    toast.text_fields = ['⚠ 承認が必要', message]
+    # windows-toasts は内部で XML テンプレートを生成するため、
+    # '<' '&' 等を含むパスがそのまま渡るとパースエラーになる [SR-INJ-002]
+    toast.text_fields = ['⚠ 承認が必要', html.escape(message)]
     toast.actions = []
     if pattern:
         toast.actions.append(ToastButton(
