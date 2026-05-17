@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.8.0] - 2026-05-18
+
+### 概要
+
+permission_handler を同期ブロッキング方式に変更してトーストで承認を完結させ、`permission_rules.json` で settings.json と同形式の相対パスパターンを使えるようにした。あわせて hook を exec 形式 (args 配列) に移行し、`summarize-memory` を D-008 フォーマット + skills プリロード構成へ刷新。トラバーサル防御を `..` / `%2e%2e` / 混在区切り / Windows パス全方位で強化し、`on_activated` のタイムアウト連続消費バグを修正した。全 18 サイクルのコードレビュー・セキュリティレビューを経て品質を確定。
+
+### 追加
+
+- **`permission_handler` にブロッキング型トースト承認を実装** (`.claude/hooks/permission_handler_toast.py`): `subprocess.run(timeout=70)` で同期実行に変更し、トーストのボタンクリック (`decision:allow`) で PermissionRequest を完結させる。fire-and-forget detached subprocess を廃止
+- **`permission_rules.json` に相対パスパターン対応を追加** (`.claude/hooks/permission_handler.py` `_match_file_path()`): 二段階照合 (絶対パス → プロジェクトルート起点相対パス) で `.claude/**` 形式のパターンが利用可能に。`settings.json` の `permissions.allow` と同じ書式に統一
+- **`_accepted_exceptions` ドキュメントフィールド** (`.claude/permission_rules.json`): auto_allow に全許可パターンを登録した理由を JSON 内に記録する仕組みを追加。`_readme` を含むアンダースコア始まりキーはドキュメント専用として `permission_handler.py` から無視される
+- **`auto_allow` サイズ上限** (`.claude/hooks/permission_handler_toast.py` `_AUTO_ALLOW_MAX_SIZE`): 上限 100 件でパターン爆発を抑制
+
+### 変更
+
+- **Hook 定義を exec 形式 (args 配列) に移行** (`.claude/settings.json`): `command` 文字列方式から `{"command": "python", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/foo.py"]}` 形式へ移行。`${CLAUDE_PROJECT_DIR}` プレースホルダで CWD 依存を排除しシェル非経由で実行
+- **`summarize-memory` を D-008 フォーマット + skills プリロード構成に刷新** (`.claude/agents/summarize-memory.md` + `.claude/skills/summarize-memory/SKILL.md`): エージェント定義は Core Mandate / Key Scope / Workflow / Tools & Constraints の D-008 規約に準拠。詳細実行手順は `skills:` frontmatter でプリロードされるバックグラウンド知識として SKILL.md に分離
+- **Stop hook orchestrator 化** (`.claude/hooks/session_stop.py`): stdin 読み出し 1 回で `stop` → `consolidate_memory` → flag 制御を順次実行する Phase 構造に整理。`_FLAG_DONE_CONTENT = "DONE"` で状態機械 (空 = 実行中 / DONE = 完了) を明確化
+
+### 修正
+
+- **トラバーサル防御を全方位で強化** (`.claude/hooks/permission_handler.py`):
+  - `..` 完全一致検出 (`"..hidden"` 等は通過): `path.replace('\\', '/').split('/')` でセグメント単位に比較
+  - URL エンコード変種 (`%2e%2e`): `urllib.parse.unquote()` で展開してから検出。`_match_file_path()` と `suggest_pattern()` 両経路で一貫適用
+  - 混在区切り (Windows バックスラッシュ + UNIX スラッシュ): `replace(os.sep, '/')` → `replace('\\', '/')` に変更しプラットフォーム非依存に
+  - Bash 先頭 1〜2 トークンの `..` ガード: `_SHELL_INJECTION_RE` が `..` を対象外のため明示チェック追加 (`../evil` や `cat ../secret` を提案から除外)
+  - `_match_file_path()` の `subject_rel_decoded` 切り出し: `..` チェックは decoded、regex マッチはエンコード済みで実施し意図を分離
+- **`on_activated` 未知引数時のタイムアウト連続消費バグを修正** (`.claude/hooks/permission_handler_toast.py`): `done.set()` を `if/elif/else` 外に固定し、未知引数でも `_TIMEOUT_SEC(60s)` + `subprocess.run timeout(70s)` の連続消費 (合計 130 秒の擬似フリーズ) を防止
+- **toast subprocess の stderr 転送** (`.claude/hooks/permission_handler.py` `notify_with_action`): `result.stderr` を `sys.stderr.buffer.write` で親プロセス stderr に伝搬し診断ログ消失を防止 [SR-R-004]
+- **`_TOAST_UNAVAILABLE_EXIT_CODE` を 3 に変更** (`.claude/hooks/permission_handler_toast.py`): Stop hook の `exit 2` (エージェント起動指示) との文脈衝突を回避
+- **html.escape() を全 toast テキストフィールドに適用** [SR-INJ-002]: `<` / `&` を含むパスでも windows-toasts の XML テンプレートパースエラーを起こさない
+- **トラバーサル防御 `_match_file_path()` のスライスバグ** (`.claude/hooks/permission_handler.py`): `lower()` 後に文字数が変わりうる非 ASCII 文字 (`İ` 等) でスライスがずれていた問題を `len(project_root_posix)+1` 固定で修正
+- **`session_stop._handle_flag_phase()` の TOCTOU 耐性** (`.claude/hooks/session_stop.py`): `os.unlink()` をアトミック操作とし、`OSError`（他プロセスが先に削除）で重複起動を防止
+- **`_SHELL_INJECTION_RE` に `\n` と `$'` を追加** (`.claude/hooks/permission_handler.py`): ヒアドキュメント改行と ANSI-C quoting によるエスケープシーケンス挿入を検出
+- **サブエージェント定義の `Skill` ツール契約欠陥を修正** (`.claude/agents/{code-reviewer,security-reviewer,planner,doc-writer,architect,interviewer}.md`): Workflow After で `report-timestamp` スキルを呼び出す契約だったが frontmatter の `tools:` に `Skill` が含まれておらず、Bash で代替実行されていた。tools に `Skill` を追加して契約を整合
+
+### テスト
+
+- **トラバーサル防御テスト 12 件追加** (`tests/hooks/test_permission_handler.py`):
+  - Bash 先頭 / 第 2 トークンの `..` 検出 (2 件)
+  - Write / Edit / Read の `..` 検出 (4 件)
+  - 境界ケース: `".."` 単体 / `"..hidden"` 通過 / 混在区切り / URL エンコード (4 件)
+  - `matches_pattern()` 側の URL エンコードトラバーサル (POSIX / Windows パス) (2 件)
+- **`test_settings_local_absolute_paths` を exec 形式に対応** (`tests/hooks/test_settings_local_absolute_paths.py`): `command` + `args` 両方からスクリプトパスを抽出し、`${CLAUDE_PROJECT_DIR}` プレースホルダも許容する
+
+### 内部
+
+- **`_FLAG_DONE_CONTENT = "DONE"` 定数の SSOT 化** (`.claude/hooks/session_stop.py`): フラグ状態機械の値を `session_stop.py` / `summarize-memory` SKILL.md / テストで共有
+- **18 サイクルのコードレビュー + セキュリティレビューを実施**: High / Critical / Medium すべて 0 件で確定。各サイクルのレポートは `.claude/reports/{code,security}-review-report-*.md` に記録
+
+---
+
 ## [2.7.0] - 2026-05-16
 
 ### 概要
