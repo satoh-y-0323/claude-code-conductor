@@ -98,7 +98,7 @@ def append_to_auto_allow(rules_path: str, pattern: str) -> bool:
 def show_toast(message: str, pattern: str | None, rules_path: str) -> bool:
     """windows-toasts でボタン付き通知を同期表示する。
 
-    Returns True if user clicked either allow button (current request should be approved).
+    ユーザーがいずれかの許可ボタンをクリックした場合に True を返す（現在のリクエストを承認）。
     ImportError 時は _UNAVAILABLE_EXIT_CODE で sys.exit する（呼び出し元がフォールバック処理）。
     """
     try:
@@ -167,7 +167,10 @@ def show_toast(message: str, pattern: str | None, rules_path: str) -> bool:
 
 
 def _show_followup_toast(message: str) -> None:
-    """パターン追加完了後の確認通知を非インタラクティブ toast で出す。"""
+    """パターン追加完了後の確認通知を非インタラクティブ toast で出す。
+
+    message は内部で html.escape() を適用してから toast に渡す [SR-INJ-002]。
+    """
     try:
         from windows_toasts import Toast, WindowsToaster  # type: ignore
     except ImportError:

@@ -218,6 +218,10 @@ def _load_root_module() -> types.ModuleType:
     return module
 
 
+# session_stop.py の _FLAG_DONE_CONTENT と同値。変更時は両方を更新すること。
+_DONE = _load_root_module()._FLAG_DONE_CONTENT
+
+
 class TestNeedsSummaryTOCTOU:
     """_needs_summary() の TOCTOU 耐性テスト.
 
@@ -365,7 +369,7 @@ class TestFlagControlLogic:
     ):
         """DONE フラグ + needs_summary=True → フラグ再作成して exit 2。"""
         flag_path = tmp_path / "test.flag"
-        flag_path.write_text("DONE", encoding="utf-8")
+        flag_path.write_text(_DONE, encoding="utf-8")
         module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=True)
 
         result = module.main()
@@ -380,7 +384,7 @@ class TestFlagControlLogic:
     ):
         """DONE フラグ + needs_summary=False → フラグ削除して exit 0。"""
         flag_path = tmp_path / "test.flag"
-        flag_path.write_text("DONE", encoding="utf-8")
+        flag_path.write_text(_DONE, encoding="utf-8")
         module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=False)
 
         result = module.main()
@@ -411,7 +415,7 @@ class TestFlagControlLogic:
         フラグは変更されずに残る（unlink が失敗したため）。
         """
         flag_path = tmp_path / "test.flag"
-        flag_path.write_text("DONE", encoding="utf-8")
+        flag_path.write_text(_DONE, encoding="utf-8")
         module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=True)
         monkeypatch.setattr(module.os, "unlink", MagicMock(side_effect=OSError("already gone")))
 
@@ -420,7 +424,7 @@ class TestFlagControlLogic:
         assert result == 0
         # unlink が失敗したためフラグは DONE のまま残る（次回 Stop hook が処理する）
         assert flag_path.exists()
-        assert flag_path.read_text(encoding="utf-8") == "DONE"
+        assert flag_path.read_text(encoding="utf-8") == _DONE
 
     def test_no_flag_and_needs_summary_true_returns_2(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

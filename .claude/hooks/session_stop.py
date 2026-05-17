@@ -89,17 +89,20 @@ def _needs_summary(claude_dir: str) -> bool:
     return latest_session_mtime > os.path.getmtime(summary_path)
 
 
-def _create_flag(flag_path: str) -> None:
+def _create_flag(flag_path: str) -> bool:
     """flag_path の親ディレクトリを作成してから空ファイルを touch する.
 
     空ファイル = エージェント実行中の状態を表す（_FLAG_DONE_CONTENT = 完了済み）。
+    Returns True if the flag was created successfully, False on failure.
     """
     try:
         os.makedirs(os.path.dirname(flag_path), exist_ok=True)
         with open(flag_path, "w", encoding="utf-8"):
             pass
+        return True
     except OSError as e:
         print(f"[session_stop:_create_flag] フラグ作成失敗: {e}", file=sys.stderr)
+        return False
 
 
 def _load_module(name: str) -> types.ModuleType:
@@ -172,7 +175,8 @@ def main() -> int:
                     return 0
                 if not _needs_summary(_CLAUDE_DIR):
                     return 0
-                _create_flag(flag_path)
+                if not _create_flag(flag_path):
+                    return 0  # フラグ作成失敗 → エージェント起動を見送る
                 print(_AGENT_INSTRUCTION, file=sys.stderr)
                 return 2
             else:
@@ -184,7 +188,8 @@ def main() -> int:
             return 0
 
         # フラグ作成 + stderr に Agent 起動指示
-        _create_flag(flag_path)
+        if not _create_flag(flag_path):
+            return 0  # フラグ作成失敗 → エージェント起動を見送る
         print(_AGENT_INSTRUCTION, file=sys.stderr)
         return 2
     except Exception as e:
