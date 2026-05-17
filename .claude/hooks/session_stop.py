@@ -154,8 +154,13 @@ def main() -> int:
                 flag_content = ""
 
             if flag_content == "DONE":
-                # エージェント完了済み → フラグ削除して今回セッションの要否を判定
-                os.unlink(flag_path)
+                # エージェント完了済み → フラグを削除してから今回セッションの要否を判定。
+                # TOCTOU 対策: os.unlink() がアトミックに成功した方だけ処理を続行する。
+                # OSError（FileNotFoundError）= 別プロセスが先に削除 → 重複起動防止でスキップ。
+                try:
+                    os.unlink(flag_path)
+                except OSError:
+                    return 0
                 if not _needs_summary(_CLAUDE_DIR):
                     return 0
                 _create_flag(flag_path)

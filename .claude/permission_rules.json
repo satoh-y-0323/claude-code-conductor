@@ -1,5 +1,8 @@
 {
   "_readme": "auto_allow にパターンを追加すると権限ダイアログなしで自動承認します。settings.json の permissions.allow と同じ書式です。notify_on_auto を false にすると自動承認時の通知を無効にできます。",
+  "_accepted_exceptions": {
+    "Skill": "Skill ツールは引数を str(tool_input) で照合するため特定スキルに絞る手段がない。Skill は version 管理下の .claude/skills/ を読むだけで外部副作用がないため全許可を許容する。"
+  },
   "notify_on_auto": false,
   "auto_allow": [
     "Bash(git status*)",
@@ -37,7 +40,7 @@
     "Bash(git -C*)",
     "Bash(git checkout*)",
     "Bash(grep -rn*)",
-    "Bash(rm -f .claude/state/*)",
+    "Bash(rm -f .claude/state/*.flag)",
     "Skill"
   ]
 }

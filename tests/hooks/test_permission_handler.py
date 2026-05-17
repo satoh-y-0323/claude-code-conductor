@@ -1151,6 +1151,8 @@ class TestNotifyWithAction:
         assert "Bash(npm install*)" in argv
         assert "--rules-file" in argv
         notify_mock.assert_not_called()
+        # returncode=0（タイムアウト/無視）→ False
+        assert module.notify_with_action("msg", "Bash(npm install*)") is False
 
     def test_windows_already_in_auto_allow_omits_pattern_arg(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

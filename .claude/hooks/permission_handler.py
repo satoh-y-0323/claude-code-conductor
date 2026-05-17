@@ -255,6 +255,7 @@ def notify_with_action(message: str, pattern: str | None) -> bool:
 
     toast_script = os.path.join(_HOOKS_DIR, 'permission_handler_toast.py')
     if not os.path.isfile(toast_script):
+        print(f'[permission_handler] toast スクリプトが見つかりません: {toast_script}', file=sys.stderr)
         notify(message)
         return False
 
@@ -267,6 +268,9 @@ def notify_with_action(message: str, pattern: str | None) -> bool:
     try:
         # timeout=70: toast 側の _TIMEOUT_SEC=60 より余裕を持たせ、
         # toast が内部タイムアウトで終了するのを確実に待つ。
+        # この間 Claude Code は PermissionRequest の応答待ち状態になるが、
+        # これはユーザーが「追加して許可」or「今回だけ許可」を選択するための意図的な待機であり
+        # フリーズではない（選択後は即座に再開する）。
         result = subprocess.run(cmd, timeout=70, capture_output=True)
         if result.returncode == 10:
             return True

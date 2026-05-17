@@ -318,3 +318,127 @@ class TestNeedsSummaryTOCTOU:
                     f"_needs_summary() が FileNotFoundError を伝播した: {exc}\n"
                     "TOCTOU 耐性が未実装。os.path.getmtime() を try/except で囲む必要がある。"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Unit: Phase 3 フラグ制御ロジックのテスト
+# [CR-T-001] DONE/"" 区別ロジックと TOCTOU 対策の挙動を検証する。
+# ---------------------------------------------------------------------------
+
+
+class TestFlagControlLogic:
+    """session_stop.py Phase 3: フラグファイルの DONE/空 区別と TOCTOU 対策の検証。
+
+    フラグ状態機械:
+      - ファイルなし → _needs_summary() が True なら フラグ作成 + exit 2
+      - 内容 "" (空) = エージェント実行中 → exit 0（重複防止）
+      - 内容 "DONE" = エージェント完了済み → unlink + 判定
+        - _needs_summary True → フラグ再作成 + exit 2
+        - _needs_summary False → exit 0
+      - unlink OSError = 別プロセスが先に削除 → exit 0（TOCTOU 対策）
+    """
+
+    def _make_module_with_mocked_phases(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        flag_path: Path,
+        needs_summary: bool,
+    ) -> types.ModuleType:
+        """Phase 1/2 をモックし、_FLAG_PATH と _needs_summary を差し替えた module を返す。"""
+        module = _load_root_module()
+        stop_mock = MagicMock(run=MagicMock(return_value=0))
+        consolidate_mock = MagicMock(run_sync=MagicMock(return_value=0))
+
+        def _fake_load(name: str) -> MagicMock:
+            return {"stop": stop_mock, "consolidate_memory": consolidate_mock}[name]
+
+        monkeypatch.setattr(module, "_load_module", _fake_load)
+        monkeypatch.setattr(module, "_FLAG_PATH", str(flag_path))
+        monkeypatch.setattr(module, "_needs_summary", lambda _: needs_summary)
+        monkeypatch.setattr(
+            "sys.stdin", type("S", (), {"read": staticmethod(lambda: "{}")})()
+        )
+        return module
+
+    def test_done_flag_and_needs_summary_true_returns_2(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """DONE フラグ + needs_summary=True → フラグ再作成して exit 2。"""
+        flag_path = tmp_path / "test.flag"
+        flag_path.write_text("DONE", encoding="utf-8")
+        module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=True)
+
+        result = module.main()
+
+        assert result == 2
+        # フラグが空（実行中）として再作成されている
+        assert flag_path.exists()
+        assert flag_path.read_text(encoding="utf-8") == ""
+
+    def test_done_flag_and_needs_summary_false_returns_0(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """DONE フラグ + needs_summary=False → フラグ削除して exit 0。"""
+        flag_path = tmp_path / "test.flag"
+        flag_path.write_text("DONE", encoding="utf-8")
+        module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=False)
+
+        result = module.main()
+
+        assert result == 0
+        # フラグが削除されている（要約不要のため）
+        assert not flag_path.exists()
+
+    def test_empty_flag_running_returns_0(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """空フラグ（実行中）→ 重複防止で exit 0。フラグは変更されない。"""
+        flag_path = tmp_path / "test.flag"
+        flag_path.write_text("", encoding="utf-8")
+        module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=True)
+
+        result = module.main()
+
+        assert result == 0
+        # フラグはそのまま残る（実行中エージェントを邪魔しない）
+        assert flag_path.exists()
+        assert flag_path.read_text(encoding="utf-8") == ""
+
+    def test_done_flag_oserror_on_unlink_returns_0(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """DONE フラグだが unlink が OSError → TOCTOU 対策で exit 0（重複起動防止）。"""
+        flag_path = tmp_path / "test.flag"
+        flag_path.write_text("DONE", encoding="utf-8")
+        module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=True)
+        monkeypatch.setattr(module.os, "unlink", MagicMock(side_effect=OSError("already gone")))
+
+        result = module.main()
+
+        assert result == 0
+
+    def test_no_flag_and_needs_summary_true_returns_2(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """フラグなし + needs_summary=True → フラグ作成して exit 2。"""
+        flag_path = tmp_path / "test.flag"
+        # フラグを作らない
+        module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=True)
+
+        result = module.main()
+
+        assert result == 2
+        assert flag_path.exists()
+        assert flag_path.read_text(encoding="utf-8") == ""
+
+    def test_no_flag_and_needs_summary_false_returns_0(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """フラグなし + needs_summary=False → exit 0（要約済み）。"""
+        flag_path = tmp_path / "test.flag"
+        module = self._make_module_with_mocked_phases(monkeypatch, flag_path, needs_summary=False)
+
+        result = module.main()
+
+        assert result == 0
+        assert not flag_path.exists()
