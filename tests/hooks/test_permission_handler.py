@@ -919,92 +919,136 @@ class TestIsPatternAlreadyInAutoAllow:
 
 
 class TestNotifyWithAction:
-    def test_none_pattern_falls_back_to_notify(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ):
-        module = _load_module(monkeypatch, tmp_path / "rules.json")
-        notify_mock = MagicMock()
-        popen_mock = MagicMock()
-        monkeypatch.setattr(module, "notify", notify_mock)
-        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+    """notify_with_action() の挙動検証（subprocess.run を mock）。
 
-        module.notify_with_action("msg", None)
-
-        notify_mock.assert_called_once_with("msg")
-        popen_mock.assert_not_called()
+    実装は blocking 方式（subprocess.run + returncode）に変更済み。
+    returncode 10 = 承認、2 = windows-toasts 未インストール、0 = タイムアウト/無視。
+    """
 
     def test_non_windows_falls_back_to_notify(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
+        """非 Windows では notify() を呼び False を返す。subprocess.run は呼ばれない。"""
         module = _load_module(monkeypatch, tmp_path / "rules.json")
         notify_mock = MagicMock()
-        popen_mock = MagicMock()
+        run_mock = MagicMock()
         monkeypatch.setattr(module, "notify", notify_mock)
-        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
         monkeypatch.setattr(module.platform, "system", lambda: "Linux")
 
-        module.notify_with_action("msg", "Bash(git *)")
+        result = module.notify_with_action("msg", "Bash(git *)")
 
         notify_mock.assert_called_once_with("msg")
-        popen_mock.assert_not_called()
+        run_mock.assert_not_called()
+        assert result is False
 
-    def test_pattern_already_in_auto_allow_falls_back_to_notify(
+    def test_windows_approved_returns_true(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
+        """subprocess.run が returncode=10 → True を返す。notify は呼ばれない。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        run_mock = MagicMock(return_value=MagicMock(returncode=10))
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        result = module.notify_with_action("msg", "Bash(npm install*)")
+
+        run_mock.assert_called_once()
+        assert result is True
+        notify_mock.assert_not_called()
+
+    def test_windows_dismissed_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """subprocess.run が returncode=0（タイムアウト/無視）→ False を返す。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        run_mock = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        result = module.notify_with_action("msg", "Bash(npm install*)")
+
+        run_mock.assert_called_once()
+        assert result is False
+        notify_mock.assert_not_called()
+
+    def test_windows_unavailable_falls_back_to_notify(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """returncode=2（windows-toasts 未インストール）→ notify フォールバック + False。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        run_mock = MagicMock(return_value=MagicMock(returncode=2))
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        result = module.notify_with_action("msg", "Bash(npm install*)")
+
+        run_mock.assert_called_once()
+        notify_mock.assert_called_once_with("msg")
+        assert result is False
+
+    def test_windows_with_new_pattern_passes_pattern_arg(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """新規パターンの場合は --pattern 引数が subprocess.run に渡される。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        run_mock = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        module.notify_with_action("msg", "Bash(npm install*)")
+
+        run_mock.assert_called_once()
+        argv = run_mock.call_args.args[0]
+        assert "--message" in argv
+        assert "msg" in argv
+        assert "--pattern" in argv
+        assert "Bash(npm install*)" in argv
+        assert "--rules-file" in argv
+        notify_mock.assert_not_called()
+
+    def test_windows_already_in_auto_allow_omits_pattern_arg(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """既存パターンの場合は --pattern なしで subprocess.run が呼ばれる。"""
         rules_file = tmp_path / "rules.json"
         rules_file.write_text(
             json.dumps({"auto_allow": ["Bash(git *)"]}), encoding="utf-8"
         )
         module = _load_module(monkeypatch, rules_file)
         notify_mock = MagicMock()
-        popen_mock = MagicMock()
+        run_mock = MagicMock(return_value=MagicMock(returncode=0))
         monkeypatch.setattr(module, "notify", notify_mock)
-        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
         monkeypatch.setattr(module.platform, "system", lambda: "Windows")
 
         module.notify_with_action("msg", "Bash(git *)")
 
-        notify_mock.assert_called_once_with("msg")
-        popen_mock.assert_not_called()
-
-    def test_windows_with_new_pattern_spawns_subprocess(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ):
-        # 実 hooks ディレクトリの permission_handler_toast.py を参照させるため
-        # _HOOKS_DIR をパッチせず module 既定のままにする
-        module = _load_module(monkeypatch, tmp_path / "rules.json")
-        notify_mock = MagicMock()
-        popen_mock = MagicMock()
-        monkeypatch.setattr(module, "notify", notify_mock)
-        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
-        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
-
-        module.notify_with_action("msg", "Bash(npm install*)")
-
-        # subprocess.Popen は呼ばれる（toast script が存在する前提）
-        popen_mock.assert_called_once()
-        call_args = popen_mock.call_args
-        argv = call_args.args[0]
-        assert "--message" in argv
-        assert "msg" in argv
-        assert "--pattern" in argv
-        assert "Bash(npm install*)" in argv
-        assert "--rules-file" in argv
-        # detach 系フラグが OR で結合されているかを確認
-        assert call_args.kwargs.get("close_fds") is True
-        # 通常の notify は呼ばれない
+        run_mock.assert_called_once()
+        argv = run_mock.call_args.args[0]
+        assert "--pattern" not in argv
         notify_mock.assert_not_called()
 
-    def test_windows_popen_failure_falls_back_to_notify(
+    def test_windows_run_oserror_falls_back_to_notify(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
+        """subprocess.run が OSError → notify フォールバック + False。"""
         module = _load_module(monkeypatch, tmp_path / "rules.json")
         notify_mock = MagicMock()
-        popen_mock = MagicMock(side_effect=OSError("spawn failed"))
+        run_mock = MagicMock(side_effect=OSError("spawn failed"))
         monkeypatch.setattr(module, "notify", notify_mock)
-        monkeypatch.setattr(module.subprocess, "Popen", popen_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
         monkeypatch.setattr(module.platform, "system", lambda: "Windows")
 
-        module.notify_with_action("msg", "Bash(npm install*)")
+        result = module.notify_with_action("msg", "Bash(npm install*)")
 
         notify_mock.assert_called_once_with("msg")
+        assert result is False

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""permission_handler_toast.py: ボタン付き Windows トースト通知を表示する detached worker.
+"""permission_handler_toast.py: ボタン付き Windows トースト通知を表示する同期ワーカー。
 
-permission_handler.py が PermissionRequest 時に detached subprocess として起動する。
-ユーザーが「自動承認に追加」ボタンをクリックしたら permission_rules.json の
-auto_allow 配列にパターンを atomic append する。
+permission_handler.py が PermissionRequest 時に subprocess.run で同期起動する。
+ユーザーが「追加して許可」または「今回だけ許可」をクリックすると
+exit code _APPROVED_EXIT_CODE(10) で終了し、呼び出し元が decision:allow を出力する。
+「追加して許可」は permission_rules.json の auto_allow 配列にパターンを atomic append する。
 
 windows-toasts のインストール:
   pip install windows-toasts
 
-windows-toasts が見つからない場合は何もせず exit する（既存通知が代替で出ている前提）。
+windows-toasts が見つからない場合は _UNAVAILABLE_EXIT_CODE(2) で exit する。
+呼び出し元（permission_handler.py）がこの code を検出してバルーン通知にフォールバックする。
 """
 from __future__ import annotations
 
@@ -117,11 +119,13 @@ def show_toast(message: str, pattern: str | None, rules_path: str) -> bool:
 
     def on_activated(event: 'ToastActivatedEventArgs') -> None:
         args = getattr(event, 'arguments', '') or ''
-        if 'action=add_auto_allow' in args and pattern:
-            added = append_to_auto_allow(rules_path, pattern)
-            if added:
-                _show_followup_toast(f'✓ 自動承認パターンに追加しました: {pattern}')
-        if args in ('action=add_auto_allow', 'action=allow_once'):
+        if args == 'action=add_auto_allow':
+            if pattern:
+                added = append_to_auto_allow(rules_path, pattern)
+                if added:
+                    _show_followup_toast(f'✓ 自動承認パターンに追加しました: {pattern}')
+            approved.set()
+        elif args == 'action=allow_once':
             approved.set()
         done.set()
 

@@ -147,9 +147,23 @@ def main() -> int:
     try:
         flag_path = _FLAG_PATH
         if os.path.exists(flag_path):
-            # フラグあり → 削除して exit 0（実行中エージェント重複防止）
-            os.unlink(flag_path)
-            return 0
+            try:
+                with open(flag_path, encoding="utf-8") as flag_file:
+                    flag_content = flag_file.read().strip()
+            except OSError:
+                flag_content = ""
+
+            if flag_content == "DONE":
+                # エージェント完了済み → フラグ削除して今回セッションの要否を判定
+                os.unlink(flag_path)
+                if not _needs_summary(_CLAUDE_DIR):
+                    return 0
+                _create_flag(flag_path)
+                print(_AGENT_INSTRUCTION, file=sys.stderr)
+                return 2
+            else:
+                # フラグ空 = エージェント実行中 → 重複防止でスキップ
+                return 0
 
         # 要約が必要か（session mtime vs llm_summary.md mtime 比較）
         if not _needs_summary(_CLAUDE_DIR):

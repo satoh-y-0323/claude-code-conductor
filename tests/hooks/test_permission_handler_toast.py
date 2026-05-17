@@ -154,10 +154,14 @@ class TestAppendToAutoAllow:
 class TestShowToast:
     """show_toast() の挙動検証（windows-toasts が無い環境では skip）."""
 
-    def test_silent_fail_when_windows_toasts_missing(self, tmp_path: Path, capsys):
-        """windows-toasts が import できない場合は何もせず exit。"""
+    def test_exits_with_unavailable_code_when_windows_toasts_missing(
+        self, tmp_path: Path, capsys
+    ):
+        """windows-toasts が import できない場合は _UNAVAILABLE_EXIT_CODE(2) で SystemExit する。
+
+        呼び出し元（permission_handler.py）がこの returncode を検出してフォールバックする設計。
+        """
         module = _load_module()
-        # windows_toasts をモジュール参照不能にする
         import sys as _sys
 
         saved_modules = {
@@ -167,7 +171,6 @@ class TestShowToast:
         }
         for k in list(saved_modules):
             del _sys.modules[k]
-        # builtins.__import__ を差し替え、windows_toasts だけ ImportError
         orig_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
 
         def fake_import(name, *args, **kwargs):
@@ -182,8 +185,9 @@ class TestShowToast:
                 __builtins__.__import__ = fake_import  # type: ignore
 
             rules_path = tmp_path / "permission_rules.json"
-            # show_toast はエラーを raise せず silent fail することを期待
-            module.show_toast("msg", "Bash(git *)", str(rules_path))
+            with pytest.raises(SystemExit) as exc_info:
+                module.show_toast("msg", "Bash(git *)", str(rules_path))
+            assert exc_info.value.code == module._UNAVAILABLE_EXIT_CODE
             # rules ファイルは書き換わらない（ボタンクリックがないため）
             assert not rules_path.exists()
         finally:
@@ -191,6 +195,5 @@ class TestShowToast:
                 __builtins__["__import__"] = orig_import
             else:
                 __builtins__.__import__ = orig_import  # type: ignore
-            # モジュールキャッシュを復元
             for k, v in saved_modules.items():
                 _sys.modules[k] = v

@@ -36,6 +36,9 @@
     "Bash(find /*/.claude/worktrees/**)",
     "Bash(git -C*)",
     "Bash(git checkout*)",
-    "Bash(grep -rn*)"
+    "Bash(grep -rn*)",
+    "Bash(Remove-Item -Path*)",
+    "Bash(rm -f*)",
+    "Skill"
   ]
 }

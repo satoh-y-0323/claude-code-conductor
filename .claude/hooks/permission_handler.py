@@ -243,6 +243,8 @@ def notify_with_action(message: str, pattern: str | None) -> bool:
         cmd += ['--pattern', add_pattern]
 
     try:
+        # timeout=70: toast 側の _TIMEOUT_SEC=60 より余裕を持たせ、
+        # toast が内部タイムアウトで終了するのを確実に待つ。
         result = subprocess.run(cmd, timeout=70, capture_output=True)
         if result.returncode == 10:
             return True
