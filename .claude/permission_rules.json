@@ -37,8 +37,7 @@
     "Bash(git -C*)",
     "Bash(git checkout*)",
     "Bash(grep -rn*)",
-    "Bash(Remove-Item -Path*)",
-    "Bash(rm -f*)",
+    "Bash(rm -f .claude/state/*)",
     "Skill"
   ]
 }

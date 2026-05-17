@@ -1000,6 +1000,55 @@ class TestMatchesPatternRelativePath:
 
         assert result is True
 
+    def test_case_insensitive_prefix_slices_correctly(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """大文字小文字が異なる project_prefix でもスライス位置が正しい（スライスバグ修正確認）。
+
+        _PROJECT_ROOT = "C:/Project" で subject が "c:/project/.claude/foo.md" の場合、
+        subject_rel が ".claude/foo.md" になることを確認する。
+        """
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "C:/Project")
+
+        result = module.matches_pattern(
+            "Edit",
+            {"file_path": "c:/project/.claude/foo.md"},
+            "Edit(.claude/**)",
+        )
+
+        assert result is True, "大文字小文字混在でスライスがずれた場合 False になる"
+
+    def test_dot_dot_traversal_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """".." を含む相対パスはトラバーサル防御でブロックされる。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
+
+        result = module.matches_pattern(
+            "Edit",
+            {"file_path": "/proj/.claude/../etc/passwd"},
+            "Edit(.claude/**)",
+        )
+
+        assert result is False, "'..' を含むパスが誤って許可された"
+
+    def test_dot_dot_not_blocked_in_project_root_itself(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """project_prefix 部分に '..' を含まない通常パスはブロックされない（誤検知なし確認）。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
+
+        result = module.matches_pattern(
+            "Write",
+            {"file_path": "/proj/.claude/memory/sessions/20260517.tmp"},
+            "Write(.claude/memory/sessions/*)",
+        )
+
+        assert result is True
+
 
 # ---------------------------------------------------------------------------
 # TestNotifyWithAction: notify_with_action() の挙動検証（subprocess.run を mock）

@@ -125,10 +125,14 @@ def matches_pattern(tool_name: str, tool_input: dict, pattern: str) -> bool:
         if re.fullmatch(regex, subject_abs):
             return True
         # 絶対パスにマッチしない場合、プロジェクトルート基準の相対パスでも照合する。
-        # Windows では大文字小文字を無視して prefix を判定する。
-        project_prefix = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/') + '/'
-        if subject_abs.lower().startswith(project_prefix.lower()):
-            subject_rel = subject_abs[len(project_prefix):]
+        # lower() 統一後の文字列でスライス長を計算し、大文字小文字差異によるずれを防ぐ。
+        project_prefix_lower = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/').lower() + '/'
+        subject_abs_lower = subject_abs.lower()
+        if subject_abs_lower.startswith(project_prefix_lower):
+            subject_rel = subject_abs[len(project_prefix_lower):]
+            # ".." を含む相対パスはディレクトリトラバーサルのリスクがあるためスキップ
+            if '..' in subject_rel.split('/'):
+                return False
             return bool(re.fullmatch(regex, subject_rel))
         return False
     elif tool_name == 'WebFetch':
