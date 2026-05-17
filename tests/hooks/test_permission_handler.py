@@ -914,7 +914,95 @@ class TestIsPatternAlreadyInAutoAllow:
 
 
 # ---------------------------------------------------------------------------
-# TestNotifyWithAction: notify_with_action() の挙動検証（subprocess.Popen を mock）
+# TestMatchesPatternRelativePath: 相対パスパターンが絶対パスにマッチする（案 A 実装確認）
+# ---------------------------------------------------------------------------
+
+
+class TestMatchesPatternRelativePath:
+    """案 A: 相対パスパターンが絶対パス subject にマッチすることを検証する。
+
+    permission_rules.json に ".claude/**" のような相対パスを書けば
+    実際の絶対パス（$PROJECT_ROOT/.claude/...）に対してマッチする。
+    """
+
+    def test_relative_pattern_matches_absolute_subject(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """.claude/** が /fake/project/.claude/foo.md にマッチする。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/fake/project")
+
+        result = module.matches_pattern(
+            "Edit",
+            {"file_path": "/fake/project/.claude/settings.json"},
+            "Edit(.claude/**)",
+        )
+
+        assert result is True, "相対パターン Edit(.claude/**) が絶対パスにマッチしなかった"
+
+    def test_relative_pattern_does_not_match_outside_project(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """.claude/** はプロジェクト外のパスにマッチしない。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/fake/project")
+
+        result = module.matches_pattern(
+            "Write",
+            {"file_path": "/other/path/.claude/foo.md"},
+            "Write(.claude/**)",
+        )
+
+        assert result is False, "プロジェクト外パスが誤ってマッチした"
+
+    def test_absolute_pattern_still_works(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """絶対パスパターンは後方互換として引き続き動作する。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/fake/project")
+
+        result = module.matches_pattern(
+            "Write",
+            {"file_path": "/fake/project/.claude/reports/foo.md"},
+            "Write(/fake/project/.claude/**)",
+        )
+
+        assert result is True, "絶対パスパターンが動作しなくなった（後方互換破壊）"
+
+    def test_nested_relative_pattern(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """.claude/memory/** がサブディレクトリを含む絶対パスにマッチする。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
+
+        result = module.matches_pattern(
+            "Write",
+            {"file_path": "/proj/.claude/memory/sessions/20260517.tmp"},
+            "Write(.claude/memory/**)",
+        )
+
+        assert result is True
+
+    def test_relative_pattern_with_single_star(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """.claude/settings.json が相対パス単一ファイル指定にマッチする。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
+
+        result = module.matches_pattern(
+            "Edit",
+            {"file_path": "/proj/.claude/settings.json"},
+            "Edit(.claude/settings.json)",
+        )
+
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# TestNotifyWithAction: notify_with_action() の挙動検証（subprocess.run を mock）
 # ---------------------------------------------------------------------------
 
 

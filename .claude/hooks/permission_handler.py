@@ -22,6 +22,7 @@ except AttributeError:
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
+_PROJECT_ROOT = os.path.dirname(_CLAUDE_DIR)
 RULES_PATH = os.path.join(_CLAUDE_DIR, 'permission_rules.json')
 
 DEFAULT_RULES: dict = {'auto_allow': [], 'notify_on_auto': True}
@@ -94,6 +95,11 @@ def matches_pattern(tool_name: str, tool_input: dict, pattern: str) -> bool:
     """
     "Bash(git *)" / "Write(.claude/**)" 形式のパターンとマッチするか判定する。
     ToolName のみ（引数なし）も許容する。
+
+    Write / Edit / Read / Glob は絶対パスと相対パスの両方でマッチを試みる。
+    相対パスはプロジェクトルート（_PROJECT_ROOT）を基準に算出するため、
+    settings.json の permissions.allow と同じ相対パス記法が permission_rules.json でも使える。
+    例: "Edit(.claude/**)" は "Edit(C:/project/.claude/**)" と等価に動作する。
     """
     m = re.match(r'^(\w+)(?:\((.+)\))?$', pattern.strip())
     if not m:
@@ -112,7 +118,19 @@ def matches_pattern(tool_name: str, tool_input: dict, pattern: str) -> bool:
             return False
         subject = command
     elif tool_name in ('Write', 'Edit', 'Read', 'Glob'):
-        subject = tool_input.get('file_path', tool_input.get('pattern', ''))
+        raw = tool_input.get('file_path', tool_input.get('pattern', ''))
+        # パス区切りを posix（/）に統一してから絶対パスで照合
+        subject_abs = raw.replace(os.sep, '/')
+        regex = _glob_to_regex(p_arg)
+        if re.fullmatch(regex, subject_abs):
+            return True
+        # 絶対パスにマッチしない場合、プロジェクトルート基準の相対パスでも照合する。
+        # Windows では大文字小文字を無視して prefix を判定する。
+        project_prefix = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/') + '/'
+        if subject_abs.lower().startswith(project_prefix.lower()):
+            subject_rel = subject_abs[len(project_prefix):]
+            return bool(re.fullmatch(regex, subject_rel))
+        return False
     elif tool_name == 'WebFetch':
         url = tool_input.get('url', '')
         if p_arg.startswith('domain:'):
