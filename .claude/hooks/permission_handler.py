@@ -28,10 +28,15 @@ RULES_PATH = os.path.join(_CLAUDE_DIR, 'permission_rules.json')
 DEFAULT_RULES: dict = {'auto_allow': [], 'notify_on_auto': True}
 _CREATE_NO_WINDOW = 0x08000000
 # p_arg 付きパターンに対してシェル制御文字を含むコマンドの自動承認を防ぐ
-_SHELL_INJECTION_RE = re.compile(r';|&&|\|\||`|\$\(')
+# \n: ヒアドキュメント等による改行インジェクション
+# \$': ANSI-C quoting（$'...'）によるエスケープシーケンス挿入
+_SHELL_INJECTION_RE = re.compile(r';|&&|\|\||`|\$\(|\n|\$\'')
 # permission_handler_toast.py の exit code と一致させること（変更時は両ファイルを同期する）
+# 注意: Stop hook も exit 2 を「エージェント起動指示」に使用するが、
+#       toast subprocess（別プロセス）の終了コードとは文脈が完全に異なる。
+#       混乱を避けるため toast の未インストールコードは 3 を使用する。
 _TOAST_APPROVED_EXIT_CODE = 10    # ユーザーが許可ボタンをクリック
-_TOAST_UNAVAILABLE_EXIT_CODE = 2  # windows-toasts 未インストール
+_TOAST_UNAVAILABLE_EXIT_CODE = 3  # windows-toasts 未インストール（Stop hook の exit 2 と区別）
 
 
 def notify(message: str) -> None:
@@ -76,6 +81,11 @@ def notify(message: str) -> None:
 
 
 def load_rules() -> dict:
+    """permission_rules.json を読み込む。
+
+    アンダースコア始まりキー（_readme, _accepted_exceptions 等）はドキュメント専用フィールドであり、
+    呼び出し元は auto_allow / notify_on_auto のみを参照するため安全に無視される。
+    """
     if not os.path.exists(RULES_PATH):
         return DEFAULT_RULES
     try:
@@ -116,6 +126,9 @@ def _match_file_path(raw: str, p_arg: str) -> bool:
     regex = _glob_to_regex(p_arg)
     if re.fullmatch(regex, subject_abs):
         return True
+    # 非 ASCII パスは lower() でスライス長が変わりうるため相対パス照合をスキップ
+    if not subject_abs.isascii():
+        return False
     # 絶対パスにマッチしない場合、プロジェクトルート基準の相対パスでも照合する。
     # settings.json の permissions.allow と同じ相対パス記法が permission_rules.json でも使える。
     project_prefix_lower = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/').lower() + '/'
@@ -226,6 +239,13 @@ def suggest_pattern(tool_name: str, tool_input: dict) -> str | None:
         path = tool_input.get('file_path', '')
         if not path:
             return None
+        # 絶対パスがプロジェクト外の場合は auto_allow 候補にしない（誤クリックによる過剰許可防止）[SR-V-002]
+        # 相対パスは Claude Code がプロジェクトルートから実行されるためプロジェクト内として扱う
+        if os.path.isabs(path):
+            path_posix_lower = path.replace(os.sep, '/').lower()
+            proj_prefix_lower = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/').lower() + '/'
+            if not path_posix_lower.startswith(proj_prefix_lower):
+                return None
         # 親ディレクトリを取り出し、posix 区切り（/）に正規化
         parent = os.path.dirname(path).replace(os.sep, '/')
         if not parent or parent in ('.', '/'):

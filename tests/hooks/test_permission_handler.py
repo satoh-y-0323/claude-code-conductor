@@ -834,12 +834,14 @@ class TestSuggestPattern:
         )
         assert result == "Write(.claude/reports/**)"
 
-    def test_edit_with_absolute_posix_path(
+    def test_edit_with_project_external_absolute_path_returns_none(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
+        """プロジェクト外の絶対パスはプロジェクト外ガードにより None を返す [SR-V-002]。"""
         module = _load_module(monkeypatch, tmp_path / "rules.json")
+        # _PROJECT_ROOT は実際のプロジェクトルート（/etc は含まれない）
         result = module.suggest_pattern("Edit", {"file_path": "/etc/hosts"})
-        assert result == "Edit(/etc/**)"
+        assert result is None
 
     def test_read_at_repo_root(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1049,6 +1051,58 @@ class TestMatchesPatternRelativePath:
 
         assert result is True
 
+    def test_non_ascii_path_skips_relative_matching(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """非 ASCII パスは lower() のスライス長不一致リスクがあるため相対パス照合をスキップする。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
+
+        # 非 ASCII パス（日本語ディレクトリ）は相対パターンにマッチしない
+        result = module.matches_pattern(
+            "Edit",
+            {"file_path": "/proj/ドキュメント/.claude/settings.json"},
+            "Edit(.claude/settings.json)",
+        )
+
+        assert result is False, "非 ASCII パスが誤って相対パターンにマッチした"
+
+
+# ---------------------------------------------------------------------------
+# TestSuggestPatternProjectScope: suggest_pattern() のプロジェクト外パス制限
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestPatternProjectScope:
+    """suggest_pattern() がプロジェクト外パスに対して None を返すことを検証する。"""
+
+    def test_project_external_path_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """プロジェクト外パス（/etc/passwd 等）は auto_allow 候補にしない [SR-V-002]。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
+
+        result = module.suggest_pattern("Edit", {"file_path": "/etc/passwd"})
+
+        assert result is None, "プロジェクト外パスが auto_allow 候補として返された"
+
+    def test_project_internal_path_returns_pattern(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """プロジェクト内パスは従来通りパターンを返す（実際の _PROJECT_ROOT を使用）。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        # 実際の _PROJECT_ROOT 配下のパスを使用（os.sep 区切りで）
+        import os
+        real_root = module._PROJECT_ROOT
+        path = os.path.join(real_root, ".claude", "reports", "foo.md")
+
+        result = module.suggest_pattern("Write", {"file_path": path})
+
+        assert result is not None
+        assert "Write(" in result
+        assert ".claude/reports/" in result.replace(os.sep, '/')
+
 
 # ---------------------------------------------------------------------------
 # TestNotifyWithAction: notify_with_action() の挙動検証（subprocess.run を mock）
@@ -1059,7 +1113,7 @@ class TestNotifyWithAction:
     """notify_with_action() の挙動検証（subprocess.run を mock）。
 
     実装は blocking 方式（subprocess.run + returncode）に変更済み。
-    returncode 10 = 承認、2 = windows-toasts 未インストール、0 = タイムアウト/無視。
+    returncode 10 = 承認、3 = windows-toasts 未インストール、0 = タイムアウト/無視。
     """
 
     def test_non_windows_falls_back_to_notify(
@@ -1116,10 +1170,10 @@ class TestNotifyWithAction:
     def test_windows_unavailable_falls_back_to_notify(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
-        """returncode=2（windows-toasts 未インストール）→ notify フォールバック + False。"""
+        """returncode=3（windows-toasts 未インストール）→ notify フォールバック + False。"""
         module = _load_module(monkeypatch, tmp_path / "rules.json")
         notify_mock = MagicMock()
-        run_mock = MagicMock(return_value=MagicMock(returncode=2))
+        run_mock = MagicMock(return_value=MagicMock(returncode=3))
         monkeypatch.setattr(module, "notify", notify_mock)
         monkeypatch.setattr(module.subprocess, "run", run_mock)
         monkeypatch.setattr(module.platform, "system", lambda: "Windows")

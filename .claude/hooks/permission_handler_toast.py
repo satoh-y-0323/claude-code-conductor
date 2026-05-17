@@ -34,7 +34,7 @@ _TIMEOUT_SEC = 60
 _AUTO_ALLOW_MAX_SIZE = 100
 # permission_handler.py の _TOAST_*_EXIT_CODE 定数と一致させること（変更時は両ファイルを同期する）
 _APPROVED_EXIT_CODE = 10   # ユーザーが許可ボタンをクリック
-_UNAVAILABLE_EXIT_CODE = 2  # windows-toasts 未インストール
+_UNAVAILABLE_EXIT_CODE = 3  # windows-toasts 未インストール（Stop hook の exit 2 と区別するため 3 を使用）
 
 
 def append_to_auto_allow(rules_path: str, pattern: str) -> bool:
