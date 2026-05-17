@@ -145,7 +145,7 @@ def show_toast(message: str, pattern: str | None, rules_path: str) -> bool:
     toast.actions = []
     if pattern:
         toast.actions.append(ToastButton(
-            content=f'追加して許可: {pattern}',
+            content=f'追加して許可: {html.escape(str(pattern))}',
             arguments='action=add_auto_allow',
         ))
     toast.actions.append(ToastButton(
@@ -175,7 +175,7 @@ def _show_followup_toast(message: str) -> None:
     try:
         toaster = WindowsToaster('Claude Code')
         toast = Toast()
-        toast.text_fields = [message]
+        toast.text_fields = [html.escape(message)]
         toaster.show_toast(toast)
     except Exception:
         pass

@@ -90,10 +90,16 @@ def _needs_summary(claude_dir: str) -> bool:
 
 
 def _create_flag(flag_path: str) -> None:
-    """flag_path の親ディレクトリを作成してから空ファイルを touch する."""
-    os.makedirs(os.path.dirname(flag_path), exist_ok=True)
-    with open(flag_path, "w", encoding="utf-8"):
-        pass
+    """flag_path の親ディレクトリを作成してから空ファイルを touch する.
+
+    空ファイル = エージェント実行中の状態を表す（_FLAG_DONE_CONTENT = 完了済み）。
+    """
+    try:
+        os.makedirs(os.path.dirname(flag_path), exist_ok=True)
+        with open(flag_path, "w", encoding="utf-8"):
+            pass
+    except OSError as e:
+        print(f"[session_stop:_create_flag] フラグ作成失敗: {e}", file=sys.stderr)
 
 
 def _load_module(name: str) -> types.ModuleType:

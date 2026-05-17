@@ -80,7 +80,12 @@ def load_rules() -> dict:
         return DEFAULT_RULES
     try:
         with open(RULES_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        # ルートが dict でない場合（リスト等）は DEFAULT_RULES にフォールバック
+        if not isinstance(data, dict):
+            print('[permission_handler] permission_rules.json のルートが dict ではありません', file=sys.stderr)
+            return DEFAULT_RULES
+        return data
     except (json.JSONDecodeError, OSError) as e:
         print(f'[permission_handler] permission_rules.json の読み込みエラー: {e}', file=sys.stderr)
         return DEFAULT_RULES
@@ -98,8 +103,11 @@ def _match_file_path(raw: str, p_arg: str) -> bool:
     """Write/Edit/Read/Glob ツール用のパスマッチング。
 
     絶対パスと相対パス（プロジェクトルート基準）の両方で照合する。
-    前提: ファイルパスは ASCII 文字のみを想定。
-    lower() 統一後の文字列でスライス長を計算し、大文字小文字差異によるずれを防ぐ。
+
+    制約: ファイルパスは実質 ASCII 文字のみを想定。
+    非 ASCII パス（日本語ディレクトリ等）を含む場合、lower() でスライス長が
+    変わるケースが理論上は存在するが、Python の str.lower() は UTF-8 範囲では
+    文字数を変えないため実用上は問題ない。
     """
     subject_abs = raw.replace(os.sep, '/')
     regex = _glob_to_regex(p_arg)
@@ -287,8 +295,10 @@ def notify_with_action(message: str, pattern: str | None) -> bool:
         if result.returncode == _TOAST_UNAVAILABLE_EXIT_CODE:
             # windows-toasts 未インストール → バルーン通知にフォールバック
             notify(message)
+        # returncode=0: タイムアウト / ユーザーが無視 → Claude Code のダイアログに委ねる
         return False
     except subprocess.TimeoutExpired:
+        # 70 秒経過しても toast subprocess が終了しない場合 → ダイアログに委ねる
         print('[permission_handler] toast タイムアウト', file=sys.stderr)
         return False
     except OSError as e:
