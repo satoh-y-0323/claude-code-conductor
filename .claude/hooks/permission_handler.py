@@ -218,47 +218,45 @@ def _is_pattern_already_in_auto_allow(pattern: str, rules: dict | None = None) -
     return pattern in (rules.get('auto_allow') or [])
 
 
-def notify_with_action(message: str, pattern: str | None) -> None:
-    """ボタン付き通知を detached subprocess で起動する。
+def notify_with_action(message: str, pattern: str | None) -> bool:
+    """ボタン付きトースト通知を同期表示し、ユーザーが許可したか返す。
 
-    pattern が None / 既に auto_allow に存在 / Windows 以外なら通常の notify() で fallback。
-    Windows でも windows-toasts が import 失敗するなら toast subprocess 側で fallback。
+    True:  ユーザーが「許可」ボタンをクリック → 呼び出し元が decision:allow を出力する
+    False: タイムアウト / 無視 / 非 Windows → Claude Code のダイアログに委ねる
+
+    「追加して許可」ボタンは pattern が None / 既に auto_allow に存在する場合は省略し、
+    「今回だけ許可」ボタンのみ表示する。
     """
-    if pattern is None or platform.system() != 'Windows':
+    if platform.system() != 'Windows':
         notify(message)
-        return
-    if _is_pattern_already_in_auto_allow(pattern):
-        notify(message)
-        return
+        return False
 
     toast_script = os.path.join(_HOOKS_DIR, 'permission_handler_toast.py')
     if not os.path.isfile(toast_script):
         notify(message)
-        return
+        return False
 
-    creationflags = (
-        _CREATE_NO_WINDOW
-        | getattr(subprocess, 'DETACHED_PROCESS', 0x00000008)
-        | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x00000200)
-    )
+    # pattern が既に auto_allow に存在する場合は「追加」ボタンを省略する
+    add_pattern = pattern if (pattern and not _is_pattern_already_in_auto_allow(pattern)) else None
+    cmd = [sys.executable, toast_script, '--message', message, '--rules-file', RULES_PATH]
+    if add_pattern:
+        cmd += ['--pattern', add_pattern]
+
     try:
-        subprocess.Popen(
-            [
-                sys.executable,
-                toast_script,
-                '--message', message,
-                '--pattern', pattern,
-                '--rules-file', RULES_PATH,
-            ],
-            creationflags=creationflags,
-            close_fds=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        result = subprocess.run(cmd, timeout=70, capture_output=True)
+        if result.returncode == 10:
+            return True
+        if result.returncode == 2:
+            # windows-toasts 未インストール → バルーン通知にフォールバック
+            notify(message)
+        return False
+    except subprocess.TimeoutExpired:
+        print('[permission_handler] toast タイムアウト', file=sys.stderr)
+        return False
     except OSError as e:
-        print(f'[permission_handler] toast subprocess 起動失敗: {e}', file=sys.stderr)
+        print(f'[permission_handler] toast 起動失敗: {e}', file=sys.stderr)
         notify(message)
+        return False
 
 
 def main() -> None:
@@ -286,9 +284,16 @@ def main() -> None:
             }))
             return
 
-    # マッチなし → ダイアログが出る前に通知（ボタン付き、可能なら）
+    # マッチなし → toast でユーザーに確認する（許可されれば decision:allow を出力）
     pattern = suggest_pattern(tool_name, tool_input)
-    notify_with_action(f'⚠ 承認が必要: {description}', pattern)
+    approved = notify_with_action(f'⚠ 承認が必要: {description}', pattern)
+    if approved:
+        print(json.dumps({
+            'hookSpecificOutput': {
+                'hookEventName': 'PermissionRequest',
+                'decision': {'behavior': 'allow'}
+            }
+        }))
 
 
 if __name__ == '__main__':

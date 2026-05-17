@@ -29,6 +29,8 @@ except AttributeError:
 
 _TIMEOUT_SEC = 60
 _AUTO_ALLOW_MAX_SIZE = 100
+_APPROVED_EXIT_CODE = 10   # ユーザーが許可ボタンをクリック
+_UNAVAILABLE_EXIT_CODE = 2  # windows-toasts 未インストール
 
 
 def append_to_auto_allow(rules_path: str, pattern: str) -> bool:
@@ -89,8 +91,12 @@ def append_to_auto_allow(rules_path: str, pattern: str) -> bool:
         return False
 
 
-def show_toast(message: str, pattern: str, rules_path: str) -> None:
-    """windows-toasts でボタン付き通知を表示し、コールバックでパターン追加を行う。"""
+def show_toast(message: str, pattern: str | None, rules_path: str) -> bool:
+    """windows-toasts でボタン付き通知を同期表示する。
+
+    Returns True if user clicked either allow button (current request should be approved).
+    ImportError 時は _UNAVAILABLE_EXIT_CODE で sys.exit する（呼び出し元がフォールバック処理）。
+    """
     try:
         from windows_toasts import (  # type: ignore
             InteractableWindowsToaster,
@@ -99,23 +105,24 @@ def show_toast(message: str, pattern: str, rules_path: str) -> None:
             ToastButton,
         )
     except ImportError:
-        # windows-toasts 未インストール: 何もせず終了（permission_handler.py 側は
-        # この subprocess の出力に依存していないので silent fail で OK）
         print(
             '[permission_handler_toast] windows-toasts が見つかりません。'
             '`pip install windows-toasts` でインストールしてください。',
             file=sys.stderr,
         )
-        return
+        sys.exit(_UNAVAILABLE_EXIT_CODE)
 
+    approved = threading.Event()
     done = threading.Event()
 
     def on_activated(event: 'ToastActivatedEventArgs') -> None:
         args = getattr(event, 'arguments', '') or ''
-        if 'action=add_auto_allow' in args:
+        if 'action=add_auto_allow' in args and pattern:
             added = append_to_auto_allow(rules_path, pattern)
             if added:
                 _show_followup_toast(f'✓ 自動承認パターンに追加しました: {pattern}')
+        if args in ('action=add_auto_allow', 'action=allow_once'):
+            approved.set()
         done.set()
 
     def on_dismissed(_event) -> None:
@@ -127,12 +134,16 @@ def show_toast(message: str, pattern: str, rules_path: str) -> None:
     toaster = InteractableWindowsToaster('Claude Code')
     toast = Toast()
     toast.text_fields = ['⚠ 承認が必要', message]
-    toast.actions = [
-        ToastButton(
-            content=f'自動承認に追加: {pattern}',
+    toast.actions = []
+    if pattern:
+        toast.actions.append(ToastButton(
+            content=f'追加して許可: {pattern}',
             arguments='action=add_auto_allow',
-        )
-    ]
+        ))
+    toast.actions.append(ToastButton(
+        content='今回だけ許可',
+        arguments='action=allow_once',
+    ))
     toast.on_activated = on_activated
     toast.on_dismissed = on_dismissed
     toast.on_failed = on_failed
@@ -141,10 +152,10 @@ def show_toast(message: str, pattern: str, rules_path: str) -> None:
         toaster.show_toast(toast)
     except Exception as e:
         print(f'[permission_handler_toast] toast 表示失敗: {e}', file=sys.stderr)
-        return
+        return False
 
-    # ボタンクリック or タイムアウトまで待機
     done.wait(timeout=_TIMEOUT_SEC)
+    return approved.is_set()
 
 
 def _show_followup_toast(message: str) -> None:
@@ -163,16 +174,16 @@ def _show_followup_toast(message: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='Interactive toast for permission auto-allow.')
+    parser = argparse.ArgumentParser(description='Interactive toast for permission handling.')
     parser.add_argument('--message', required=True, help='通知本文')
-    parser.add_argument('--pattern', required=True, help='auto_allow に追加するパターン')
+    parser.add_argument('--pattern', default=None, help='auto_allow に追加するパターン（省略可）')
     parser.add_argument(
         '--rules-file', required=True, help='permission_rules.json の絶対パス'
     )
     args = parser.parse_args()
 
-    show_toast(args.message, args.pattern, args.rules_file)
-    return 0
+    approved = show_toast(args.message, args.pattern, args.rules_file)
+    return _APPROVED_EXIT_CODE if approved else 0
 
 
 if __name__ == '__main__':
