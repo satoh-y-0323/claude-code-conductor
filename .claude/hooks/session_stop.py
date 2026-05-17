@@ -93,7 +93,7 @@ def _create_flag(flag_path: str) -> bool:
     """flag_path の親ディレクトリを作成してから空ファイルを touch する.
 
     空ファイル = エージェント実行中の状態を表す（_FLAG_DONE_CONTENT = 完了済み）。
-    Returns True if the flag was created successfully, False on failure.
+    作成に成功した場合は True、OSError が発生した場合は False を返す。
     """
     try:
         os.makedirs(os.path.dirname(flag_path), exist_ok=True)

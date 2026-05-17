@@ -114,7 +114,10 @@ def _match_file_path(raw: str, p_arg: str) -> bool:
 
     絶対パスと相対パス（プロジェクトルート基準）の両方で照合する。
 
-    制約: ファイルパスは ASCII 文字（英数字・記号）のみを想定。
+    制約: ファイルパス（subject）とパターン（p_arg）はともに ASCII 文字のみを想定。
+    subject（raw）は isascii() で検査し非 ASCII の場合は相対パス照合をスキップする。
+    p_arg（permission_rules.json のパターン）も ASCII 前提だが実装上の検査はしない
+    （パターンはユーザーが管理するローカル設定ファイルから読まれるため許容）。
     prefix チェックは lower() で大文字小文字を統一した後に行い、スライス長も
     lower() 後の長さ（`len(project_prefix_lower)`）で統一することで
     大文字小文字差異によるずれを防ぐ。
@@ -256,6 +259,12 @@ def suggest_pattern(tool_name: str, tool_input: dict) -> str | None:
         pat = tool_input.get('pattern', '')
         if not pat:
             return f"{tool_name}"
+        # 絶対パスで始まるパターンがプロジェクト外の場合は候補にしない [SR-V-001]
+        if os.path.isabs(pat):
+            pat_posix_lower = pat.replace(os.sep, '/').lower()
+            proj_prefix_lower = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/').lower() + '/'
+            if not pat_posix_lower.startswith(proj_prefix_lower):
+                return None
         return f"{tool_name}({pat})"
 
     if tool_name == 'WebFetch':

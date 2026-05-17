@@ -157,7 +157,7 @@ class TestShowToast:
     def test_exits_with_unavailable_code_when_windows_toasts_missing(
         self, tmp_path: Path, capsys
     ):
-        """windows-toasts が import できない場合は _UNAVAILABLE_EXIT_CODE(2) で SystemExit する。
+        """windows-toasts が import できない場合は _UNAVAILABLE_EXIT_CODE(3) で SystemExit する。
 
         呼び出し元（permission_handler.py）がこの returncode を検出してフォールバックする設計。
         """

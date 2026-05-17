@@ -1103,6 +1103,27 @@ class TestSuggestPatternProjectScope:
         assert "Write(" in result
         assert ".claude/reports/" in result.replace(os.sep, '/')
 
+    def test_glob_project_external_absolute_pattern_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Glob で絶対パスのプロジェクト外パターンは auto_allow 候補にしない [SR-V-001]。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
+
+        result = module.suggest_pattern("Glob", {"pattern": "/etc/**"})
+
+        assert result is None, "Glob のプロジェクト外パターンが auto_allow 候補として返された"
+
+    def test_glob_relative_pattern_returns_pattern(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Glob で相対パターンは従来通り返す（プロジェクト内として扱う）。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+
+        result = module.suggest_pattern("Glob", {"pattern": "**/*.py"})
+
+        assert result == "Glob(**/*.py)"
+
 
 # ---------------------------------------------------------------------------
 # TestNotifyWithAction: notify_with_action() の挙動検証（subprocess.run を mock）
@@ -1261,6 +1282,38 @@ class TestNotifyWithAction:
         monkeypatch.setattr(module, "notify", notify_mock)
         monkeypatch.setattr(module.subprocess, "run", run_mock)
         monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        result = module.notify_with_action("msg", "Bash(npm install*)")
+
+        notify_mock.assert_called_once_with("msg")
+        assert result is False
+
+    def test_windows_timeout_expired_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """subprocess.run が TimeoutExpired → stderr 出力 + False。ダイアログに委ねる。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        run_mock = MagicMock(side_effect=module.subprocess.TimeoutExpired(cmd="toast", timeout=70))
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        result = module.notify_with_action("msg", "Bash(npm install*)")
+
+        run_mock.assert_called_once()
+        notify_mock.assert_not_called()
+        assert result is False
+
+    def test_windows_toast_script_missing_falls_back_to_notify(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """toast スクリプトが存在しない場合は stderr 警告 + notify() + False。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(module.os.path, "isfile", lambda _: False)
 
         result = module.notify_with_action("msg", "Bash(npm install*)")
 
