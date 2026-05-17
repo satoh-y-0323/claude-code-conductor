@@ -1133,7 +1133,7 @@ class TestNotifyWithAction:
     def test_windows_with_new_pattern_passes_pattern_arg(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
-        """新規パターンの場合は --pattern 引数が subprocess.run に渡される。"""
+        """新規パターンの場合は --pattern 引数が subprocess.run に渡される。returncode=0 → False。"""
         module = _load_module(monkeypatch, tmp_path / "rules.json")
         notify_mock = MagicMock()
         run_mock = MagicMock(return_value=MagicMock(returncode=0))
@@ -1141,7 +1141,7 @@ class TestNotifyWithAction:
         monkeypatch.setattr(module.subprocess, "run", run_mock)
         monkeypatch.setattr(module.platform, "system", lambda: "Windows")
 
-        module.notify_with_action("msg", "Bash(npm install*)")
+        result = module.notify_with_action("msg", "Bash(npm install*)")
 
         run_mock.assert_called_once()
         argv = run_mock.call_args.args[0]
@@ -1151,8 +1151,29 @@ class TestNotifyWithAction:
         assert "Bash(npm install*)" in argv
         assert "--rules-file" in argv
         notify_mock.assert_not_called()
-        # returncode=0（タイムアウト/無視）→ False
-        assert module.notify_with_action("msg", "Bash(npm install*)") is False
+        assert result is False  # returncode=0（タイムアウト/無視）→ False
+
+    def test_windows_none_pattern_shows_allow_once_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """Windows + pattern=None の場合は --pattern なしで subprocess.run が呼ばれる（「今回だけ許可」のみ表示）。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        run_mock = MagicMock(return_value=MagicMock(returncode=10))
+        monkeypatch.setattr(module, "notify", notify_mock)
+        monkeypatch.setattr(module.subprocess, "run", run_mock)
+        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+
+        result = module.notify_with_action("msg", None)
+
+        run_mock.assert_called_once()
+        argv = run_mock.call_args.args[0]
+        # --pattern は渡されない（「今回だけ許可」ボタンのみの toast）
+        assert "--pattern" not in argv
+        assert "--message" in argv
+        assert "--rules-file" in argv
+        notify_mock.assert_not_called()
+        assert result is True  # returncode=10 → 承認
 
     def test_windows_already_in_auto_allow_omits_pattern_arg(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

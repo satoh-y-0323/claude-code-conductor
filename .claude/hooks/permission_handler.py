@@ -126,6 +126,9 @@ def matches_pattern(tool_name: str, tool_input: dict, pattern: str) -> bool:
             return True
         # 絶対パスにマッチしない場合、プロジェクトルート基準の相対パスでも照合する。
         # lower() 統一後の文字列でスライス長を計算し、大文字小文字差異によるずれを防ぐ。
+        # 前提: Windows/macOS/Linux のファイルパスは ASCII 文字のみを想定。
+        # Unicode 文字（日本語ディレクトリ等）は lower() 前後で文字数が変わる可能性があるが
+        # Python の lower() は UTF-8 範囲では文字数を変えないため実用上は問題ない。
         project_prefix_lower = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/').lower() + '/'
         subject_abs_lower = subject_abs.lower()
         if subject_abs_lower.startswith(project_prefix_lower):
@@ -272,9 +275,9 @@ def notify_with_action(message: str, pattern: str | None) -> bool:
         # これはユーザーが「追加して許可」or「今回だけ許可」を選択するための意図的な待機であり
         # フリーズではない（選択後は即座に再開する）。
         result = subprocess.run(cmd, timeout=70, capture_output=True)
-        if result.returncode == 10:
+        if result.returncode == 10:  # _APPROVED_EXIT_CODE
             return True
-        if result.returncode == 2:
+        if result.returncode == 2:   # _UNAVAILABLE_EXIT_CODE
             # windows-toasts 未インストール → バルーン通知にフォールバック
             notify(message)
         return False

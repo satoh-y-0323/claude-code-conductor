@@ -35,6 +35,8 @@ except AttributeError:
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 _FLAG_PATH = os.path.join(_CLAUDE_DIR, "state", "llm_summary_agent_requested.flag")
+# フラグ状態機械: 空文字列 = エージェント実行中、この値 = エージェント完了済み
+_FLAG_DONE_CONTENT = "DONE"
 
 _AGENT_INSTRUCTION = """\
 直近のセッションファイルが llm_summary.md より新しいため要約が必要です。
@@ -151,9 +153,10 @@ def main() -> int:
                 with open(flag_path, encoding="utf-8") as flag_file:
                     flag_content = flag_file.read().strip()
             except OSError:
+                # 読み取り失敗は保守的に「実行中」と解釈して重複起動を防ぐ
                 flag_content = ""
 
-            if flag_content == "DONE":
+            if flag_content == _FLAG_DONE_CONTENT:
                 # エージェント完了済み → フラグを削除してから今回セッションの要否を判定。
                 # TOCTOU 対策: os.unlink() がアトミックに成功した方だけ処理を続行する。
                 # OSError（FileNotFoundError）= 別プロセスが先に削除 → 重複起動防止でスキップ。
