@@ -35,6 +35,16 @@ pytestmark = pytest.mark.skipif(
 
 
 def _iter_hook_commands() -> list[str]:
+    """各 hook の「実行対象となる文字列表現」を抽出する。
+
+    Claude Code の hook は以下 2 形式をサポートする:
+      - shell 形式: `{"command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/foo.py\""}`
+      - exec 形式: `{"command": "python", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/foo.py"]}`
+
+    exec 形式では実際のスクリプトパスは `args[0]` 以降にあるため、
+    後段のパスチェックを共通化するために args を `command + " " + args[0]` 等で
+    1 つの文字列に結合してから返す。
+    """
     cfg = json.loads(SETTINGS_LOCAL.read_text(encoding="utf-8"))
     commands: list[str] = []
     for event_hooks in cfg.get("hooks", {}).values():
@@ -43,7 +53,15 @@ def _iter_hook_commands() -> list[str]:
         for matcher in event_hooks:
             for h in matcher.get("hooks", []):
                 cmd = h.get("command", "")
-                if isinstance(cmd, str) and cmd:
+                args = h.get("args", [])
+                if not isinstance(cmd, str) or not cmd:
+                    continue
+                if isinstance(args, list) and args:
+                    # exec 形式: args 内のスクリプトパスを後段の正規表現が抽出できる形に結合
+                    args_str = " ".join(str(a) for a in args)
+                    commands.append(f"{cmd} {args_str}")
+                else:
+                    # shell 形式: command 文字列そのまま
                     commands.append(cmd)
     return commands
 
@@ -54,8 +72,8 @@ def _extract_script_path(cmd: str) -> str | None:
     m = re.search(r'"([^"]+\.py)"', cmd)
     if m:
         return m.group(1)
-    # クォートなし: python <PATH>.py args
-    m = re.search(r'\b(\S+\.py)\b', cmd)
+    # クォートなし: python <PATH>.py args（${...} プレースホルダ含む）
+    m = re.search(r'(\S+\.py)\b', cmd)
     return m.group(1) if m else None
 
 
@@ -80,7 +98,8 @@ class TestAbsolutePathPolicy:
             if script_path is None:
                 violations.append(f"スクリプトパス抽出失敗: {cmd!r}")
                 continue
-            if script_path.startswith("$CLAUDE_PROJECT_DIR"):
+            # shell 形式の $CLAUDE_PROJECT_DIR と exec 形式の ${CLAUDE_PROJECT_DIR} 両方を許容
+            if script_path.startswith("$CLAUDE_PROJECT_DIR") or script_path.startswith("${CLAUDE_PROJECT_DIR}"):
                 continue
             if os.path.isabs(script_path):
                 continue

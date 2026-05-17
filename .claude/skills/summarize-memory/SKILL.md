@@ -83,6 +83,15 @@ _生成: {ISO 8601 タイムスタンプ（UTC）} / model: claude (CLI default)
 - タイムスタンプは Skill ツールで `report-timestamp` を呼び出して取得する:
   - 出力形式 `YYYYMMDD-HHMMSS`（UTC）を ISO 8601 UTC 形式に変換する
   - 変換例: `20260517-214333` → `2026-05-17T21:43:33+00:00`
+  - `report-timestamp` スキルが利用できない場合のフォールバック（Bash ツールが使える前提）:
+    1. Bash で以下を実行して同じ形式のタイムスタンプを取得する
+       （`datetime` は標準ライブラリのみ使用のため特定のカレントディレクトリは不要）:
+       ```
+       python -c "from datetime import datetime,timezone; print(datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S'))"
+       ```
+    2. `python` コマンドが存在しない環境では `python3` に替えて実行する
+    3. 取得した `YYYYMMDD-HHMMSS` 形式を ISO 8601 UTC 形式へ変換する
+       （変換例: `20260517-214333` → `2026-05-17T21:43:33+00:00`）
 - 出力全体が 4000 文字を超える場合は、要約テキスト末尾を切り詰めて
   `...（出力上限により切り詰め）` を追加し 4000 文字以内に収める
 - 既存の `llm_summary.md` は Write ツールで上書きする

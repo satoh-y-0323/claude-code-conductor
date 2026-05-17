@@ -137,7 +137,8 @@ def _handle_flag_phase(flag_path: str) -> int:
             with open(flag_path, encoding="utf-8") as flag_file:
                 flag_content = flag_file.read().strip()
         except OSError:
-            # 読み取り失敗は保守的に「実行中」と解釈して重複起動を防ぐ
+            # TOCTOU: exists() と open() の間にファイルが削除された場合も OSError になる。
+            # 読み取り失敗は保守的に「実行中」と解釈して重複起動を防ぐ。
             flag_content = ""
 
         if flag_content == _FLAG_DONE_CONTENT:

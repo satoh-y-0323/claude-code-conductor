@@ -1,7 +1,7 @@
 {
   "_readme": "auto_allow にパターンを追加すると権限ダイアログなしで自動承認します。settings.json の permissions.allow と同じ書式です。notify_on_auto を false にすると自動承認時の通知を無効にできます。アンダースコア始まりキー（_readme/_accepted_exceptions 等）はドキュメント専用フィールドで permission_handler.py は無視します。",
   "_accepted_exceptions": {
-    "Skill": "Skill ツールは引数を str(tool_input) で照合するため特定スキルに絞る手段がない。Skill は version 管理下の .claude/skills/ を読むだけで外部副作用がないため全許可を許容する。",
+    "Skill": "\"Skill\"（引数なし）は全スキル呼び出しを引数によらず承認する。特定スキルのみに絞る記法がないため全許可を選択している。Skill は version 管理下の .claude/skills/ を読むだけで外部副作用がないため全許可を許容する。",
     "Bash(rm -f .claude/state/*.flag)": "Bash パターンはコマンド文字列の前方一致照合のため permission_handler.py の '..' トラバーサル防御（_match_file_path 内）は適用されない。ただし state/*.flag は glob 限定で拡大しない設計であり、ローカルツール前提の脅威モデルでは実害リスクが低いと判断し許容する。"
   },
   "notify_on_auto": false,

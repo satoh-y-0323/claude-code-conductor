@@ -11,7 +11,7 @@ import platform
 import re
 import subprocess
 import sys
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 try:
     sys.stdin.reconfigure(encoding='utf-8')
@@ -130,9 +130,16 @@ def _match_file_path(raw: str, p_arg: str) -> bool:
     if subject_abs.lower().startswith(project_root_posix.lower() + '/'):
         # スライスは lower() 前の原長で切り出す（非 ASCII でも安全）
         subject_rel = subject_abs[len(project_root_posix) + 1:]
-        # ".." を含む相対パスはディレクトリトラバーサルのリスクがあるためスキップ
-        if '..' in subject_rel.split('/'):
+        # ".." を含む相対パスはトラバーサルのリスクがあるためスキップ。
+        # unquote() で %2e%2e 等の URL エンコード変種も展開してから検出する [SR-V-002]。
+        subject_rel_decoded = unquote(subject_rel)
+        if '..' in subject_rel_decoded.split('/'):
             return False
+        # regex マッチはエンコード済み subject_rel で行う。
+        # permission_rules.json のパターンは settings.json と同形式の人間可読文字列であり、
+        # auto_allow 追加経路（permission_handler_toast.append_to_auto_allow / 手動編集）の
+        # いずれも URL エンコードを差し込まない設計のため、デコード済みで登録される前提が成立する。
+        # エンコードされた subject_rel がパターンに一致することはなく、unquote 不要。
         return bool(re.fullmatch(regex, subject_rel))
     return False
 
@@ -228,11 +235,20 @@ def suggest_pattern(tool_name: str, tool_input: dict) -> str | None:
             head = f"{tokens[0]} {tokens[1]}"
         else:
             head = tokens[0]
+        # 先頭 1〜2 トークンのいずれかに ".." が含まれる場合（例: "../evil" や "cat ../secret"）は
+        # トラバーサルパターンが auto_allow に登録されるリスクがあるため提案を中断する。
+        # _SHELL_INJECTION_RE は ".." を対象としないためここで明示チェックする。
+        if any('..' in tok.replace('\\', '/').split('/') for tok in tokens[:2]):
+            return None
         return f"Bash({head}*)"
 
     if tool_name in ('Write', 'Edit', 'Read'):
         path = tool_input.get('file_path', '')
         if not path:
+            return None
+        # ".." と完全一致する成分のみトラバーサルとみなす（"..hidden" 等は通過させる）。
+        # '\\' と '/' の正規化に加え unquote() で %2e%2e などの URL エンコード変種も展開する [SR-V-002]。
+        if '..' in unquote(path).replace('\\', '/').split('/'):
             return None
         # 絶対パスがプロジェクト外の場合は auto_allow 候補にしない（誤クリックによる過剰許可防止）[SR-V-002]
         # 相対パスは Claude Code がプロジェクトルートから実行されるためプロジェクト内として扱う
@@ -251,8 +267,9 @@ def suggest_pattern(tool_name: str, tool_input: dict) -> str | None:
         pat = tool_input.get('pattern', '')
         if not pat:
             return f"{tool_name}"
-        # ".." を含む相対パターンは auto_allow 候補にしない（トラバーサル防御の一貫性）
-        if '..' in pat.replace(os.sep, '/').split('/'):
+        # ".." と完全一致する成分のみトラバーサルとみなす（"..hidden" 等は通過させる）。
+        # '\\' と '/' の正規化に加え unquote() で %2e%2e などの URL エンコード変種も展開する [SR-V-002]。
+        if '..' in unquote(pat).replace('\\', '/').split('/'):
             return None
         # 絶対パスで始まるパターンがプロジェクト外の場合は候補にしない [SR-V-001]
         if os.path.isabs(pat):

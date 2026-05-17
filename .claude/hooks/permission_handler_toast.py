@@ -100,6 +100,11 @@ def show_toast(message: str, pattern: str | None, rules_path: str) -> bool:
 
     ユーザーがいずれかの許可ボタンをクリックした場合に True を返す（現在のリクエストを承認）。
     ImportError 時は _UNAVAILABLE_EXIT_CODE で sys.exit する（呼び出し元がフォールバック処理）。
+
+    on_activated コールバック設計メモ:
+      - windows-toasts の仕様上、on_activated は 1 回のトースト操作につき 1 回しか呼ばれない
+      - done.set() を if/elif/else の外に置くことで未知引数時でも待機が即解除される
+        （else で done を立てないと _TIMEOUT_SEC + subprocess.run timeout が連続消費される）
     """
     try:
         from windows_toasts import (  # type: ignore
@@ -129,7 +134,9 @@ def show_toast(message: str, pattern: str | None, rules_path: str) -> bool:
             approved.set()
         elif args == 'action=allow_once':
             approved.set()
-        done.set()
+        else:
+            print(f'[permission_handler_toast] 未知のアクション引数: {args!r}', file=sys.stderr)
+        done.set()  # 全分岐でここに到達する（設計メモは show_toast docstring を参照）
 
     def on_dismissed(_event) -> None:
         done.set()

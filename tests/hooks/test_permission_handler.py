@@ -825,6 +825,20 @@ class TestSuggestPattern:
         assert module.suggest_pattern("Bash", {"command": ""}) is None
         assert module.suggest_pattern("Bash", {"command": "   "}) is None
 
+    def test_bash_with_dotdot_as_first_token_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """先頭トークンが '..' を含む Bash コマンドはトラバーサル防御で None を返す。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        assert module.suggest_pattern("Bash", {"command": "../evil"}) is None
+
+    def test_bash_with_dotdot_as_second_token_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """2 番目のトークンが '..' を含む Bash コマンドもトラバーサル防御で None を返す。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        assert module.suggest_pattern("Bash", {"command": "cat ../secret"}) is None
+
     def test_write_with_parent_dir(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
@@ -878,6 +892,62 @@ class TestSuggestPattern:
     ):
         module = _load_module(monkeypatch, tmp_path / "rules.json")
         assert module.suggest_pattern("", {}) is None
+
+    def test_write_with_dotdot_path_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """Write に '..' を含む相対パスはトラバーサル防御で None を返す（Glob と同様）。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("Write", {"file_path": "../../etc/passwd"})
+        assert result is None, "'..' を含む Write パスが誤って候補に上がった"
+
+    def test_edit_with_dotdot_path_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """Edit に '..' を含む相対パスはトラバーサル防御で None を返す。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("Edit", {"file_path": ".claude/../../../secret"})
+        assert result is None, "'..' を含む Edit パスが誤って候補に上がった"
+
+    def test_read_with_dotdot_path_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """Read に '..' を含む相対パスはトラバーサル防御で None を返す（Write/Edit と同じ分岐）。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("Read", {"file_path": "../../etc/shadow"})
+        assert result is None, "'..' を含む Read パスが誤って候補に上がった"
+
+    def test_write_with_only_dotdot_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """'..' 単体のパスはトラバーサル防御で None を返す。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        assert module.suggest_pattern("Write", {"file_path": ".."}) is None
+
+    def test_write_with_dotdot_hidden_not_blocked(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """'..hidden' は '..' と完全一致しないため誤検知せず有効なパターンを返す。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("Write", {"file_path": "..hidden"})
+        assert result == "Write(*)", f"'..hidden' が誤ってトラバーサルとみなされた: {result!r}"
+
+    def test_write_with_mixed_separator_dotdot_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """混在区切り（バックスラッシュ+スラッシュ）の '..' もトラバーサル防御で None を返す。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        # '..\foo' のような Windows バックスラッシュ混在パスも検出する
+        result = module.suggest_pattern("Write", {"file_path": "..\\foo"})
+        assert result is None, "混在区切りの '..' が誤って候補に上がった"
+
+    def test_write_with_url_encoded_dotdot_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """%2e%2e（URL エンコード形式の '..'）はトラバーサル防御で None を返す [SR-V-002]。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        result = module.suggest_pattern("Write", {"file_path": "%2e%2e/etc/passwd"})
+        assert result is None, "%2e%2e 形式の '..' が誤って候補に上がった"
 
 
 # ---------------------------------------------------------------------------
@@ -1085,6 +1155,36 @@ class TestMatchesPatternRelativePath:
         )
 
         assert result is True
+
+    def test_url_encoded_dotdot_traversal_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """%2e%2e（URL エンコード形式の '..'）を含むパスはトラバーサル防御でブロックされる [SR-V-002]。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
+
+        result = module.matches_pattern(
+            "Write",
+            {"file_path": "/proj/%2e%2e/etc/passwd"},
+            "Write(.claude/**)",
+        )
+
+        assert result is False, "%2e%2e 形式のトラバーサルパスが誤って許可された"
+
+    def test_url_encoded_dotdot_traversal_windows_path_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Windows パス形式で %2e%2e を含むパスもトラバーサル防御でブロックされる [SR-V-002]。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "C:/proj")
+
+        result = module.matches_pattern(
+            "Write",
+            {"file_path": "C:/proj/%2e%2e/etc/passwd"},
+            "Write(.claude/**)",
+        )
+
+        assert result is False, "Windows パスの %2e%2e 形式トラバーサルが誤って許可された"
 
 
 # ---------------------------------------------------------------------------
