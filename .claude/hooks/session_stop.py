@@ -36,6 +36,7 @@ _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 _FLAG_PATH = os.path.join(_CLAUDE_DIR, "state", "llm_summary_agent_requested.flag")
 # フラグ状態機械: 空文字列 = エージェント実行中、この値 = エージェント完了済み
+# 読み取り時は .strip() を適用して比較するため、Write ツールが付加する末尾改行は許容する
 _FLAG_DONE_CONTENT = "DONE"
 
 _AGENT_INSTRUCTION = """\

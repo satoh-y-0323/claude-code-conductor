@@ -113,34 +113,23 @@ def _match_file_path(raw: str, p_arg: str) -> bool:
     """Write/Edit/Read/Glob ツール用のパスマッチング。
 
     絶対パスと相対パス（プロジェクトルート基準）の両方で照合する。
+    非 ASCII パス（日本語ディレクトリ等）も対象に含む。
 
-    制約: ファイルパス（subject）とパターン（p_arg）はともに ASCII 文字のみを想定。
-    subject（raw）は isascii() で検査し非 ASCII の場合は相対パス照合をスキップする
-    （非 ASCII パスに対しては絶対パスでの照合のみ実施）。
-    p_arg（permission_rules.json のパターン）も ASCII 前提だが実装上の検査はしない
-    （パターンはユーザーが管理するローカル設定ファイルから読まれるため許容）。
-    p_arg に非 ASCII が含まれる場合、re.escape() がそのまま使用されるため
-    `_glob_to_regex()` の変換は動作するが、大文字小文字の照合精度が落ちる可能性がある。
-    prefix チェックは lower() で大文字小文字を統一した後に行い、スライス長も
-    lower() 後の長さ（`len(project_prefix_lower)`）で統一することで
-    大文字小文字差異によるずれを防ぐ。
-    `len(s) == len(s.lower())` はすべての ASCII 文字で成立するため、
-    ASCII のみのパスでは subject_abs（元の大文字小文字）から正確に
-    プロジェクト相対パスを切り出せる。
+    プレフィックスチェックは lower() で大文字小文字を統一して行い、
+    スライスには元の project_root_posix の長さを使用する。
+    これにより lower() 後に文字数が変わりうる非 ASCII 文字（İ 等）でも
+    スライスが正しく機能する。
     """
     subject_abs = raw.replace(os.sep, '/')
     regex = _glob_to_regex(p_arg)
     if re.fullmatch(regex, subject_abs):
         return True
-    # 非 ASCII パスは lower() でスライス長が変わりうるため相対パス照合をスキップ
-    if not subject_abs.isascii():
-        return False
     # 絶対パスにマッチしない場合、プロジェクトルート基準の相対パスでも照合する。
     # settings.json の permissions.allow と同じ相対パス記法が permission_rules.json でも使える。
-    project_prefix_lower = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/').lower() + '/'
-    subject_abs_lower = subject_abs.lower()
-    if subject_abs_lower.startswith(project_prefix_lower):
-        subject_rel = subject_abs[len(project_prefix_lower):]
+    project_root_posix = _PROJECT_ROOT.replace(os.sep, '/').rstrip('/')
+    if subject_abs.lower().startswith(project_root_posix.lower() + '/'):
+        # スライスは lower() 前の原長で切り出す（非 ASCII でも安全）
+        subject_rel = subject_abs[len(project_root_posix) + 1:]
         # ".." を含む相対パスはディレクトリトラバーサルのリスクがあるためスキップ
         if '..' in subject_rel.split('/'):
             return False
@@ -310,6 +299,8 @@ def notify_with_action(message: str, pattern: str | None) -> bool:
         return False
 
     toast_script = os.path.join(_HOOKS_DIR, 'permission_handler_toast.py')
+    # isfile チェック: 不在を事前に明確なメッセージで検出（配布欠損の診断用）
+    # OSError catch: spawn 時の権限エラー等、不在以外の失敗を捕捉
     if not os.path.isfile(toast_script):
         print(f'[permission_handler] toast スクリプトが見つかりません: {toast_script}', file=sys.stderr)
         notify(message)

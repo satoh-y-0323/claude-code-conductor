@@ -1051,21 +1051,40 @@ class TestMatchesPatternRelativePath:
 
         assert result is True
 
-    def test_non_ascii_path_skips_relative_matching(
+    def test_non_ascii_path_within_project_matches_relative_pattern(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """非 ASCII パスは lower() のスライス長不一致リスクがあるため相対パス照合をスキップする。"""
+        """非 ASCII パスでもプロジェクト内であれば相対パターンにマッチする [SR-V-002] 対応確認。
+
+        isascii() guard を削除し len(project_root_posix)+1 でスライスすることで
+        日本語ディレクトリ等を含むパスも正しく照合される。
+        """
         module = _load_module(monkeypatch, tmp_path / "rules.json")
         monkeypatch.setattr(module, "_PROJECT_ROOT", "/proj")
 
-        # 非 ASCII パス（日本語ディレクトリ）は相対パターンにマッチしない
+        # 非 ASCII パス（日本語ディレクトリ）がプロジェクト内にある場合もマッチする
+        result = module.matches_pattern(
+            "Write",
+            {"file_path": "/proj/.claude/memory/メモ.tmp"},
+            "Write(.claude/memory/**)",
+        )
+
+        assert result is True, "プロジェクト内の非 ASCII パスが相対パターンにマッチしなかった"
+
+    def test_non_ascii_project_root_path_still_works(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """非 ASCII を含むプロジェクトルートでもスライスが正しく動作する。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        monkeypatch.setattr(module, "_PROJECT_ROOT", "/プロジェクト")
+
         result = module.matches_pattern(
             "Edit",
-            {"file_path": "/proj/ドキュメント/.claude/settings.json"},
+            {"file_path": "/プロジェクト/.claude/settings.json"},
             "Edit(.claude/settings.json)",
         )
 
-        assert result is False, "非 ASCII パスが誤って相対パターンにマッチした"
+        assert result is True
 
 
 # ---------------------------------------------------------------------------
