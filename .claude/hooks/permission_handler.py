@@ -104,10 +104,13 @@ def _match_file_path(raw: str, p_arg: str) -> bool:
 
     絶対パスと相対パス（プロジェクトルート基準）の両方で照合する。
 
-    制約: ファイルパスは実質 ASCII 文字のみを想定。
-    非 ASCII パス（日本語ディレクトリ等）を含む場合、lower() でスライス長が
-    変わるケースが理論上は存在するが、Python の str.lower() は UTF-8 範囲では
-    文字数を変えないため実用上は問題ない。
+    制約: ファイルパスは ASCII 文字（英数字・記号）のみを想定。
+    prefix チェックは lower() で大文字小文字を統一した後に行い、スライス長も
+    lower() 後の長さ（`len(project_prefix_lower)`）で統一することで
+    大文字小文字差異によるずれを防ぐ。
+    `len(s) == len(s.lower())` はすべての ASCII 文字で成立するため、
+    ASCII のみのパスでは subject_abs（元の大文字小文字）から正確に
+    プロジェクト相対パスを切り出せる。
     """
     subject_abs = raw.replace(os.sep, '/')
     regex = _glob_to_regex(p_arg)
