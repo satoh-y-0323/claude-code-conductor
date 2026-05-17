@@ -120,17 +120,61 @@ def _load_module(name: str) -> types.ModuleType:
     return module
 
 
+def _handle_flag_phase(flag_path: str) -> int:
+    """Phase 3: LLM 要約エージェント起動フラグ制御.
+
+    フラグ状態機械:
+      - フラグなし → _needs_summary() が True なら フラグ作成 + exit 2
+      - 内容 "" (空) = エージェント実行中 → exit 0（重複防止）
+      - 内容 _FLAG_DONE_CONTENT = エージェント完了済み → unlink + 判定
+        - _needs_summary True  → フラグ再作成 + exit 2
+        - _needs_summary False → exit 0
+      - unlink OSError = 別プロセスが先に削除（TOCTOU 対策） → exit 0
+    """
+    if os.path.exists(flag_path):
+        try:
+            with open(flag_path, encoding="utf-8") as flag_file:
+                flag_content = flag_file.read().strip()
+        except OSError:
+            # 読み取り失敗は保守的に「実行中」と解釈して重複起動を防ぐ
+            flag_content = ""
+
+        if flag_content == _FLAG_DONE_CONTENT:
+            # エージェント完了済み → フラグを削除してから今回セッションの要否を判定。
+            # TOCTOU 対策: os.unlink() がアトミックに成功した方だけ処理を続行する。
+            # OSError（FileNotFoundError）= 別プロセスが先に削除 → 重複起動防止でスキップ。
+            try:
+                os.unlink(flag_path)
+            except OSError:
+                return 0
+            if not _needs_summary(_CLAUDE_DIR):
+                return 0
+            if not _create_flag(flag_path):
+                return 0  # フラグ作成失敗 → エージェント起動を見送る
+            print(_AGENT_INSTRUCTION, file=sys.stderr)
+            return 2
+        else:
+            # フラグ空 = エージェント実行中 → 重複防止でスキップ
+            return 0
+
+    # 要約が必要か（session mtime vs llm_summary.md mtime 比較）
+    if not _needs_summary(_CLAUDE_DIR):
+        return 0
+
+    # フラグ作成 + stderr に Agent 起動指示
+    if not _create_flag(flag_path):
+        return 0  # フラグ作成失敗 → エージェント起動を見送る
+    print(_AGENT_INSTRUCTION, file=sys.stderr)
+    return 2
+
+
 def main() -> int:
     """Stop hook エントリポイント.
 
     stdin を 1 回読んで stop.run / consolidate_memory.run_sync を順に呼ぶ。
     片方が失敗しても他方は実行する。
 
-    Phase 3: Phase 1/2 完了後に「要約が必要か」を判定し、
-    LLM 要約エージェントの起動指示を制御する。
-    - flag あり                          → exit 0 + flag 削除 (実行中重複防止)
-    - _needs_summary == True             → exit 2 + flag 作成 + stderr に Agent 起動指示
-    - _needs_summary == False            → exit 0 (要約済み or session なし)
+    Phase 3: _handle_flag_phase() に委譲して LLM 要約エージェントの起動指示を制御する。
     """
     try:
         payload = json.loads(sys.stdin.read())
@@ -156,42 +200,7 @@ def main() -> int:
 
     # Phase 3: LLM 要約エージェント起動フラグ制御
     try:
-        flag_path = _FLAG_PATH
-        if os.path.exists(flag_path):
-            try:
-                with open(flag_path, encoding="utf-8") as flag_file:
-                    flag_content = flag_file.read().strip()
-            except OSError:
-                # 読み取り失敗は保守的に「実行中」と解釈して重複起動を防ぐ
-                flag_content = ""
-
-            if flag_content == _FLAG_DONE_CONTENT:
-                # エージェント完了済み → フラグを削除してから今回セッションの要否を判定。
-                # TOCTOU 対策: os.unlink() がアトミックに成功した方だけ処理を続行する。
-                # OSError（FileNotFoundError）= 別プロセスが先に削除 → 重複起動防止でスキップ。
-                try:
-                    os.unlink(flag_path)
-                except OSError:
-                    return 0
-                if not _needs_summary(_CLAUDE_DIR):
-                    return 0
-                if not _create_flag(flag_path):
-                    return 0  # フラグ作成失敗 → エージェント起動を見送る
-                print(_AGENT_INSTRUCTION, file=sys.stderr)
-                return 2
-            else:
-                # フラグ空 = エージェント実行中 → 重複防止でスキップ
-                return 0
-
-        # 要約が必要か（session mtime vs llm_summary.md mtime 比較）
-        if not _needs_summary(_CLAUDE_DIR):
-            return 0
-
-        # フラグ作成 + stderr に Agent 起動指示
-        if not _create_flag(flag_path):
-            return 0  # フラグ作成失敗 → エージェント起動を見送る
-        print(_AGENT_INSTRUCTION, file=sys.stderr)
-        return 2
+        return _handle_flag_phase(_FLAG_PATH)
     except Exception as e:
         print(f"[session_stop:flag_control] failed: {type(e).__name__}", file=sys.stderr)
         return 0

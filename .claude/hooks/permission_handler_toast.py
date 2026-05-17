@@ -9,7 +9,7 @@ exit code _APPROVED_EXIT_CODE(10) で終了し、呼び出し元が decision:all
 windows-toasts のインストール:
   pip install windows-toasts
 
-windows-toasts が見つからない場合は _UNAVAILABLE_EXIT_CODE(2) で exit する。
+windows-toasts が見つからない場合は _UNAVAILABLE_EXIT_CODE(3) で exit する。
 呼び出し元（permission_handler.py）がこの code を検出してバルーン通知にフォールバックする。
 """
 from __future__ import annotations

@@ -22,7 +22,7 @@
     "Edit(.claude/settings.json)",
     "Write(.claude/reports/**)",
     "Write(.claude/tmp/**)",
-    "Write(.claude/state/**)",
+    "Write(.claude/state/*.flag)",
     "Write(.claude/memory/**)",
     "Write(.claude/agent-memory/**)",
     "Write(.claude/rules/**)",

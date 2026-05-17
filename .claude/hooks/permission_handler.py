@@ -115,9 +115,12 @@ def _match_file_path(raw: str, p_arg: str) -> bool:
     絶対パスと相対パス（プロジェクトルート基準）の両方で照合する。
 
     制約: ファイルパス（subject）とパターン（p_arg）はともに ASCII 文字のみを想定。
-    subject（raw）は isascii() で検査し非 ASCII の場合は相対パス照合をスキップする。
+    subject（raw）は isascii() で検査し非 ASCII の場合は相対パス照合をスキップする
+    （非 ASCII パスに対しては絶対パスでの照合のみ実施）。
     p_arg（permission_rules.json のパターン）も ASCII 前提だが実装上の検査はしない
     （パターンはユーザーが管理するローカル設定ファイルから読まれるため許容）。
+    p_arg に非 ASCII が含まれる場合、re.escape() がそのまま使用されるため
+    `_glob_to_regex()` の変換は動作するが、大文字小文字の照合精度が落ちる可能性がある。
     prefix チェックは lower() で大文字小文字を統一した後に行い、スライス長も
     lower() 後の長さ（`len(project_prefix_lower)`）で統一することで
     大文字小文字差異によるずれを防ぐ。
@@ -259,6 +262,9 @@ def suggest_pattern(tool_name: str, tool_input: dict) -> str | None:
         pat = tool_input.get('pattern', '')
         if not pat:
             return f"{tool_name}"
+        # ".." を含む相対パターンは auto_allow 候補にしない（トラバーサル防御の一貫性）
+        if '..' in pat.replace(os.sep, '/').split('/'):
+            return None
         # 絶対パスで始まるパターンがプロジェクト外の場合は候補にしない [SR-V-001]
         if os.path.isabs(pat):
             pat_posix_lower = pat.replace(os.sep, '/').lower()
@@ -322,6 +328,9 @@ def notify_with_action(message: str, pattern: str | None) -> bool:
         # これはユーザーが「追加して許可」or「今回だけ許可」を選択するための意図的な待機であり
         # フリーズではない（選択後は即座に再開する）。
         result = subprocess.run(cmd, timeout=70, capture_output=True)
+        # toast subprocess の stderr を転送（診断ログの消失を防ぐ）[SR-R-004]
+        if result.stderr and isinstance(result.stderr, bytes):
+            sys.stderr.buffer.write(result.stderr)
         if result.returncode == _TOAST_APPROVED_EXIT_CODE:
             return True
         if result.returncode == _TOAST_UNAVAILABLE_EXIT_CODE:
