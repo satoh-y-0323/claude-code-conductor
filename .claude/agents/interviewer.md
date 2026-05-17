@@ -7,6 +7,7 @@ tools:
   - Write
   - Glob
   - Grep
+  - Skill
 ---
 
 # Interviewer

@@ -10,6 +10,7 @@ tools:
   - Bash
   - Glob
   - Grep
+  - Skill
 ---
 
 # Code Reviewer
