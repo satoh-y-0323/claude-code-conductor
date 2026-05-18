@@ -369,6 +369,11 @@ def main() -> None:
     rules = load_rules()
     description = describe_tool(tool_name, tool_input)
 
+    # AskUserQuestion は通知のみ。自動承認対象外として扱う。
+    if tool_name == 'AskUserQuestion':
+        notify(f'-> 質問: {description}')
+        return
+
     for pattern in rules.get('auto_allow', []):
         if matches_pattern(tool_name, tool_input, pattern):
             if rules.get('notify_on_auto', True):

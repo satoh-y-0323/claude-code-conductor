@@ -1438,3 +1438,58 @@ class TestNotifyWithAction:
 
         notify_mock.assert_called_once_with("msg")
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# 26-28. main: AskUserQuestion は通知のみ・自動承認対象外
+# ---------------------------------------------------------------------------
+
+
+class TestMainAskUserQuestion:
+    """main: AskUserQuestion は通知のみ。decision を出力せず自動承認対象外として扱う。"""
+
+    def test_ask_user_question_calls_notify(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AskUserQuestion が来ると notify() が呼ばれる。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        monkeypatch.setattr(module, "notify", notify_mock)
+
+        payload = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "続けますか？"}]}}
+        _run_main_in_process(module, payload)
+
+        notify_mock.assert_called_once()
+
+    def test_ask_user_question_does_not_output_decision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AskUserQuestion が来ても decision を出力しない（stdout が空）。"""
+        module = _load_module(monkeypatch, tmp_path / "rules.json")
+        notify_mock = MagicMock()
+        monkeypatch.setattr(module, "notify", notify_mock)
+
+        payload = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "続けますか？"}]}}
+        output = _run_main_in_process(module, payload)
+
+        assert output.strip() == "", f"AskUserQuestion が decision を出力した: {output!r}"
+
+    def test_ask_user_question_excluded_even_if_in_auto_allow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AskUserQuestion が auto_allow に登録されていても decision を出力しない。"""
+        rules_file = tmp_path / "permission_rules.json"
+        rules_file.write_text(
+            json.dumps({"auto_allow": ["AskUserQuestion"], "notify_on_auto": False}),
+            encoding="utf-8",
+        )
+        module = _load_module(monkeypatch, rules_file)
+        notify_mock = MagicMock()
+        monkeypatch.setattr(module, "notify", notify_mock)
+
+        payload = {"tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "続けますか？"}]}}
+        output = _run_main_in_process(module, payload)
+
+        assert output.strip() == "", (
+            "AskUserQuestion が auto_allow にあっても decision を出力してはいけない"
+        )
