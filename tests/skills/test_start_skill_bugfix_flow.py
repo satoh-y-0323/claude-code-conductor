@@ -1,56 +1,50 @@
 """
 tests/skills/test_start_skill_bugfix_flow.py
 
-TDD Red フェーズ: start/SKILL.md の bug-fix フローが
-tester 完了後に code-reviewer と security-reviewer を 1 メッセージ内で並列起動する
-旨の記述を検証するテスト。
+新仕様の /start SKILL.md におけるデバッグ調査フローの記述検証。
 
-現在の SKILL.md には「security-audit の Step 2 へ遷移し即実行」という記述のため、
-両テストが FAILED となる（正しい状態）。
+新仕様:
+- Step 1 の選択肢として「デバッグ調査から」が存在する
+- Step 2 で「デバッグ調査から」が systematic-debugger 起動 →
+  dev-workflow Phase D（bug-fix モード）への遷移を記述する
 """
-from pathlib import Path
-
-SKILL_PATH = Path(__file__).parents[2] / ".claude" / "skills" / "start" / "SKILL.md"
-
-
-def _bugfix_table_row(content: str) -> str:
-    """Step 2 テーブルの bug-fix | systematic-debugger 行を返す。"""
-    for line in content.splitlines():
-        if "bug-fix" in line and "systematic-debugger" in line:
-            return line
-    return ""
+from tests.skills._skill_helpers import (
+    keyword_in_neighborhood,
+    read_start_skill as _start,
+)
 
 
-# ---------------------------------------------------------------------------
-# テスト 1: bug-fix フローに code-reviewer と security-reviewer の両方が明記されているか
-# ---------------------------------------------------------------------------
-
-def test_bugfix_flow_includes_both_reviewers():
-    """bug-fix フローに code-reviewer と security-reviewer の両方が明記されている。"""
-    content = SKILL_PATH.read_text(encoding="utf-8")
-    row = _bugfix_table_row(content)
-    assert row, "bug-fix | systematic-debugger 直起動 の行が見つからない"
-    assert "code-reviewer" in row, "bug-fix 行に code-reviewer がない"
-    assert "security-reviewer" in row, "bug-fix 行に security-reviewer がない"
-    assert "並列" in row or "1 メッセージ" in row, \
-        "bug-fix 行に並列起動の明示がない"
+def test_step1_includes_debug_option():
+    """Step 1 の AskUserQuestion に「デバッグ調査から」の選択肢が含まれる。"""
+    assert "デバッグ調査から" in _start(), \
+        "/start に「デバッグ調査から」の選択肢が含まれていない"
 
 
-# ---------------------------------------------------------------------------
-# テスト 2: systematic-debugger → developer → tester の順序が正しいか
-# ---------------------------------------------------------------------------
+def test_step2_debug_routing_invokes_systematic_debugger():
+    """Step 2 のマッピングで「デバッグ調査から」が systematic-debugger を起動する。
 
-def test_bugfix_flow_order_maintained():
-    """systematic-debugger → developer → tester の順序が正しい。"""
-    content = SKILL_PATH.read_text(encoding="utf-8")
-    row = _bugfix_table_row(content)
-    assert row, "bug-fix | systematic-debugger 直起動 の行が見つからない"
+    「デバッグ調査から」を含む行の近傍に systematic-debugger の起動指示が現れる。
+    """
+    assert keyword_in_neighborhood(
+        _start(), "デバッグ調査から", ("systematic-debugger",)
+    ), "「デバッグ調査から」近傍に systematic-debugger の起動指示がない"
 
-    pos_sd = row.find("systematic-debugger")
-    pos_dev = row.find("developer")
-    pos_tester = row.find("tester")
-    assert 0 <= pos_sd < pos_dev < pos_tester, \
-        "systematic-debugger → developer → tester の順序が正しくない"
 
-    assert "security-reviewer" in row, \
-        "bug-fix 行に security-reviewer がない"
+def test_step2_debug_transitions_to_dev_workflow_phase_d():
+    """「デバッグ調査から」のマッピングが dev-workflow フェーズ D 遷移を含む。"""
+    content = _start()
+    # 「dev-workflow」と「フェーズ D」または「Phase D」の両方が近傍にある必要がある
+    has_jp = keyword_in_neighborhood(
+        content, "デバッグ調査から", ("フェーズ D", "dev-workflow")
+    )
+    has_en = keyword_in_neighborhood(
+        content, "デバッグ調査から", ("Phase D", "dev-workflow")
+    )
+    assert has_jp or has_en, \
+        "「デバッグ調査から」のマッピングに dev-workflow フェーズ D への遷移が記述されていない"
+
+
+def test_old_bugfix_task_type_table_removed():
+    """旧 task_type ベースの bug-fix テーブル行（| bug-fix |）が残っていない。"""
+    assert "| bug-fix |" not in _start(), \
+        "旧 bug-fix の task_type テーブル行が残っている"

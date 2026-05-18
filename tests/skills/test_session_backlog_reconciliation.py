@@ -8,31 +8,19 @@ tests/skills/test_session_backlog_reconciliation.py
 - dev-workflow/SKILL.md: フェーズ E 共通の「引き継ぎバックログの照合」ステップ
 - taxonomy.md: memory/ セクションの責務分担明示
 """
-import re
-from pathlib import Path
+from tests.skills._skill_helpers import (
+    WORKTREE_ROOT,
+    extract_section,
+    read_dev_workflow_skill,
+    read_init_session_skill,
+)
 
-ROOT = Path(__file__).parents[2]
-INIT_SESSION_SKILL = ROOT / ".claude" / "skills" / "init-session" / "SKILL.md"
-DEV_WORKFLOW_SKILL = ROOT / ".claude" / "skills" / "dev-workflow" / "SKILL.md"
-TAXONOMY_DOC = ROOT / ".claude" / "docs" / "taxonomy.md"
-
-
-def _read(path: Path) -> str:
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8")
+# taxonomy.md は SKILL.md ではないため Path を直接保持する。
+TAXONOMY_DOC = WORKTREE_ROOT / ".claude" / "docs" / "taxonomy.md"
 
 
-def _extract_section(content: str, heading: str) -> str:
-    """## 見出しから次の ## 見出しまでを切り出す。"""
-    pattern = re.compile(
-        r"(^" + re.escape(heading) + r".*?)(?=^##\s|\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
-    match = pattern.search(content)
-    if match:
-        return match.group(1)
-    return ""
+def _read_taxonomy() -> str:
+    return TAXONOMY_DOC.read_text(encoding="utf-8") if TAXONOMY_DOC.exists() else ""
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +29,7 @@ def _extract_section(content: str, heading: str) -> str:
 
 def test_init_session_has_step_1_5():
     """init-session/SKILL.md に Step 1.5 セクションが存在する。"""
-    content = _read(INIT_SESSION_SKILL)
+    content = read_init_session_skill()
     assert "## Step 1.5:" in content, (
         "init-session/SKILL.md に '## Step 1.5:' 見出しが見つかりません。"
         " 残タスクと git log を照合する Step 1.5 を追加してください。"
@@ -50,8 +38,8 @@ def test_init_session_has_step_1_5():
 
 def test_init_session_step_1_5_has_keyword_match_logic():
     """Step 1.5 に git log とキーワード照合の手順が含まれる。"""
-    content = _read(INIT_SESSION_SKILL)
-    section = _extract_section(content, "## Step 1.5:")
+    content = read_init_session_skill()
+    section = extract_section(content, "## Step 1.5:")
 
     assert section, "Step 1.5 セクションが見つかりません。"
 
@@ -65,8 +53,8 @@ def test_init_session_step_1_5_has_keyword_match_logic():
 
 def test_init_session_step_1_5_no_auto_update():
     """Step 1.5 は自動 [x] 化しない（ユーザー承認必須）旨が明記されている。"""
-    content = _read(INIT_SESSION_SKILL)
-    section = _extract_section(content, "## Step 1.5:")
+    content = read_init_session_skill()
+    section = extract_section(content, "## Step 1.5:")
 
     assert "自動で `[x]` 化はしない" in section or "自動で[x]化はしない" in section, (
         "Step 1.5 で '自動で [x] 化はしない' 旨が明記されていません。"
@@ -76,8 +64,8 @@ def test_init_session_step_1_5_no_auto_update():
 
 def test_init_session_update_rule_distinguishes_a_and_b():
     """更新ルール部に種別 A（ワークフローフェーズ）と種別 B（引き継ぎバックログ）の区別がある。"""
-    content = _read(INIT_SESSION_SKILL)
-    section = _extract_section(content, "## session ファイルの更新ルール")
+    content = read_init_session_skill()
+    section = extract_section(content, "## session ファイルの更新ルール")
 
     assert section, "更新ルールセクションが見つかりません。"
 
@@ -97,7 +85,7 @@ def test_init_session_update_rule_distinguishes_a_and_b():
 
 def test_dev_workflow_has_backlog_reconciliation_section():
     """dev-workflow/SKILL.md に '## 引き継ぎバックログの照合' セクションが存在する。"""
-    content = _read(DEV_WORKFLOW_SKILL)
+    content = read_dev_workflow_skill()
     heading = "## 引き継ぎバックログの照合"
     assert heading in content, (
         f"dev-workflow/SKILL.md に '{heading}' セクションが見つかりません。"
@@ -107,8 +95,8 @@ def test_dev_workflow_has_backlog_reconciliation_section():
 
 def test_dev_workflow_backlog_section_has_required_steps():
     """共通ステップにキーワード照合・AskUserQuestion・コミット直前の指示が含まれる。"""
-    content = _read(DEV_WORKFLOW_SKILL)
-    section = _extract_section(content, "## 引き継ぎバックログの照合")
+    content = read_dev_workflow_skill()
+    section = extract_section(content, "## 引き継ぎバックログの照合")
 
     assert section, "共通ステップセクションが見つかりません。"
 
@@ -126,7 +114,7 @@ def test_dev_workflow_backlog_section_has_required_steps():
 
 def test_dev_workflow_phase_e_references_backlog_reconciliation():
     """フェーズ E のコミット提案部から共通ステップへの参照がある。"""
-    content = _read(DEV_WORKFLOW_SKILL)
+    content = read_dev_workflow_skill()
 
     occurrences = content.count("引き継ぎバックログの照合")
     assert occurrences >= 3, (
@@ -141,8 +129,8 @@ def test_dev_workflow_phase_e_references_backlog_reconciliation():
 
 def test_taxonomy_memory_section_clarifies_responsibility():
     """taxonomy.md の memory/ 説明に Hook と LLM の責務分担が明記されている。"""
-    content = _read(TAXONOMY_DOC)
-    section = _extract_section(content, "### `memory/`")
+    content = _read_taxonomy()
+    section = extract_section(content, "### `memory/`")
 
     assert section, "taxonomy.md の memory/ セクションが見つかりません。"
 
