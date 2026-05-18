@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Context gauge statusline script.
-Displays context usage + optional rate limit gauges (when plan provides rate_limits data).
+"""Statusline script for Claude Code.
+
+Displays: [model display name] effort | ctx used X% | 5h lim X% | 7d lim X%
+
+context_window_size (200K / 1M) は ctx used X% と情報重複のため表示しない。
+gauge バー描画も省スペース優先で表示しない。
 """
 
 import json
@@ -33,14 +37,6 @@ def pct_color(pct: int) -> str:
         return YELLOW
     else:
         return GREEN
-
-
-def format_context_size(size: int) -> str:
-    if size >= 900_000:
-        return '1M'
-    elif size >= 100_000:
-        return '200K'
-    return str(size)
 
 
 def format_reset_time(resets_at) -> str:
@@ -82,17 +78,12 @@ def render_output(raw: str) -> None:
     header: list[str] = []
     metrics: list[str] = []
 
-    # [model display name]  context_size  effort  — スペース区切り
+    # [model display name]  effort  — スペース区切り
+    # （context_window_size は ctx used X% と情報重複のため表示しない）
     model = data.get('model') or {}
     display_name = model.get('display_name', '')
     if display_name:
         header.append(f'[{display_name}]')
-
-    # context window size: 200K / 1M
-    ctx_window = data.get('context_window') or {}
-    ctx_size = ctx_window.get('context_window_size')
-    if ctx_size:
-        header.append(format_context_size(int(ctx_size)))
 
     # effort level
     effort = data.get('effort') or {}
@@ -101,6 +92,7 @@ def render_output(raw: str) -> None:
         header.append(effort_level)
 
     # ctx usg %
+    ctx_window = data.get('context_window') or {}
     ctx_pct = round(ctx_window.get('used_percentage') or 0)
     metrics.append('ctx used ' + pct_color(ctx_pct) + str(ctx_pct) + '%' + RESET)
 

@@ -14,6 +14,10 @@ from pathlib import Path
 from c3.paths import claude_root_for
 from c3.plan_validator import split_waves, validate_plan_report
 
+# 旧 c3 po dry-run の exit 2 (= manifest error) と互換。
+# validate / waves サブコマンド共通の終了コード。
+_EXIT_MANIFEST_ERROR = 2
+
 
 def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
@@ -45,38 +49,38 @@ def _resolve_root(path: Path) -> Path | None:
 def _handle_validate(args: argparse.Namespace) -> int:
     if not args.plan_report.is_file():
         print(f"plan-report not found: {args.plan_report}", file=sys.stderr)
-        return 2
+        return _EXIT_MANIFEST_ERROR
     root = _resolve_root(args.plan_report)
     if root is None:
         print("could not locate .claude/ directory for agent lookup", file=sys.stderr)
-        return 2
+        return _EXIT_MANIFEST_ERROR
     errors = validate_plan_report(args.plan_report, root)
     if not errors:
         return 0
     for err in errors:
         print(err, file=sys.stderr)
-    return 2  # 旧 c3 po dry-run の exit 2 = manifest error と互換
+    return _EXIT_MANIFEST_ERROR
 
 
 def _handle_waves(args: argparse.Namespace) -> int:
     if not args.plan_report.is_file():
         print(f"plan-report not found: {args.plan_report}", file=sys.stderr)
-        return 2
+        return _EXIT_MANIFEST_ERROR
     root = _resolve_root(args.plan_report)
     if root is None:
         print("could not locate .claude/ directory for agent lookup", file=sys.stderr)
-        return 2
+        return _EXIT_MANIFEST_ERROR
     # 旧 c3 po waves と同じく、まず validate を走らせてから分解する
     errors = validate_plan_report(args.plan_report, root)
     if errors:
         for err in errors:
             print(err, file=sys.stderr)
-        return 2
+        return _EXIT_MANIFEST_ERROR
     try:
         output = split_waves(args.plan_report)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
-        return 2
+        return _EXIT_MANIFEST_ERROR
     json.dump(output, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
     return 0

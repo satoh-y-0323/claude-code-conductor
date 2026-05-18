@@ -18,7 +18,7 @@ Expected after fix:
     When key is absent: outputs "- context_items_before: N/A"
     When key is present with value 0: outputs "- context_items_before: 0"
 
-This test FAILS on the unfixed implementation because absent key produces "0" not "N/A".
+実装は 'N/A' 出力に修正済み。本テスト群は将来 '0' 出力に退行しないかを守る Green 回帰防止テスト。
 """
 
 from __future__ import annotations
@@ -76,8 +76,7 @@ class TestContextItemsBeforeNoneShowsNA:
         - If None  -> output "- context_items_before: N/A"
         - If 0     -> output "- context_items_before: 0"
 
-    This test FAILS on the unfixed implementation because absent key produces
-    "0" instead of "N/A".
+    実装は 'N/A' 出力で修正済み。本テストは将来 '0' 出力に退行しないかを守る Green 回帰防止テスト。
     """
 
     def test_context_items_before_none_shows_na(self, tmp_path: Path) -> None:
@@ -88,8 +87,7 @@ class TestContextItemsBeforeNoneShowsNA:
         pre_compact.py は append_checkpoint() を通じてセッションファイルにサマリを書き込む。
         キーが存在しない payload を渡したとき、書き込まれたサマリに 'N/A' が含まれるか確認する。
 
-        この テスト は未修正の実装に対して FAIL する。
-        現在の実装では 'context_items_before' キーが不在のとき '0' が出力される。
+        実装側で 'N/A' 出力に修正済み。本テストは将来 '0' 出力に退行しないかを守る Green 回帰防止テスト。
 
         注意: pre_compact.py はセッションファイルを実際の .claude/memory/sessions/ に書き込む。
         テスト用に cwd を tmp_path（.git ファイルを持つ worktree に見せかけない場所）に設定し、

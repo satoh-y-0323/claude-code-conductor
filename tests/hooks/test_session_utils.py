@@ -235,10 +235,8 @@ class TestAppendCheckpoint:
         `summary` に `-->` がそのまま含まれると、このブロックが途中で閉じられてしまい
         JSON パースが壊れる可能性がある。
 
-        現在の実装は `body = summary.strip()` のままでサニタイズが未実装のため、
-        このテストは FAIL する（機能未実装による失敗）。
-
-        修正: `body = summary.strip().replace('-->', '-- >')` に変更すること。
+        実装側で `body = summary.strip().replace('-->', '-- >')` 採用済み。
+        本テストは将来素通しに退行しないかを守る Green 回帰防止テスト。
         """
         module = _load_module()
         session_file = str(tmp_path / "20260505.tmp")

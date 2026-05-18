@@ -218,7 +218,8 @@ def _load_root_module() -> types.ModuleType:
     return module
 
 
-# session_stop.py の _FLAG_DONE_CONTENT と同値。変更時は両方を更新すること。
+# session_stop._FLAG_DONE_CONTENT から動的取得（リテラル直書きを避け、定数変更に自動追従）。
+# 手動同期は不要。
 _DONE = _load_root_module()._FLAG_DONE_CONTENT
 
 

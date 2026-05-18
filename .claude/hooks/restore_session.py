@@ -41,6 +41,15 @@ def find_latest_session() -> str | None:
     return os.path.join(SESSIONS_DIR, max(files))
 
 
+def extract_section(content: str, heading: str) -> str:
+    """``session_utils.extract_section`` への薄いラッパー（後方互換用）。
+
+    過去にこのモジュール直下にあった ``extract_section`` を呼び出すテスト・スクリプトとの
+    互換維持のため、モジュールレベルで公開する。実体は :mod:`session_utils` 側にある。
+    """
+    return _load_session_utils().extract_section(content, heading)
+
+
 def main():
     path = find_latest_session()
     if not path or not os.path.exists(path):

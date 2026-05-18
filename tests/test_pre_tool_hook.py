@@ -1,8 +1,7 @@
-"""Tests for .claude/hooks/pre_tool.py — TDD Red phase.
+"""Tests for .claude/hooks/pre_tool.py — Green 回帰防止テスト。
 
-These tests verify the *expected* (post-fix) behavior of the hook.
-Several tests are expected to FAIL against the current (unfixed) implementation,
-demonstrating the security gaps documented in [Sec High-1] and [Sec High-2].
+実装側で [Sec High-1] / [Sec High-2] のセキュリティ修正は完了済み。
+本ファイルは将来の改修で同等の脆弱性が退行しないかを守る回帰防止テスト群。
 """
 
 from __future__ import annotations
@@ -92,7 +91,7 @@ class TestRmRfDetection:
             f"stderr: {result.stderr}"
         )
 
-    # --- [Sec High-1] BUG TESTS (expected to FAIL on current implementation) ---
+    # --- [Sec High-1] BUG 回帰防止テスト (実装側修正済み・Green 維持) ---
 
     def test_ls_rf_then_rm_somefile_is_NOT_blocked(self):
         """BUG [Sec High-1]: 'ls -rf && rm somefile' must NOT be blocked.
@@ -101,7 +100,7 @@ class TestRmRfDetection:
         so '-rf' in 'ls -rf' is incorrectly attributed to 'rm', causing a
         false positive block.
 
-        This test FAILS on the unfixed implementation.
+        実装側修正済み。本テストは退行防止のための Green 回帰防止テスト。
         """
         result = _run_hook("ls -rf && rm somefile")
         assert _is_allowed(result), (
@@ -116,7 +115,7 @@ class TestRmRfDetection:
         Current bug: '-rf' from the echo argument is collected into short_flags,
         causing a false positive block on rm.
 
-        This test FAILS on the unfixed implementation.
+        実装側修正済み。本テストは退行防止のための Green 回帰防止テスト。
         """
         result = _run_hook("echo '-rf' | rm somefile")
         assert _is_allowed(result), (
@@ -279,7 +278,7 @@ class TestNonBashTool:
 
 
 # ---------------------------------------------------------------------------
-# [NEW Red-phase tests] — expected to FAIL against current implementation
+# [Green 回帰防止テスト] — 実装側修正済み・退行を AST/振る舞いで守る
 # ---------------------------------------------------------------------------
 
 
@@ -293,7 +292,7 @@ class TestBlockMessageTruncation:
             f'[PreToolUse BLOCK] 危険なコマンドをブロックしました: {cmd}'
         This can leak long secrets embedded in the command string.
 
-        This test FAILS on the unfixed implementation (full command output).
+        実装側で修正済み（full command output）。本テストは Green 回帰防止テスト。
         """
         # Build a command that triggers rm -rf blocking and has a payload > 200 chars
         long_suffix = "A" * 300  # 300 extra characters
@@ -334,7 +333,7 @@ class TestTruncateWordBoundary:
 
         After fix: pattern uses \\bTRUNCATE\\b so 'PRETRUNCATE' is not matched.
 
-        This test FAILS on the unfixed implementation (false positive warning emitted).
+        実装側で修正済み（false positive warning emitted）。本テストは Green 回帰防止テスト。
         """
         result = _run_hook("PRETRUNCATE orders")
         assert _is_allowed(result), (
@@ -349,7 +348,7 @@ class TestTruncateWordBoundary:
 
 
 # ---------------------------------------------------------------------------
-# [Round 4 Red-phase] Full-path rm detection
+# [Round 4 Green 回帰防止] Full-path rm detection
 # ---------------------------------------------------------------------------
 
 
@@ -363,7 +362,7 @@ class TestFullPathRmDetection:
 
     After fix: the check must match the basename of the rm token as well.
 
-    These tests FAIL on the unfixed implementation (full-path rm is not detected).
+    実装側で os.path.basename ベースの検出に修正済み。本テスト群は退行防止のための Green 回帰防止テスト。
     """
 
     def test_full_path_rm_rf_is_blocked(self):
@@ -372,7 +371,7 @@ class TestFullPathRmDetection:
         re.fullmatch(r'rm', '/bin/rm') is False, so the current implementation
         does NOT block this command.
 
-        This test FAILS on the unfixed implementation.
+        実装側修正済み。本テストは退行防止のための Green 回帰防止テスト。
         """
         result = _run_hook("/bin/rm -rf /important")
         assert _is_blocked(result), (
@@ -389,7 +388,7 @@ class TestFullPathRmDetection:
         re.fullmatch(r'rm', './rm') is False, so the current implementation
         does NOT block this command.
 
-        This test FAILS on the unfixed implementation.
+        実装側修正済み。本テストは退行防止のための Green 回帰防止テスト。
         """
         result = _run_hook("./rm -rf /important")
         assert _is_blocked(result), (
@@ -404,7 +403,7 @@ class TestFullPathRmDetection:
 
         This covers an alternative installation path for rm.
 
-        This test FAILS on the unfixed implementation.
+        実装側修正済み。本テストは退行防止のための Green 回帰防止テスト。
         """
         result = _run_hook("/usr/bin/rm -rf /tmp/data")
         assert _is_blocked(result), (

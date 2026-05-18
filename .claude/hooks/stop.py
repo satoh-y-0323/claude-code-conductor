@@ -251,6 +251,10 @@ def update_patterns(date_str: str) -> None:
             continue
 
         registered = _parse_session_date(pattern['registered_date'])
+        if registered is None:
+            # registered_date が parse 不能ならパターンを保持して継続（クラッシュ回避）
+            active.append(pattern)
+            continue
         days_elapsed = (today - registered).days
 
         if days_elapsed >= EXPIRY_DAYS:

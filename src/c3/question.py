@@ -376,6 +376,9 @@ def _render_question(question: Question, cursor: int, selected: set[int]) -> Non
 
 
 def _clear_screen() -> None:
+    # パイプ・リダイレクト時に ANSI 制御シーケンスを書き出さない
+    if not sys.stdout.isatty():
+        return
     print("\033[2J\033[H", end="")
 
 

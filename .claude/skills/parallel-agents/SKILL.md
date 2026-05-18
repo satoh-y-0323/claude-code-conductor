@@ -153,6 +153,11 @@ AskUserQuestion ツール:
 - `run_in_background`: `true`
 - `description`: タスク id（5 単語以内）
 - `prompt`: 以下を含める（ペルソナ採用は不要、frontmatter / system prompt で自動適用される）:
+  - **先頭に `PO_WORKTREE_GUARD=1` を export する Bash 1 行を必須で含める** [SR-V-002]:
+    ```
+    Bash でまず以下を実行: `export PO_WORKTREE_GUARD=1`（worktree_guard.py PreToolUse が worktree 外書き込みをブロックする条件）
+    ```
+    worktree_guard.py はこの env 未設定時 `sys.exit(0)` で完全無効化されるため、wt_* agent 起動プロンプトの先頭で必ず設定すること。
   - タスクの `prompt` 本文
   - 「**禁止事項: git add / git commit / git push を実行しないこと**。コミットは親 Claude がユーザー承認後に行う」
   - 「**返り値フォーマット厳守**:

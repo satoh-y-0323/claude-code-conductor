@@ -5,6 +5,10 @@ PO_WORKTREE_GUARD=1 が設定されている場合のみ動作する。
 worktree 内で実装タスクを実行するワークフロー（parallel-agents skill が
 isolation:"worktree" 付きで起動する agent など）が事前にこの env を設定して有効化する。
 Write / Edit ツールの対象パスが CWD（worktree ルート）外であればブロックする。
+
+NOTE [SR-V-002]: env 未設定時にガードが無効化されるリスクは parallel-agents/SKILL.md
+で `PO_WORKTREE_GUARD=1` 設定を必須化することで運用上対処する。CWD parts チェック
+単独で自動有効化する設計変更は次回 major bump で検討予定。
 """
 
 import json

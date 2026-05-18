@@ -5,7 +5,7 @@ Covers:
   after breaking out of the read loop when total_size > MAX_INPUT.
 - Normal input (below MAX_INPUT) must be processed without truncation.
 - statusline display output (context gauge) must be produced for valid JSON input.
-- Unit tests: pct_color, build_gauge, format_reset_time
+- Unit tests: pct_color, format_reset_time
 - Subprocess-based render_output integration tests
 """
 
@@ -185,24 +185,24 @@ class TestNormalInput:
 # ---------------------------------------------------------------------------
 class TestDisplayOutput:
     def test_context_gauge_appears_in_output(self):
-        """Context gauge label must appear in stdout for valid JSON input."""
+        """ctx used ラベルが stdout に表示されること（省スペース UI）。"""
         payload = '{"context_window": {"used_percentage": 55}}\n'
         output = run_main_with_input(payload)
-        assert "context usage:" in output
+        assert "ctx used" in output
 
     def test_invalid_json_still_produces_output(self):
-        """Even if stdin is not valid JSON, a gauge line must be printed."""
+        """無効な JSON でも ctx used 行が表示されること。"""
         output = run_main_with_input("not json at all\n")
-        assert "context usage:" in output
+        assert "ctx used" in output
 
     def test_rate_limit_section_appears_when_provided(self):
-        """Rate limit gauge must appear when five_hour data is in JSON."""
+        """5h lim セクションが rate_limits 提供時に表示されること（省スペース UI）。"""
         payload = (
             '{"context_window": {"used_percentage": 10},'
             ' "rate_limits": {"five_hour": {"used_percentage": 80, "resets_at": null}}}\n'
         )
         output = run_main_with_input(payload)
-        assert "5hour limits:" in output
+        assert "5h lim" in output
 
 
 # ---------------------------------------------------------------------------
@@ -232,27 +232,6 @@ class TestPctColor:
     def test_75_is_not_orange(self):
         """75% is not strictly > 75 → result does NOT contain ORANGE (boundary)."""
         assert statusline.ORANGE not in statusline.pct_color(75)
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: build_gauge
-# ---------------------------------------------------------------------------
-class TestBuildGauge:
-    def test_100_pct_has_10_filled_blocks(self):
-        """100% → all 10 cells are filled (BLOCK character × 10)."""
-        gauge = statusline.build_gauge(100)
-        assert gauge.count(statusline.BLOCK) == 10
-
-    def test_0_pct_has_no_filled_blocks(self):
-        """0% → 0 BLOCK characters and 10 BLOCK_EMPTY characters."""
-        gauge = statusline.build_gauge(0)
-        assert gauge.count(statusline.BLOCK) == 0
-        assert gauge.count(statusline.BLOCK_EMPTY) == 10
-
-    def test_50_pct_has_5_filled_blocks(self):
-        """50% → exactly 5 BLOCK characters."""
-        gauge = statusline.build_gauge(50)
-        assert gauge.count(statusline.BLOCK) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -310,24 +289,24 @@ class TestRenderOutputSubprocess:
         return result.stdout.decode("utf-8", errors="replace")
 
     def test_context_usage_label_and_percentage_in_output(self):
-        """used_percentage:50 → stdout contains 'context usage:' and '50%'."""
+        """used_percentage:50 → stdout contains 'ctx used' and '50%' (compact UI)."""
         output = self._run({"context_window": {"used_percentage": 50}})
-        assert "context usage:" in output
+        assert "ctx used" in output
         assert "50%" in output
 
     def test_rate_limits_five_hour_label_and_percentage_in_output(self):
-        """rate_limits.five_hour.used_percentage:80 → '5hour limits:' and '80%' in stdout."""
+        """rate_limits.five_hour.used_percentage:80 → '5h lim' and '80%' in stdout (compact UI)."""
         output = self._run({
             "context_window": {"used_percentage": 10},
             "rate_limits": {
                 "five_hour": {"used_percentage": 80, "resets_at": None},
             },
         })
-        assert "5hour limits:" in output
+        assert "5h lim" in output
         assert "80%" in output
 
     def test_broken_json_does_not_crash_and_produces_output(self):
-        """Broken JSON input → process exits cleanly with gauge output (0% context)."""
+        """Broken JSON input → process exits cleanly with ctx used line (0% context)."""
         output = self._run("this is not valid json { broken }")
         assert len(output) > 0
-        assert "context usage:" in output
+        assert "ctx used" in output

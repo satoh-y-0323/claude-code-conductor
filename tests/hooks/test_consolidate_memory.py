@@ -75,6 +75,8 @@ def _make_session(
         f"\n"
         f"<!-- C3:SESSION:JSON\n"
         f"{{}}\n"
+        # session_utils.py の sanitize 仕様で `-->` は `-- >` に置換されるため、
+        # 既にサニタイズ済みの形式でフィクスチャを書く（実運用ファイルの再現）。
         f"-- >\n"
     )
     path = sessions_dir / f"{date_str}.tmp"
@@ -1533,8 +1535,8 @@ class TestWriteSummaryAtomicWrite:
     ) -> None:
         """write_summary() が output_path へ書き込む際に os.replace を経由すること。
 
-        Red フェーズ: 現在の実装は open(..., "w") 直接書き込みのため、
-        os.replace は呼ばれず FAIL する（機能未実装による失敗）。
+        実装は `_atomic_write` (tempfile + os.replace) を採用済み。
+        本テストは将来 open(..., "w") 直接書き込みに退行しないかを守る Green 回帰防止テスト。
         """
         mod = _load_hook_module()
         sessions = tmp_path / "memory" / "sessions"
@@ -1571,11 +1573,9 @@ class TestWriteSummaryAtomicWrite:
     ) -> None:
         """write_summary() が output_path を直接 open('w') しないこと。
 
-        Red フェーズ: 現在の実装は output_path を直接 open("w") で書き込むため、
-        このテストは FAIL する（機能未実装による失敗）。
-
-        実装済みになれば: _atomic_write() を経由するため tempfile に書き込んだ後
-        os.replace されるので、output_path を直接 open("w") することはない。
+        実装は `_atomic_write` (tempfile + os.replace) を採用済みで、output_path への
+        直接 open('w') は行わない。本テストは将来の改修で直接書き込みに退行しないかを
+        守る Green 回帰防止テスト。
         """
         mod = _load_hook_module()
         sessions = tmp_path / "memory" / "sessions"
@@ -1704,11 +1704,8 @@ class TestWriteSummaryAtomicWriteUsesAtomicWrite:
     ) -> None:
         """write_summary() が _atomic_write() を呼ぶこと。
 
-        Red フェーズ: 現在の実装は _atomic_write() を呼ばず open(..., "w") を直接使う
-        ため、このテストは FAIL する（機能未実装による失敗）。
-
-        アトミック書き込みが実装されれば: write_summary() が _atomic_write() を経由し、
-        このスパイに output_path が記録される。
+        実装は `_atomic_write()` 経由で書き込み済み。本テストは将来の改修で `open(..., "w")`
+        直接書き込みに退行しないかをスパイで守る Green 回帰防止テスト。
         """
         mod = _load_hook_module()
         sessions = tmp_path / "memory" / "sessions"

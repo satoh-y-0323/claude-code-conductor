@@ -78,8 +78,8 @@ _SAFE_PAYLOAD_FIELDS = frozenset({
 # U+2028 (LINE SEPARATOR) / U+2029 (PARAGRAPH SEPARATOR) の定数 (sec-H-1)
 # ensure_ascii=False の json.dumps はこれらをエスケープしないため、
 # _append_log で明示的に \\u2028 / \\u2029 へ置換する。
-_U2028 = ' '
-_U2029 = ' '
+_U2028 = ' '  # LINE SEPARATOR
+_U2029 = ' '  # PARAGRAPH SEPARATOR
 
 
 def _now_iso() -> str:

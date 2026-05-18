@@ -37,6 +37,13 @@ _BUSY_TIMEOUT_MS = BUSY_TIMEOUT_MS  # 内部互換エイリアス（既存コー
 LEARNING_THRESHOLD = 30
 
 
+def _apply_busy_timeout(conn: sqlite3.Connection) -> None:
+    # PRAGMA はパラメータバインドできないため値が整数であることを int() で強制する。
+    # 現在 _BUSY_TIMEOUT_MS は定数だが、将来 env 等から読まれた場合の PRAGMA
+    # インジェクション (`5000; ATTACH ...`) を未然に防ぐ防衛的キャスト [SR-INJ-001]。
+    conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_MS)}")
+
+
 def locate_c3_db(start: Path | None = None) -> Path | None:
     """`.claude/state/c3.db` を探索する。
 
@@ -117,7 +124,7 @@ def fetch_review_decisions(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
-            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            _apply_busy_timeout(conn)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT checklist_id, finding_text, decision, reason, "
@@ -176,7 +183,7 @@ def insert_review_decision(
         conn = sqlite3.connect(str(db_path))
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            _apply_busy_timeout(conn)
             conn.execute(
                 "INSERT INTO review_decisions "
                 "(checklist_id, finding_text, decision, reason, "
@@ -252,7 +259,7 @@ def read_tier_params(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
-            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            _apply_busy_timeout(conn)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT tier, alpha, beta, trials "
@@ -313,7 +320,7 @@ def update_tier_params(
         conn = sqlite3.connect(str(db_path))
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            _apply_busy_timeout(conn)
             # SQLite 3.24+ の UPSERT。既存行があれば加算更新、無ければ初期値 + 1 試行分
             conn.execute(
                 "INSERT INTO tier_bandit "
@@ -372,7 +379,7 @@ def record_tier_recent_outcome(
         conn = sqlite3.connect(str(db_path))
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            _apply_busy_timeout(conn)
             conn.execute(
                 "INSERT INTO tier_recent_outcomes "
                 "(task_complexity, tier, success, ts) VALUES (?, ?, ?, ?)",
@@ -413,7 +420,7 @@ def read_recent_outcomes(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
-            conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+            _apply_busy_timeout(conn)
             rows = conn.execute(
                 "SELECT task_complexity, tier, success, ts "
                 "FROM tier_recent_outcomes "
@@ -467,7 +474,7 @@ def read_tier_failure_rate(
     try:
         conn = sqlite3.connect(str(db_path))
         try:
-            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            _apply_busy_timeout(conn)
             rows = conn.execute(
                 "SELECT success FROM tier_recent_outcomes "
                 "WHERE task_complexity = ? AND tier = ? "

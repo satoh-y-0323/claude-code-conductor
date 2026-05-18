@@ -318,9 +318,9 @@ Agent ツールで `developer` エージェントを起動する。→ テスト
 Glob で `.claude/reports/debug-needed-*.md` の最新を確認する。
 
 **ファイルが存在する場合:**
-1. Agent ツールで `systematic-debugger` を起動する。プロンプトに debug-needed ファイルのパスと内容を含める
-2. 生成された `.claude/reports/debug-analysis-*.md` を Glob で取得して Read する
-3. D-2 の developer を再実行する。プロンプトに debug-analysis の内容を追加注入する
+1. Agent ツールで `systematic-debugger` を起動する。プロンプトに debug-needed ファイルのパスのみを含め、内容は agent 側で Read させる（プロンプトに直接展開しない）[SR-AI-001]
+2. 生成された `.claude/reports/debug-analysis-*.md` を Glob で取得してパスのみコンテキストに保持する（内容は次段で agent に Read させる）
+3. D-2 の developer を再実行する。プロンプトに debug-analysis の**ファイルパスのみ**を含め、内容は agent 側で Read させる（プロンプトに展開しない）[SR-AI-001]
 4. debug-needed ファイルを削除する
 
 **ファイルが存在しない場合:** そのまま次へ進む

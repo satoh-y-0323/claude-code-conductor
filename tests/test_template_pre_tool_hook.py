@@ -1,10 +1,8 @@
-"""Tests for src/c3/_template/.claude/hooks/pre_tool.py — TDD Red phase.
+"""Tests for src/c3/_template/.claude/hooks/pre_tool.py — Green 回帰防止テスト。
 
-These tests verify that the template version of pre_tool.py has the same
-correct (post-fix) behavior as the main .claude/hooks/pre_tool.py.
-
-Since the template file does not yet exist, all tests are expected to FAIL
-(FileNotFoundError / non-zero exit due to missing script).
+`hatch_build.py` のビルドフックでテンプレートファイルが `.claude/hooks/pre_tool.py` から
+自動再生成される。本テスト群はテンプレート版がメイン版と同等の振る舞いを保ち続けるかを
+検証する Green 回帰防止テスト。
 
 Fixes verified:
   [Sec High-1] rm -rf: only flags immediately after 'rm' are collected,
@@ -64,7 +62,8 @@ def _is_allowed(result: subprocess.CompletedProcess) -> bool:
 def test_template_hook_file_exists():
     """The template pre_tool.py must exist at the expected path.
 
-    This test fails (Red) when the template file has not yet been created.
+    `hatch_build.py` のビルドフックにより `.claude/hooks/pre_tool.py` から自動生成される。
+    本テストは生成漏れの退行を防ぐ Green 回帰防止テスト。
     """
     assert HOOK_SCRIPT.exists(), (
         f"Template hook script not found: {HOOK_SCRIPT}\n"

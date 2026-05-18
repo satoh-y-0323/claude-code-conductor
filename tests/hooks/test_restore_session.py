@@ -75,6 +75,15 @@ def _run_main_subprocess(sessions_dir: Path) -> subprocess.CompletedProcess:
     tmp_script = hooks_dir / "restore_session.py"
     tmp_script.write_text(script_src, encoding="utf-8")
 
+    # session_utils.py も同じディレクトリにコピーする
+    # （restore_session.py が extract_section を動的ロードするため必須）
+    session_utils_src = HOOK_PATH.parent / "session_utils.py"
+    if session_utils_src.is_file():
+        (hooks_dir / "session_utils.py").write_text(
+            session_utils_src.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
     return subprocess.run(
         [sys.executable, str(tmp_script)],
         capture_output=True,

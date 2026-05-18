@@ -154,7 +154,7 @@ class TestAppendCheckpointValidatesLabel:
         - '-->' must be sanitized (e.g. replaced with '-- >') to avoid breaking the
           <!-- C3:SESSION:JSON ... --> block
 
-    These tests FAIL on the unfixed implementation.
+    実装側でサニタイズ済み。本テストは将来の改修で素通しに退行しないかを守る Green 回帰防止テスト群。
     """
 
     def test_append_checkpoint_sanitizes_control_chars_in_label(
@@ -165,7 +165,7 @@ class TestAppendCheckpointValidatesLabel:
         制御文字（\\x00-\\x1f、\\n と \\t を除く）はターミナルインジェクションや
         パース破壊の原因になる。
 
-        この テスト は未修正の実装に対して FAIL する（制御文字がそのまま書き込まれるため）。
+        実装側でサニタイズ済み。本テストは将来 ANSI/NULL/BEL を素通しさせる退行を防ぐ Green 回帰防止テスト。
         """
         su = _load_session_utils()
         session_file = tmp_path / "2026-05-05.tmp"
@@ -199,7 +199,7 @@ class TestAppendCheckpointValidatesLabel:
         セッションファイルの <!-- C3:SESSION:JSON ... --> ブロックを破壊しないよう、
         '-->' は '-- >' 等に変換されるべき。
 
-        この テスト は未修正の実装に対して FAIL する（'-->' がそのまま書き込まれるため）。
+        実装側で `-->` → `-- >` への置換済み。本テストは将来素通しに退行しないかを守る Green 回帰防止テスト。
         """
         su = _load_session_utils()
         session_file = tmp_path / "2026-05-05-comment.tmp"
@@ -274,8 +274,8 @@ class TestEnsureSessionLogicNotDuplicated:
         a direct call to os.path.getsize() (since the logic is delegated to session_utils).
         We check that os.path.getsize() is NOT called inside ensure_session_file.
 
-    This test FAILS on the unfixed implementation because ensure_session_file
-    in stop.py still calls os.path.getsize() directly (duplicating the logic).
+    Status: 実装側で session_utils 側のヘルパー (`ensure_session_initialized`) に委譲済み。
+    本テストは stop.py 側で再びインライン重複に退行しないかを AST で守る Green 回帰防止テスト。
     """
 
     def test_ensure_session_logic_is_not_duplicated_in_stop(self):
@@ -286,9 +286,8 @@ class TestEnsureSessionLogicNotDuplicated:
         ロジックが session_utils のヘルパーに委譲されていれば、
         ensure_session_file は os.path.getsize を直接呼ぶ必要がない。
 
-        この テスト は未修正の実装に対して FAIL する。
-        現在の stop.py::ensure_session_file は os.path.getsize(path) を直接呼び出しており、
-        session_utils.py::append_checkpoint と同一ロジックが重複している。
+        実装側でヘルパー (`session_utils.ensure_session_initialized`) に委譲済み。
+        本テストは stop.py で再びインライン重複に退行しないかを AST で守る Green 回帰防止テスト。
         """
         stop_source = STOP_PY.read_text(encoding="utf-8")
         stop_tree = ast.parse(stop_source)
@@ -390,7 +389,7 @@ class TestEnsureSessionInitializedHasSingleProcessComment:
         - "single process"
         - "TOCTOU"
 
-    This test FAILS on the unfixed implementation because none of those keywords
+    本テストは Green 回帰防止テスト（実装側修正済み）。修正前は none of those keywords
     appear in the function source.
     """
 
@@ -402,7 +401,7 @@ class TestEnsureSessionInitializedHasSingleProcessComment:
         to check for keyword presence in the source text (covers both docstrings and
         inline comments).
 
-        This test FAILS on the unfixed implementation because the current docstring
+        本テストは Green 回帰防止テスト（実装側修正済み）。修正前は the current docstring
         does not mention any of the required keywords.
         """
         su = _load_session_utils()

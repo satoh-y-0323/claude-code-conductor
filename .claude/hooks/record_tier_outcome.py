@@ -87,6 +87,40 @@ def _delete_tier_selection() -> None:
         )
 
 
+# prompt-history.jsonl の上限サイズ（バイト）。超過時は末尾 _PROMPT_HISTORY_TRUNCATE_LINES 行
+# だけを残してローテーションする。読み込み側 (select_tier._PROMPT_HISTORY_SCAN_LINES=1000) と
+# 同じオーダーで保持し、ディスク消費を抑える [SR-V-001]。
+_PROMPT_HISTORY_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+_PROMPT_HISTORY_TRUNCATE_LINES = 2000
+
+
+def _rotate_prompt_history_if_needed() -> None:
+    """prompt-history.jsonl が上限超過なら末尾 N 行を残して切り詰める。
+
+    書き込み側のサイズ無制限成長を防ぐシンプルなローテーション。失敗時は警告のみ。
+    """
+    try:
+        size = os.path.getsize(PROMPT_HISTORY_PATH)
+    except OSError:
+        return
+    if size <= _PROMPT_HISTORY_MAX_BYTES:
+        return
+    try:
+        # 末尾 N 行のみ deque で保持して上書きする（ファイル全体は走査するが I/O のみ）
+        import collections as _c
+        with open(PROMPT_HISTORY_PATH, "r", encoding="utf-8") as f:
+            tail = list(_c.deque(f, maxlen=_PROMPT_HISTORY_TRUNCATE_LINES))
+        tmp_path = PROMPT_HISTORY_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.writelines(tail)
+        os.replace(tmp_path, PROMPT_HISTORY_PATH)
+    except OSError as exc:
+        print(
+            f"[record_tier_outcome] prompt-history rotate skipped: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _append_prompt_history(selection: dict, success: bool) -> None:
     """Phase 2-C: prompt-history.jsonl に 1 行追記する。
 
@@ -108,6 +142,7 @@ def _append_prompt_history(selection: dict, success: bool) -> None:
     }
     try:
         os.makedirs(os.path.dirname(PROMPT_HISTORY_PATH), exist_ok=True)
+        _rotate_prompt_history_if_needed()
         with open(PROMPT_HISTORY_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError as exc:

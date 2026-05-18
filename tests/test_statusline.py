@@ -1,4 +1,9 @@
-"""Tests for .claude/hooks/statusline.py"""
+"""Tests for .claude/hooks/statusline.py (AST 静的解析特化)。
+
+本ファイルは AST ベースの静的検査（型アノテーション・バイトカウント実装確認）と
+基礎的な関数単体テストを担当する。subprocess / in-process の振る舞いテストは
+``tests/hooks/test_statusline.py`` を参照すること。
+"""
 
 import ast
 import io
@@ -51,22 +56,6 @@ def test_pct_color_60_or_below_returns_green():
 
 
 # ---------------------------------------------------------------------------
-# build_gauge (2 件)
-# ---------------------------------------------------------------------------
-
-def test_build_gauge_100_contains_10_blocks():
-    """build_gauge(100) は BLOCK 10 個を含む"""
-    result = mod.build_gauge(100)
-    assert mod.BLOCK * 10 in result
-
-
-def test_build_gauge_0_contains_10_empty_blocks():
-    """build_gauge(0) は BLOCK_EMPTY 10 個を含む"""
-    result = mod.build_gauge(0)
-    assert mod.BLOCK_EMPTY * 10 in result
-
-
-# ---------------------------------------------------------------------------
 # format_reset_time (2 件)
 # ---------------------------------------------------------------------------
 
@@ -105,7 +94,7 @@ def test_render_output_context_usage_contains_expected_text(capsys):
 
 
 def test_render_output_rate_limit_contains_expected_text(capsys):
-    """render_output が rate limit 情報を含む出力を書き出す"""
+    """render_output が rate limit 情報を含む出力を書き出す（省スペース UI: '5h lim'）。"""
     import json
     payload = json.dumps({
         "context_window": {"used_percentage": 20},
@@ -119,23 +108,22 @@ def test_render_output_rate_limit_contains_expected_text(capsys):
     mod.render_output(payload)
     captured = capsys.readouterr()
     output = captured.out
-    assert "5hour" in output or "limit" in output, (
-        f"Expected '5hour' or 'limit' in output, got: {output!r}"
+    assert "5h" in output and "lim" in output, (
+        f"Expected '5h' and 'lim' in output (compact label '5h lim'), got: {output!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# main() バイトカウント (Low-3)
+# main() バイトカウント (Low-3 修正済み回帰検証テスト)
 # ---------------------------------------------------------------------------
 
 def test_total_size_uses_byte_count_not_char_count():
-    """main() の total_size はバイト数でカウントされるべき（Low-3）。
+    """main() の total_size がバイト数でカウントされていることを AST で検証する（Green 回帰防止）。
 
-    現在の実装は `total_size += len(line)` で文字数カウントになっている。
-    UTF-8 マルチバイト文字（例: "あ" = 3バイト）を含む行を処理するとき、
-    total_size はバイト数（3）でカウントされるべきであり、文字数（1）ではない。
-
-    修正: `total_size += len(line.encode('utf-8'))` に変更すると Green になる。
+    UTF-8 マルチバイト文字（例: "あ" = 3バイト）を含む行を処理する際、
+    total_size はバイト数でカウントされる必要がある。実装は
+    `total_size += len(line.encode('utf-8'))` で対応済みであり、本テストは
+    将来の改修で `len(line)` に戻されないかを AST で守る。
     """
     tree = ast.parse(HOOK_PATH.read_text(encoding="utf-8"))
 
@@ -188,27 +176,15 @@ def test_total_size_uses_byte_count_not_char_count():
 # ---------------------------------------------------------------------------
 
 def test_truncation_uses_byte_aware_index():
-    """切り詰め処理が文字数インデックスではなくバイト境界を考慮した切り詰めをすること（Low 第3ラウンド指摘2）。
+    """main() の切り詰め処理がバイト境界を考慮していることを AST で検証する（Green 回帰防止）。
 
-    現在の実装:
-        overflow = total_size - MAX_INPUT          # バイト数
-        chunks[-1] = chunks[-1][: len(chunks[-1]) - overflow]  # 文字数インデックスで切り詰め（バグ）
+    `overflow` バイト数を文字列スライスにそのまま渡すとマルチバイト文字（例: "あ" = 3バイト）
+    で切り詰め位置がずれるため、実装は以下のいずれかを採用する必要がある:
+      - encode してバイト列で切り詰めた後 `decode(errors='replace')` で復元する
+      - `sys.stdin.read(MAX_INPUT)` で一括読み込みする
 
-    問題: `overflow` はバイト数だが、文字列スライス `[: len(chunks[-1]) - overflow]` は
-    文字数インデックスを使っている。UTF-8 マルチバイト文字（例: "あ" = 3バイト/文字）では、
-    `overflow` バイトを文字数として扱うと切り詰め位置が誤る。
-
-    期待する修正: バイト列に変換してから切り詰め、再デコードするか、
-    または `sys.stdin.read(MAX_INPUT)` による一括読み込みで回避すること。
-
-    このテストは AST で切り詰め処理がバイト境界を考慮した実装になっているかを確認する。
-    具体的には、切り詰めに文字列スライスを使う場合、バイト列（encode/decode）を
-    経由するパターン、または stdin.read() による一括読み込みパターンのどちらかを検出する。
-
-    現在の実装では上記いずれも使っていないため FAIL する（機能未実装による失敗）。
-
-    修正例A: `chunks[-1] = chunks[-1].encode('utf-8')[: len(chunks[-1].encode('utf-8')) - overflow].decode('utf-8', errors='replace')`
-    修正例B: `raw = sys.stdin.read(MAX_INPUT)` で一括読み込みに変更する。
+    本テストは AST でいずれかのパターンが存在することを確認し、将来の改修で
+    文字数インデックスのスライスに戻されないかを守る。
     """
     tree = ast.parse(HOOK_PATH.read_text(encoding="utf-8"))
 
@@ -276,24 +252,13 @@ def test_truncation_uses_byte_aware_index():
 # ---------------------------------------------------------------------------
 
 def test_render_output_data_has_typed_annotation():
-    """render_output 内の data 変数が詳細型アノテーション（dict[str, Any] 等）を持つこと（Low-1）。
+    """render_output 内の data 変数が `dict[str, Any]` 形式の詳細型を持つことを AST で検証する（Green 回帰防止）。
 
-    現在の実装:
-        def render_output(raw: str) -> None:
-            data: dict = {}   # 詳細型なし（不完全なアノテーション）
+    実装は `data: dict[str, Any] = {}` を採用済み。本テストは将来の改修で
+    `data: dict = {}` のような subscript なしアノテーションに退行しないかを守る。
 
-    問題: `data: dict = {}` は型情報が不完全。型チェッカーは data の値の型を
-    Any として扱うため、型安全性の恩恵が得られない。
-
-    期待する修正:
-        data: dict[str, Any] = {}
-        または
-        data: Dict[str, Any] = {}  # typing.Dict
-
-    このテストは AST で render_output 内の data アノテーションが詳細型（subscript 付き）
-    になっていることを確認する。
-
-    この テスト は未修正の実装に対して FAIL する（`data: dict = {}` は subscript なし）。
+    検出対象: `dict[str, Any]` （Python 3.9+ の組込み generic）または
+    `Dict[str, Any]` (`typing.Dict`) のどちらかであれば PASS。
     """
     source = HOOK_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)

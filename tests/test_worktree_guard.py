@@ -10,6 +10,7 @@ Tests are organised around the CWD-based activation scheme:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -41,15 +42,27 @@ def _run_guard(
     *,
     cwd: str | None = None,
     hook: Path = _HOOK,
+    enable_guard: bool = True,
 ) -> subprocess.CompletedProcess:
-    """Run worktree_guard.py as a subprocess, feeding *payload* via stdin."""
+    """Run worktree_guard.py as a subprocess, feeding *payload* via stdin.
+
+    worktree_guard.py は `PO_WORKTREE_GUARD=1` が設定されている場合のみ動作する。
+    デフォルトでガード有効化（`enable_guard=True`）でテストする。
+    """
+    env: dict[str, str] = {}
+    if enable_guard:
+        env["PO_WORKTREE_GUARD"] = "1"
+    # Windows では subprocess に SYSTEMROOT を継承させないと sys.executable 起動が失敗する
+    for key in ("SYSTEMROOT", "PATH"):
+        if key in os.environ:
+            env[key] = os.environ[key]
     return subprocess.run(
         [sys.executable, str(hook)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env={},
+        env=env,
         cwd=cwd,
     )
 

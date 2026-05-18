@@ -8,7 +8,7 @@ C3 のスラッシュコマンドはすべてスキル（`.claude/skills/{name}/
 |---|---|
 | `/init-session` | セッション初期化・前回状態の復元・残タスクと git log の整合性チェック |
 | `/setup` | コーディング規約の設定（`coding-standards.md` / `project-conventions.md` を生成） |
-| `/start` | 開発ワークフローの入口。タスク種別を選び、最適なエージェント編成で開始 |
+| `/start` | 開発ワークフローの入口。開始地点（標準ワークフロー / 実装 / デバッグ / レビュー）を選んで対応する dev-workflow フェーズへ遷移 |
 | `/develop` | TDD フェーズ（D）から直接開始 |
 | `/code-review` | レビューフェーズ（E）から直接開始（code-reviewer + security-reviewer） |
 | `/promote-pattern` | 蓄積されたパターンを `rules/promoted/` または `skills/promoted-*/` に昇格 |
@@ -25,22 +25,20 @@ C3 のスラッシュコマンドはすべてスキル（`.claude/skills/{name}/
 
 | スキル | 役割 |
 |---|---|
-| `task-routing` | タスク種別から推奨エージェント編成を決定 |
 | `dev-workflow` | 5 フェーズのワークフロー本体 |
 | `parallel-agents` | plan-report の wave 単位で親 Claude の Agent ツール並列起動 + isolation:worktree |
 | `report-timestamp` | レポートファイル名のタイムスタンプ取得 |
 
-## タスク種別と推奨エージェント編成
+## `/start` の開始地点
 
-`/start` 実行時、以下の 5 種別から選択します。
+`/start` 実行時、以下の 4 つから開始地点を選択します（v2.8.0 で `task_type` 選択を廃止し直接フェーズを選ぶ方式に簡素化）。
 
-| 種別 | 推奨フロー |
+| 開始地点 | 遷移先 |
 |---|---|
-| **feature** | 5 フェーズフル（A→B→C→D→E） |
-| **bug-fix** | systematic-debugger → developer → tester → code-reviewer + security-reviewer 並列 |
-| **refactor** | 計画 → 実装 → テスト → レビュー（既存テストでカバー可能なら C→D-2→E） |
-| **security-audit** | code-reviewer + security-reviewer 並列レビュー → planner → TDD → 最終レビュー |
-| **docs** | doc-writer 単独 |
+| **標準ワークフロー** | ヒアリング / 設計 / 計画 のいずれか（新機能・リファクタ・改善など） |
+| **実装から** | 既存 plan-report を使って実装フェーズ（D）へ |
+| **デバッグ調査から** | systematic-debugger → 実装（developer + tester Green）→ レビュー |
+| **レビューから** | 既存コードを code-reviewer + security-reviewer でレビュー（指摘あれば計画フェーズへ戻る） |
 
 ## 並列実行 (parallel-agents skill)
 

@@ -1,6 +1,6 @@
 """Shared terminal helpers for c3 CLI subcommands.
 
-Used by cli_doctor.py / cli_status.py / future cli_*.py to keep the
+Used by cli_doctor.py, cli_tier.py, and future cli_*.py to keep the
 ``_supports_color`` and ANSI-related logic in one place.
 """
 

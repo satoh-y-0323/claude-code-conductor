@@ -1,6 +1,12 @@
 """Tests verifying that src/c3/_template/.claude/hooks/statusline.py is in sync
 with the canonical body at .claude/hooks/statusline.py.
 
+役割分担:
+- `.dev/hooks/_sync_check.py` (PostToolUse): 配布元の作業中に同期不一致をリアルタイム警告
+- 本テスト (CI 検証): pytest 経由でリリース前に最終同期を担保する
+
+両者は冗長ではなく、開発フローの異なる時点（編集時 / CI 時）で同期不一致を検出する。
+
 Covers:
 1. Template file exists at the expected path.
 2. Template file contains the MAX_INPUT trimming fix

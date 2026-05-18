@@ -27,6 +27,10 @@ from c3.question import (
 
 PROTOCOL_VERSION = "2025-11-25"
 
+# MCP JSON-RPC 1 メッセージあたりのサイズ上限。信頼済みローカルクライアントを想定するが
+# 万一巨大な payload を送られた場合のメモリ・CPU 暴走を防ぐ防衛的上限 [SR-V-001]。
+_MAX_LINE_BYTES = 2 * 1024 * 1024  # 2 MB
+
 
 def main() -> int:
     _force_utf8_stdio()
@@ -42,6 +46,9 @@ class C3MCPServer:
 
     def run(self) -> int:
         for line in sys.stdin:
+            if len(line.encode("utf-8", errors="replace")) > _MAX_LINE_BYTES:
+                self._send(self._error(None, -32600, "request too large"))
+                continue
             line = line.strip()
             if not line:
                 continue
@@ -168,6 +175,12 @@ class C3MCPServer:
             line = sys.stdin.readline()
             if not line:
                 return {"action": "cancel"}
+            if len(line.encode("utf-8", errors="replace")) > _MAX_LINE_BYTES:
+                print(
+                    "[c3 mcp_server] _elicit: oversized response skipped",
+                    file=sys.stderr,
+                )
+                continue
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError as exc:

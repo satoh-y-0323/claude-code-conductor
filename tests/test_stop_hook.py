@@ -66,7 +66,7 @@ class TestSavePatternsAtomicWrite:
         Use tempfile.mkstemp or a NamedTemporaryFile, write to temp file,
         then rename/replace to PATTERNS_FILE atomically using os.replace.
 
-    This test FAILS on the unfixed implementation (os.replace not used).
+    実装側で修正済み（os.replace not used）。本テストは Green 回帰防止テスト。
     """
 
     def test_save_patterns_uses_atomic_write(self):
@@ -76,7 +76,7 @@ class TestSavePatternsAtomicWrite:
         uses os.replace (or os.rename) for the final write operation, OR
         uses tempfile module (mkstemp / NamedTemporaryFile).
 
-        This test FAILS on the unfixed implementation because save_patterns()
+        本テストは Green 回帰防止テスト（実装側修正済み）。修正前は save_patterns()
         uses direct open(..., 'w') without atomic replace.
         """
         source = STOP_PY.read_text(encoding="utf-8")
@@ -149,7 +149,7 @@ class TestBuildSessionsByDateReturnsSet:
         - Return type annotation is set or set[str]
         - Return statement returns set(...) or uses a set literal / set comprehension
 
-    This test FAILS on the unfixed implementation because:
+    本テストは Green 回帰防止テスト（実装側修正済み）。修正前は:
         1. Type annotation is 'dict' not 'set'
         2. Return statement builds a dict, not a set
     """
@@ -161,7 +161,7 @@ class TestBuildSessionsByDateReturnsSet:
           1. The return type annotation of _build_sessions_by_date is 'set' (or set[str])
           2. OR the return statement returns a set literal / set() / set comprehension
 
-        This test FAILS on the unfixed implementation because both checks fail:
+        本テストは Green 回帰防止テスト（実装側修正済み）。修正前は both checks fail:
           - annotation is 'dict'
           - return statement builds and returns a dict {}
         """
@@ -252,7 +252,7 @@ class TestApplySessionUpdatesAtomicWrite:
         Use tempfile.mkstemp (or NamedTemporaryFile) in the same directory,
         write updated content to temp file, then atomically replace with os.replace().
 
-    This test FAILS on the unfixed implementation because _apply_session_updates()
+    本テストは Green 回帰防止テスト（実装側修正済み）。修正前は _apply_session_updates()
     uses direct open(path, 'w') without any atomic replace.
     """
 
@@ -263,7 +263,7 @@ class TestApplySessionUpdatesAtomicWrite:
         uses os.replace (or os.rename) for the final write operation, OR
         uses tempfile module (mkstemp / NamedTemporaryFile).
 
-        This test FAILS on the unfixed implementation because _apply_session_updates()
+        本テストは Green 回帰防止テスト（実装側修正済み）。修正前は _apply_session_updates()
         uses direct open(path, 'w') without atomic replace.
         """
         source = STOP_PY.read_text(encoding="utf-8")

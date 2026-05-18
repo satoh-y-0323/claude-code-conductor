@@ -8,7 +8,7 @@ tier-routing (Phase 2 完成) の効果計測用ダッシュボード。
 - ``c3 tier stats --recent N``: 直近 outcome の表示件数を変更（デフォルト 10）
 
 設計判断:
-- po-status ``c3 status`` の CLI パターン（`cli_status.py`）を踏襲
+- PO 廃止前の ``c3 status`` CLI パターンを踏襲（旧 ``cli_status.py`` / v2.0.0 で削除）
 - データがゼロでも「収集中」と分かる表示にする
 - escalation 発動回数は専用テーブルがないため今回は表示なし（将来拡張余地）
 """

@@ -111,7 +111,8 @@ def validate_plan_report(plan_report_path: Path, claude_root: Path) -> list[str]
 
     Checks performed:
     - YAML frontmatter parses successfully
-    - ``po_plan_version`` field present
+    - ``po_plan_version`` field present (フィールド名は PO 廃止後も後方互換のため維持。
+      既存 plan-report の再利用性を担保するため次回 major bump まで改名しない)
     - ``tasks`` is a non-empty list
     - each task has a non-empty string ``id``
     - each task has a non-empty string ``agent``

@@ -364,7 +364,7 @@ class TestEnsureSessionFileSingleReadWrite:
 
     Expected after fix: combined into 1 read + 1 write.
 
-    This test FAILS on the unfixed implementation.
+    実装側で修正済み。本テストは退行防止のための Green 回帰防止テスト。
     """
 
     def test_ensure_session_file_does_single_read_write(self, tmp_path):
@@ -434,14 +434,14 @@ class TestLoadPatternsJsonDecodeError:
 
     Expected after fix: catch JSONDecodeError and return {"patterns": []}.
 
-    This test FAILS on the unfixed implementation.
+    実装側で修正済み。本テストは退行防止のための Green 回帰防止テスト。
     """
 
     def test_load_patterns_handles_json_decode_error(self, tmp_path):
         """load_patterns() on a broken patterns.json must return {"patterns": []}
         without raising an exception.
 
-        This test FAILS on the unfixed implementation (json.JSONDecodeError raised).
+        実装側で修正済み（json.JSONDecodeError raised）。本テストは Green 回帰防止テスト。
         """
         broken_patterns_file = tmp_path / "patterns.json"
         broken_patterns_file.write_text(
@@ -486,7 +486,7 @@ class TestAppendLastMessageEscapesCommentCloser:
     Expected after fix:
         Replace '-->' with '-- >' (or similar) before writing.
 
-    This test FAILS on the unfixed implementation.
+    実装側で修正済み。本テストは退行防止のための Green 回帰防止テスト。
     """
 
     def _make_session_with_json_block(self, session_file: Path, date_str: str) -> None:
@@ -512,7 +512,7 @@ class TestAppendLastMessageEscapesCommentCloser:
         """When last_assistant_message contains '-->', the session file's JSON block
         must remain intact (not be broken by an unescaped comment closer).
 
-        This test FAILS on the unfixed implementation because '-->' is written
+        本テストは Green 回帰防止テスト（実装側修正済み）。修正前は '-->' is written
         verbatim, which closes the HTML comment block prematurely.
         """
         session_file = tmp_path / f"{TODAY_STR}.tmp"

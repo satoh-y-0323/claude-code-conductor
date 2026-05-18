@@ -94,11 +94,15 @@ def _mask_secrets(text: str) -> str:
 
     キー名やプレフィックスは残し、値のみを置換することで
     「何が含まれていたか」は伝わらないようにする。
-    PEM ブロックは開始タグ〜終了タグ全体を ***  に置換する。
+    PEM ブロックは開始タグ + *** + 終了タグ に置換する。
     """
     result = text
     for pattern in _MASK_PATTERNS:
-        result = pattern.sub(lambda m: m.group(1) + "***", result)
+        # group(2) があれば PEM ブロック (BEGIN...END)、なければプレフィックス系
+        result = pattern.sub(
+            lambda m: m.group(1) + "***" + (m.group(2) if m.lastindex and m.lastindex >= 2 else ""),
+            result,
+        )
     return result
 
 # prompt-history.jsonl の末尾から読む最大行数（パフォーマンス対策）
@@ -325,11 +329,11 @@ def write_tier_selection(
     record_tier_outcome.py がこの json を読んで α/β を更新する。
     既存ファイルは上書きされる（最新 1 件のみ保持）。
 
-    tier-routing Phase 2-A: ``suggested_model`` も併せて書く。runner.py がこれを読んで
-    PO 経由のサブエージェント起動時に ``claude --agents`` で動的に上書きする。
-    tier 名と model の短縮名は同一とする。
+    ``suggested_model`` を併せて書く。tier 名と model の短縮名は同一とする。
+    （PO 廃止前は runner.py が読んで ``claude --agents`` 用に使っていたが、v2.0.0 以降は
+    記録目的のみ。将来再利用する余地のために維持する。）
 
-    tier-routing Phase 2-B: ``escalated`` / ``escalation_reason`` を任意で含める。
+    ``escalated`` / ``escalation_reason`` を任意で含める。
     failure rate に基づく昇格が起きた場合のみ True / 文字列が入る。
     """
     os.makedirs(os.path.dirname(TIER_SELECTION_PATH), exist_ok=True)
@@ -337,7 +341,7 @@ def write_tier_selection(
         "complexity": complexity,
         "tier": tier,
         "mode": mode,
-        # Phase 2-A: tier はそのまま claude --agents の model 短縮名として使える
+        # tier はそのまま claude --agents の model 短縮名として使える
         "suggested_model": tier,
     }
     if escalated:
@@ -383,10 +387,8 @@ def build_additional_context(
 
     return (
         f"[tier-routing 推奨] 複雑度: {complexity} / 推奨 Tier: {tier}（{confidence}）。"
-        f"PO 経由のサブエージェント起動時はこの推奨が claude --agents JSON で"
-        f" 自動適用されます（Phase 2-A）。親 Claude の Agent ツール経由は依然"
-        f" frontmatter 指定が優先されるため、コスト最適化したい場合は手動切替"
-        f" してください。{suffix}"
+        f" 親 Claude の Agent ツール経由ではエージェント定義の frontmatter 指定が"
+        f" 優先されるため、コスト最適化したい場合は手動切替してください。{suffix}"
     )
 
 
