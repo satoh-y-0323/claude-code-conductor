@@ -100,7 +100,7 @@ Codex/Cursor adapter は、C3 の `AskUserQuestion` JSON を MCP tool `c3_ask_us
 /start
 ```
 
-タスク種別（feature / bug-fix / refactor / security-audit / docs）を確認し、種別に応じた最適なエージェント編成と開始フェーズを選んで実行します。
+開始地点（標準ワークフローの各フェーズ / 実装 / デバッグ調査 / レビュー）を選び、対応する dev-workflow フェーズに遷移します（v2.8.0 以降は `task_type` 概念を廃止し、フェーズを直接選ぶ方式に簡素化）。
 
 ## 5 フェーズの開発ワークフロー
 

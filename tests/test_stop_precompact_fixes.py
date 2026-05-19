@@ -1,8 +1,9 @@
 """
-Red-phase tests for fix-stop-precompact task.
+Regression guard for the fix-stop-precompact task.
 
-These tests verify the planned fixes are in place. They are written
-BEFORE the implementation, so they are expected to FAIL initially.
+These tests pin the planned fixes in place. They were originally written
+BEFORE the implementation as TDD Red tests; the implementation is now in
+place and all tests pass.
 
 Fixes under test:
   [Code High-2]   update_patterns caches os.listdir result (O(N+M) instead of O(N×M))

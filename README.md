@@ -137,6 +137,7 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | `/doc` | ドキュメントをヒアリングして生成（mermaid 図・README・API 仕様書など） |
 | `/mcp-config` | MCP サーバーの追加・一覧・削除（プロジェクトスコープ） |
 | `/extract-lib` | 複数プロジェクトのコードを横断解析し、共通処理をライブラリとして設計・生成 |
+| `/recall` | 過去のセッション・レポート・パターンから類似情報を意味検索（HNSW + 多言語 embedding） |
 
 ### ターミナルで使う `c3` CLI（PyPI インストール時）
 
@@ -150,6 +151,9 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | `c3 ask` | Claude Code 以外で `AskUserQuestion` 互換の単一選択・複数選択を実行 |
 | `c3 plan validate <plan-report>` | plan-report の YAML フロントマターと agent 存在を検証 |
 | `c3 plan waves <plan-report>` | plan-report の wave 分解結果を JSON で出力 |
+| `c3 recall search "<query>"` または `c3 recall "<query>"` | `.claude/memory/sessions/` 等から類似チャンクを意味検索 |
+| `c3 recall rebuild [--force]` | HNSW インデックスを再構築（初回は fastembed が ~220MB のモデルを取得） |
+| `c3 recall stats` | チャンク数・モデル名・最終 rebuild 日時を表示 |
 
 ### 基本的な使い方
 
@@ -336,3 +340,35 @@ C3 はセッションをまたいで作業状態を記憶します。
   - session ファイルの記録時刻を更新
   - Claude の最終応答（`last_assistant_message`）を事実ログに自動記録（次セッションで「前回何をしたか」が分かる）
   - パターン信用度を再計算
+
+---
+
+## 第三者ライブラリのライセンス
+
+`c3 recall` 機能（v2.10.0〜）で利用する以下の依存は `LICENSES/` ディレクトリに出典を同梱しています:
+
+| 依存 | ライセンス | 用途 |
+|---|---|---|
+| [chroma-hnswlib](https://github.com/chroma-core/hnswlib) | Apache-2.0 | HNSW 近傍検索インデックス |
+| [fastembed](https://github.com/qdrant/fastembed) | Apache-2.0 | embedding 生成ランタイム（ONNX ベース） |
+| [onnxruntime](https://github.com/microsoft/onnxruntime) | MIT | fastembed の推論バックエンド |
+| [sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) | Apache-2.0 | 多言語 embedding モデル（384 次元・約 220MB・約 50 言語対応） |
+
+C3 本体は MIT のままです。業務アプリへの再配布時はこれらの LICENSE / NOTICE を同梱してください。
+
+### `c3 recall` 自動コンテキスト注入（α 案）
+
+v2.10.0 から `UserPromptSubmit` フック `.claude/hooks/recall_inject.py` が、毎プロンプトで `c3 recall search` を裏で実行し、類似情報の上位 3 件を親 Claude のコンテキストに追加します。前置きで「現タスクと無関係なら無視してください」と明示し、最終的な採否は LLM 側の判断に委ねる設計です（α 案）。
+
+- 短い prompt / スラッシュコマンド / `@mention` / index 未構築の場合は silent no-op
+- 環境変数 `C3_RECALL_HOOK_DISABLE=1` で完全停止可
+- 注入対象は score 0.4 以上の上位 3 件のみ（CLI の既定 `--min-score 0.3` より厳格に絞る）
+- インデックスが古い（ソース mtime > index mtime）と判定したら、注入テキストの冒頭に「AskUserQuestion で `今すぐ rebuild / 後で / 無視` を確認してください」ガイダンスを付加。親 Claude が読んで AskUserQuestion を発火し、ユーザー選択に応じて Bash で `c3 recall rebuild` を実行する
+
+オフライン環境やプロキシ越しに利用する場合、初回 `c3 recall rebuild` 時のモデルダウンロードは `FASTEMBED_CACHE_PATH` 環境変数を社内ミラー / NAS パスに向けることで回避できます。
+
+> **fastembed モデルダウンロードの整合性 (SR-L-3)**
+> fastembed は HuggingFace Hub からモデルを取得する際に blob ID とサイズを検証しますが、SHA-256 チェックサムの独立検証は行いません。セキュリティ要件の高い環境では、`FASTEMBED_CACHE_PATH` を社内ミラーに向けたうえで、ダウンロード後に公式リポジトリ (https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) 掲載の SHA-256 と手動で照合することを推奨します。
+
+> **推移的依存 urllib3 の脆弱性 (SR-H-1)**
+> `urllib3 <= 2.6.3` に既知脆弱性が報告されています。`fastembed → huggingface-hub → urllib3` 経由で間接的に利用されます。`pip install -U urllib3` で 2.7.0 以上にアップデートすることを推奨します。

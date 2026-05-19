@@ -1,5 +1,5 @@
 """
-Tests for .claude/hooks/stop.py (Round 5 - Red phase)
+Tests for .claude/hooks/stop.py (Round 5 - regression guard)
 
   TestSavePatternsAtomicWrite (Medium-1)
     - save_patterns() must use os.replace (or tempfile + rename) for atomic write
@@ -7,7 +7,7 @@ Tests for .claude/hooks/stop.py (Round 5 - Red phase)
   TestBuildSessionsByDateReturnsSet (Medium-3)
     - _build_sessions_by_date() must return a set, not a dict
 
-Tests for .claude/hooks/stop.py (Round 6 - Red phase)
+Tests for .claude/hooks/stop.py (Round 6 - regression guard)
 
   TestApplySessionUpdatesAtomicWrite (Medium-1 Round 6)
     - _apply_session_updates() must use os.replace or tempfile for atomic write

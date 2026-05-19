@@ -1,5 +1,5 @@
 """
-Tests for .claude/hooks/pre_compact.py (Round 5 - Red phase)
+Tests for .claude/hooks/pre_compact.py (Round 5 - regression guard)
 
   TestContextItemsBeforeNoneShowsNA (Low-2)
     - context_items_before キーが存在しない場合、summary に N/A が含まれること

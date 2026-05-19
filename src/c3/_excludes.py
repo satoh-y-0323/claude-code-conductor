@@ -41,6 +41,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "settings.local.json",
     "pytest_temp.ini",
     "logs/*",
+    # state/* で v2.10.0 の recall.hnsw / recall_meta.json も自動除外
     "state/*",
     # v2.1.0: tdd-develop / worktree-tdd-workflow 廃止（planner が TDD を 3-wave に分解する設計に統一）
     "agents/tdd-develop.md",

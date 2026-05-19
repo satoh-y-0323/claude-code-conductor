@@ -1,0 +1,9 @@
+chroma-hnswlib
+Copyright (c) Chroma authors and the hnswlib authors
+
+This product includes software developed by:
+- The Chroma project (https://github.com/chroma-core/chroma)
+- The hnswlib authors (https://github.com/nmslib/hnswlib)
+
+Licensed under the Apache License, Version 2.0.
+See the chroma-hnswlib-LICENSE file accompanying this NOTICE for the full license text.

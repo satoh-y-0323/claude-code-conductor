@@ -1,5 +1,5 @@
 """
-Red-phase tests for sync-template-stop task.
+Regression guard for the sync-template-stop task.
 
 These tests verify that the template-side stop.py
 (src/c3/_template/.claude/hooks/stop.py) contains the same

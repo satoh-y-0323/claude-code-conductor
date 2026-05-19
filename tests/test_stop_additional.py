@@ -15,7 +15,7 @@ Additional tests for stop.py:
     - Pattern 4 days old, trust=1.0 -> promotion_candidate: true
     - Pattern 31 days old         -> excluded from patterns.json (EXPIRY_DAYS=30)
 
-  [New Red-phase tests]
+  [Regression guards (originally Red-phase)]
   TestEnsureSessionFileSingleReadWrite
     - _append_last_message + _update_facts_timestamp must complete with
       exactly 1 read + 1 write total (not 2 reads + 2 writes)
@@ -349,7 +349,7 @@ class TestUpdatePatternsTrustScore:
 
 
 # ---------------------------------------------------------------------------
-# [New Red-phase] TestEnsureSessionFileSingleReadWrite
+# [Regression guard] TestEnsureSessionFileSingleReadWrite
 # ---------------------------------------------------------------------------
 
 
@@ -418,7 +418,7 @@ class TestEnsureSessionFileSingleReadWrite:
 
 
 # ---------------------------------------------------------------------------
-# [New Red-phase] TestLoadPatternsJsonDecodeError
+# [Regression guard] TestLoadPatternsJsonDecodeError
 # ---------------------------------------------------------------------------
 
 
@@ -469,7 +469,7 @@ class TestLoadPatternsJsonDecodeError:
 
 
 # ---------------------------------------------------------------------------
-# [New Red-phase] TestAppendLastMessageEscapesCommentCloser
+# [Regression guard] TestAppendLastMessageEscapesCommentCloser
 # ---------------------------------------------------------------------------
 
 

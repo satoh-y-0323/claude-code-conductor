@@ -22,8 +22,13 @@
 .claude/logs/
 
 # C3 runtime state (per-user, never committed; tier_selection.json も hooks が動的生成する一時ファイル)
+# v2.10.0: recall.hnsw / recall_meta.json も state/* で自動除外（元データから再生成可能）
 .claude/state/*
 !.claude/state/.gitkeep
+
+# fastembed のローカルキャッシュ（プロジェクト直下に作られた場合のフェイルセーフ）
+fastembed_cache/
+.fastembed_cache/
 
 # Python bytecode / cache
 __pycache__/

@@ -22,16 +22,16 @@ def _run_list(kind: str, target: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
-# _summary – OSError handling (Red phase: should fail until fix is applied)
+# _summary – OSError handling (regression guard)
 # ---------------------------------------------------------------------------
 
 
 def test_summary_returns_unreadable_on_oserror(tmp_path: Path):
     """_summary must return '(unreadable)' when read_text raises OSError.
 
-    This test is written before the fix is applied (TDD Red phase).
-    It verifies that an OSError (e.g. permission denied) does not propagate
-    and is instead silently reported as '(unreadable)'.
+    Regression guard for the OSError handler (originally added before the
+    fix). Verifies that an OSError (e.g. permission denied) does not
+    propagate and is instead silently reported as '(unreadable)'.
     """
     fake_md = tmp_path / "agent.md"
     fake_md.write_text("# Some Agent\n", encoding="utf-8")
@@ -41,7 +41,7 @@ def test_summary_returns_unreadable_on_oserror(tmp_path: Path):
 
     assert result == "(unreadable)", (
         f"Expected '(unreadable)' but got {result!r}. "
-        "The OSError handler has not been implemented yet."
+        "_summary must wrap the OSError silently."
     )
 
 

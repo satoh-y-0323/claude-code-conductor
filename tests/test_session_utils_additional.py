@@ -6,12 +6,12 @@ Covers:
   - create_session_template(date_str)
   - append_checkpoint(session_file, label, summary)
 
-[New Red-phase tests]
+[Regression guards (originally Red-phase)]
   - append_checkpoint_validates_label: label に制御文字や --> が含まれる場合にサニタイズされること
   - ensure_session_logic_is_not_duplicated_in_stop (Round 5 Medium-2):
     stop.py の ensure_session_file が空ファイル再初期化ロジックをインラインで重複実装していないこと
 
-[Round 6 Red-phase tests]
+[Round 6 regression guards]
   - test_ensure_session_initialized_has_single_process_comment (Round 6 Medium-2):
     ensure_session_initialized 関数のソースに「単一プロセス」「single process」「TOCTOU」コメントがあること
 """
@@ -136,7 +136,7 @@ class TestAppendCheckpoint:
 
 
 # ---------------------------------------------------------------------------
-# [New Red-phase] TestAppendCheckpointValidatesLabel
+# [Regression guard] TestAppendCheckpointValidatesLabel
 # ---------------------------------------------------------------------------
 
 class TestAppendCheckpointValidatesLabel:
@@ -240,7 +240,7 @@ class TestAppendCheckpointValidatesLabel:
 
 
 # ---------------------------------------------------------------------------
-# [New Red-phase Round 5] TestEnsureSessionLogicNotDuplicated (Medium-2)
+# [Regression guard - Round 5] TestEnsureSessionLogicNotDuplicated (Medium-2)
 # ---------------------------------------------------------------------------
 
 
@@ -352,7 +352,7 @@ class TestEnsureSessionLogicNotDuplicated:
 
 
 # ---------------------------------------------------------------------------
-# [Round 6 Red-phase] TestEnsureSessionInitializedHasSingleProcessComment (Medium-2)
+# [Regression guard - Round 6] TestEnsureSessionInitializedHasSingleProcessComment (Medium-2)
 # ---------------------------------------------------------------------------
 
 

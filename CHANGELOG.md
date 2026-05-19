@@ -1,5 +1,51 @@
 # Changelog
 
+## [2.10.0] - 2026-05-19
+
+### 概要
+
+業務環境で蓄積される `.claude/memory/sessions/` / `.claude/agent-memory/` / `.claude/reports/archive/` / `.claude/memory/patterns.json` を意味検索（HNSW + 多言語 embedding）で再利用できる `c3 recall` 機能を追加。fastembed + `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`（384 dim, ~220MB, Apache-2.0, ~50 言語対応）で日本語・英語・コードを横断検索する CLI と、LLM 自律呼び出し用の `/recall` Skill を同梱。設計書 `.claude/docs/C3_hnsw_機能追加詳細設計.md` 準拠（fastembed 公式 onnx に上がっていない `intfloat/multilingual-e5-small` ではなく MiniLM-L12-v2 を採用、E5 プレフィックス自動付与は E5 系モデル選択時のみに切替）。
+
+### 追加
+
+- **`c3 recall` CLI サブコマンド** (`src/c3/cli_recall.py`)
+  - `c3 recall search "<query>"` — 意味検索を実行。`--top` / `--source` / `--min-score` / `--json` をサポート（既定 top=5, min-score=0.3）
+  - `c3 recall "<query>"` — 省略形。`c3 recall search "<query>"` と同義（`src/c3/cli.py` の `_rewrite_recall_shortcut`）
+  - `c3 recall rebuild [--force] [--source SOURCE]` — インデックスを `.claude/state/recall.hnsw` に再構築（atomic write + `.bak` 保持）
+  - `c3 recall stats [--json]` — チャンク数・ソース別内訳・モデル名・最終 rebuild 日時を表示（fastembed ロード不要）
+- **`src/c3/recall_chunker.py`** — Markdown `##` 見出し単位 → 1000 文字超は 100 文字重複窓で再分割（E5 の 512 token 上限と整合）
+- **`src/c3/embedding.py`** — `Embedder` ABC + `FastEmbedBackend`。デフォルトは MiniLM-L12-v2（プレフィックス不要）。`intfloat/multilingual-e5-{small,base,large}` を指定した場合のみ `query: ` / `passage: ` プレフィックスを自動付与
+- **`src/c3/recall_index.py`** — HNSW (`cosine` / M=16 / ef_construction=200 / ef_query=50) + `recall_meta.json` のラッパー。`.claude/memory/sessions/*.tmp` / `.claude/agent-memory/**/*.md` / `.claude/reports/archive/*.md` / `.claude/memory/patterns.json` の収集ロジックも提供
+- **`/recall` Skill** (`.claude/skills/recall/SKILL.md`) — LLM 自律呼び出し用。設計書 §7 準拠の `name:` / `description:` / `allowed-tools:` フロントマター形式
+- **UserPromptSubmit hook** (`.claude/hooks/recall_inject.py`) — ユーザーのプロンプトを受けて自動で `c3 recall search` を実行し、上位 3 件を `additionalContext` として親 Claude に注入する。**「現タスクと無関係なら無視してください」と前置きして AI に判断を委譲する設計（α 案）**。短い prompt / スラッシュコマンド / @mention / index 未構築時は silent no-op。`C3_RECALL_HOOK_DISABLE=1` で停止可
+- **ステール検出 → AskUserQuestion 連携** (`.claude/hooks/recall_inject.py::index_is_stale`) — hook がソース mtime と index mtime を比較してインデックスが古い場合、`additionalContext` の冒頭に「AskUserQuestion で `今すぐ rebuild する / 後で / 無視` の 3 択をユーザーに提示してください」というディレクティブを追加。親 Claude が読み取って AskUserQuestion を発火し、ユーザーが「今すぐ rebuild」を選んだ場合は Bash で `c3 recall rebuild` を実行する流れ。同一セッション中に「後で」「無視」を選んだら再尋問しない方針を SKILL.md に明記
+- **`LICENSES/` ディレクトリ** — Apache-2.0 / MIT の出典明示用に新設。chroma-hnswlib / fastembed / onnxruntime / sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 の 4 セット同梱
+
+### 変更
+
+- **必須依存追加** (`pyproject.toml`): `chroma-hnswlib>=0.7.6` / `fastembed>=0.8.0`。fastembed は torch 非依存で +220MB 程度（onnxruntime + 多言語 MiniLM モデル）
+- **wheel `force-include`** (`pyproject.toml`): `LICENSES/` ディレクトリを `c3/LICENSES` として同梱
+- **`.gitignore` / `_excludes.py` / `hatch_build.py`** — `.claude/state/*` 既存除外で `recall.hnsw` / `recall_meta.json` は自動的に Git 管理外。`fastembed_cache/` / `.fastembed_cache/` の fail-safe 除外を `.gitignore` に追加
+
+### 配布の取り扱い
+
+- HNSW インデックス本体 (`recall.hnsw`) / メタデータ (`recall_meta.json`) は `.claude/state/*` で除外、各環境で `c3 recall rebuild` により再生成
+- fastembed のモデルファイル (~150MB) は `~/.cache/fastembed/` にキャッシュ（環境変数 `FASTEMBED_CACHE_PATH` で変更可）。Git 管理対象外
+- 業務利用先で `c3 update` 経由で受け取れる（破壊的変更なし）
+
+### 既知事項
+
+- 初回 `c3 recall rebuild` 時に fastembed がモデルをダウンロードする（~220MB、オフライン環境では `FASTEMBED_CACHE_PATH` を社内 NAS 等に向ける運用が必要）
+- インデックスのステール検出は mtime ベース。`c3 recall search` 時に古い場合は stderr で警告するが、検索自体は続行する
+- 検索しきい値: `--min-score` の既定は `0.3`（E2E 検証で実用的と判断）。0.5+ にすると強い類似のみ、0.0 で無効化
+- fastembed の mean pooling 警告（情報メッセージ）は `embedding.py` 側で抑制済み。挙動は sentence-transformers 公式と整合しており、結果に問題なし
+
+### セキュリティ告知（SR-H-1: 推移的依存 urllib3）
+
+`urllib3 <= 2.6.3` に既知脆弱性が報告されています。C3 の直接依存ではありませんが、`fastembed → huggingface-hub → urllib3` 経由で間接的に利用されます。利用環境で `pip install -U urllib3` を実行し、2.7.0 以上にアップデートすることを推奨します。
+
+---
+
 ## [2.9.0] - 2026-05-19
 
 ### 概要

@@ -12,7 +12,16 @@ import argparse
 import sys
 
 from c3 import __version__
-from c3 import cli_ask, cli_doctor, cli_init, cli_list, cli_plan, cli_tier, cli_update
+from c3 import (
+    cli_ask,
+    cli_doctor,
+    cli_init,
+    cli_list,
+    cli_plan,
+    cli_recall,
+    cli_tier,
+    cli_update,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     cli_plan.register(sub)
     cli_tier.register(sub)
     cli_ask.register(sub)
+    cli_recall.register(sub)
 
     return parser
 
@@ -42,8 +52,32 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_streams()
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_rewrite_recall_shortcut(argv))
     return args.handler(args)
+
+
+def _rewrite_recall_shortcut(argv: list[str] | None) -> list[str] | None:
+    """Rewrite ``c3 recall <query>`` to ``c3 recall search <query>``.
+
+    Argparse cannot natively pick a default subcommand based on whether the
+    second token is recognised, so we pre-process the argv list. Inserting
+    ``search`` is only done when the first positional token after ``recall``
+    is not a known subcommand (``search`` / ``rebuild`` / ``stats``) and is
+    not an option flag (``-h``, ``--help``, ``--target``, ...).
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    if len(argv) < 2:
+        return argv
+    if argv[0] != "recall":
+        return argv
+    known_subcommands = {"search", "rebuild", "stats"}
+    second = argv[1]
+    if second in known_subcommands:
+        return argv
+    if second.startswith("-"):
+        return argv
+    return [argv[0], "search", *argv[1:]]
 
 
 def _force_utf8_streams() -> None:

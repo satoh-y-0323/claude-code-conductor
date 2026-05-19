@@ -1,8 +1,9 @@
 """
-Red-phase tests for fix-precompact-toctou task.
+Regression guard for the fix-precompact-toctou task.
 
-These tests verify the planned fixes are in place. They are written
-BEFORE the implementation, so they are expected to FAIL initially.
+These tests pin the planned fixes in place. They were originally written
+BEFORE the implementation as TDD Red tests; the implementation is now in
+place and all tests pass.
 
 Fixes under test:
   [Fix 1] TOCTOU in .claude/hooks/pre_compact.py (main)
