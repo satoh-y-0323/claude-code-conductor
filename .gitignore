@@ -46,7 +46,9 @@ src/c3/_template/
 site/
 
 # C3 founding documents (kept locally, not for distribution)
-.claude/docs/taxonomy.md
+# Note: .claude/docs/taxonomy.md は GitHub に公開済み (初回コミットから tracked)。
+# 公開ドキュメントとして認めるため .gitignore からは除外しない。
+# wheel 配布からは引き続き _excludes.py / hatch_build.py で除外。
 .claude/docs/decisions.md
 .claude/docs/game-studios-research.md
 .claude/docs/c3候補機能への質問に対する回答.md
