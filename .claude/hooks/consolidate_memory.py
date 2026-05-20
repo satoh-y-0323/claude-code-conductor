@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -76,6 +77,11 @@ PROMOTION_CANDIDATES_PATH = os.path.join(
 
 # Stop hook の stdin payload に対する上限（1 MB）[SR-V-001]
 MAX_STDIN_BYTES = 1 * 1024 * 1024
+
+# Markdown インジェクション・ターミナルエスケープ防止のため除去する制御文字パターン [SR-V-001]
+# 対象: \x00-\x08, \x0b (VT), \x0c (FF), \x0e-\x1f, \x7f (DEL)
+# 除外: \x09 (TAB) は _sanitize_field でスペースに置換、\x0a (LF), \x0d (CR) も同様
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _load_session_utils():
@@ -274,15 +280,26 @@ def _load_patterns_readonly(patterns_path: str) -> list[dict]:
 
 
 def _sanitize_field(value: str) -> str:
-    """Markdown インジェクション防止のため改行を除去する [SR-AI-001]。
+    """Markdown インジェクション・制御文字インジェクション防止のためのサニタイズ。
+
+    除去対象 [SR-V-001] [SR-AI-001]:
+    - CR/LF（改行）→ スペースに置換
+    - タブ (\\t) → スペースに置換
+    - null byte / その他 ASCII 制御文字 (\\x00-\\x08, \\x0b, \\x0c, \\x0e-\\x1f, \\x7f) → 削除
 
     Args:
         value: サニタイズ対象の文字列。
 
     Returns:
-        CR / LF / CRLF をスペースに置換した文字列。
+        制御文字を除去・置換した文字列。
     """
-    return value.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    sanitized = (
+        value.replace("\r\n", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .replace("\t", " ")
+    )
+    return _CONTROL_CHARS_RE.sub("", sanitized)
 
 
 def _truncate_for_table(text: str, limit: int = _PROMOTION_DESC_MAX_LEN) -> str:
@@ -423,11 +440,14 @@ def write_promotion_candidates_log(
         lines.append("|---|---|---|---|---|")
         for c in candidates:
             f = _extract_candidate_fields(c)
-            cid_disp = _truncate_for_table(f["cid"], limit=_PROMOTION_CID_MAX_LEN)
+            cid_disp = _truncate_for_table(
+                _sanitize_field(f["cid"]), limit=_PROMOTION_CID_MAX_LEN
+            )
+            safe_registered = _sanitize_field(f["registered"])
             desc = _truncate_for_table(f["description"])
             lines.append(
                 f"| `{cid_disp}` | {f['trust_str']} | "
-                f"{f['obs_count']} | {f['registered']} | {desc} |"
+                f"{f['obs_count']} | {safe_registered} | {desc} |"
             )
         lines.append("")
         # 詳細セクション（コピペ用）
@@ -439,9 +459,11 @@ def write_promotion_candidates_log(
             f = _extract_candidate_fields(c)
             safe_cid = _sanitize_field(f["cid"])
             safe_desc = _sanitize_field(f["description"])
+            safe_registered = _sanitize_field(f["registered"])
+            safe_last_updated = _sanitize_field(f["last_updated"])
             lines.append(f"### {safe_cid}  [trust {f['trust_str']}]")
             lines.append(
-                f"- 登録日: {f['registered']} / 最終更新: {f['last_updated']} / "
+                f"- 登録日: {safe_registered} / 最終更新: {safe_last_updated} / "
                 f"観測: {f['obs_count']} 件"
             )
             lines.append(f"- {safe_desc}")
