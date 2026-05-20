@@ -1,4 +1,4 @@
-"""Tests for .claude/hooks/review_hint_inject.py and c3_db review helpers.
+"""Tests for .claude/skills/dev-workflow/scripts/review_hint_inject.py and c3_db review helpers.
 
 review-hint: レビュー判断ヒント機能の検証。
 
@@ -20,13 +20,18 @@ review-hint: レビュー判断ヒント機能の検証。
  10. 6 ヶ月超の判断に [要再評価] が付く
  11. 重複指摘フラグセクションが付与される
 
+ b4 追加テスト (TestBuildHintSection):
+ 12. reason に改行 + Markdown 見出し（\\n##）を含む場合、出力に \\n## が現れず空白置換される
+ 13. reason に backtick を含む場合、サニタイズされること
+ 14. 古い decided_at で [要再評価] フラグが付く（_is_old 判定が壊れないこと）
+
  append_hints_to_report:
- 12. レポート末尾に追記
- 13. 二重追記の回避
+ 15. レポート末尾に追記
+ 16. 二重追記の回避
 
  main (E2E):
- 14. 単一レポート + DB に過去判断 → ヒントセクションが追記される
- 15. 2 レポート + 同一 ID 指摘 → 重複指摘フラグが両方に出る
+ 17. 単一レポート + DB に過去判断 → ヒントセクションが追記される
+ 18. 2 レポート + 同一 ID 指摘 → 重複指摘フラグが両方に出る
 """
 
 from __future__ import annotations
@@ -41,9 +46,12 @@ from pathlib import Path
 import pytest
 
 WORKTREE_ROOT = Path(__file__).parents[2]
-HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "review_hint_inject.py"
+HOOK_PATH = WORKTREE_ROOT / ".claude" / "skills" / "dev-workflow" / "scripts" / "review_hint_inject.py"
 SCHEMA_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "schema.sql"
 INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "session_start.py"
+
+# b4 テスト: a1 完了後 HOOK_PATH と同じ場所を参照（後方互換のため NEW_HOOK_PATH として残置）
+NEW_HOOK_PATH = HOOK_PATH
 
 
 def _create_c3_db(db_path: Path) -> None:
@@ -222,6 +230,108 @@ class TestBuildHintSection:
         assert "重複指摘フラグ" in section
         assert "CR-Q-001" in section
         assert "SR-K-002" in section
+
+    # ------------------------------------------------------------------
+    # b4: _sanitize_md によるサニタイズ検証（新規 Red テスト）
+    # ------------------------------------------------------------------
+
+    def _load_new_hook_module(self) -> types.ModuleType:
+        """新パス（.claude/skills/dev-workflow/scripts/）からモジュールをロードする。"""
+        spec = importlib.util.spec_from_file_location("review_hint_inject_b4", NEW_HOOK_PATH)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        return mod
+
+    def _make_decision_row(
+        self,
+        *,
+        decided_at: str,
+        reason: str = "テスト理由",
+        decision: str = "accepted",
+    ) -> dict:
+        return {
+            "checklist_id": "CR-Q-001",
+            "decision": decision,
+            "reason": reason,
+            "decided_at": decided_at,
+            "reviewer": "code-reviewer",
+            "finding_text": "finding",
+            "context_summary": None,
+        }
+
+    def test_reason_with_newline_md_heading_is_sanitized(self) -> None:
+        """reason に '\\n## 偽見出し' を含む decision row を build_hint_section に渡したとき、
+        出力に '\\n## 偽見出し' が現れず、空白置換されること。
+
+        [b4 Red] _sanitize_md ヘルパーが未実装のため、現時点では生の '\\n## 偽見出し'
+        が出力に含まれて FAIL する。
+        """
+        mod = self._load_new_hook_module()
+        decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        row = self._make_decision_row(
+            decided_at=decided_at,
+            reason="正常理由\n## 偽見出し インジェクション",
+        )
+        decisions = {"CR-Q-001": [row]}
+        section = mod.build_hint_section(decisions)
+
+        assert "\n## 偽見出し" not in section, (
+            "reason 内の '\\n## 偽見出し' が Markdown 出力にそのまま埋め込まれている。"
+            "_sanitize_md で改行・# をサニタイズする必要がある。 [b4 / SR-NEW]"
+        )
+        # サニタイズ後の空白置換された文字列は出力に含まれる
+        assert "偽見出し インジェクション" in section
+
+    def test_reason_with_backtick_is_sanitized(self) -> None:
+        """reason に backtick を含む入力でもサニタイズされること。
+
+        [b4 Red] _sanitize_md ヘルパーが未実装のため、現時点では生の backtick
+        が出力に含まれて FAIL する（```injection``` 等のコードブロック崩し）。
+        """
+        mod = self._load_new_hook_module()
+        decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        row = self._make_decision_row(
+            decided_at=decided_at,
+            reason="理由 `backtick injection` 終わり",
+        )
+        decisions = {"CR-Q-001": [row]}
+        section = mod.build_hint_section(decisions)
+
+        assert "`" not in section, (
+            "reason 内の backtick が Markdown 出力にそのまま埋め込まれている。"
+            "_sanitize_md で backtick をサニタイズする必要がある。 [b4 / SR-NEW]"
+        )
+        # バッククォートが空白に置換された結果、前後の語は残っている
+        assert "backtick injection" in section
+
+    def test_old_decided_at_gets_reeval_flag_after_sanitize(self) -> None:
+        """古い decided_at で [要再評価] フラグが付くこと。
+
+        _is_old 判定は decided_at の生値（サニタイズ前）を使うため、
+        decided_at の値が ISO 8601 として正しければフラグが付く。
+        _sanitize_md が decided_at に適用されても _is_old 判定が壊れないことを確認。
+
+        [b4 Red] _sanitize_md ヘルパー未実装のため、reason のサニタイズが不完全な
+        状態で実行され、先の 2 テストが先に FAIL する。このテストは「b4 実装後も
+        _is_old 判定が正しく動く」ことを保証する回帰テスト。
+        """
+        mod = self._load_new_hook_module()
+        old_iso = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat(timespec="seconds")
+        row = self._make_decision_row(
+            decided_at=old_iso,
+            reason="古い理由\n## 見出し崩し",
+        )
+        decisions = {"CR-Q-001": [row]}
+        section = mod.build_hint_section(decisions)
+
+        # [要再評価] フラグが付くこと（_is_old 判定が壊れていない）
+        assert "[要再評価]" in section, (
+            "[要再評価] フラグが付いていない。"
+            "_is_old() への入力が decided_at の生値（ISO 8601）であることを確認すること。"
+        )
+        # 同時に、reason のサニタイズも確認
+        assert "\n## 見出し崩し" not in section
 
 
 # ---------------------------------------------------------------------------

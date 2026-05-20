@@ -1,4 +1,4 @@
-"""Tests for .claude/hooks/record_tier_outcome.py
+"""Tests for .claude/skills/dev-workflow/scripts/record_tier_outcome.py
 
 tier-routing MVP: Tier outcome 記録 CLI の検証。
 
@@ -9,12 +9,22 @@ tier-routing MVP: Tier outcome 記録 CLI の検証。
   4. tier_selection.json が壊れた JSON の場合は何もせず exit 0
   5. DB 不在時は exit 0、json は削除されない（リトライ可能）
   6. --outcome の値が不正なら argparse がエラー（exit 2）
+
+b2 追加テストケース (TestClaudeDirAssertion):
+  7. 正常配置（.claude/skills/dev-workflow/scripts/）でロードしても AssertionError が出ない
+  8. 3 階層遡れない場所に置いた場合に AssertionError が発生する
+
+b3 追加テストケース (TestPromptHistoryAppend):
+  9. prompt_prefix に U+2028 を含む selection を書いたとき、jsonl 行に生の U+2028 が含まれない
+ 10. prompt_prefix に U+2029 を含む selection を書いたとき、jsonl 行に生の U+2029 が含まれない
+ 11. json.loads 後に prompt_prefix が元の文字列（U+2028/U+2029 入り）に戻ること
 """
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -22,9 +32,16 @@ from pathlib import Path
 import pytest
 
 WORKTREE_ROOT = Path(__file__).parents[2]
-HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "record_tier_outcome.py"
+HOOK_PATH = WORKTREE_ROOT / ".claude" / "skills" / "dev-workflow" / "scripts" / "record_tier_outcome.py"
 SCHEMA_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "schema.sql"
 INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "session_start.py"
+
+# b2 / b3 テスト: a1 完了後 HOOK_PATH と同じ場所を参照（後方互換のため NEW_HOOK_PATH として残置）
+NEW_HOOK_PATH = HOOK_PATH
+
+# U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR（実体文字を埋め込まず chr() で参照）
+_LS = chr(0x2028)  # LINE SEPARATOR
+_PS = chr(0x2029)  # PARAGRAPH SEPARATOR
 
 
 def _create_c3_db(db_path: Path) -> None:
@@ -162,6 +179,14 @@ class TestPromptHistoryAppend:
             encoding="utf-8",
         )
 
+    def _load_new_hook(self, name: str) -> types.ModuleType:
+        """新パス（.claude/skills/dev-workflow/scripts/）からモジュールをロードする。"""
+        spec = importlib.util.spec_from_file_location(name, NEW_HOOK_PATH)
+        assert spec is not None and spec.loader is not None
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)  # type: ignore[attr-defined]
+        return hook
+
     def test_appends_record_on_success(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -289,3 +314,201 @@ class TestPromptHistoryAppend:
         assert len(lines) == 2
         assert json.loads(lines[0])["prompt_prefix"] == "既存エントリ"
         assert json.loads(lines[1])["prompt_prefix"] == "新しいエントリ"
+
+    # ------------------------------------------------------------------
+    # b3: U+2028 / U+2029 エスケープ検証（新規 Red テスト）
+    # ------------------------------------------------------------------
+
+    def test_line_separator_u2028_not_in_jsonl(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """prompt_prefix に U+2028 を含む selection を書いたとき、
+        jsonl の該当行に生の U+2028 が含まれないこと。
+
+        NOTE: Python の str.splitlines() は U+2028 を行区切りとして扱うため、
+        生の U+2028 が書き込まれると splitlines() で分割された行には U+2028 が
+        残らない。本テストでは split('\\n') を使って JSONL の 1 行を取り出し、
+        その行に U+2028 が含まれるかを検証する。
+
+        [b3 Red] _append_prompt_history に U+2028 エスケープ処理が未実装のため
+        現時点では生の U+2028 が書き込まれて FAIL する。
+        """
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        history_path = tmp_path / "logs" / "prompt-history.jsonl"
+
+        # U+2028 LINE SEPARATOR を含む prompt_prefix（chr() で参照 — 実体文字を埋め込まない）
+        prefix_with_ls = "テスト" + _LS + "区切り"
+        self._write_selection_with_prompt(
+            sel_path,
+            complexity="simple", tier="haiku",
+            prompt_prefix=prefix_with_ls,
+            prompt_hash="aabbccddeeff0011",
+        )
+
+        hook = self._load_new_hook("record_tier_outcome_b3")
+        monkeypatch.setattr(hook, "TIER_SELECTION_PATH", str(sel_path))
+        monkeypatch.setattr(hook, "PROMPT_HISTORY_PATH", str(history_path))
+
+        from c3 import db as c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        rc = hook.main(["--outcome", "success"])
+        assert rc == 0
+        assert history_path.is_file()
+
+        raw_content = history_path.read_text(encoding="utf-8")
+        # split('\n') を使って JSONL の 1 行目を取り出す
+        # （splitlines() は U+2028 でも行分割するため不可）
+        raw_line = raw_content.split("\n")[0]
+        assert _LS not in raw_line, (
+            "U+2028 (LINE SEPARATOR) が jsonl 行に生のまま含まれている。"
+            "_append_prompt_history で json.dumps 後に str.replace でエスケープする必要がある。"
+        )
+
+    def test_paragraph_separator_u2029_not_in_jsonl(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """prompt_prefix に U+2029 を含む selection を書いたとき、
+        jsonl の該当行に生の U+2029 が含まれないこと。
+
+        NOTE: Python の str.splitlines() は U+2029 を行区切りとして扱うため、
+        split('\\n') で検証する。
+
+        [b3 Red] _append_prompt_history に U+2029 エスケープ処理が未実装のため
+        現時点では生の U+2029 が書き込まれて FAIL する。
+        """
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        history_path = tmp_path / "logs" / "prompt-history.jsonl"
+
+        # U+2029 PARAGRAPH SEPARATOR を含む prompt_prefix（chr() で参照）
+        prefix_with_ps = "段落" + _PS + "セパレータ"
+        self._write_selection_with_prompt(
+            sel_path,
+            complexity="simple", tier="haiku",
+            prompt_prefix=prefix_with_ps,
+            prompt_hash="1122334455667788",
+        )
+
+        hook = self._load_new_hook("record_tier_outcome_b3b")
+        monkeypatch.setattr(hook, "TIER_SELECTION_PATH", str(sel_path))
+        monkeypatch.setattr(hook, "PROMPT_HISTORY_PATH", str(history_path))
+
+        from c3 import db as c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        rc = hook.main(["--outcome", "success"])
+        assert rc == 0
+        assert history_path.is_file()
+
+        raw_content = history_path.read_text(encoding="utf-8")
+        # split('\n') を使って JSONL の 1 行目を取り出す
+        raw_line = raw_content.split("\n")[0]
+        assert _PS not in raw_line, (
+            "U+2029 (PARAGRAPH SEPARATOR) が jsonl 行に生のまま含まれている。"
+            "_append_prompt_history で json.dumps 後に str.replace でエスケープする必要がある。"
+        )
+
+    def test_line_separator_roundtrip_via_json_loads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """エスケープ後に json.loads すると prompt_prefix が元の文字列（U+2028/U+2029 入り）に戻ること。
+
+        エスケープ処理（\\u2028 / \\u2029 置換）後、jsonl 行を json.loads すると
+        JSON の \\uXXXX エスケープが Python の unicode 文字に復元される。
+
+        [b3 Red] エスケープ処理が未実装のため、現状では前 2 テストが先に FAIL する。
+        本テストは実装後に PASS することを確認する「仕様の正確さ」保証テスト。
+        """
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        history_path = tmp_path / "logs" / "prompt-history.jsonl"
+
+        # U+2028 / U+2029 両方を含む prompt_prefix（chr() で参照）
+        original_prefix = "前" + _LS + "後" + _PS + "末"
+        self._write_selection_with_prompt(
+            sel_path,
+            complexity="simple", tier="haiku",
+            prompt_prefix=original_prefix,
+            prompt_hash="ffeeddccbbaa9988",
+        )
+
+        hook = self._load_new_hook("record_tier_outcome_b3c")
+        monkeypatch.setattr(hook, "TIER_SELECTION_PATH", str(sel_path))
+        monkeypatch.setattr(hook, "PROMPT_HISTORY_PATH", str(history_path))
+
+        from c3 import db as c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        rc = hook.main(["--outcome", "success"])
+        assert rc == 0
+
+        raw_content = history_path.read_text(encoding="utf-8")
+        raw_line = raw_content.split("\n")[0]
+        # 生の U+2028 / U+2029 が含まれていない前提で json.loads する
+        assert _LS not in raw_line, "U+2028 が jsonl 行に生のまま含まれている"
+        assert _PS not in raw_line, "U+2029 が jsonl 行に生のまま含まれている"
+        record = json.loads(raw_line)
+        # json.loads で \\u2028 / \\u2029 → 元の U+2028 / U+2029 に復元される
+        assert record["prompt_prefix"] == original_prefix
+
+
+# ---------------------------------------------------------------------------
+# b2: _CLAUDE_DIR 実行時アサーション検証（新規 Red テスト）
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeDirAssertion:
+    """b2 タスク: record_tier_outcome.py の _CLAUDE_DIR アサーション検証。
+
+    b2 実装前（現時点）: _CLAUDE_DIR 直後の assert が存在しないため、
+    test_wrong_placement_raises_assertion_error は「AssertionError が出ない」として
+    「assert が存在しない」ことを示す FAIL になる。
+
+    正常配置テストは新パス（NEW_HOOK_PATH）で _load_hook_module を呼んで
+    AssertionError が出ないことを確認する。
+    """
+
+    def _load_from_path(self, hook_path: Path) -> types.ModuleType:
+        spec = importlib.util.spec_from_file_location("record_tier_outcome_assert_t", hook_path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        return mod
+
+    def test_normal_placement_no_assertion_error(self) -> None:
+        """正常配置（.claude/skills/dev-workflow/scripts/）でロードしても AssertionError が出ないこと。
+
+        [b2 Green 前提] NEW_HOOK_PATH が正しい 3 階層構造に置かれているため、
+        _CLAUDE_DIR が '.claude' で終わるアサーションは通過する。
+        このテストは b2 実装後も PASS を維持すること。
+        """
+        # AssertionError が出なければ PASS
+        try:
+            self._load_from_path(NEW_HOOK_PATH)
+        except AssertionError as exc:
+            pytest.fail(
+                f"正常配置でのモジュールロードが AssertionError で失敗した: {exc}"
+            )
+
+    def test_wrong_placement_raises_assertion_error(self, tmp_path: Path) -> None:
+        """スクリプトを 3 階層遡れない場所（tmp_path 直下）に置いた場合に
+        AssertionError が発生すること。
+
+        [b2 Red] _CLAUDE_DIR 直後の assert が未実装のため、現時点では
+        AssertionError が出ずに FAIL する。
+        """
+        # tmp_path/scripts/record_tier_outcome.py に配置
+        # _SCRIPT_DIR = tmp_path/scripts/
+        # _CLAUDE_DIR = tmp_path.parent.parent（'.claude' で終わらない）
+        wrong_scripts = tmp_path / "scripts"
+        wrong_scripts.mkdir()
+        wrong_hook = wrong_scripts / "record_tier_outcome.py"
+        shutil.copy(NEW_HOOK_PATH, wrong_hook)
+
+        with pytest.raises(AssertionError, match=r"_CLAUDE_DIR resolution broke"):
+            self._load_from_path(wrong_hook)
