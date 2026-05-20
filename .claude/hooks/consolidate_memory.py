@@ -74,6 +74,10 @@ PROMOTION_CANDIDATES_PATH = os.path.join(
     _CLAUDE_DIR, "memory", PROMOTION_CANDIDATES_FILE_NAME
 )
 
+# Stop hook の stdin payload に対する上限（1 MB）[SR-V-001]
+MAX_STDIN_BYTES = 1 * 1024 * 1024
+
+
 def _load_session_utils():
     """session_utils モジュールを動的にロードして返す（同階層）。"""
     import importlib.util
@@ -257,10 +261,28 @@ def _load_patterns_readonly(patterns_path: str) -> list[dict]:
             file=sys.stderr,
         )
         return []
-    patterns = data.get("patterns") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return []
+    patterns = data.get("patterns", [])
     if not isinstance(patterns, list):
+        print(
+            f"[consolidate_memory] patterns.json: expected list under 'patterns', got {type(patterns).__name__}",
+            file=sys.stderr,
+        )
         return []
     return [p for p in patterns if isinstance(p, dict)]
+
+
+def _sanitize_field(value: str) -> str:
+    """Markdown インジェクション防止のため改行を除去する [SR-AI-001]。
+
+    Args:
+        value: サニタイズ対象の文字列。
+
+    Returns:
+        CR / LF / CRLF をスペースに置換した文字列。
+    """
+    return value.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
 
 
 def _truncate_for_table(text: str, limit: int = _PROMOTION_DESC_MAX_LEN) -> str:
@@ -415,12 +437,14 @@ def write_promotion_candidates_log(
         lines.append("")
         for c in candidates:
             f = _extract_candidate_fields(c)
-            lines.append(f"### {f['cid']}  [trust {f['trust_str']}]")
+            safe_cid = _sanitize_field(f["cid"])
+            safe_desc = _sanitize_field(f["description"])
+            lines.append(f"### {safe_cid}  [trust {f['trust_str']}]")
             lines.append(
                 f"- 登録日: {f['registered']} / 最終更新: {f['last_updated']} / "
                 f"観測: {f['obs_count']} 件"
             )
-            lines.append(f"- {f['description']}")
+            lines.append(f"- {safe_desc}")
             lines.append("")
 
     payload = "\n".join(lines).rstrip() + "\n"
@@ -592,6 +616,9 @@ def run_sync(today: datetime | None = None) -> int:
     Args:
         today: 集約対象日付（省略時は現在時刻）。session_stop.py から
                複数フェーズで同じ today を共有したい場合に注入する。
+
+    Returns:
+        int: 常に 0（失敗してもセッションは止めない設計のため）。
     """
     # main() 全体で同じ "today" を共有する（datetime.now() の二重評価回避 + 決定論性）
     if today is None:
@@ -640,8 +667,15 @@ def main() -> int:
     session_stop.py orchestrator からは run_sync() が直接呼ばれる。
     """
     # stdin の payload は読むが内容は使わない（呼び出し元の Claude Code から送られる）
+    # 1 MB 上限: 超過時は stderr に警告して即 return 0（セッションは止めない）[SR-V-001]
     try:
-        sys.stdin.read()
+        raw = sys.stdin.read()
+        if len(raw) > MAX_STDIN_BYTES:
+            print(
+                f"[consolidate_memory] stdin payload exceeds max {MAX_STDIN_BYTES} bytes; aborting",
+                file=sys.stderr,
+            )
+            return 0
     except Exception:  # noqa: BLE001
         pass
     return run_sync()
