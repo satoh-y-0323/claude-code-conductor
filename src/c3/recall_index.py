@@ -20,11 +20,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Any, Iterator, Sequence
 
 from c3.recall_chunker import chunk_markdown
 
@@ -227,7 +229,16 @@ class RecallIndex:
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
 
         index_tmp = self.index_path.with_suffix(self.index_path.suffix + ".tmp")
-        self._index.save_index(str(index_tmp))
+        # CR-E-002: clean up index_tmp if _hnsw_save raises, so a failed save
+        # never leaves a partial .tmp file on disk.
+        try:
+            _hnsw_save(self._index, index_tmp)
+        except Exception:
+            try:
+                index_tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         _atomic_replace(index_tmp, self.index_path)
 
         meta_tmp = self.meta_path.with_suffix(self.meta_path.suffix + ".tmp")
@@ -269,7 +280,7 @@ class RecallIndex:
         import hnswlib  # noqa: PLC0415 — lazy so unit tests can mock
 
         self._index = hnswlib.Index(space=HNSW_SPACE, dim=self.dim)
-        self._index.load_index(str(self.index_path), max_elements=max_elements)
+        _hnsw_load(self._index, self.index_path, max_elements=max_elements)
         self._index.set_ef(HNSW_EF_QUERY)
         return True
 
@@ -487,6 +498,130 @@ def _atomic_replace(src: Path, dst: Path) -> None:
         except OSError:
             pass
     os.replace(src, dst)
+
+
+def _hnsw_save(index: Any, path: Path) -> None:
+    """Save via ASCII temp on Windows; hnswlib C fopen silently fails on non-ASCII paths.
+
+    On non-Windows or when ``path`` is already ASCII, ``save_index`` is called
+    directly without the tempfile indirection (performance path).
+
+    On Windows with a non-ASCII destination path:
+
+    1. ``tempfile.mkstemp`` creates a temp file under ``%TEMP%``.  The Windows
+       default ``%TEMP%`` is ``C:\\Users\\<user>\\AppData\\Local\\Temp``, which
+       is ASCII in the vast majority of installations.  We verify this assumption
+       explicitly and raise ``RuntimeError`` if it does not hold.
+    2. ``hnswlib`` writes to the ASCII temp path, then ``shutil.copy2`` moves the
+       bytes to the real (potentially non-ASCII) destination.
+    3. The temp file is removed in a ``finally`` block.  If removal fails, a
+       warning is emitted to ``sys.stderr`` instead of silently swallowing the
+       error, so operators can detect temp-directory leaks.
+    4. Any exception raised by ``hnswlib.save_index`` is caught and re-raised as
+       a ``RuntimeError`` whose message contains only the *destination* filename,
+       never the internal temp path (information hiding / SR-NEW).
+    """
+    if sys.platform != "win32" or str(path).isascii():
+        index.save_index(str(path))
+        return
+    fd, tmp_str = tempfile.mkstemp(suffix=".hnsw")
+    os.close(fd)
+    # M-2 / SR-V-002: verify that mkstemp returned an ASCII path.
+    # If TEMP/TMP is set to a non-ASCII directory this assumption breaks.
+    if not tmp_str.isascii():
+        try:
+            os.unlink(tmp_str)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"hnswlib workaround failed: TEMP path '{tmp_str}' contains non-ASCII "
+            "characters. Set TEMP/TMP to an ASCII-only path."
+        )
+    tmp = Path(tmp_str)
+    # L-5 / SR-K-002: restrict permissions to owner-only on POSIX.
+    # On Windows os.chmod is a no-op for most permission bits, so this is safe
+    # to call unconditionally.
+    try:
+        os.chmod(tmp_str, 0o600)
+    except OSError:
+        pass  # Windows or non-POSIX FS — best-effort only
+    try:
+        # L-1 / SR-NEW: wrap hnswlib call and hide the internal tmp path from
+        # the raised exception to avoid leaking implementation details.
+        try:
+            index.save_index(tmp_str)
+        except Exception as e:
+            raise RuntimeError(
+                f"hnswlib save_index failed on '{path.name}': {type(e).__name__}"
+            ) from None
+        shutil.copy2(tmp, path)
+    finally:
+        # M-1 / SR-V-002: warn on cleanup failure instead of silently ignoring.
+        try:
+            tmp.unlink()
+        except OSError as e:
+            print(
+                f"[_hnsw_save] tmp cleanup failed: {tmp}: {e}",
+                file=sys.stderr,
+            )
+
+
+def _hnsw_load(index: Any, path: Path, **kwargs: Any) -> None:
+    """Load via ASCII temp on Windows; hnswlib C fopen silently fails on non-ASCII paths.
+
+    On non-Windows or when ``path`` is already ASCII, ``load_index`` is called
+    directly without the tempfile indirection (performance path).
+
+    On Windows with a non-ASCII source path:
+
+    1. ``shutil.copy2`` copies the file to an ASCII temp path under ``%TEMP%``.
+       The same ASCII-verification logic as :func:`_hnsw_save` applies — a
+       ``RuntimeError`` is raised if ``%TEMP%`` itself is non-ASCII.
+    2. ``hnswlib`` loads from the ASCII temp path.
+    3. The temp file is removed in a ``finally`` block with the same
+       stderr-warning-on-failure behaviour as :func:`_hnsw_save`.
+    4. Any exception raised by ``hnswlib.load_index`` is wrapped to hide the
+       internal temp path from callers.
+    """
+    if sys.platform != "win32" or str(path).isascii():
+        index.load_index(str(path), **kwargs)
+        return
+    fd, tmp_str = tempfile.mkstemp(suffix=".hnsw")
+    os.close(fd)
+    # M-2 / SR-V-002: verify ASCII assumption for the temp path.
+    if not tmp_str.isascii():
+        try:
+            os.unlink(tmp_str)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"hnswlib workaround failed: TEMP path '{tmp_str}' contains non-ASCII "
+            "characters. Set TEMP/TMP to an ASCII-only path."
+        )
+    tmp = Path(tmp_str)
+    # L-5 / SR-K-002: restrict permissions to owner-only on POSIX.
+    try:
+        os.chmod(tmp_str, 0o600)
+    except OSError:
+        pass  # Windows or non-POSIX FS — best-effort only
+    try:
+        shutil.copy2(path, tmp)
+        # L-1 / SR-NEW: wrap hnswlib call and hide the internal tmp path.
+        try:
+            index.load_index(tmp_str, **kwargs)
+        except Exception as e:
+            raise RuntimeError(
+                f"hnswlib load_index failed on '{path.name}': {type(e).__name__}"
+            ) from None
+    finally:
+        # M-1 / SR-V-002: warn on cleanup failure instead of silently ignoring.
+        try:
+            tmp.unlink()
+        except OSError as e:
+            print(
+                f"[_hnsw_load] tmp cleanup failed: {tmp}: {e}",
+                file=sys.stderr,
+            )
 
 
 def _utcnow_iso() -> str:
