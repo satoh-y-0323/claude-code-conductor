@@ -8,6 +8,11 @@ disable-model-invocation: true
 MCP サーバーの追加・一覧・削除を対話形式で行う。
 全ての設定は `.claude/settings.json` のプロジェクトスコープに書き込む。
 
+> **注意:** Claude Code にはネイティブの `/mcp` コマンドが別途存在するが、それとは別物。
+> ネイティブ `/mcp add` は `settings.json` 以外のファイル（`~/.claude/mcp.json` 等）に書き込む可能性があるが、
+> 正確な書き込み先は Claude Code のバージョン依存であり未確認（要確認）。
+> C3 プロジェクトでは必ずこの `/mcp-config` スキルを使うこと（設定の分散を防ぐため）。
+
 ---
 
 ## Step 1: 操作を選択する
