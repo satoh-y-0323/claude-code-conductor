@@ -72,11 +72,26 @@ def _is_old(decided_at_iso: str, days: int = DEFAULT_REEVAL_DAYS) -> bool:
 
 
 def _sanitize_md(s: str) -> str:
-    """Markdown 構造を崩しうる文字（改行・# / ``` ）を空白に置換する。
+    """マークダウン構造を崩しうる文字（改行・# / ``` ）を空白に置換する。
 
-    DB 由来フィールドをレポート Markdown に埋め込む際の防御。[SR-NEW]
+    対象文字:
+        - ``\\r`` / ``\\n``: 行区切り
+        - ``#``: 見出し記号
+        - `` ` ``: コードブロック・インラインコード境界
+        - ``\\u2028`` (LINE SEPARATOR) / ``\\u2029`` (PARAGRAPH SEPARATOR):
+          Python の ``str.splitlines()`` および ECMAScript JSON.parse が行区切りとして扱う Unicode 文字。
+          Markdown レンダラー上の実害は軽微だが、record_tier_outcome.py の
+          U+2028/U+2029 エスケープとの一貫性のため対象に含める。
+        - ``\\x85`` (NEXT LINE / NEL):
+          Python の ``str.splitlines()`` が行区切りとして扱う Unicode 文字。
+          splitlines() 互換性のため対象に含める。
+
+    DB 由来フィールドをレポート Markdown に埋め込む際の防御。[SR-NEW] / [CR-Q-001]
     """
-    return re.sub(r"[\r\n#`]", " ", str(s))
+    # NOTE: ソースコード上は escape 表記で記述し、実体文字を埋め込まない。
+    # raw string を使わず通常文字列にすることで \u2028 / \u2029 / \x85 を Python が Unicode に解決する。
+    # コードポイント昇順: \r(0D) < \n(0A) < \x85(85) < # < ` < \u2028 < \u2029
+    return re.sub("[\r\n\x85#`\u2028\u2029]", " ", str(s))
 
 
 def build_hint_section(
