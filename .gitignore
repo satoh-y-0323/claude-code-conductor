@@ -9,7 +9,6 @@
 .claude/memory/patterns.json
 .claude/memory/agent-audit.log
 .claude/memory/consolidated_summary.md
-.claude/memory/llm_summary.md
 .claude/memory/promotion-candidates.md
 
 # Agent-individual memory (personal, populated at runtime)
@@ -56,6 +55,7 @@ site/
 .claude/docs/c3追加予定機能リスト.md
 .claude/docs/ruflo_research_result.md
 .claude/docs/C3_hnsw_機能追加詳細設計.md
+.claude/docs/C3_利用状況可視化.md
 
 # codex 対応調査メモ (個人作業ノート、配布・コミット対象外)
 .claude/docs/codex対応/

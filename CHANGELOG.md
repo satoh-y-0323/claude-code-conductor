@@ -1,5 +1,59 @@
 # Changelog
 
+## [2.11.0] - 2026-05-21
+
+### 破壊的変更: summarize-memory 機能の廃止
+
+`.claude/memory/llm_summary.md` を生成・自動注入していた `summarize-memory` エージェント機能を完全に廃止した。LLM 出力に narration テキストや tool-call XML マークアップが混入する汚染が数日おきに再発しており（Issue #2 として追跡）、SKILL.md のプロンプト制約・サニタイザでは構造的に修復困難と判断した。`patterns.json` ベースの promotion 候補と MVP セッション集約（`consolidated_summary.md`）は維持。長期記憶の代替として `c3 recall`（v2.10.0 で追加）の意味検索を利用すること。
+
+### 削除
+
+- **`summarize-memory` エージェント / スキル**
+  - `.claude/agents/summarize-memory.md`
+  - `.claude/skills/summarize-memory/SKILL.md`
+- **Stop hook Phase 3**（LLM 要約エージェント起動フラグ制御）
+  - `.claude/hooks/session_stop.py` の `_FLAG_PATH` / `_FLAG_DONE_CONTENT` / `_AGENT_INSTRUCTION` 定数
+  - `_needs_summary()` / `_create_flag()` / `_handle_flag_phase()` / `_sanitize_llm_summary()` 関数
+- **`consolidate_memory.py` の LLM 関連 API**
+  - 関数: `build_llm_summary_section()` / `_spawn_detached_llm()` / `_llm_only_main()` / `_ensure_llm_summary_placeholder()` / `_write_llm_summary_extract()` / `_acquire_llm_lock()` / `_release_llm_lock()` / `_escape_for_xml()` / `_build_llm_prompt()` / `_parse_today_arg()`
+  - 定数: `_LLM_INPUT_MAX_CHARS` / `_LLM_OUTPUT_MAX_CHARS` / `_LLM_TIMEOUT_SEC` / `_LLM_DEPTH_ENV` / `LLM_SUMMARY_FILE_NAME` / `LLM_SUMMARY_PATH` / `LLM_SUMMARY_PLACEHOLDER` / `LOCK_PATH` / `LOCK_STALE_SEC` / `LLM_ONLY_FLAG`
+  - `write_summary()` の `enable_llm` パラメータ（破壊的シグネチャ変更）
+  - `consolidate_memory.py --llm-only <iso>` モード
+- **配布除外パターン**: `memory/llm_summary.md` を `.gitignore` / `src/c3/_excludes.py` / `hatch_build.py` から削除（生成自体しなくなったため）
+
+### 変更
+
+- **`.claude/CLAUDE.md`**: `@memory/llm_summary.md` の自動注入参照を削除
+- **テストの整理**: `tests/hooks/test_consolidate_memory.py` から LLM 関連 13 クラス約 43 件、`tests/hooks/test_session_stop.py` から Phase 3 関連 3 クラス計 14 件を削除（871 件 → 814 件）
+
+### Migration（既存利用先環境向け cleanup 手順）
+
+`c3 update` は配布物の削除を検出しないため、`pip install -U claude-code-conductor` 後に以下を手動実行してください。
+
+```bash
+# 1. CLAUDE.md の自動注入参照を削除
+#    .claude/CLAUDE.md の `@memory/llm_summary.md` 行を手動編集で削除
+
+# 2. ランタイム生成物を削除（gitignored）
+rm -f .claude/memory/llm_summary.md
+rm -f .claude/state/llm_summary_agent_requested.flag
+rm -f .claude/state/consolidate_llm.lock
+
+# 3. 不要になったエージェント / スキルを削除
+rm -f .claude/agents/summarize-memory.md
+rm -rf .claude/skills/summarize-memory/
+```
+
+### 根拠
+
+- 数日おきに発生する LLM 出力の汚染（narration テキストや内部 tool-call XML マークアップが Write content に混入）が SKILL.md のプロンプト制約 / サニタイザでは構造的に修復困難
+- `@memory/llm_summary.md` 経由で汚染が次セッションへ自己増殖する設計上の脆さ
+- 効果が限定的：要約に「再発パターン」と記録されているにも関わらず同じ問題が繰り返し再発し、LLM の行動変容に繋がっていない
+- 約 1900 行のプロダクションコード + 約 2500 行のテストという過大な投資に対する費用対効果の悪化
+- 代替手段：`c3 recall` の HNSW + 多言語 embedding によるオンデマンド意味検索（v2.10.0 で導入済み）でセッション履歴を必要時に取得可能
+
+---
+
 ## [2.10.0] - 2026-05-19
 
 ### 概要

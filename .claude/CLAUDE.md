@@ -68,4 +68,3 @@
 <!-- このセクションは C3 のコマンドが自動で更新する。手動で編集しないこと。 -->
 
 @rules/promoted/index.md
-@memory/llm_summary.md
