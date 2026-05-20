@@ -1,5 +1,63 @@
 # Changelog
 
+## [Unreleased]
+
+### タクソノミー棚卸（hooks/ 整理）
+
+- **skill-callable CLI ヘルパーの再配置**: `review_hint_inject.py` / `record_review_decision.py` / `record_tier_outcome.py` を `.claude/hooks/` から `.claude/skills/dev-workflow/scripts/` に移動。`hooks/` は Claude Code のイベントフックとそのヘルパーモジュール専用とする
+- **`subagent_log.py` を削除**: PO（Parallel Orchestra、v2.0.0 廃止）時代の残骸。SubagentStart/Stop イベントの開発用ロギングフック
+- **`taxonomy.md` / `decisions.md` 更新**: skills の「オーケストレーション skill」「ユーティリティ skill」2 種類分類を追記、D-010 / D-011 を追加（フック拡張・promoted スキルパス変更）
+- **`record_review_decision.py` に文字数 / バイト数上限を導入**: `MAX_FINDING_LEN=2000` / `MAX_REASON_LEN=2000` / `MAX_FIELD_BYTES=8192` で DB 肥大化を防止
+- **`review_hint_inject.py` に `ALLOWED_REPORT_DIR` パスガード**: `.claude/reports/` 配下のみ許可（パストラバーサル防御）
+
+#### Migration（既存利用先環境向け cleanup 手順）
+
+`c3 update` は配布物の削除を検出しないため、`pip install -U claude-code-conductor` 後に以下を手動実行してください。
+
+**1. 旧 hooks/ 配下の skill-callable スクリプトを削除**
+
+POSIX（Linux/macOS）:
+```bash
+rm -f .claude/hooks/review_hint_inject.py
+rm -f .claude/hooks/record_review_decision.py
+rm -f .claude/hooks/record_tier_outcome.py
+rm -f .claude/hooks/subagent_log.py
+```
+
+PowerShell（Windows）:
+```powershell
+Remove-Item -Force .claude\hooks\review_hint_inject.py
+Remove-Item -Force .claude\hooks\record_review_decision.py
+Remove-Item -Force .claude\hooks\record_tier_outcome.py
+Remove-Item -Force .claude\hooks\subagent_log.py
+```
+
+**2. `.claude/settings.local.json` から `subagent_log.py` 関連を削除**（個人ファイル）
+
+- `permissions.allow` の `"Bash(python .claude/hooks/subagent_log.py*)"` エントリ
+- `hooks.SubagentStart` ブロック全体（subagent_log.py を呼ぶもの）
+- `hooks.SubagentStop` ブロック全体（同上）
+
+**3. `.claude/settings.json` の `permissions.allow` を新パスに置換**
+
+```diff
+- "Bash(python .claude/hooks/review_hint_inject.py*)",
+- "Bash(python .claude/hooks/record_review_decision.py*)",
+- "Bash(python .claude/hooks/record_tier_outcome.py*)",
++ "Bash(python .claude/skills/dev-workflow/scripts/review_hint_inject.py*)",
++ "Bash(python .claude/skills/dev-workflow/scripts/record_review_decision.py*)",
++ "Bash(python .claude/skills/dev-workflow/scripts/record_tier_outcome.py*)",
+```
+
+**4. 確認**
+
+```bash
+# 旧パス参照が残っていないか確認
+grep -r "\.claude/hooks/review_hint_inject\|\.claude/hooks/record_review_decision\|\.claude/hooks/record_tier_outcome\|\.claude/hooks/subagent_log" .claude/ || echo "OK: 旧パス参照なし"
+```
+
+---
+
 ## [2.11.0] - 2026-05-21
 
 ### 破壊的変更: summarize-memory 機能の廃止

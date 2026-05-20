@@ -406,10 +406,10 @@ AskUserQuestion で確認する:
 Agent ツールで `code-reviewer` エージェントを起動する。
 
 **review-hint 過去判断ヒント注入（レポート生成後）:**
-code-reviewer がレポートを Write し終えたら、Bash で `.claude/hooks/review_hint_inject.py` を呼んで過去判断ヒントをレポート末尾に追記する:
+code-reviewer がレポートを Write し終えたら、Bash で `.claude/skills/dev-workflow/scripts/review_hint_inject.py` を呼んで過去判断ヒントをレポート末尾に追記する:
 
 ```bash
-python .claude/hooks/review_hint_inject.py .claude/reports/code-review-report-{timestamp}.md
+python .claude/skills/dev-workflow/scripts/review_hint_inject.py .claude/reports/code-review-report-{timestamp}.md
 ```
 
 ヒントは独立セクションとして追加されるだけで、code-reviewer の指摘本文は変更されない。
@@ -465,7 +465,7 @@ AskUserQuestion で確認する:
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
 3. **review-hint 判断記録**: 各指摘について Bash で c3.db に記録する（`[CR-XX-NNN]` を含むもののみ。`[CR-NEW]` は記録対象外、チェックリスト追加候補として別途扱う）:
    ```bash
-   python .claude/hooks/record_review_decision.py \
+   python .claude/skills/dev-workflow/scripts/record_review_decision.py \
      --checklist-id CR-Q-001 \
      --finding "{指摘本文を 1 行で}" \
      --decision {fixed|accepted} \
@@ -500,10 +500,10 @@ AskUserQuestion で許容理由を確認する:
 Agent ツールで `security-reviewer` エージェントを起動する。
 
 **review-hint 過去判断ヒント注入（レポート生成後）:**
-security-reviewer がレポートを Write し終えたら、Bash で `.claude/hooks/review_hint_inject.py` に **両レポートのパス** を渡して呼ぶ。両方渡すことで重複指摘フラグ（同じ checklist_id を CR と SR が指摘）が判定される:
+security-reviewer がレポートを Write し終えたら、Bash で `.claude/skills/dev-workflow/scripts/review_hint_inject.py` に **両レポートのパス** を渡して呼ぶ。両方渡すことで重複指摘フラグ（同じ checklist_id を CR と SR が指摘）が判定される:
 
 ```bash
-python .claude/hooks/review_hint_inject.py \
+python .claude/skills/dev-workflow/scripts/review_hint_inject.py \
   .claude/reports/code-review-report-{ts1}.md \
   .claude/reports/security-review-report-{ts2}.md
 ```
@@ -530,7 +530,7 @@ AskUserQuestion で確認する:
 承認後 → セッションファイルの `- [ ] security-review` を `- [x]` に Edit する。続けて **「引き継ぎバックログの照合」**（後述の共通ステップ）を実行してからコミットを提案する。
 **tier-routing 結果記録**: フェーズ E の最終承認時のみ Bash で記録する（多重カウント防止のため E-1 では記録しない）:
 ```bash
-python .claude/hooks/record_tier_outcome.py --outcome success
+python .claude/skills/dev-workflow/scripts/record_tier_outcome.py --outcome success
 ```
 
 **指摘がある場合:**
@@ -565,7 +565,7 @@ python .claude/hooks/record_tier_outcome.py --outcome success
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
 3. **review-hint 判断記録**: 各指摘について Bash で c3.db に記録する（`[SR-XX-NNN]` を含むもののみ。`[SR-NEW]` は記録対象外、チェックリスト追加候補として別途扱う）:
    ```bash
-   python .claude/hooks/record_review_decision.py \
+   python .claude/skills/dev-workflow/scripts/record_review_decision.py \
      --checklist-id SR-K-002 \
      --finding "{指摘本文を 1 行で}" \
      --decision {fixed|accepted} \
@@ -590,7 +590,7 @@ AskUserQuestion で許容理由を確認する:
 4. セッションファイルの `- [ ] security-review` を `- [x]` に Edit する。続けて **「引き継ぎバックログの照合」**（後述の共通ステップ）を実行してからコミットを提案する。
 5. **tier-routing 結果記録**: 全許容で完了するのも「成功」としてカウント:
    ```bash
-   python .claude/hooks/record_tier_outcome.py --outcome success
+   python .claude/skills/dev-workflow/scripts/record_tier_outcome.py --outcome success
    ```
 
 **「否認・再診断を依頼する」の場合:**
@@ -598,13 +598,13 @@ AskUserQuestion で許容理由を確認する:
 セッションファイルの `## 試みたが失敗したアプローチ` に教訓をルール形式で追記し `patterns` に追加する。
 **tier-routing 結果記録**: 否認は「失敗」としてカウント:
 ```bash
-python .claude/hooks/record_tier_outcome.py --outcome failure
+python .claude/skills/dev-workflow/scripts/record_tier_outcome.py --outcome failure
 ```
 
 **「全て対応する」「対応する指摘を選ぶ」の場合（フェーズ C へ戻る）:**
 これらも tier の選択がコスト最適でなかったとみなし、**tier-routing 結果記録**で失敗をカウントしてからフェーズ C へ:
 ```bash
-python .claude/hooks/record_tier_outcome.py --outcome failure
+python .claude/skills/dev-workflow/scripts/record_tier_outcome.py --outcome failure
 ```
 
 ---

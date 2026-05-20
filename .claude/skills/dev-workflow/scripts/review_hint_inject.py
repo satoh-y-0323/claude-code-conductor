@@ -59,6 +59,20 @@ CHECKLIST_ID_RE = re.compile(r"\[((?:CR|SR)-[A-Z]+-\d{3,})\]")
 # parents[3] で .claude/ に到達（scripts/ → dev-workflow/ → skills/ → .claude/）。
 # テストでは monkeypatch で差し替え可能。
 ALLOWED_REPORT_DIR = (Path(__file__).resolve().parents[3] / "reports").resolve()
+# 誤配置検出: ALLOWED_REPORT_DIR の親が `.claude` であることを実行時に検証 [SR-NEW]。
+# パストラバーサル防御ではなく、スクリプトが別階層に移動された場合の
+# サイレント破綻を防ぐ。`assert` は `python -O` で無効化されるため
+# RuntimeError で明示的に投げる。
+# record_tier_outcome.py の _CLAUDE_DIR 検証と対称な endswith パターンを使用。
+# `os.sep + ".claude"` は Windows (`\\.claude`)・`"/.claude"` は POSIX 用の固定リテラル。
+# 両方チェックすることで OS 依存しないパス末尾検証になる。
+_parent_str = str(ALLOWED_REPORT_DIR.parent)
+if not (_parent_str.endswith(os.sep + ".claude") or _parent_str.endswith("/.claude")):
+    raise RuntimeError(
+        f"ALLOWED_REPORT_DIR resolution broke: expected parent to end with '.claude' "
+        f"but got {_parent_str!r}. "
+        "Check that this file is at .claude/skills/dev-workflow/scripts/."
+    )
 
 
 def extract_checklist_ids(report_text: str) -> list[str]:
@@ -239,7 +253,11 @@ def main(argv: list[str] | None = None) -> int:
     report_paths: list[Path] = []
     for a in argv:
         p = Path(a)
-        # .claude/reports/ 配下のみを許可する [SR-V-002]
+        # .claude/reports/ 配下のみを許可する [SR-V-002]。
+        # NOTE: Path.resolve() は URL エンコード（%2e%2e 等）を解除しないため、
+        #   ALLOWED_REPORT_DIR 配下にリテラルディレクトリ名として `%2e%2e` を含む
+        #   パスを渡すと relative_to() を通過する。実体ファイルが存在しない限り
+        #   直後の is_file() が二段目防御として弾くため実害なし（脅威モデル: ローカル CLI）。
         try:
             resolved = p.resolve()
             resolved.relative_to(ALLOWED_REPORT_DIR)
@@ -247,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[review_hint_inject] path outside reports/ (skipped): {p}", file=sys.stderr)
             continue
         if not p.is_file():
+            # 二段目防御: %2e%2e 等のリテラルが ALLOWED 配下に解決された場合も
+            # 実ファイルが存在しなければここで弾かれる
             print(f"[review_hint_inject] not a file (skipped): {p}", file=sys.stderr)
             continue
         report_paths.append(p)

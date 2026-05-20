@@ -60,8 +60,16 @@ def _create_c3_db(db_path: Path) -> None:
     mod.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
 
 
-def _load_hook_module() -> types.ModuleType:
-    spec = importlib.util.spec_from_file_location("review_hint_inject", HOOK_PATH)
+def _load_hook_module(name: str = "review_hint_inject") -> types.ModuleType:
+    """モジュールを importlib.util.spec_from_file_location で動的読み込みする。
+
+    NOTE: spec_from_file_location は spec.loader.exec_module() を呼ぶたびに
+    fresh なモジュールを返す（sys.modules には自動登録されない）。
+    引数 `name` はモジュールの `__name__` 属性として使われ、テスト間で衝突しない
+    一意な名前を渡せばロガーや内部 ID の重複を避けられる。
+    test_record_tier_outcome.py の同名関数とシグネチャ統一。
+    """
+    spec = importlib.util.spec_from_file_location(name, HOOK_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
@@ -377,7 +385,7 @@ class TestBuildHintSection:
         assert "後段" in section
 
     # ------------------------------------------------------------------
-    # B-3: U+0085 (NEL) サニタイズ（Red テスト）
+    # B-3: U+0085 (NEL) サニタイズ（Green 回帰防止テスト）
     # ------------------------------------------------------------------
 
     # ソースコード上に実体文字を埋め込まず、chr() 経由で参照する。

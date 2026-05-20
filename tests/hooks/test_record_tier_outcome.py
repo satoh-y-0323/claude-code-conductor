@@ -453,14 +453,14 @@ class TestPromptHistoryAppend:
 # ---------------------------------------------------------------------------
 
 
-class TestClaudeDirAssertion:
-    """b2 タスク: record_tier_outcome.py の _CLAUDE_DIR アサーション検証。
+class TestClaudeDirGuard:
+    """record_tier_outcome.py の _CLAUDE_DIR 誤配置検出ガードの検証。
 
-    b2 実装済み: _CLAUDE_DIR 直後の assert により、誤配置時に AssertionError が発生する。
-    本クラスはその振る舞いを保証する回帰防止テスト。
+    [Cycle 8 L-1 対応] `assert` は `python -O` で無効化されるため
+    `RuntimeError` で明示的に投げる設計に変更済み。本クラスはその振る舞いを保証する回帰防止テスト。
 
     正常配置テストは HOOK_PATH で _load_from_path を呼んで
-    AssertionError が出ないことを確認する。
+    RuntimeError が出ないことを確認する。
     """
 
     def _load_from_path(self, hook_path: Path) -> types.ModuleType:
@@ -470,34 +470,36 @@ class TestClaudeDirAssertion:
         spec.loader.exec_module(mod)  # type: ignore[attr-defined]
         return mod
 
-    def test_normal_placement_no_assertion_error(self) -> None:
-        """正常配置（.claude/skills/dev-workflow/scripts/）でロードしても AssertionError が出ないこと。
+    def test_normal_placement_no_error(self) -> None:
+        """正常配置（.claude/skills/dev-workflow/scripts/）でロードしても誤配置ガードが発火しないこと。
 
-        [b2 Green 前提] HOOK_PATH が正しい 3 階層構造に置かれているため、
-        _CLAUDE_DIR が '.claude' で終わるアサーションは通過する。
-        このテストは b2 実装後も PASS を維持すること。
+        HOOK_PATH が正しい 3 階層構造に置かれているため、
+        _CLAUDE_DIR が '.claude' で終わる RuntimeError ガードは通過する。
         """
-        # AssertionError が出なければ PASS
+        # RuntimeError / AssertionError ともに発生しなければ PASS
         try:
             self._load_from_path(HOOK_PATH)
-        except AssertionError as exc:
+        except (RuntimeError, AssertionError) as exc:
             pytest.fail(
-                f"正常配置でのモジュールロードが AssertionError で失敗した: {exc}"
+                f"正常配置でのモジュールロードが誤配置ガードで失敗した: {exc}"
             )
 
-    def test_wrong_placement_raises_assertion_error(self, tmp_path: Path) -> None:
+    def test_wrong_placement_raises_runtime_error(self, tmp_path: Path) -> None:
         """スクリプトを 3 階層遡れない場所（tmp_path 直下）に置いた場合に
-        AssertionError が発生すること。
+        RuntimeError が発生すること。
 
-        [b2 Green 回帰防止] _CLAUDE_DIR 直後の assert は実装済み。本テストは誤配置を検出することを確認する回帰防止テスト。
+        [Cycle 8 L-1] python -O で無効化されないよう assert ではなく
+        RuntimeError で投げる。本テストは誤配置を検出することを確認する回帰防止テスト。
         """
-        # tmp_path/scripts/record_tier_outcome.py に配置
-        # _SCRIPT_DIR = tmp_path/scripts/
-        # _CLAUDE_DIR = tmp_path.parent.parent（'.claude' で終わらない）
+        # tmp_path/scripts/record_tier_outcome.py に配置すると:
+        #   _SCRIPT_DIR = tmp_path/scripts/
+        #   _CLAUDE_DIR = os.path.dirname(_SCRIPT_DIR) を 3 回 → tmp_path の祖父祖父
+        # pytest の tmp_path はファイルシステムルート近くの一時パスのため
+        # '.claude' で終わらず誤配置検出が発火する。
         wrong_scripts = tmp_path / "scripts"
         wrong_scripts.mkdir()
         wrong_hook = wrong_scripts / "record_tier_outcome.py"
         shutil.copy(HOOK_PATH, wrong_hook)
 
-        with pytest.raises(AssertionError, match=r"_CLAUDE_DIR resolution broke"):
+        with pytest.raises(RuntimeError, match=r"_CLAUDE_DIR resolution broke"):
             self._load_from_path(wrong_hook)

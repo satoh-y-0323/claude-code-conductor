@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import sys
@@ -41,13 +42,15 @@ _CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 # 3 階層遡りで `.claude` に到達することを実行時に検証。
 # 将来スクリプトが別階層に移動された場合のサイレント破綻を防ぐ。
 #
-# 注: このアサーションはセキュリティ防御ではなく、スクリプトの誤配置
-# （ディレクトリ階層変更・移動忘れ等）を実行時に検出するための開発時チェック。
-# 外部攻撃者がディレクトリ構造を制御できる脅威モデルは前提としていない（[SR-NEW]）。
-assert _CLAUDE_DIR.endswith(os.sep + ".claude") or _CLAUDE_DIR.endswith("/.claude"), (
-    f"_CLAUDE_DIR resolution broke: expected to end with '.claude' but got {_CLAUDE_DIR!r}. "
-    "Check that this file is at .claude/skills/dev-workflow/scripts/."
-)
+# 注: これはセキュリティ防御ではなく、スクリプトの誤配置（ディレクトリ階層変更・
+# 移動忘れ等）を実行時に検出するための開発時チェック。外部攻撃者がディレクトリ
+# 構造を制御できる脅威モデルは前提としていない（[SR-NEW]）。
+# `assert` は `python -O` で無効化されるため、RuntimeError で明示的に投げる。
+if not (_CLAUDE_DIR.endswith(os.sep + ".claude") or _CLAUDE_DIR.endswith("/.claude")):
+    raise RuntimeError(
+        f"_CLAUDE_DIR resolution broke: expected to end with '.claude' but got {_CLAUDE_DIR!r}. "
+        "Check that this file is at .claude/skills/dev-workflow/scripts/."
+    )
 TIER_SELECTION_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_selection.json")
 # Phase 2-C: prompt 履歴ファイル（select_tier.py が読む類似度推定の母数）。
 PROMPT_HISTORY_PATH = os.path.join(_CLAUDE_DIR, "logs", "prompt-history.jsonl")
@@ -120,9 +123,8 @@ def _rotate_prompt_history_if_needed() -> None:
         return
     try:
         # 末尾 N 行のみ deque で保持して上書きする（ファイル全体は走査するが I/O のみ）
-        import collections as _c
         with open(PROMPT_HISTORY_PATH, "r", encoding="utf-8") as f:
-            tail = list(_c.deque(f, maxlen=_PROMPT_HISTORY_TRUNCATE_LINES))
+            tail = list(collections.deque(f, maxlen=_PROMPT_HISTORY_TRUNCATE_LINES))
         tmp_path = PROMPT_HISTORY_PATH + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.writelines(tail)
@@ -163,7 +165,11 @@ def _append_prompt_history(selection: dict, success: bool) -> None:
         # (Cycle 3 M-01 / Cycle 4 H-01 の回帰防止。)
         _LS = chr(0x2028)  # LINE SEPARATOR
         _PS = chr(0x2029)  # PARAGRAPH SEPARATOR
-        line = line.replace(_LS, "\u2028").replace(_PS, "\u2029")
+        # The second arg must be the 6-char ASCII string '\u2028' (literal backslash + 'u2028'),
+        # NOT the actual U+2028 char. In Python a normal string "\u2028" evaluates to the
+        # 1-char separator, but raw string r"\u2028" keeps the backslash literal, giving the
+        # 6-char escape sequence that JSON consumers need. Do NOT remove the r-prefix.
+        line = line.replace(_LS, r"\u2028").replace(_PS, r"\u2029")
         with open(PROMPT_HISTORY_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError as exc:
