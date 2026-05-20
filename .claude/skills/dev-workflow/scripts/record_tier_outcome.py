@@ -40,6 +40,10 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR)))
 # 3 階層遡りで `.claude` に到達することを実行時に検証。
 # 将来スクリプトが別階層に移動された場合のサイレント破綻を防ぐ。
+#
+# 注: このアサーションはセキュリティ防御ではなく、スクリプトの誤配置
+# （ディレクトリ階層変更・移動忘れ等）を実行時に検出するための開発時チェック。
+# 外部攻撃者がディレクトリ構造を制御できる脅威モデルは前提としていない（[SR-NEW]）。
 assert _CLAUDE_DIR.endswith(os.sep + ".claude") or _CLAUDE_DIR.endswith("/.claude"), (
     f"_CLAUDE_DIR resolution broke: expected to end with '.claude' but got {_CLAUDE_DIR!r}. "
     "Check that this file is at .claude/skills/dev-workflow/scripts/."
@@ -155,7 +159,11 @@ def _append_prompt_history(selection: dict, success: bool) -> None:
         line = json.dumps(record, ensure_ascii=False)
         # JSONL 互換性: U+2028 (LINE SEPARATOR) / U+2029 (PARAGRAPH SEPARATOR) を
         # ECMAScript パーサが行区切りと解釈するため事前にエスケープする [SR-V-001]。
-        line = line.replace(" ", "\\u2028").replace(" ", "\\u2029")
+        # NOTE: ソースコード上は escape 表記で識谞し、実体文字を埋め込まない
+        # (Cycle 3 M-01 / Cycle 4 H-01 の回帰防止。)
+        _LS = chr(0x2028)  # LINE SEPARATOR
+        _PS = chr(0x2029)  # PARAGRAPH SEPARATOR
+        line = line.replace(_LS, "\u2028").replace(_PS, "\u2029")
         with open(PROMPT_HISTORY_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError as exc:
