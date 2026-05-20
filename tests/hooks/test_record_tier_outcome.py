@@ -36,9 +36,6 @@ HOOK_PATH = WORKTREE_ROOT / ".claude" / "skills" / "dev-workflow" / "scripts" / 
 SCHEMA_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "schema.sql"
 INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "session_start.py"
 
-# b2 / b3 テスト: a1 完了後 HOOK_PATH と同じ場所を参照（後方互換のため NEW_HOOK_PATH として残置）
-NEW_HOOK_PATH = HOOK_PATH
-
 # U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR（実体文字を埋め込まず chr() で参照）
 _LS = chr(0x2028)  # LINE SEPARATOR
 _PS = chr(0x2029)  # PARAGRAPH SEPARATOR
@@ -52,8 +49,13 @@ def _create_c3_db(db_path: Path) -> None:
     mod.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
 
 
-def _load_hook_module() -> types.ModuleType:
-    spec = importlib.util.spec_from_file_location("record_tier_outcome_t", HOOK_PATH)
+def _load_hook_module(name: str = "record_tier_outcome_t") -> types.ModuleType:
+    """HOOK_PATH からモジュールをロードする。
+
+    name は spec_from_file_location の第 1 引数（sys.modules キャッシュキー）。
+    テスト間の汚染を避けるため、テストごとに異なる名前を渡すことができる。
+    """
+    spec = importlib.util.spec_from_file_location(name, HOOK_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
@@ -178,14 +180,6 @@ class TestPromptHistoryAppend:
             }),
             encoding="utf-8",
         )
-
-    def _load_new_hook(self, name: str) -> types.ModuleType:
-        """新パス（.claude/skills/dev-workflow/scripts/）からモジュールをロードする。"""
-        spec = importlib.util.spec_from_file_location(name, NEW_HOOK_PATH)
-        assert spec is not None and spec.loader is not None
-        hook = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(hook)  # type: ignore[attr-defined]
-        return hook
 
     def test_appends_record_on_success(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -330,8 +324,7 @@ class TestPromptHistoryAppend:
         残らない。本テストでは split('\\n') を使って JSONL の 1 行を取り出し、
         その行に U+2028 が含まれるかを検証する。
 
-        [b3 Red] _append_prompt_history に U+2028 エスケープ処理が未実装のため
-        現時点では生の U+2028 が書き込まれて FAIL する。
+        [b3 Green 回帰防止] _append_prompt_history の U+2028 エスケープ処理は実装済み。本テストは PASS を維持する回帰防止テスト。
         """
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
@@ -347,7 +340,7 @@ class TestPromptHistoryAppend:
             prompt_hash="aabbccddeeff0011",
         )
 
-        hook = self._load_new_hook("record_tier_outcome_b3")
+        hook = _load_hook_module("record_tier_outcome_b3")
         monkeypatch.setattr(hook, "TIER_SELECTION_PATH", str(sel_path))
         monkeypatch.setattr(hook, "PROMPT_HISTORY_PATH", str(history_path))
 
@@ -376,8 +369,7 @@ class TestPromptHistoryAppend:
         NOTE: Python の str.splitlines() は U+2029 を行区切りとして扱うため、
         split('\\n') で検証する。
 
-        [b3 Red] _append_prompt_history に U+2029 エスケープ処理が未実装のため
-        現時点では生の U+2029 が書き込まれて FAIL する。
+        [b3 Green 回帰防止] _append_prompt_history の U+2029 エスケープ処理は実装済み。本テストは PASS を維持する回帰防止テスト。
         """
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
@@ -393,7 +385,7 @@ class TestPromptHistoryAppend:
             prompt_hash="1122334455667788",
         )
 
-        hook = self._load_new_hook("record_tier_outcome_b3b")
+        hook = _load_hook_module("record_tier_outcome_b3b")
         monkeypatch.setattr(hook, "TIER_SELECTION_PATH", str(sel_path))
         monkeypatch.setattr(hook, "PROMPT_HISTORY_PATH", str(history_path))
 
@@ -420,8 +412,7 @@ class TestPromptHistoryAppend:
         エスケープ処理（\\u2028 / \\u2029 置換）後、jsonl 行を json.loads すると
         JSON の \\uXXXX エスケープが Python の unicode 文字に復元される。
 
-        [b3 Red] エスケープ処理が未実装のため、現状では前 2 テストが先に FAIL する。
-        本テストは実装後に PASS することを確認する「仕様の正確さ」保証テスト。
+        [b3 Green 回帰防止] _append_prompt_history の U+2028/U+2029 エスケープ処理は実装済み。本テストは PASS を維持する回帰防止テスト。
         """
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
@@ -437,7 +428,7 @@ class TestPromptHistoryAppend:
             prompt_hash="ffeeddccbbaa9988",
         )
 
-        hook = self._load_new_hook("record_tier_outcome_b3c")
+        hook = _load_hook_module("record_tier_outcome_b3c")
         monkeypatch.setattr(hook, "TIER_SELECTION_PATH", str(sel_path))
         monkeypatch.setattr(hook, "PROMPT_HISTORY_PATH", str(history_path))
 
@@ -465,11 +456,10 @@ class TestPromptHistoryAppend:
 class TestClaudeDirAssertion:
     """b2 タスク: record_tier_outcome.py の _CLAUDE_DIR アサーション検証。
 
-    b2 実装前（現時点）: _CLAUDE_DIR 直後の assert が存在しないため、
-    test_wrong_placement_raises_assertion_error は「AssertionError が出ない」として
-    「assert が存在しない」ことを示す FAIL になる。
+    b2 実装済み: _CLAUDE_DIR 直後の assert により、誤配置時に AssertionError が発生する。
+    本クラスはその振る舞いを保証する回帰防止テスト。
 
-    正常配置テストは新パス（NEW_HOOK_PATH）で _load_hook_module を呼んで
+    正常配置テストは HOOK_PATH で _load_from_path を呼んで
     AssertionError が出ないことを確認する。
     """
 
@@ -483,13 +473,13 @@ class TestClaudeDirAssertion:
     def test_normal_placement_no_assertion_error(self) -> None:
         """正常配置（.claude/skills/dev-workflow/scripts/）でロードしても AssertionError が出ないこと。
 
-        [b2 Green 前提] NEW_HOOK_PATH が正しい 3 階層構造に置かれているため、
+        [b2 Green 前提] HOOK_PATH が正しい 3 階層構造に置かれているため、
         _CLAUDE_DIR が '.claude' で終わるアサーションは通過する。
         このテストは b2 実装後も PASS を維持すること。
         """
         # AssertionError が出なければ PASS
         try:
-            self._load_from_path(NEW_HOOK_PATH)
+            self._load_from_path(HOOK_PATH)
         except AssertionError as exc:
             pytest.fail(
                 f"正常配置でのモジュールロードが AssertionError で失敗した: {exc}"
@@ -499,8 +489,7 @@ class TestClaudeDirAssertion:
         """スクリプトを 3 階層遡れない場所（tmp_path 直下）に置いた場合に
         AssertionError が発生すること。
 
-        [b2 Red] _CLAUDE_DIR 直後の assert が未実装のため、現時点では
-        AssertionError が出ずに FAIL する。
+        [b2 Green 回帰防止] _CLAUDE_DIR 直後の assert は実装済み。本テストは誤配置を検出することを確認する回帰防止テスト。
         """
         # tmp_path/scripts/record_tier_outcome.py に配置
         # _SCRIPT_DIR = tmp_path/scripts/
@@ -508,7 +497,7 @@ class TestClaudeDirAssertion:
         wrong_scripts = tmp_path / "scripts"
         wrong_scripts.mkdir()
         wrong_hook = wrong_scripts / "record_tier_outcome.py"
-        shutil.copy(NEW_HOOK_PATH, wrong_hook)
+        shutil.copy(HOOK_PATH, wrong_hook)
 
         with pytest.raises(AssertionError, match=r"_CLAUDE_DIR resolution broke"):
             self._load_from_path(wrong_hook)

@@ -233,14 +233,6 @@ class TestBuildHintSection:
     # b4: _sanitize_md によるサニタイズ検証（新規 Red テスト）
     # ------------------------------------------------------------------
 
-    def _load_new_hook_module(self) -> types.ModuleType:
-        """新パス（.claude/skills/dev-workflow/scripts/）からモジュールをロードする。"""
-        spec = importlib.util.spec_from_file_location("review_hint_inject_b4", HOOK_PATH)
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
-        return mod
-
     def _make_decision_row(
         self,
         *,
@@ -264,7 +256,7 @@ class TestBuildHintSection:
 
         [b4 Green 回帰防止] _sanitize_md ヘルパー実装済み。本テストは PASS を維持する回帰防止テスト。
         """
-        mod = self._load_new_hook_module()
+        mod = _load_hook_module()
         decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         row = self._make_decision_row(
             decided_at=decided_at,
@@ -285,7 +277,7 @@ class TestBuildHintSection:
 
         [b4 Green 回帰防止] _sanitize_md ヘルパー実装済み。本テストは PASS を維持する回帰防止テスト。
         """
-        mod = self._load_new_hook_module()
+        mod = _load_hook_module()
         decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         row = self._make_decision_row(
             decided_at=decided_at,
@@ -311,7 +303,7 @@ class TestBuildHintSection:
         [b4 Green 回帰防止] _sanitize_md ヘルパー実装済み。本テストは「_sanitize_md 実装後も
         _is_old 判定が正しく動く」ことを保証する回帰防止テスト。
         """
-        mod = self._load_new_hook_module()
+        mod = _load_hook_module()
         old_iso = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat(timespec="seconds")
         row = self._make_decision_row(
             decided_at=old_iso,
@@ -342,7 +334,7 @@ class TestBuildHintSection:
 
         [B-1 Green 回帰防止] _sanitize_md の正規表現に U+2028 が含まれていることを保証する回帰防止テスト。
         """
-        mod = self._load_new_hook_module()
+        mod = _load_hook_module()
         decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         reason_with_ls = f"理由before{self._LS}理由after"
         row = self._make_decision_row(
@@ -366,7 +358,7 @@ class TestBuildHintSection:
 
         [B-1 Green 回帰防止] _sanitize_md の正規表現に U+2029 が含まれていることを保証する回帰防止テスト。
         """
-        mod = self._load_new_hook_module()
+        mod = _load_hook_module()
         decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         reason_with_ps = f"前段{self._PS}後段"
         row = self._make_decision_row(
@@ -397,7 +389,7 @@ class TestBuildHintSection:
 
         [B-3 Green 回帰防止] _sanitize_md の正規表現に U+0085 が含まれていることを保証する回帰防止テスト。
         """
-        mod = self._load_new_hook_module()
+        mod = _load_hook_module()
         decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         reason_with_nel = f"before{self._NEL}after"
         row = self._make_decision_row(
