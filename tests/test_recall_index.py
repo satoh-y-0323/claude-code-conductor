@@ -26,6 +26,8 @@ from c3.recall_index import (
     is_stale,
     snippet_of,
     warn_if_stale,
+    _hnsw_save,
+    _hnsw_load,
 )
 
 
@@ -590,3 +592,396 @@ def test_collect_sources_skips_symlinks(tmp_path: Path) -> None:
     assert not any("linked_session.tmp" in p for p in chunk_paths), (
         "symlinked file should be skipped by collect_sources"
     )
+
+
+# ----- _hnsw_save / _hnsw_load Windows non-ASCII path workaround (T1-B1) -----
+#
+# These tests verify the platform-aware detour logic introduced to work around
+# hnswlib's C-level fopen() silently failing on Windows non-ASCII paths.
+#
+# Cases 1-3 verify call routing (direct vs. tempfile detour).
+# Cases 4-5 verify error-handling behaviour (regression guard for G2-B1).
+
+
+class TestHnswSaveNonWindowsUsesDirectCall:
+    """Case 1: Non-Windows always calls save_index directly, even for non-ASCII paths."""
+
+    def test_hnsw_save_on_non_windows_uses_direct_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Linux/macOS, _hnsw_save must call index.save_index(str(path)) directly.
+
+        The tempfile detour is Windows-only; on other platforms hnswlib handles
+        non-ASCII paths natively via the OS.
+        """
+        hnswlib = pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "linux")
+
+        non_ascii_path = tmp_path / "テスト索引.hnsw"
+        mock_index = MagicMock()
+
+        _hnsw_save(mock_index, non_ascii_path)
+
+        mock_index.save_index.assert_called_once_with(str(non_ascii_path))
+
+
+class TestHnswSaveWindowsAsciiPathUsesDirectCall:
+    """Case 2: Windows + ASCII path calls save_index directly (no tempfile detour)."""
+
+    def test_hnsw_save_on_windows_with_ascii_path_uses_direct_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows with a pure-ASCII path, _hnsw_save must NOT use tempfile.
+
+        The tempfile detour adds overhead and is only justified for non-ASCII
+        paths where hnswlib's C fopen() would silently fail.
+        """
+        hnswlib = pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
+
+        ascii_path = tmp_path / "recall.hnsw"
+        mock_index = MagicMock()
+
+        _hnsw_save(mock_index, ascii_path)
+
+        mock_index.save_index.assert_called_once_with(str(ascii_path))
+
+
+class TestHnswSaveWindowsNonAsciiPathUsesTempfile:
+    """Case 3: Windows + non-ASCII path must route through an ASCII tempfile."""
+
+    def test_hnsw_save_on_windows_with_non_ascii_path_uses_tempfile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows with a non-ASCII path, _hnsw_save must call save_index with an
+        ASCII-only tempfile path, then copy the result to the real destination.
+
+        The argument passed to save_index must be ASCII-only (hnswlib C fopen safe).
+        """
+        hnswlib = pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        import shutil
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
+
+        non_ascii_path = tmp_path / "日本語パス" / "recall.hnsw"
+        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
+
+        mock_index = MagicMock()
+
+        # Intercept shutil.copy2 so the test does not require the tempfile to
+        # actually contain valid HNSW data.
+        with patch.object(recall_mod.shutil, "copy2"):
+            _hnsw_save(mock_index, non_ascii_path)
+
+        # save_index must have been called with a path that is ASCII-only.
+        assert mock_index.save_index.call_count == 1
+        actual_path_arg = mock_index.save_index.call_args[0][0]
+        assert actual_path_arg.isascii(), (
+            f"save_index was called with non-ASCII path {actual_path_arg!r}; "
+            "expected an ASCII-only tempfile path"
+        )
+        # The ASCII tmp path must differ from the real (non-ASCII) destination.
+        assert actual_path_arg != str(non_ascii_path)
+
+
+class TestHnswSaveTempfileCleanupFailureLogsWarning:
+    """regression guard for G2-B1: unlink failure during tempfile cleanup emits a stderr warning.
+
+    Verifies that the finally block logs a warning to stderr instead of
+    silently swallowing the OSError when tmp.unlink() fails.
+    """
+
+    def test_hnsw_save_tempfile_cleanup_failure_logs_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When tmp.unlink() raises OSError, _hnsw_save must log a warning to stderr.
+
+        The warning must mention that the temporary file could not be removed
+        (e.g. contain the word 'warn' or 'cleanup' or 'temp' case-insensitively).
+        """
+        hnswlib = pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        import shutil
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
+
+        non_ascii_path = tmp_path / "テスト" / "recall.hnsw"
+        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
+
+        mock_index = MagicMock()
+
+        # Simulate unlink() failure by patching Path.unlink on the tmp path.
+        # We patch shutil.copy2 to avoid needing valid HNSW data, and patch
+        # Path.unlink to raise OSError unconditionally.
+        original_unlink = recall_mod.Path.unlink
+
+        def failing_unlink(self, missing_ok=False):
+            raise OSError("simulated cleanup failure")
+
+        with (
+            patch.object(recall_mod.shutil, "copy2"),
+            patch.object(recall_mod.Path, "unlink", failing_unlink),
+        ):
+            _hnsw_save(mock_index, non_ascii_path)
+
+        captured = capsys.readouterr()
+        assert captured.err, (
+            "_hnsw_save must emit a warning to stderr when tmp cleanup fails, "
+            "but stderr was empty"
+        )
+        lower_err = captured.err.lower()
+        assert any(kw in lower_err for kw in ("warn", "cleanup", "temp", "unlink", "tmp")), (
+            f"stderr warning {captured.err!r} does not mention cleanup failure"
+        )
+
+
+class TestHnswSaveHidesTempPathOnHnswlibError:
+    """regression guard for G2-B1: hnswlib exceptions must not expose the internal tempfile path.
+
+    Verifies that when save_index raises, the re-raised exception message contains
+    the real destination path (or a generic message) but never the internal ASCII
+    tempfile path used as a workaround.
+    """
+
+    def test_hnsw_save_hides_temp_path_on_hnswlib_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When save_index raises, the re-raised exception must NOT contain the
+        internal ASCII tempfile path in its message.
+
+        The caller should see the real destination path (or a generic message)
+        but never the implementation-detail tmp path that was used internally.
+        """
+        hnswlib = pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        import shutil
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
+
+        non_ascii_path = tmp_path / "日本語" / "recall.hnsw"
+        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
+
+        captured_tmp_path: list[str] = []
+
+        def spy_save_index(path_str: str) -> None:
+            captured_tmp_path.append(path_str)
+            raise RuntimeError(f"hnswlib internal error writing to {path_str}")
+
+        mock_index = MagicMock()
+        mock_index.save_index.side_effect = spy_save_index
+
+        with pytest.raises(Exception) as exc_info:
+            _hnsw_save(mock_index, non_ascii_path)
+
+        assert captured_tmp_path, "save_index was not called; test setup is wrong"
+        tmp_path_str = captured_tmp_path[0]
+
+        error_message = str(exc_info.value)
+        assert tmp_path_str not in error_message, (
+            f"Exception message {error_message!r} leaks the internal tempfile path "
+            f"{tmp_path_str!r}. _hnsw_save must wrap the exception and hide the tmp path."
+        )
+
+
+# ----- _hnsw_load Windows non-ASCII path workaround (T1-B1 load-side) -----
+#
+# These tests are regression guards for the platform-aware load detour mirroring
+# the _hnsw_save logic.  The implementation in _hnsw_load already satisfies all
+# five cases, so these tests should PASS (verify guard).
+
+
+class TestHnswLoadNonWindowsUsesDirectCall:
+    """regression guard for _hnsw_load: non-Windows calls load_index directly."""
+
+    def test_hnsw_load_non_windows_uses_direct_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """regression guard for _hnsw_load non-ASCII path on Linux/macOS.
+
+        On non-Windows, _hnsw_load must call index.load_index(str(path)) directly
+        without tempfile indirection, even for non-ASCII paths.
+        """
+        pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "linux")
+
+        non_ascii_path = tmp_path / "テスト索引.hnsw"
+        # The file does not need to exist because load_index is mocked.
+        mock_index = MagicMock()
+
+        _hnsw_load(mock_index, non_ascii_path)
+
+        mock_index.load_index.assert_called_once_with(str(non_ascii_path))
+
+
+class TestHnswLoadWindowsAsciiPathUsesDirectCall:
+    """regression guard for _hnsw_load: Windows + ASCII path calls load_index directly."""
+
+    def test_hnsw_load_windows_with_ascii_path_uses_direct_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """regression guard for _hnsw_load ASCII path on Windows.
+
+        On Windows with a pure-ASCII path, _hnsw_load must NOT use the tempfile
+        detour; load_index must be called with the original path string.
+        """
+        pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
+
+        ascii_path = tmp_path / "recall.hnsw"
+        mock_index = MagicMock()
+
+        _hnsw_load(mock_index, ascii_path)
+
+        mock_index.load_index.assert_called_once_with(str(ascii_path))
+
+
+class TestHnswLoadWindowsNonAsciiPathUsesTempfile:
+    """regression guard for _hnsw_load: Windows + non-ASCII path routes through ASCII tempfile."""
+
+    def test_hnsw_load_windows_with_non_ascii_path_uses_tempfile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """regression guard for _hnsw_load non-ASCII path tempfile detour on Windows.
+
+        On Windows with a non-ASCII source path, _hnsw_load must call load_index
+        with an ASCII-only tempfile path, not the original non-ASCII path.
+        """
+        pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
+
+        non_ascii_path = tmp_path / "日本語パス" / "recall.hnsw"
+        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create a dummy file so shutil.copy2 (if not patched) doesn't fail.
+        non_ascii_path.write_bytes(b"\x00")
+
+        mock_index = MagicMock()
+
+        with patch.object(recall_mod.shutil, "copy2"):
+            _hnsw_load(mock_index, non_ascii_path)
+
+        assert mock_index.load_index.call_count == 1
+        actual_path_arg = mock_index.load_index.call_args[0][0]
+        assert actual_path_arg.isascii(), (
+            f"load_index was called with non-ASCII path {actual_path_arg!r}; "
+            "expected an ASCII-only tempfile path"
+        )
+        assert actual_path_arg != str(non_ascii_path)
+
+
+class TestHnswLoadTempfileCleanupFailureLogsWarning:
+    """regression guard for _hnsw_load: unlink failure during cleanup emits stderr warning."""
+
+    def test_hnsw_load_tempfile_cleanup_failure_logs_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """regression guard for _hnsw_load cleanup-failure warning.
+
+        When tmp.unlink() raises OSError, _hnsw_load must emit a warning to stderr
+        instead of silently swallowing the error, so operators can detect temp-
+        directory leaks.
+        """
+        pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
+
+        non_ascii_path = tmp_path / "テスト" / "recall.hnsw"
+        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
+        non_ascii_path.write_bytes(b"\x00")
+
+        mock_index = MagicMock()
+
+        def failing_unlink(self, missing_ok=False):
+            raise OSError("simulated cleanup failure")
+
+        with (
+            patch.object(recall_mod.shutil, "copy2"),
+            patch.object(recall_mod.Path, "unlink", failing_unlink),
+        ):
+            _hnsw_load(mock_index, non_ascii_path)
+
+        captured = capsys.readouterr()
+        assert captured.err, (
+            "_hnsw_load must emit a warning to stderr when tmp cleanup fails, "
+            "but stderr was empty"
+        )
+        lower_err = captured.err.lower()
+        assert any(kw in lower_err for kw in ("warn", "cleanup", "temp", "unlink", "tmp")), (
+            f"stderr warning {captured.err!r} does not mention cleanup failure"
+        )
+
+
+class TestHnswLoadHidesTempPathOnHnswlibError:
+    """regression guard for _hnsw_load: hnswlib exceptions must not expose the internal temp path."""
+
+    def test_hnsw_load_hides_temp_path_on_hnswlib_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """regression guard for _hnsw_load exception message does not leak tmp path.
+
+        When load_index raises, the re-raised exception must NOT contain the
+        internal ASCII tempfile path in its message.  The caller should see the
+        real destination filename (or a generic message) but never the
+        implementation-detail tmp path used internally.
+        """
+        pytest.importorskip("hnswlib")
+
+        import c3.recall_index as recall_mod
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
+
+        non_ascii_path = tmp_path / "日本語" / "recall.hnsw"
+        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
+        non_ascii_path.write_bytes(b"\x00")
+
+        captured_tmp_path: list[str] = []
+
+        def spy_load_index(path_str: str, **kwargs: object) -> None:
+            captured_tmp_path.append(path_str)
+            raise RuntimeError(f"hnswlib internal error reading from {path_str}")
+
+        mock_index = MagicMock()
+        mock_index.load_index.side_effect = spy_load_index
+
+        with patch.object(recall_mod.shutil, "copy2"):
+            with pytest.raises(Exception) as exc_info:
+                _hnsw_load(mock_index, non_ascii_path)
+
+        assert captured_tmp_path, "load_index was not called; test setup is wrong"
+        tmp_path_str = captured_tmp_path[0]
+
+        error_message = str(exc_info.value)
+        assert tmp_path_str not in error_message, (
+            f"Exception message {error_message!r} leaks the internal tempfile path "
+            f"{tmp_path_str!r}. _hnsw_load must wrap the exception and hide the tmp path."
+        )

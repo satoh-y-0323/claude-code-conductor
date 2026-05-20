@@ -30,6 +30,8 @@ try:
 except AttributeError:
     pass
 
+# Stop hook の stdin payload に対する上限（1 MB）[SR-V-001]
+MAX_STDIN_BYTES = 1 * 1024 * 1024
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -54,9 +56,19 @@ def main() -> int:
 
     stdin を 1 回読んで stop.run / consolidate_memory.run_sync を順に呼ぶ。
     片方が失敗しても他方は実行する。常に exit 0 を返す。
+
+    [SR-V-001] stdin payload の上限は MAX_STDIN_BYTES (1 MB)。
+    超過時は stderr に警告を出力して return 0 で早期リターンする（セッションは止めない）。
     """
     try:
-        payload = json.loads(sys.stdin.read())
+        raw = sys.stdin.read()
+        if len(raw) > MAX_STDIN_BYTES:
+            print(
+                f"[session_stop] stdin payload exceeds {MAX_STDIN_BYTES} bytes; aborting",
+                file=sys.stderr,
+            )
+            return 0
+        payload = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         payload = {}
 

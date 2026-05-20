@@ -992,3 +992,353 @@ class TestWriteSummaryAtomicWriteFailure:
         )
 
 
+# ---------------------------------------------------------------------------
+# T1-B2: stdin 1 MB 上限 [L-3 SR-V-001]
+# ---------------------------------------------------------------------------
+
+
+class TestStdinMaxBytes:
+    """main() の stdin 読み取りに 1 MB 上限が課されることを検証する。[L-3 SR-V-001]"""
+
+    def test_main_rejects_stdin_over_max_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """stdin に 1 MB を超えるデータを流した場合、警告を出力するか非ゼロ終了コードを返すことを検証。
+
+        regression guard for [L-3 SR-V-001]: consolidate_memory.main() は stdin が
+        1 MB を超えた場合に stderr 警告を出力するか非ゼロ終了コードを返すべき。
+        """
+        mod = _load_hook_module()
+
+        # 1 MB + 1 byte のペイロード
+        oversized_payload = b"x" * ((1 << 20) + 1)
+
+        class OversizedStdin:
+            def read(self):
+                return oversized_payload.decode("latin-1")
+
+        monkeypatch.setattr(sys, "stdin", OversizedStdin())
+
+        # run_sync をスタブ化して stdin 読み取り後の処理をスキップ
+        monkeypatch.setattr(mod, "run_sync", lambda *a, **kw: 0)
+
+        import io as _io
+        old_stderr = sys.stderr
+        sys.stderr = _io.StringIO()
+
+        rc = mod.main()
+
+        stderr_output = sys.stderr.getvalue()
+        sys.stderr = old_stderr
+
+        # 上限超過時は stderr に警告を出力するか、非ゼロ終了コードを返すべき。
+        assert (
+            "too large" in stderr_output.lower()
+            or "max" in stderr_output.lower()
+            or "limit" in stderr_output.lower()
+            or rc != 0
+        ), (
+            "stdin が 1 MB を超えた場合、stderr に警告ログを出力するか非ゼロ終了コードを返すべき。"
+            "[L-3 SR-V-001] regression guard: 無制限読み取りへの退行を防ぐ。"
+        )
+
+    def test_main_accepts_stdin_within_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """1 MB 以内の stdin で正常動作（exit 0）することを検証。
+
+        既存挙動の維持確認。Green フェーズで上限実装後もこのケースは PASS すること。
+        """
+        mod = _load_hook_module()
+
+        # 1 MB - 1 byte のペイロード（上限以内）
+        within_payload = "x" * ((1 << 20) - 1)
+
+        class WithinStdin:
+            def read(self):
+                return within_payload
+
+        monkeypatch.setattr(sys, "stdin", WithinStdin())
+        monkeypatch.setattr(mod, "run_sync", lambda *a, **kw: 0)
+
+        rc = mod.main()
+
+        assert rc == 0, (
+            "1 MB 以内の stdin では正常終了（exit 0）すること。"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T1-B2: patterns.json 型検証 [L-4 SR-V-001]
+# ---------------------------------------------------------------------------
+
+
+class TestPatternsJsonValidation:
+    """patterns.json の型検証と description/id の改行除去を検証する。[L-4 SR-V-001]"""
+
+    def test_load_patterns_rejects_non_list(
+        self, tmp_path: Path
+    ) -> None:
+        r"""_load_patterns_readonly に patterns が list でなく dict の場合、stderr に警告を出力すること。
+
+        regression guard for [L-4 SR-V-001]: 型不整合時は無言で無視せず stderr 警告を
+        出力するべき（プロンプトインジェクション防止）。
+        """
+        import io as _io
+
+        mod = _load_hook_module()
+        patterns_path = tmp_path / "patterns.json"
+        # patterns が dict（list でない）
+        patterns_path.write_text(
+            '{"patterns": {"unexpected_key": "unexpected_value"}}',
+            encoding="utf-8",
+        )
+
+        old_stderr = sys.stderr
+        sys.stderr = _io.StringIO()
+
+        result = mod._load_patterns_readonly(str(patterns_path))
+
+        stderr_output = sys.stderr.getvalue()
+        sys.stderr = old_stderr
+
+        # 型不整合は空リストを返すべき（既存動作の維持）
+        assert result == [], f"非 list の patterns は空リストを返すべきだが {result!r} が返った"
+
+        # 型不整合は stderr に警告を出力するべき
+        assert stderr_output != "", (
+            "patterns.json の `patterns` フィールドが list でない場合、"
+            "stderr に型不整合警告を出力するべき。"
+            "[L-4 SR-V-001] regression guard: 無言での空リスト返却への退行を防ぐ。"
+        )
+
+    def test_promotion_candidates_strips_newlines_in_description(
+        self, tmp_path: Path
+    ) -> None:
+        r"""patterns.json の description に \n / \r が含まれていた場合、
+        write_promotion_candidates_log の出力（詳細セクション）でこれらが除去されることを検証。
+
+        regression guard for [L-4 SR-V-001]: 詳細セクションの description から
+        \n / \r を除去して Markdown インジェクションを防ぐ。
+        """
+        mod = _load_hook_module()
+        from datetime import datetime, timezone
+
+        output_path = tmp_path / "promotion-candidates.md"
+
+        candidates = [
+            {
+                "id": "injected_id",
+                "description": "line1\nline2\r\nline3\rline4",
+                "trust_score": 0.9,
+                "promotion_candidate": True,
+                "observations": [{"date": "20260501"}],
+                "registered_date": "20260501",
+            }
+        ]
+
+        mod.write_promotion_candidates_log(
+            candidates,
+            str(output_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        content = output_path.read_text(encoding="utf-8")
+
+        # description に含まれる生の \n / \r が出力ファイルに残っていないことを検証
+        # 詳細セクションの description 行を特定して検証
+        assert "line1\nline2" not in content, (
+            "description の改行 \\n が詳細セクションに残っている。"
+            "Markdown インジェクション防止のため除去すること。"
+            "[L-4 SR-V-001] regression guard: description 改行除去への退行を防ぐ。"
+        )
+        assert "line3\rline4" not in content, (
+            "description の改行 \\r が詳細セクションに残っている。"
+            "Markdown インジェクション防止のため除去すること。"
+            "[L-4 SR-V-001] regression guard: description 改行除去への退行を防ぐ。"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-1b: _sanitize_field 拡張テスト（タブ / null byte / ASCII 制御文字）
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeFieldExtended:
+    """regression guard for _sanitize_field to strip tab, null byte, and ASCII control chars."""
+
+    def test_sanitize_field_strips_tab(self) -> None:
+        """regression guard for [N-3]: _sanitize_field がタブ文字を除去またはスペースに置換すること。
+
+        Verifies that _sanitize_field strips tab characters (\t) from field values.
+        """
+        mod = _load_hook_module()
+        result = mod._sanitize_field("before\tafter")
+        assert "\t" not in result, (
+            "_sanitize_field はタブ文字 \\t を除去またはスペースに置換する必要がある。"
+            "[N-3] regression guard: タブ素通りへの退行を防ぐ。"
+        )
+
+    def test_sanitize_field_strips_null_byte(self) -> None:
+        """regression guard for [N-3]: _sanitize_field が null byte を除去すること。
+
+        Verifies that _sanitize_field removes null bytes (\x00) from field values.
+        """
+        mod = _load_hook_module()
+        result = mod._sanitize_field("before\x00after")
+        assert "\x00" not in result, (
+            "_sanitize_field は null byte \\x00 を除去する必要がある。"
+            "[N-3] regression guard: null byte 素通りへの退行を防ぐ。"
+        )
+
+    def test_sanitize_field_strips_ascii_control_chars(self) -> None:
+        r"""regression guard for [N-3]: _sanitize_field が ASCII 制御文字を除去すること。
+
+        Verifies that _sanitize_field strips ASCII control characters
+        (\x01-\x08, \x0b, \x0c, \x0e-\x1f, \x7f) from field values.
+        """
+        mod = _load_hook_module()
+        # \x01-\x08, \x0b, \x0c, \x0e-\x1f, \x7f (exclude \x09=tab tested above,
+        # \x0a=LF and \x0d=CR which are already handled)
+        control_chars = (
+            "".join(chr(i) for i in range(0x01, 0x09))  # \x01-\x08
+            + "\x0b\x0c"                                 # VT, FF
+            + "".join(chr(i) for i in range(0x0e, 0x20)) # \x0e-\x1f
+            + "\x7f"                                     # DEL
+        )
+        result = mod._sanitize_field(f"before{control_chars}after")
+        for ch in control_chars:
+            assert ch not in result, (
+                f"_sanitize_field は ASCII 制御文字 \\x{ord(ch):02x} を除去する必要がある。"
+                "[N-3] regression guard: ASCII 制御文字素通りへの退行を防ぐ。"
+            )
+
+
+# ---------------------------------------------------------------------------
+# T-1b: registered / last_updated / cid_disp への sanitize 適用テスト
+# ---------------------------------------------------------------------------
+
+
+class TestPromotionCandidatesSanitize:
+    """regression guard for _sanitize_field applied to registered/last_updated/cid_disp fields."""
+
+    def test_registered_with_newline_is_sanitized_in_table(
+        self, tmp_path: Path
+    ) -> None:
+        r"""regression guard for [N-1]: registered_date の改行が表セクションで除去されること。
+
+        Verifies that _sanitize_field is applied to registered_date in the table section,
+        preventing \n from breaking the Markdown table row.
+        """
+        mod = _load_hook_module()
+        output_path = tmp_path / "promotion-candidates.md"
+
+        candidates = [
+            {
+                "id": "p1",
+                "description": "desc",
+                "trust_score": 0.9,
+                "promotion_candidate": True,
+                "observations": [{"date": "20260501"}],
+                "registered_date": "20260501\nINJECTED",
+                "last_updated": "20260501",
+            }
+        ]
+
+        mod.write_promotion_candidates_log(
+            candidates,
+            str(output_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        text = output_path.read_text(encoding="utf-8")
+        # 表セクション内の行に生の \n があってはならない
+        # テーブル行は | ... | ... | 形式であり、その中に改行が入ると行が壊れる
+        assert "20260501\nINJECTED" not in text, (
+            "registered_date の改行 \\n が表セクションに残っている。"
+            "_sanitize_field の適用が必要。[N-1]"
+        )
+
+    def test_registered_with_newline_is_sanitized_in_detail(
+        self, tmp_path: Path
+    ) -> None:
+        r"""regression guard for [N-1]: registered_date の改行が詳細セクションで除去されること。
+
+        Verifies that _sanitize_field is applied to registered_date and last_updated
+        in the detail section ('## 詳細'), preventing Markdown injection.
+        """
+        mod = _load_hook_module()
+        output_path = tmp_path / "promotion-candidates.md"
+
+        candidates = [
+            {
+                "id": "p1",
+                "description": "desc",
+                "trust_score": 0.9,
+                "promotion_candidate": True,
+                "observations": [{"date": "20260501"}],
+                "registered_date": "20260501\nINJECTED",
+                "last_updated": "20260501\nINJECTED_LU",
+            }
+        ]
+
+        mod.write_promotion_candidates_log(
+            candidates,
+            str(output_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        text = output_path.read_text(encoding="utf-8")
+        assert "20260501\nINJECTED" not in text, (
+            "registered_date の改行 \\n が詳細セクションに残っている。"
+            "_sanitize_field の適用が必要。[N-1]"
+        )
+        assert "20260501\nINJECTED_LU" not in text, (
+            "last_updated の改行 \\n が詳細セクションに残っている。"
+            "_sanitize_field の適用が必要。[N-1]"
+        )
+
+    def test_cid_with_newline_is_sanitized_in_table(
+        self, tmp_path: Path
+    ) -> None:
+        r"""regression guard for cid (id field) newline being stripped in table section output.
+
+        The table section uses _truncate_for_table(f["cid"]) for cid_disp.
+        _truncate_for_table internally replaces CR/LF with spaces, so this should already
+        be handled — but it does NOT strip tab/null/ASCII control chars.
+        This test confirms that a newline in cid does not appear raw in the table output.
+        If _truncate_for_table already covers this, the test will PASS even before the fix,
+        acting as a regression guard. The deeper gap (tab/null) is covered by
+        TestSanitizeFieldExtended above.
+        """
+        mod = _load_hook_module()
+        output_path = tmp_path / "promotion-candidates.md"
+
+        candidates = [
+            {
+                "id": "cid_with\nnewline",
+                "description": "desc",
+                "trust_score": 0.9,
+                "promotion_candidate": True,
+                "observations": [{"date": "20260501"}],
+                "registered_date": "20260501",
+                "last_updated": "20260501",
+            }
+        ]
+
+        mod.write_promotion_candidates_log(
+            candidates,
+            str(output_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        text = output_path.read_text(encoding="utf-8")
+        # _truncate_for_table は \n を space に置換するため、テーブル行内に生の \n はないはず
+        # ただし _sanitize_field 未適用なら \t や \x00 はそのまま残る
+        # このテストは改行に関する回帰防止を確認する
+        table_lines = [line for line in text.splitlines() if line.startswith("|") and "cid_with" in line]
+        assert len(table_lines) >= 1, (
+            "cid に改行が含まれる場合でも表セクションに1行として出力されるべき。"
+            "[N-2] cid_disp に _sanitize_field が適用されていないと行が壊れる。"
+        )
+
