@@ -129,7 +129,7 @@ Codex/Cursor adapter は、C3 の `AskUserQuestion` JSON を MCP tool `c3_ask_us
 - session ファイルの記録時刻を更新
 - Claude の最終応答を事実ログに自動記録（次セッションで「前回何をしたか」が分かる）
 - `patterns.json` の信用度を再計算
-- LLM 要約をバックグラウンドで生成し、次セッションのコンテキストに注入する `llm_summary.md` を更新
+- 過去 7 日分のセッション記録を `consolidated_summary.md` に集約し、古い session.tmp を archive 化
 
 ## 次に読むページ
 

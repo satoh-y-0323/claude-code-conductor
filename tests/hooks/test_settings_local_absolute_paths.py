@@ -2,7 +2,7 @@
 
 過去 defect:
   「`settings.local.json` の古い相対パス hooks による `settings.json` 上書き」
-  （`.claude/memory/llm_summary.md` 記録）。
+  （セッションメモリに記録あり）。
 
   Claude Code は settings.local.json と settings.json をマージするが、相対パスの
   hooks コマンドがあると不整合を起こすケースがある。本リポジトリの開発者向け
