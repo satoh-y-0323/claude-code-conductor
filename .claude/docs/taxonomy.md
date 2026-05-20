@@ -124,13 +124,16 @@ paths:
 ---
 
 ### `skills/`
-複数エージェントをまたぐオーケストレーション手順を置く。Claude Code のスラッシュコマンドとしても機能する。
+複数エージェントをまたぐオーケストレーション手順、およびユーザー向けユーティリティ手順を置く。Claude Code のスラッシュコマンドとしても機能する。
 
-- フェーズ構成（Phase 1 → 2 → 3...）
-- エージェント間の受け渡し手順
-- TDD サイクル・レビューサイクル等の繰り返しフロー
+**2種類のスキル:**
 
-> **Skill = オーケストレーション手順**（この定義が C3 の核心）。
+| 種別 | 説明 | 例 |
+|---|---|---|
+| **オーケストレーション skill** | 複数エージェントをまたぐフェーズ構成・受け渡し・TDD サイクル等 | `dev-workflow` / `develop` / `parallel-agents` |
+| **ユーティリティ skill** | エージェント起動を伴わないユーザー向け対話型ツール。`disable-model-invocation: true` が目印 | `mcp-config` / `pattern-status` / `recall` |
+
+> **Skill = オーケストレーション手順 または ユーザー向けユーティリティ**（どちらも skills/ に置く）。
 > 単一エージェントの作業手順は `agents/` に書く。参照知識は `rules/` に書く。
 
 **ディレクトリ構造:**
@@ -144,12 +147,13 @@ skills/
     examples/
       sample.md        # 期待する出力の例
     scripts/
-      helper.py        # Claude が実行できるユーティリティスクリプト
+      helper.py        # SKILL.md から Bash で呼ぶ CLI ヘルパースクリプト
 ```
 
 - `SKILL.md` は必須。他のファイルは任意のサポートファイル。
 - `SKILL.md` はサポートファイルへの参照のみ書き、詳細はそちらに分離する（500行以下推奨）。
 - サポートファイルはスキル実行のたびに自動ロードされない。`SKILL.md` で参照された時にのみ読まれる。
+- `scripts/` 配下にはこの skill 専用の CLI ヘルパー（例: `review_hint_inject.py` / `record_review_decision.py` のようにスキル本体から Bash 経由で呼ぶスクリプト）を置く。複数 skill が共有する場合は別途集約場所を検討する。
 
 **SKILL.md の YAML フロントマター（有効なキー）:**
 
@@ -203,14 +207,20 @@ Summarize the changes above.
 ---
 
 ### `hooks/`
-イベントドリブンで自動実行されるスクリプトを置く。
+Claude Code のライフサイクルイベントに登録される自動実行スクリプト、およびそのヘルパーモジュールを置く。
 
-- `PreToolUse` / `PostToolUse` / `Stop` / `PreCompact` / `Notification` 等のイベントに対応
-- 危険コマンドのガード
-- セッション状態の記録・クリーンアップ
-- `tmp/` の後片付け
+**2種類のファイル:**
 
-> Python スクリプト（`.py`）で実装する。フックの登録は `settings.json` の `hooks` セクションで行う。
+| 種別 | 説明 | 例 |
+|---|---|---|
+| **イベントフック** | Claude Code のライフサイクルイベントに登録し自動実行。`settings.json` の `hooks` セクションに登録必須 | `session_start.py` / `pre_tool.py` / `post_tool.py` |
+| **Hook ワーカー** | イベントフックから `importlib` 等で内部呼び出しされるヘルパーモジュール。単独でイベント登録しない | `stop.py` / `consolidate_memory.py` / `session_utils.py` |
+| **リソースファイル** | フックスクリプトが参照する DDL・設定ファイルなど。Python スクリプトではなく hooks/ に同居するが、イベント登録も内部呼び出しもしない | `schema.sql` |
+
+対応イベント: `SessionStart` / `PreToolUse` / `PostToolUse` / `Stop` / `PreCompact` / `PermissionRequest` / `UserPromptSubmit` 等
+
+> Python スクリプト（`.py`）で実装する。イベントフックの登録は `settings.json` の `hooks` セクションで行う。
+> スキルが Bash 経由で呼ぶ CLI ヘルパーは `hooks/` ではなく **`skills/<name>/scripts/`** に置く（taxonomy 上 hook ではないため）。
 
 ---
 
@@ -245,7 +255,6 @@ Summarize the changes above.
 - `code-review-report-YYYYMMDD-HHMMSS.md` — コードレビュー結果
 - `security-review-report-YYYYMMDD-HHMMSS.md` — セキュリティレビュー結果
 - `test-report-YYYYMMDD-HHMMSS.md` — テスト結果
-- `po-run-report-wave-N-YYYYMMDD-HHMMSS.json` — PO 実行ログ
 - `archive/` — 完了したサイクルのレポートをアーカイブするサブフォルダ
 
 > タイムスタンプはレポートファイル名に使用する。生成時は `report-timestamp` スキルで取得すること。
@@ -363,15 +372,20 @@ claude --plugin-url https://example.com/plugin.zip  # ZIP アーカイブ
 書きたい内容は...
   │
   ├─ 手順・ワークフロー？
-  │   ├─ 複数エージェントをまたぐ → skills/
-  │   └─ 単一エージェントの作業手順 → agents/
+  │   ├─ 複数エージェントをまたぐオーケストレーション → skills/（orchestration skill）
+  │   ├─ ユーザー向け対話型ユーティリティ（エージェント起動なし）→ skills/（utility skill）
+  │   └─ 単一エージェントの作業手順・ペルソナ → agents/
   │
   ├─ 知識・制約？
   │   ├─ 常時適用 → rules/
   │   └─ 特定パスにのみ適用 → rules/（paths フロントマター）
   │
   ├─ 自動実行スクリプト？
-  │   └─ hooks/
+  │   ├─ Claude Code イベントに登録するフック → hooks/（settings.json に登録）
+  │   └─ フックから内部呼び出しされるヘルパー → hooks/（co-location 許容）
+  │
+  ├─ スキルから Bash で呼ぶ CLI ヘルパー？
+  │   └─ skills/<name>/scripts/（その skill 専用 CLI スクリプト）
   │
   ├─ レポート出力？
   │   └─ reports/
