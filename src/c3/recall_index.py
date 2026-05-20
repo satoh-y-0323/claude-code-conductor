@@ -541,6 +541,13 @@ def _hnsw_save(index: Any, path: Path) -> None:
     # L-5 / SR-K-002: restrict permissions to owner-only on POSIX.
     # On Windows os.chmod is a no-op for most permission bits, so this is safe
     # to call unconditionally.
+    # [N-4 SR-NEW] TOCTOU 攻撃面最小化:
+    # mkstemp 直後（save_index でファイルに書き込む前）にパーミッションを 0o600 に絞る。
+    # fd を close した後・ファイルパスが他プロセスから見える状態になった直後のタイミングで
+    # chmod することで「mkstemp → chmod → save_index → copy → unlink」のシーケンス全体を通じて
+    # 他ユーザーが読める時間窓を最小化する。
+    # Windows は POSIX 権限非対応のため os.chmod は例外を出さず silently 実行されるが
+    # パーミッションビットは変化しない（0o666 のまま）。POSIX では機能する。best-effort。
     try:
         os.chmod(tmp_str, 0o600)
     except OSError:
@@ -600,6 +607,13 @@ def _hnsw_load(index: Any, path: Path, **kwargs: Any) -> None:
         )
     tmp = Path(tmp_str)
     # L-5 / SR-K-002: restrict permissions to owner-only on POSIX.
+    # [N-4 SR-NEW] TOCTOU 攻撃面最小化:
+    # mkstemp 直後（copy2 でファイルに書き込む前）にパーミッションを 0o600 に絞る。
+    # fd を close した後・ファイルパスが他プロセスから見える状態になった直後のタイミングで
+    # chmod することで「mkstemp → chmod → copy2 → load_index → unlink」のシーケンス全体を通じて
+    # 他ユーザーが読める時間窓を最小化する。
+    # Windows は POSIX 権限非対応のため os.chmod は例外を出さず silently 実行されるが
+    # パーミッションビットは変化しない（0o666 のまま）。POSIX では機能する。best-effort。
     try:
         os.chmod(tmp_str, 0o600)
     except OSError:

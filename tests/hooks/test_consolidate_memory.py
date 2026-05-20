@@ -1191,6 +1191,72 @@ class TestSanitizeFieldExtended:
             "[N-3] regression guard: null byte 素通りへの退行を防ぐ。"
         )
 
+    def test_sanitize_field_strips_unicode_zero_width_space(self) -> None:
+        """regression guard for [CR-M-001] / [L-1]: _sanitize_field must strip U+200B
+        (ZERO WIDTH SPACE) so that invisible characters cannot be injected into
+        Markdown output.
+
+        _CONTROL_CHARS_RE now covers U+200B-U+200F; this test guards against regression.
+        """
+        mod = _load_hook_module()
+        # U+200B: ZERO WIDTH SPACE
+        result = mod._sanitize_field("a​b")
+        assert "​" not in result, (
+            "regression guard for [CR-M-001] / [L-1]: _sanitize_field は U+200B"
+            " (ZERO WIDTH SPACE) を除去する必要がある。"
+            "_CONTROL_CHARS_RE の拡張（U+200B-U+200F を含める）が必要。"
+        )
+        assert result == "ab", (
+            f"U+200B 除去後は 'ab' になるべきだが {result!r} が返った。"
+        )
+
+    def test_sanitize_field_strips_unicode_line_separator(self) -> None:
+        """regression guard for [CR-M-001] / [L-1]: _sanitize_field must strip U+2028
+        (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) to prevent invisible
+        line-break injection into Markdown output.
+
+        _CONTROL_CHARS_RE now covers U+2028 / U+2029; this test guards against regression.
+        """
+        mod = _load_hook_module()
+        # U+2028: LINE SEPARATOR, U+2029: PARAGRAPH SEPARATOR
+        result_ls = mod._sanitize_field("a b")
+        assert " " not in result_ls, (
+            "regression guard for [CR-M-001] / [L-1]: _sanitize_field は U+2028"
+            " (LINE SEPARATOR) を除去する必要がある。"
+            "_CONTROL_CHARS_RE の拡張（U+2028 / U+2029 を含める）が必要。"
+        )
+        assert result_ls == "ab", (
+            f"U+2028 除去後は 'ab' になるべきだが {result_ls!r} が返った。"
+        )
+
+        result_ps = mod._sanitize_field("a b")
+        assert " " not in result_ps, (
+            "regression guard for [CR-M-001] / [L-1]: _sanitize_field は U+2029"
+            " (PARAGRAPH SEPARATOR) を除去する必要がある。"
+        )
+        assert result_ps == "ab", (
+            f"U+2029 除去後は 'ab' になるべきだが {result_ps!r} が返った。"
+        )
+
+    def test_sanitize_field_strips_unicode_bom(self) -> None:
+        """regression guard for [CR-M-001] / [L-1]: _sanitize_field must strip U+FEFF
+        (BYTE ORDER MARK / ZERO WIDTH NO-BREAK SPACE) from field values.
+
+        U+FEFF is invisible and can corrupt Markdown rendering or introduce subtle
+        injection vectors.  _CONTROL_CHARS_RE now covers U+FEFF; this test guards against regression.
+        """
+        mod = _load_hook_module()
+        # U+FEFF: BOM / ZERO WIDTH NO-BREAK SPACE
+        result = mod._sanitize_field("﻿abc")
+        assert "﻿" not in result, (
+            "regression guard for [CR-M-001] / [L-1]: _sanitize_field は U+FEFF (BOM)"
+            " を除去する必要がある。"
+            "_CONTROL_CHARS_RE の拡張（U+FEFF を含める）が必要。"
+        )
+        assert result == "abc", (
+            f"U+FEFF 除去後は 'abc' になるべきだが {result!r} が返った。"
+        )
+
     def test_sanitize_field_strips_ascii_control_chars(self) -> None:
         r"""regression guard for [N-3]: _sanitize_field が ASCII 制御文字を除去すること。
 
@@ -1340,5 +1406,112 @@ class TestPromotionCandidatesSanitize:
         assert len(table_lines) >= 1, (
             "cid に改行が含まれる場合でも表セクションに1行として出力されるべき。"
             "[N-2] cid_disp に _sanitize_field が適用されていないと行が壊れる。"
+        )
+
+
+class TestPromotionCandidatesSanitizeDescription:
+    """regression guard for description sanitization in table section output.
+
+    The table section must apply _sanitize_field → _truncate_for_table (two-pass)
+    to the description field.  Currently only _truncate_for_table is applied, so
+    tab characters and null bytes pass through without removal.
+    """
+
+    def test_description_with_tab_is_sanitized_in_table(
+        self, tmp_path: Path
+    ) -> None:
+        r"""regression guard for [CR-M-001] / [L-1]: description containing \t must be
+        sanitized (tab → space) and then truncated when rendered in the Markdown table.
+
+        The table section at L447 calls _truncate_for_table(f["description"]) directly,
+        bypassing _sanitize_field.  Until the two-pass pipeline is unified, a tab
+        injected into description will appear raw in the table cell.
+        """
+        mod = _load_hook_module()
+        output_path = tmp_path / "promotion-candidates.md"
+
+        candidates = [
+            {
+                "id": "tab_desc",
+                "description": "before\tafter",
+                "trust_score": 0.9,
+                "promotion_candidate": True,
+                "observations": [{"date": "20260501"}],
+                "registered_date": "20260501",
+            }
+        ]
+
+        mod.write_promotion_candidates_log(
+            candidates,
+            str(output_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        text = output_path.read_text(encoding="utf-8")
+
+        # Find the table row for this candidate
+        table_lines = [
+            line for line in text.splitlines()
+            if line.startswith("|") and "tab_desc" in line
+        ]
+        assert len(table_lines) >= 1, (
+            "表セクションに tab_desc を含む行が存在しない。"
+        )
+        table_row = table_lines[0]
+        assert "\t" not in table_row, (
+            "regression guard for [CR-M-001] / [L-1]: description の \\t が表セクション行に"
+            "残っている。_sanitize_field が description に適用されていないため。"
+            "修正: _truncate_for_table(f['description']) を"
+            "_truncate_for_table(_sanitize_field(f['description'])) に変更すること。"
+        )
+        # After sanitization the tab should have become a space; "before after" is acceptable
+        assert "before" in table_row and "after" in table_row, (
+            "description の内容('before'と'after')が表セクションに残っていること。"
+        )
+
+    def test_description_with_null_byte_is_sanitized_in_table(
+        self, tmp_path: Path
+    ) -> None:
+        r"""regression guard for [CR-M-001] / [L-1]: description containing \x00 must be
+        stripped when rendered in the Markdown table section.
+
+        _truncate_for_table does not call _sanitize_field, so null bytes pass through
+        unfiltered until the two-pass pipeline is applied.
+        """
+        mod = _load_hook_module()
+        output_path = tmp_path / "promotion-candidates.md"
+
+        candidates = [
+            {
+                "id": "null_desc",
+                "description": "before\x00after",
+                "trust_score": 0.9,
+                "promotion_candidate": True,
+                "observations": [{"date": "20260501"}],
+                "registered_date": "20260501",
+            }
+        ]
+
+        mod.write_promotion_candidates_log(
+            candidates,
+            str(output_path),
+            today=datetime(2026, 5, 9, tzinfo=timezone.utc),
+        )
+
+        text = output_path.read_text(encoding="utf-8")
+
+        table_lines = [
+            line for line in text.splitlines()
+            if line.startswith("|") and "null_desc" in line
+        ]
+        assert len(table_lines) >= 1, (
+            "表セクションに null_desc を含む行が存在しない。"
+        )
+        table_row = table_lines[0]
+        assert "\x00" not in table_row, (
+            "regression guard for [CR-M-001] / [L-1]: description の null byte \\x00 が"
+            "表セクション行に残っている。_sanitize_field が description に適用されていないため。"
+            "修正: _truncate_for_table(f['description']) を"
+            "_truncate_for_table(_sanitize_field(f['description'])) に変更すること。"
         )
 

@@ -78,10 +78,20 @@ PROMOTION_CANDIDATES_PATH = os.path.join(
 # Stop hook の stdin payload に対する上限（1 MB）[SR-V-001]
 MAX_STDIN_BYTES = 1 * 1024 * 1024
 
-# Markdown インジェクション・ターミナルエスケープ防止のため除去する制御文字パターン [SR-V-001]
-# 対象: \x00-\x08, \x0b (VT), \x0c (FF), \x0e-\x1f, \x7f (DEL)
+# Markdown インジェクション・ターミナルエスケープ防止のため除去する制御文字パターン [SR-V-001] [SR-AI-001]
+# - ASCII 制御文字: \x00-\x08, \x0b (VT), \x0c (FF), \x0e-\x1f, \x7f (DEL)
+# - Latin-1 補完制御文字: \x80-\x9f
+# - Unicode 行/段落区切り: U+2028 (LINE SEPARATOR), U+2029 (PARAGRAPH SEPARATOR)
+# - Zero-Width 系: U+200B-U+200F
+# - BOM: U+FEFF
 # 除外: \x09 (TAB) は _sanitize_field でスペースに置換、\x0a (LF), \x0d (CR) も同様
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_CONTROL_CHARS_RE = re.compile(
+    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f"
+    "\x80-\x9f"
+    "  "
+    "​-‏"
+    "﻿]"
+)
 
 
 def _load_session_utils():
@@ -444,7 +454,7 @@ def write_promotion_candidates_log(
                 _sanitize_field(f["cid"]), limit=_PROMOTION_CID_MAX_LEN
             )
             safe_registered = _sanitize_field(f["registered"])
-            desc = _truncate_for_table(f["description"])
+            desc = _truncate_for_table(_sanitize_field(f["description"]))
             lines.append(
                 f"| `{cid_disp}` | {f['trust_str']} | "
                 f"{f['obs_count']} | {safe_registered} | {desc} |"
