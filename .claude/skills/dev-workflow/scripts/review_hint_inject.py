@@ -18,6 +18,14 @@ review-hint: レビュー判断ヒント機能。code-reviewer / security-review
 出力:
 - 指定された各レポートの末尾に「## 過去判断ヒント」セクションを追記
 - exit code: 0 (失敗してもセッションを止めない方針)
+
+セキュリティ注記:
+- 引数はファイルシステム上の実在するパスのみ受け付ける（`p.is_file()` チェック済み）。
+  存在しないパス・ディレクトリは警告を出してスキップする。
+- URL エンコードは解除しない。`%2e%2e` 等のリテラル文字列はディレクトリ名として
+  そのまま扱われる（パスは `Path.resolve()` → `relative_to(ALLOWED_REPORT_DIR)` で
+  正規化後に .claude/reports/ 配下のみ許可するため、エンコード解除は不要かつ不可）。
+- 攻撃者が引数を直接制御できる脅威モデルは想定外（ローカル CLI 前提）。
 """
 
 from __future__ import annotations
@@ -46,6 +54,11 @@ DEFAULT_REEVAL_DAYS = 30 * 6
 # checklist_id を抽出する正規表現（[CR-XX-NNN] / [SR-XX-NNN]、連番は 3 桁以上）。
 # 短すぎる連番（[CR-Q-1] 等）は誤抽出を防ぐため対象外とする。
 CHECKLIST_ID_RE = re.compile(r"\[((?:CR|SR)-[A-Z]+-\d{3,})\]")
+
+# パスガード: main() の引数は .claude/reports/ 配下に限定する [SR-V-002]。
+# parents[3] で .claude/ に到達（scripts/ → dev-workflow/ → skills/ → .claude/）。
+# テストでは monkeypatch で差し替え可能。
+ALLOWED_REPORT_DIR = (Path(__file__).resolve().parents[3] / "reports").resolve()
 
 
 def extract_checklist_ids(report_text: str) -> list[str]:
@@ -226,6 +239,13 @@ def main(argv: list[str] | None = None) -> int:
     report_paths: list[Path] = []
     for a in argv:
         p = Path(a)
+        # .claude/reports/ 配下のみを許可する [SR-V-002]
+        try:
+            resolved = p.resolve()
+            resolved.relative_to(ALLOWED_REPORT_DIR)
+        except (OSError, ValueError):
+            print(f"[review_hint_inject] path outside reports/ (skipped): {p}", file=sys.stderr)
+            continue
         if not p.is_file():
             print(f"[review_hint_inject] not a file (skipped): {p}", file=sys.stderr)
             continue
