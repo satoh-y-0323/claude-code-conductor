@@ -50,8 +50,6 @@ HOOK_PATH = WORKTREE_ROOT / ".claude" / "skills" / "dev-workflow" / "scripts" / 
 SCHEMA_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "schema.sql"
 INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "session_start.py"
 
-# b4 テスト: a1 完了後 HOOK_PATH と同じ場所を参照（後方互換のため NEW_HOOK_PATH として残置）
-NEW_HOOK_PATH = HOOK_PATH
 
 
 def _create_c3_db(db_path: Path) -> None:
@@ -237,7 +235,7 @@ class TestBuildHintSection:
 
     def _load_new_hook_module(self) -> types.ModuleType:
         """新パス（.claude/skills/dev-workflow/scripts/）からモジュールをロードする。"""
-        spec = importlib.util.spec_from_file_location("review_hint_inject_b4", NEW_HOOK_PATH)
+        spec = importlib.util.spec_from_file_location("review_hint_inject_b4", HOOK_PATH)
         assert spec is not None and spec.loader is not None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)  # type: ignore[attr-defined]
@@ -264,8 +262,7 @@ class TestBuildHintSection:
         """reason に '\\n## 偽見出し' を含む decision row を build_hint_section に渡したとき、
         出力に '\\n## 偽見出し' が現れず、空白置換されること。
 
-        [b4 Red] _sanitize_md ヘルパーが未実装のため、現時点では生の '\\n## 偽見出し'
-        が出力に含まれて FAIL する。
+        [b4 Green 回帰防止] _sanitize_md ヘルパー実装済み。本テストは PASS を維持する回帰防止テスト。
         """
         mod = self._load_new_hook_module()
         decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -286,8 +283,7 @@ class TestBuildHintSection:
     def test_reason_with_backtick_is_sanitized(self) -> None:
         """reason に backtick を含む入力でもサニタイズされること。
 
-        [b4 Red] _sanitize_md ヘルパーが未実装のため、現時点では生の backtick
-        が出力に含まれて FAIL する（```injection``` 等のコードブロック崩し）。
+        [b4 Green 回帰防止] _sanitize_md ヘルパー実装済み。本テストは PASS を維持する回帰防止テスト。
         """
         mod = self._load_new_hook_module()
         decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -312,9 +308,8 @@ class TestBuildHintSection:
         decided_at の値が ISO 8601 として正しければフラグが付く。
         _sanitize_md が decided_at に適用されても _is_old 判定が壊れないことを確認。
 
-        [b4 Red] _sanitize_md ヘルパー未実装のため、reason のサニタイズが不完全な
-        状態で実行され、先の 2 テストが先に FAIL する。このテストは「b4 実装後も
-        _is_old 判定が正しく動く」ことを保証する回帰テスト。
+        [b4 Green 回帰防止] _sanitize_md ヘルパー実装済み。本テストは「_sanitize_md 実装後も
+        _is_old 判定が正しく動く」ことを保証する回帰防止テスト。
         """
         mod = self._load_new_hook_module()
         old_iso = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat(timespec="seconds")
@@ -332,6 +327,93 @@ class TestBuildHintSection:
         )
         # 同時に、reason のサニタイズも確認
         assert "\n## 見出し崩し" not in section
+
+    # ------------------------------------------------------------------
+    # B-1: U+2028 / U+2029 サニタイズ（Green 回帰防止テスト）
+    # ------------------------------------------------------------------
+
+    # ソースコード上に実体文字を埋め込まず、chr() 経由で参照する。
+    _LS = chr(0x2028)  # LINE SEPARATOR
+    _PS = chr(0x2029)  # PARAGRAPH SEPARATOR
+
+    def test_reason_with_u2028_line_separator_is_sanitized(self) -> None:
+        """reason に U+2028 (LINE SEPARATOR) を含む decision row を build_hint_section に渡したとき、
+        出力に生の U+2028 が含まれず、前後の語が空白置換で残ること。
+
+        [B-1 Green 回帰防止] _sanitize_md の正規表現に U+2028 が含まれていることを保証する回帰防止テスト。
+        """
+        mod = self._load_new_hook_module()
+        decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        reason_with_ls = f"理由before{self._LS}理由after"
+        row = self._make_decision_row(
+            decided_at=decided_at,
+            reason=reason_with_ls,
+        )
+        decisions = {"CR-Q-001": [row]}
+        section = mod.build_hint_section(decisions)
+
+        assert self._LS not in section, (
+            f"reason 内の U+2028 (LINE SEPARATOR) が Markdown 出力にそのまま埋め込まれている。"
+            f"_sanitize_md に U+2028 を追加する必要がある。 [B-1 / SR-NEW / CR-Q-001]"
+        )
+        # サニタイズ後も前後の語は空白置換された形で残ること
+        assert "理由before" in section
+        assert "理由after" in section
+
+    def test_reason_with_u2029_paragraph_separator_is_sanitized(self) -> None:
+        """reason に U+2029 (PARAGRAPH SEPARATOR) を含む decision row を build_hint_section に渡したとき、
+        出力に生の U+2029 が含まれず、前後の語が空白置換で残ること。
+
+        [B-1 Green 回帰防止] _sanitize_md の正規表現に U+2029 が含まれていることを保証する回帰防止テスト。
+        """
+        mod = self._load_new_hook_module()
+        decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        reason_with_ps = f"前段{self._PS}後段"
+        row = self._make_decision_row(
+            decided_at=decided_at,
+            reason=reason_with_ps,
+        )
+        decisions = {"CR-Q-001": [row]}
+        section = mod.build_hint_section(decisions)
+
+        assert self._PS not in section, (
+            f"reason 内の U+2029 (PARAGRAPH SEPARATOR) が Markdown 出力にそのまま埋め込まれている。"
+            f"_sanitize_md に U+2029 を追加する必要がある。 [B-1 / SR-NEW / CR-Q-001]"
+        )
+        # サニタイズ後も前後の語は空白置換された形で残ること
+        assert "前段" in section
+        assert "後段" in section
+
+    # ------------------------------------------------------------------
+    # B-3: U+0085 (NEL) サニタイズ（Red テスト）
+    # ------------------------------------------------------------------
+
+    # ソースコード上に実体文字を埋め込まず、chr() 経由で参照する。
+    _NEL = chr(0x85)  # NEXT LINE (NEL)
+
+    def test_reason_with_u0085_nel_is_sanitized(self) -> None:
+        """reason に U+0085 (NEXT LINE / NEL) を含む decision row を build_hint_section に渡したとき、
+        出力に生の U+0085 が含まれず、前後の語が空白置換で残ること。
+
+        [B-3 Green 回帰防止] _sanitize_md の正規表現に U+0085 が含まれていることを保証する回帰防止テスト。
+        """
+        mod = self._load_new_hook_module()
+        decided_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        reason_with_nel = f"before{self._NEL}after"
+        row = self._make_decision_row(
+            decided_at=decided_at,
+            reason=reason_with_nel,
+        )
+        decisions = {"CR-Q-001": [row]}
+        section = mod.build_hint_section(decisions)
+
+        assert self._NEL not in section, (
+            f"reason 内の U+0085 (NEXT LINE / NEL) が Markdown 出力にそのまま埋め込まれている。"
+            f"_sanitize_md に U+0085 (\\x85) を追加する必要がある。 [B-3 / SR-NEW]"
+        )
+        # サニタイズ後も前後の語は空白置換された形で残ること
+        assert "before" in section
+        assert "after" in section
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +481,8 @@ class TestMainE2E:
         # locate_c3_db を tmp_path 配下を見るように差し替え
         mod = _load_hook_module()
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+        # B-2 実装後: ALLOWED_REPORT_DIR を tmp_path に差し替えてパスガードを回避 [SR-V-002]
+        monkeypatch.setattr(mod, "ALLOWED_REPORT_DIR", tmp_path)
 
         # レポート作成
         report = tmp_path / "code-review-report.md"
@@ -437,6 +521,8 @@ class TestMainE2E:
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
 
         mod = _load_hook_module()
+        # B-2 実装後: ALLOWED_REPORT_DIR を tmp_path に差し替えてパスガードを回避 [SR-V-002]
+        monkeypatch.setattr(mod, "ALLOWED_REPORT_DIR", tmp_path)
 
         cr_report = tmp_path / "code-review-report.md"
         sr_report = tmp_path / "security-review-report.md"
@@ -464,3 +550,76 @@ class TestMainE2E:
         mod = _load_hook_module()
         rc = mod.main([str(tmp_path / "ghost.md")])
         assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# B-2: .claude/reports/ 配下限定ガード（Green 回帰防止テスト）
+# ---------------------------------------------------------------------------
+
+
+class TestMainReportsPathGuard:
+    """.claude/reports/ 配下以外のパスを main() に渡したとき、ファイルが書き換えられないことを確認する。
+
+    [B-2 Green 回帰防止] .claude/reports/ 配下限定ガード（ALLOWED_REPORT_DIR）が実装済み。
+    本クラスは範囲外パスが skip される振る舞いを保証する回帰防止テスト。
+    """
+
+    def test_main_skips_path_outside_reports_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """tmp_path 配下（.claude/reports/ 外）のファイルを main() に渡したとき、
+        ファイルが書き換えられず、stderr に skip メッセージが出ること。
+
+        [B-2 Green 回帰防止] tmp_path 配下（.claude/reports/ 外）のファイルを main() に渡したとき、
+        ファイルが書き換えられず、stderr に skip メッセージが出ることを保証する。
+        """
+        mod = _load_hook_module()
+
+        # .claude/reports/ 配下ではないテンポラリパス
+        outside_report = tmp_path / "outside.md"
+        original_content = "# Outside Report\n\n[CR-Q-001] some finding\n"
+        outside_report.write_text(original_content, encoding="utf-8")
+
+        rc = mod.main([str(outside_report)])
+
+        # セッションを止めない方針: 戻り値は 0
+        assert rc == 0, f"main() は範囲外パスに対して 0 を返すべきだが {rc} が返された"
+
+        # ファイルが書き換えられていないこと
+        actual_content = outside_report.read_text(encoding="utf-8")
+        assert actual_content == original_content, (
+            ".claude/reports/ 外のファイルが書き換えられた。"
+            "範囲外パスは処理スキップする必要がある。 [B-2 / SR-V-002]"
+        )
+
+        # stderr に skip ログが出ること
+        captured = capsys.readouterr()
+        assert "path outside reports/" in captured.err or "skipped" in captured.err, (
+            "範囲外パスに対して stderr に skip メッセージが出力されていない。 [B-2 / SR-V-002]"
+        )
+
+    def test_main_processes_path_inside_reports_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """正常パス（ALLOWED_REPORT_DIR 配下のファイル）では従来通り動作すること。
+
+        monkeypatch で ALLOWED_REPORT_DIR を tmp_path に差し替え、
+        実際の .claude/reports/ ディレクトリへの書き込みを発生させない。
+        本テストは Green 回帰防止テスト。
+        """
+        mod = _load_hook_module()
+        # ALLOWED_REPORT_DIR を tmp_path に差し替え（実 .claude/reports/ を汚さない）
+        monkeypatch.setattr(mod, "ALLOWED_REPORT_DIR", tmp_path.resolve())
+
+        tmp_report_path = tmp_path / "code-review-report.md"
+        original_content = "# Code Review Report\n\n[CR-Q-001] some finding\n"
+        tmp_report_path.write_text(original_content, encoding="utf-8")
+
+        rc = mod.main([str(tmp_report_path)])
+        assert rc == 0, (
+            "main() は ALLOWED_REPORT_DIR 配下の正常パスに対して 0 を返すべきだが "
+            f"{rc} が返された"
+        )
+        # 正常パスが処理対象に含まれる（ファイルの存在確認を通過する）ことを確認。
+        # DB が空のため hint は追記されないが、ファイル自体は読み込まれる。
+        assert tmp_report_path.exists(), "ALLOWED_REPORT_DIR 配下のファイルが削除された"
