@@ -1,35 +1,18 @@
-"""Tests for .dev/hooks/_planner_check.py
+"""Tests for .claude/hooks/planner_check.py (配布対象 PostToolUse hook)
 
-PostToolUse hook（配布元専用）の挙動を検証する。
-plan-report-*.md の YAML frontmatter を機械検査し、planner の記述ミスを早期検出する。
+plan-report-*.md の YAML frontmatter を機械検査する配布対象 hook の挙動を検証する。
+利用先環境でも動作する汎用ルール（R2/R4/R6）を扱う。
 
 検査ルール:
-  R2: code-reviewer / security-reviewer の writes ファイル名に task_id を含み・タイムスタンプを含まないか
-  R3: writes に src/c3/_template/ パスが 1 つでも含まれていたらブロック（exit 2）
+  R2: code-reviewer / security-reviewer の writes ファイル名にタイムスタンプを含まないか
   R4: 同一 writes パスを複数 task が宣言し、depends_on で順序付けされていない場合に警告
+  R6: タスク総数 >= 3 かつ reviewer 系タスクが 0 件の場合に WARN（レビュー全削除検出）
+
+C3 開発リポジトリ固有の R3（src/c3/_template/ ブロック）は
+`.dev/hooks/_planner_check.py` に分離。テストは `test_planner_check_dev.py` 参照。
 
 廃止ルール:
   R1 (tdd-develop writes 完備): v2.1.0 で `tdd-develop` agent 廃止に伴い削除。
-
-テストケース:
-  1. R2 正常: code-reviewer の writes がタスクID含み・タイムスタンプなし → 警告なし
-  2. R2 違反 (2 サブケース):
-     - code-reviewer writes にタイムスタンプ入り → [PlannerCheck WARN]
-     - security-reviewer writes にタイムスタンプ入り → [PlannerCheck WARN]
-  3. R3 違反: writes に _template/ パスを含む → exit 2 + [PlannerCheck BLOCK]
-  4. R4 違反: 同一 writes パスを 2 task が宣言・depends_on なし → [PlannerCheck WARN]
-     R4 正常: depends_on で順序付けあり → 警告なし
-  5. 対象外動作:
-     - plan-report 以外のファイルへの Write → exit 0・stderr 空
-     - tool_name が Read → exit 0・stderr 空
-     - file_path 空 → exit 0・stderr 空
-     - payload に file_path なし → exit 0・stderr 空
-     - 不正 JSON → exit 0 (crash しない)
-     - frontmatter なしの plan-report → exit 0・stderr 空
-     - YAML 構文エラーの plan-report → exit 0・stderr 空
-
-`.dev/` は gitignore 対象だが、テストファイル自体は配布される。利用者環境に
-`.dev/hooks/_planner_check.py` が無い場合は skip する。
 """
 
 from __future__ import annotations
@@ -43,11 +26,11 @@ from pathlib import Path
 import pytest
 
 WORKTREE_ROOT = Path(__file__).parents[2]
-HOOK_PATH = WORKTREE_ROOT / ".dev" / "hooks" / "_planner_check.py"
+HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "planner_check.py"
 
 pytestmark = pytest.mark.skipif(
     not HOOK_PATH.is_file(),
-    reason=".dev/hooks/_planner_check.py is distributor-only (gitignored)",
+    reason=".claude/hooks/planner_check.py not found",
 )
 
 
@@ -80,6 +63,7 @@ def _write_plan_report(tmp_path: Path, name: str, frontmatter_body: str) -> Path
 
 # ---------------------------------------------------------------------------
 # Group 1: R2 正常 — code-reviewer/security-reviewer の writes がタスクID付き・タイムスタンプなし
+# Note: R2 テストは reviewer タスクを 1 件含むため R6 (reviewer 0 件検出) は発火しない
 # ---------------------------------------------------------------------------
 
 class TestR2Pass:
@@ -334,76 +318,6 @@ class TestR2Violation:
 
 
 # ---------------------------------------------------------------------------
-# Group 3: R3 違反 — _template/ パスを含む writes はブロック（exit 2）
-# ---------------------------------------------------------------------------
-
-class TestR3Block:
-    """writes に src/c3/_template/ パスが含まれる場合は exit 2 でブロックする。"""
-
-    def test_block_template_path_in_writes(self, tmp_path: Path) -> None:
-        """developer task の writes に _template/ パスがある → exit 2 + BLOCK。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "template-in-writes",
-            """
-            po_plan_version: "0.1"
-            name: "template path in writes"
-            tasks:
-              - id: t1
-                agent: developer
-                writes:
-                  - src/c3/_template/.claude/hooks/foo.py
-                prompt: "implement"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 2
-        assert "[PlannerCheck BLOCK]" in result.stderr
-
-    def test_block_template_path_in_tester_task(self, tmp_path: Path) -> None:
-        """tester task の writes でも _template/ があれば exit 2。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "tester-template",
-            """
-            po_plan_version: "0.1"
-            name: "tester with template path"
-            tasks:
-              - id: t1
-                agent: tester
-                writes:
-                  - tests/test_foo.py
-                  - .claude/reports/test-report-t1.md
-                  - src/c3/_template/.claude/settings.json
-                prompt: "Red phase"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 2
-        assert "[PlannerCheck BLOCK]" in result.stderr
-
-    def test_block_template_subdirectory_path(self, tmp_path: Path) -> None:
-        """_template/ 配下の深いパスも検出する。"""
-        report_path = _write_plan_report(
-            tmp_path,
-            "template-deep",
-            """
-            po_plan_version: "0.1"
-            name: "deep template path"
-            tasks:
-              - id: t1
-                agent: developer
-                writes:
-                  - src/c3/_template/deeply/nested/path/file.py
-                prompt: "implement"
-            """,
-        )
-        result = _run_hook(_payload("Write", str(report_path)))
-        assert result.returncode == 2
-        assert "[PlannerCheck BLOCK]" in result.stderr
-
-
-# ---------------------------------------------------------------------------
 # Group 4: R4 正常・違反 — 同一 writes パスを複数 task が宣言する場合
 # ---------------------------------------------------------------------------
 
@@ -496,6 +410,167 @@ class TestR4:
         result = _run_hook(_payload("Write", str(report_path)))
         assert result.returncode == 0
         assert "[PlannerCheck WARN]" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Group R6: レビュータスク全削除検出（タスク総数 >= 3 かつ reviewer 0 件で WARN）
+# ---------------------------------------------------------------------------
+
+class TestR6ReviewerAbsence:
+    """plan-report のレビュータスクが完全消失している場合の WARN 検証。"""
+
+    def test_three_tasks_with_no_reviewer_warns(self, tmp_path: Path) -> None:
+        """タスク総数 3 件で reviewer 0 件なら WARN。"""
+        report_path = _write_plan_report(
+            tmp_path,
+            "no-reviewer-3tasks",
+            """
+            po_plan_version: "0.1"
+            name: "three tasks no reviewer"
+            tasks:
+              - id: t1
+                agent: tester
+                writes: [tests/test_foo.py, .claude/reports/test-report-t1.md]
+                prompt: "Red"
+              - id: t2
+                agent: developer
+                depends_on: [t1]
+                writes: [src/foo.py]
+                prompt: "Green"
+              - id: t3
+                agent: tester
+                depends_on: [t2]
+                writes: [.claude/reports/test-report-t3.md]
+                prompt: "Confirm"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert "[PlannerCheck WARN]" in result.stderr
+        assert "R6" in result.stderr
+
+    def test_three_tasks_with_no_reviewer_edit_triggers_warn(self, tmp_path: Path) -> None:
+        """Edit ペイロードでも、タスク総数 3 件で reviewer 0 件なら WARN が発火する。
+
+        tool_name を "Write" から "Edit" に変えた場合も R6 検査が同様に機能することを確認する。
+        """
+        report_path = _write_plan_report(
+            tmp_path,
+            "no-reviewer-3tasks-edit",
+            """
+            po_plan_version: "0.1"
+            name: "three tasks no reviewer edit variant"
+            tasks:
+              - id: t1
+                agent: tester
+                writes: [tests/test_foo.py, .claude/reports/test-report-t1.md]
+                prompt: "Red"
+              - id: t2
+                agent: developer
+                depends_on: [t1]
+                writes: [src/foo.py]
+                prompt: "Green"
+              - id: t3
+                agent: tester
+                depends_on: [t2]
+                writes: [.claude/reports/test-report-t3.md]
+                prompt: "Confirm"
+            """,
+        )
+        result = _run_hook(_payload("Edit", str(report_path)))
+        assert result.returncode == 0
+        assert "[PlannerCheck WARN]" in result.stderr
+        assert "R6" in result.stderr
+
+    def test_two_tasks_with_no_reviewer_below_threshold_no_warn(self, tmp_path: Path) -> None:
+        """タスク総数 2 件（閾値未満）で reviewer 0 件でも WARN なし。
+
+        小規模な単発タスク（ドキュメント修正など）の合理的な省略を巻き込まないため。
+        """
+        report_path = _write_plan_report(
+            tmp_path,
+            "no-reviewer-2tasks",
+            """
+            po_plan_version: "0.1"
+            name: "two tasks no reviewer below threshold"
+            tasks:
+              - id: t1
+                agent: tester
+                writes: [tests/test_foo.py, .claude/reports/test-report-t1.md]
+                prompt: "Red"
+              - id: t2
+                agent: developer
+                depends_on: [t1]
+                writes: [src/foo.py]
+                prompt: "Green"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert "R6" not in result.stderr
+
+    def test_code_reviewer_present_no_warn(self, tmp_path: Path) -> None:
+        """code-reviewer タスクが 1 件以上含まれていれば WARN なし。"""
+        report_path = _write_plan_report(
+            tmp_path,
+            "with-code-reviewer",
+            """
+            po_plan_version: "0.1"
+            name: "with code reviewer"
+            tasks:
+              - id: t1
+                agent: tester
+                writes: [tests/test_foo.py, .claude/reports/test-report-t1.md]
+                prompt: "Red"
+              - id: t2
+                agent: developer
+                depends_on: [t1]
+                writes: [src/foo.py]
+                prompt: "Green"
+              - id: t3
+                agent: tester
+                depends_on: [t2]
+                writes: [.claude/reports/test-report-t3.md]
+                prompt: "Confirm"
+              - id: review1
+                agent: code-reviewer
+                depends_on: [t3]
+                read_only: true
+                prompt: "review"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert "R6" not in result.stderr
+
+    def test_security_reviewer_present_no_warn(self, tmp_path: Path) -> None:
+        """security-reviewer タスクのみでも reviewer 系として WARN を抑制する。"""
+        report_path = _write_plan_report(
+            tmp_path,
+            "with-security-reviewer",
+            """
+            po_plan_version: "0.1"
+            name: "with security reviewer only"
+            tasks:
+              - id: t1
+                agent: tester
+                writes: [tests/test_foo.py, .claude/reports/test-report-t1.md]
+                prompt: "Red"
+              - id: t2
+                agent: developer
+                depends_on: [t1]
+                writes: [src/foo.py]
+                prompt: "Green"
+              - id: sec_review
+                agent: security-reviewer
+                depends_on: [t2]
+                read_only: true
+                prompt: "security review"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert "R6" not in result.stderr
 
 
 # ---------------------------------------------------------------------------
