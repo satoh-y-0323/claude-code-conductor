@@ -1,20 +1,20 @@
 def multiply(a: int | float, b: int | float) -> int | float:
-    """二つの数値を掛け算して返す。
+    """Multiply two numeric values.
 
     Args:
-        a: 乗算する数値（int または float）
-        b: 乗算する数値（int または float）
+        a: First numeric value (int or float).
+        b: Second numeric value (int or float).
 
     Returns:
-        a と b の積
+        Product of a and b.
 
     Raises:
-        TypeError: a または b が int/float でない場合（bool を含む）
+        TypeError: If a or b is not int or float (bool excluded).
     """
-    # bool は int のサブクラスのため、isinstance(True, int) は True を返す
-    # そのため bool を明示的に除外する
+    # bool is a subclass of int, so isinstance(True, int) returns True.
+    # Explicitly exclude bool to prevent unintended behavior.
     if isinstance(a, bool) or not isinstance(a, (int, float)):
-        raise TypeError(f"引数 a は int または float でなければなりません。{type(a)} が渡されました。")
+        raise TypeError(f"Both arguments must be int or float, not {type(a).__name__}")
     if isinstance(b, bool) or not isinstance(b, (int, float)):
-        raise TypeError(f"引数 b は int または float でなければなりません。{type(b)} が渡されました。")
+        raise TypeError(f"Both arguments must be int or float, not {type(b).__name__}")
     return a * b

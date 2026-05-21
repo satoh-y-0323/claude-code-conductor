@@ -21,17 +21,17 @@ class TestMultiplyNormal:
 
 class TestMultiplyTypeError:
     def test_multiply_string_raises_type_error(self):
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"Both arguments must be int or float, not"):
             multiply("2", 3)
 
     def test_multiply_none_raises_type_error(self):
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"Both arguments must be int or float, not"):
             multiply(None, 3)
 
     def test_multiply_list_raises_type_error(self):
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"Both arguments must be int or float, not"):
             multiply([1], 3)
 
     def test_multiply_bool_raises_type_error(self):
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"Both arguments must be int or float, not"):
             multiply(True, 3)

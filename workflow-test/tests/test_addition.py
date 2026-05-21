@@ -21,17 +21,17 @@ class TestAddNormalCases:
 
 class TestAddErrorCases:
     def test_add_string_raises_type_error(self):
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"Both arguments must be int or float, not"):
             add("1", 2)
 
     def test_add_none_raises_type_error(self):
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"Both arguments must be int or float, not"):
             add(None, 2)
 
     def test_add_list_raises_type_error(self):
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"Both arguments must be int or float, not"):
             add([1], 2)
 
     def test_add_bool_raises_type_error(self):
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match=r"Both arguments must be int or float, not"):
             add(True, 2)
