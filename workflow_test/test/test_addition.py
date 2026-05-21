@@ -15,8 +15,15 @@ class TestAddNormalCases:
     def test_add_zeros(self):
         assert add(0, 0) == 0
 
+    def test_add_int_and_float(self):
+        assert add(1, 2.5) == 3.5
+
 
 class TestAddErrorCases:
     def test_add_string_raises_type_error(self):
         with pytest.raises(TypeError):
             add("a", 1)
+
+    def test_add_bool_raises_type_error(self):
+        with pytest.raises(TypeError):
+            add(True, 1)
