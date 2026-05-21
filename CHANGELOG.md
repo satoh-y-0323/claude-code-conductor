@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.14.2] - 2026-05-22
+
+### 個人ドキュメントの wheel 配布除外
+
+配布元 `.claude/docs/` 配下に置く開発検討メモ（個人ノート）を、wheel 配布物および `c3 init` / `c3 update` の対象から除外するための除外パターンを追加した。
+
+- `src/c3/_excludes.py` の `EXCLUDE_PATTERNS` を更新
+- `hatch_build.py` の `EXCLUDE_PATTERNS` を更新（3 ファイル同期グループ）
+- `.gitignore` を更新
+- wheel ビルド検証で `c3/_template/.claude/docs/` への混入なしを確認
+
+#### 利用先への影響
+
+なし。本リリースは配布元の build 時除外パターンのみの修正で、利用先の `.claude/docs/` 配下に影響しない。
+
+---
+
 ## [2.14.1] - 2026-05-21
 
 ### Hotfix: worktrees ファイルの wheel 混入を防止
