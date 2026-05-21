@@ -114,16 +114,20 @@ stdout の JSON 形式:
 
 v2.2.0 以降、全 agent が並列起動可能のため `parallelizable` 列は省略する。subagent_type マッピングは 2-C 参照。
 
-### 2-B: 実行可否をユーザーに確認する
+### 2-B: マイルストーン確認（設定時のみ）
 
-AskUserQuestion ツール:
+phase-c-plan の C-1 で「マイルストーンを設ける」を選んだ場合のみ、**指定した wave の直前**で AskUserQuestion を出す。それ以外の wave はスキップして 2-C へ直行する。
+
+plan-report 承認時点で全タスク・agent・writes・prompt が確認済みのため、wave ごとの承認は不要。
+
+マイルストーン wave の確認 UI（該当 wave のみ）:
 
 ```json
 {
   "questions": [{
-    "question": "Wave {N} を実行してよいですか？並列度 {M}。",
+    "question": "Wave {N}（マイルストーン）に到達しました。続行しますか？",
     "options": [
-      { "label": "承認・進む", "description": "この wave を実行する" },
+      { "label": "続行する", "description": "この wave を実行する" },
       { "label": "中断", "description": "ここで wave 実行を停止する。完了済みの wave はそのまま残る" }
     ]
   }]
