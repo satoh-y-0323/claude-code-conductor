@@ -149,11 +149,11 @@ AskUserQuestion ツール:
 各 Agent ツール呼び出しに以下を指定:
 
 - `subagent_type`: 上記マッピング表の値
-- `isolation`: `"worktree"`
+- `isolation`: **`read_only: false` タスクのみ `"worktree"` を指定する。`read_only: true`（code-reviewer / security-reviewer）はソースを変更しないため worktree 不要。`isolation` を省略して main リポジトリで直接実行し、レポートを main の `.claude/reports/` に直接書かせる。**
 - `run_in_background`: `true`
 - `description`: タスク id（5 単語以内）
 - `prompt`: 以下を含める（ペルソナ採用は不要、frontmatter / system prompt で自動適用される）:
-  - **先頭に `PO_WORKTREE_GUARD=1` を export する Bash 1 行を必須で含める** [SR-V-002]:
+  - **`read_only: false` タスクのみ: 先頭に `PO_WORKTREE_GUARD=1` を export する Bash 1 行を必須で含める** [SR-V-002]:
     ```
     Bash でまず以下を実行: `export PO_WORKTREE_GUARD=1`（worktree_guard.py PreToolUse が worktree 外書き込みをブロックする条件）
     ```
