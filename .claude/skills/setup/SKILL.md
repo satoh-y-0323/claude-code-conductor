@@ -178,10 +178,15 @@ AskUserQuestion ツール:
 ## Phase 3: project-setup エージェントの起動
 
 全ヒアリング結果を整理して Agent ツールで `project-setup` エージェントを起動する。
+agent は本 skill 配下の `templates/` と `reference.md` を Read して、`{プレースホルダ}` を置換する形で 2 ファイルを生成する。
 
 プロンプト形式:
 ```
 以下の情報をもとに rules/ ファイルを生成してください。
+テンプレートと参照表は以下に配置されています:
+- .claude/skills/setup/templates/coding-standards-template.md
+- .claude/skills/setup/templates/project-conventions-template.md
+- .claude/skills/setup/reference.md（言語→拡張子マッピング・公式スタイルガイド参照先）
 
 ## 技術スタック
 - 言語・バージョン: {回答}
@@ -197,8 +202,9 @@ AskUserQuestion ツール:
 - その他: {回答}
 
 ## 生成ルール
-- coding-standards.md には言語に対応するファイル拡張子の YAML フロントマター paths を必ず付ける
+- coding-standards.md には reference.md の言語→拡張子マッピングを {LANG_PATHS} に展開する
 - project-conventions.md には paths を付けない（git・コミット規約など横断的ルールのため常時適用）
+- 全プレースホルダを実値に置換した完成版を Write する（プレースホルダを残さない）
 ```
 
 ---

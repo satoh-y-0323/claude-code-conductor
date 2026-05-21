@@ -93,6 +93,31 @@ Claude Code Conductor（C3）における各ファイルタイプの意味を定
 
 adapter 生成物の詳細仕様は [`platform-adapters.md`](platform-adapters.md) を参照。
 
+**Agent 定義の書き方（v2.13.0+, D-012 準拠）:**
+
+agent 本体には**ペルソナ定義のみ**を書く。処理手順・参照知識・テンプレートは外出しする。
+
+| 内容 | 配置先 |
+|---|---|
+| ペルソナ（誰・✅❌・出力契約） | 本体（`agents/<name>.md`） |
+| 処理手順・チェックリスト | `skills/<name>/SKILL.md`（オーケストレーション skill 内） |
+| 知識・原則・自動検査ルール | `rules/<topic>.md` |
+| 出力テンプレート | `skills/<skill>/templates/` |
+| 参照表 | `skills/<skill>/reference.md`（複数になったら `references/` ディレクトリ） |
+
+**判定基準（「ペルソナか手順か」迷ったとき）:**
+
+- **ペルソナ**: 取り除いたら「この agent が誰なのか」が分からなくなる文章
+- **手順**: 取り除いても「誰か」は分かるが「何をする手順か」が分からなくなる文章
+- **知識**: 「これを知っておけ」と言える命題
+
+**目安サイズ:**
+
+- agent 本体は frontmatter 込み **80 行以内**
+- 1 skill SKILL.md は **500 行以内**（Claude Code 公式 Tip 準拠）
+
+詳細経緯は `decisions.md` の **D-012** を参照。
+
 ---
 
 ### `rules/`
@@ -151,9 +176,19 @@ skills/
 ```
 
 - `SKILL.md` は必須。他のファイルは任意のサポートファイル。
-- `SKILL.md` はサポートファイルへの参照のみ書き、詳細はそちらに分離する（500行以下推奨）。
+- `SKILL.md` はサポートファイルへの参照のみ書き、詳細はそちらに分離する（500 行以下推奨）。
 - サポートファイルはスキル実行のたびに自動ロードされない。`SKILL.md` で参照された時にのみ読まれる。
-- `scripts/` 配下にはこの skill 専用の CLI ヘルパー（例: `review_hint_inject.py` / `record_review_decision.py` のようにスキル本体から Bash 経由で呼ぶスクリプト）を置く。複数 skill が共有する場合は別途集約場所を検討する。
+
+**サブディレクトリ / ファイルの用途分担（Claude Code 公式 skill 規約準拠・v2.13.0+ で明文化）:**
+
+| ディレクトリ / ファイル | 目的 | 例 |
+|---|---|---|
+| `templates/` | LLM が `{プレースホルダ}` を埋めて生成するファイルの雛形 | `setup/templates/coding-standards-template.md` |
+| `reference.md` / `references/` | LLM が Read して内容を引用・参照するだけの表・データ。1 ファイルなら単数 `reference.md`、複数なら `references/` ディレクトリ | `setup/reference.md` |
+| `scripts/` | SKILL.md から Bash で呼ぶ CLI ヘルパー（その skill 専用） | `dev-workflow/scripts/review_hint_inject.py` |
+| `examples/` | 期待する出力サンプル（再現性確認用） | `<name>/examples/sample.md` |
+
+複数 skill が共有する CLI スクリプトが必要になった場合は、共通配置場所の議論を `decisions.md` で追加する。
 
 **SKILL.md の YAML フロントマター（有効なキー）:**
 

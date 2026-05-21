@@ -13,7 +13,7 @@ tools:
 # Project Setup
 
 ## Core Mandate
-親 Claude から渡されたスタック情報・規約情報をもとに、標準規約を Web 検索で補完して
+親 Claude から渡されたスタック情報・規約情報をもとに、テンプレートを埋めて
 `.claude/rules/coding-standards.md` と `.claude/rules/project-conventions.md` を生成する。
 ユーザーとの対話は行わない。
 
@@ -31,91 +31,43 @@ tools:
 
 ## Workflow
 
-**Step 1: 既存ファイルの確認**
+**Step 1: テンプレートと参照を Read する**
+
+以下を Read してプレースホルダ構造と置換ルールを把握する:
+- `.claude/skills/setup/templates/coding-standards-template.md`
+- `.claude/skills/setup/templates/project-conventions-template.md`
+- `.claude/skills/setup/reference.md`（言語→拡張子マッピング・公式スタイルガイド参照先）
+
+**Step 2: 既存ファイルの確認**
 
 Glob で `.claude/rules/coding-standards.md` と `.claude/rules/project-conventions.md` の存在を確認する。
 存在する場合は Read して、上書きではなく更新として差分を反映する。
 
-**Step 2: 標準規約の Web 検索**
+**Step 3: 標準規約の Web 検索**
 
-プロンプトに含まれるスタック情報をもとに以下を調査する:
+プロンプトに含まれるスタック情報と `reference.md` の「公式スタイルガイド参照先」をもとに以下を調査する:
 - 言語の公式スタイルガイド（PEP8、Google Style Guide、StandardJS 等）
 - フレームワークのベストプラクティス（公式ドキュメント優先）
 - セキュリティガイドライン（OWASP、CWE 等）
 - テストフレームワークのベストプラクティス
 
-**Step 3: `.claude/rules/coding-standards.md` を生成**
+**Step 4: 2 ファイルを生成**
 
-言語に応じた `paths` を YAML フロントマターに設定し、関係するファイルを編集している時だけこのルールが適用されるようにする。
+テンプレートの `{プレースホルダ}` を以下のルールで置換し、Write ツールで出力する:
 
-言語 → 拡張子の対応例（複数言語の場合は全て列挙する）:
-- Python → `**/*.py`
-- TypeScript → `**/*.ts`, `**/*.tsx`
-- JavaScript → `**/*.js`, `**/*.jsx`, `**/*.mjs`, `**/*.cjs`
-- TypeScript + JavaScript → 上記すべて
-- Go → `**/*.go`
-- Java → `**/*.java`
-- Kotlin → `**/*.kt`, `**/*.kts`
-- C# → `**/*.cs`
-- Rust → `**/*.rs`
-- Ruby → `**/*.rb`
+- `{LANG_PATHS}` ← `reference.md` の言語→glob マッピングを YAML リスト行に展開
+- `{STACK_NAME}` / `{LANGUAGE}` / `{FRAMEWORK}` / `{RUNTIME}` / `{DATABASE}` ← 親プロンプトのスタック情報
+- `{LAST_UPDATED}` ← 今日の日付（YYYY-MM-DD）
+- `{STYLE_GUIDE_NOTES}` / `{NAMING_RULES}` / `{TEST_RULES}` / `{SECURITY_BASELINE}` ← Step 3 の Web 検索結果
+- `{PROJECT_NAMING_RULES}` / `{COMMENT_POLICY}` / `{TEST_COVERAGE_GOAL}` / `{BRANCH_COMMIT_RULES}` / `{OTHER_RULES}` ← 親プロンプトのヒアリング結果
 
-```markdown
----
-paths:
-  - "**/*.{拡張子}"
----
-# Coding Standards: {スタック名}
-<!-- /agent-project-setup により生成。言語・フレームワークのバージョンアップ時に更新する。-->
-最終更新: YYYY-MM-DD
-
-## Stack
-- Language: ...
-- Framework: ...
-- Runtime: ...
-- Database: ...
-
-## スタイル規約
-（公式ガイドの要点・参照 URL 付き）
-
-## 命名規則
-（言語標準の命名規則）
-
-## テスト規約
-（テストフレームワークのベストプラクティス）
-
-## セキュリティベースライン
-（OWASP 等の基本チェック項目）
-```
-
-**Step 4: `.claude/rules/project-conventions.md` を生成**
-
-プロンプトに含まれるヒアリング結果をそのまま構造化して記載する。
-
-```markdown
-# Project Conventions
-<!-- /agent-project-setup により生成。チーム規約の変更時に更新する。-->
-最終更新: YYYY-MM-DD
-
-## 命名規則（プロジェクト固有）
-...
-
-## コメント方針
-...
-
-## テストカバレッジ目標
-...
-
-## ブランチ・コミット規約
-...
-
-## その他のルール
-...
-```
+出力先:
+- `.claude/rules/coding-standards.md`
+- `.claude/rules/project-conventions.md`
 
 **Step 5: 完了報告**
 
-生成した2ファイルのパスと主要な規約の概要を出力する。
+生成した 2 ファイルのパスと主要な規約の概要を出力する。
 
 ## Tools & Constraints
 制限: 規約ファイル以外のソースファイルは編集しない

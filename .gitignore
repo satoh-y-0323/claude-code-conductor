@@ -20,6 +20,10 @@
 # PO task execution logs
 .claude/logs/
 
+# parallel-agents skill が isolation:"worktree" 起動時に生成する一時 worktree。
+# git worktree list から外れた残骸は cleanup 対象だが、tracking はしない。
+.claude/worktrees/
+
 # C3 runtime state (per-user, never committed; tier_selection.json も hooks が動的生成する一時ファイル)
 # v2.10.0: recall.hnsw / recall_meta.json も state/* で自動除外（元データから再生成可能）
 .claude/state/*

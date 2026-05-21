@@ -316,6 +316,31 @@ class TestR2Violation:
         assert result.returncode == 0
         assert "[PlannerCheck WARN]" in result.stderr
 
+    def test_r2_violation_on_edit_payload(self, tmp_path: Path) -> None:
+        """Edit ペイロードでも R2 違反は検出される。
+
+        hook 本体は Write/Edit 両方を処理するため、Edit でも代表的な違反ケースで
+        WARN が発火することを確認する（R6 Edit テストと対称な代表ケース）。
+        """
+        report_path = _write_plan_report(
+            tmp_path,
+            "r2-edit-variant",
+            """
+            po_plan_version: "0.1"
+            name: "r2 edit variant"
+            tasks:
+              - id: review1
+                agent: code-reviewer
+                writes:
+                  - .claude/reports/code-review-report-20260510.md
+                prompt: "review"
+            """,
+        )
+        result = _run_hook(_payload("Edit", str(report_path)))
+        assert result.returncode == 0
+        assert "[PlannerCheck WARN]" in result.stderr
+        assert "R2" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # Group 4: R4 正常・違反 — 同一 writes パスを複数 task が宣言する場合
@@ -410,6 +435,36 @@ class TestR4:
         result = _run_hook(_payload("Write", str(report_path)))
         assert result.returncode == 0
         assert "[PlannerCheck WARN]" in result.stderr
+
+    def test_r4_violation_on_edit_payload(self, tmp_path: Path) -> None:
+        """Edit ペイロードでも R4 違反は検出される。
+
+        hook 本体は Write/Edit 両方を処理するため、Edit でも代表的な違反ケースで
+        WARN が発火することを確認する。
+        """
+        report_path = _write_plan_report(
+            tmp_path,
+            "r4-edit-variant",
+            """
+            po_plan_version: "0.1"
+            name: "r4 edit variant"
+            tasks:
+              - id: t1
+                agent: developer
+                writes:
+                  - src/foo.py
+                prompt: "first"
+              - id: t2
+                agent: developer
+                writes:
+                  - src/foo.py
+                prompt: "second without dependency"
+            """,
+        )
+        result = _run_hook(_payload("Edit", str(report_path)))
+        assert result.returncode == 0
+        assert "[PlannerCheck WARN]" in result.stderr
+        assert "R4" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +629,105 @@ class TestR6ReviewerAbsence:
 
 
 # ---------------------------------------------------------------------------
+# Group JSON 出力 — LLM コンテキスト注入用の hookSpecificOutput.additionalContext
+# ---------------------------------------------------------------------------
+
+class TestJsonAdditionalContext:
+    """stderr に加えて stdout に JSON 出力で LLM コンテキストに WARN を注入する。
+
+    Claude Code 公式仕様（PostToolUse exit 0 + stdout JSON）に従い、
+    hookSpecificOutput.additionalContext を返すと LLM が system reminder として
+    受け取る。stderr は人間向け、stdout JSON は LLM 向けの二重出力。
+    """
+
+    def test_r6_violation_emits_json_additional_context(self, tmp_path: Path) -> None:
+        """R6 違反時に stdout に hookSpecificOutput.additionalContext を含む JSON が出力される。"""
+        report_path = _write_plan_report(
+            tmp_path,
+            "r6-json-test",
+            """
+            po_plan_version: "0.1"
+            name: "r6 json output test"
+            tasks:
+              - id: t1
+                agent: tester
+                writes: [tests/test_x.py, .claude/reports/test-report-t1.md]
+                prompt: "Red"
+              - id: t2
+                agent: developer
+                depends_on: [t1]
+                writes: [src/x.py]
+                prompt: "Green"
+              - id: t3
+                agent: tester
+                depends_on: [t2]
+                writes: [.claude/reports/test-report-t3.md]
+                prompt: "Confirm"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        # stdout は JSON
+        parsed = json.loads(result.stdout)
+        assert "hookSpecificOutput" in parsed
+        assert parsed["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "R6" in ctx
+        assert "[PlannerCheck WARN]" in ctx
+
+    def test_r2_violation_emits_json_additional_context(self, tmp_path: Path) -> None:
+        """R2 違反でも JSON additionalContext が出る。"""
+        report_path = _write_plan_report(
+            tmp_path,
+            "r2-json-test",
+            """
+            po_plan_version: "0.1"
+            name: "r2 json output test"
+            tasks:
+              - id: review1
+                agent: code-reviewer
+                writes: [.claude/reports/code-review-report-20260510.md]
+                prompt: "review"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        parsed = json.loads(result.stdout)
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "R2" in ctx
+
+    def test_no_violation_no_json_output(self, tmp_path: Path) -> None:
+        """違反なしなら stdout は空（JSON も出さない）。"""
+        report_path = _write_plan_report(
+            tmp_path,
+            "no-violation",
+            """
+            po_plan_version: "0.1"
+            name: "no violation"
+            tasks:
+              - id: t1
+                agent: tester
+                writes: [tests/test_x.py, .claude/reports/test-report-t1.md]
+                prompt: "Red"
+              - id: t2
+                agent: developer
+                depends_on: [t1]
+                writes: [src/x.py]
+                prompt: "Green"
+              - id: review1
+                agent: code-reviewer
+                depends_on: [t2]
+                read_only: true
+                prompt: "review"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+
+# ---------------------------------------------------------------------------
 # Group 5: 対象外動作 — 検査をスキップして exit 0・stderr 空になるケース
 # ---------------------------------------------------------------------------
 
@@ -674,3 +828,136 @@ class TestOutOfScope:
         result = _run_hook(_payload("Write", str(report_path)))
         assert result.returncode == 0
         assert result.stderr == ""
+
+
+# ---------------------------------------------------------------------------
+# Group Security: 守備深化（path traversal / sanitize / size limit / debug path）
+# ---------------------------------------------------------------------------
+
+class TestSecurityHardening:
+    """セキュリティ・防御的コーディングの検証（SR-V-001/SR-V-002/SR-NEW 対応）。"""
+
+    def test_path_traversal_in_file_path_is_ignored(self, tmp_path: Path) -> None:
+        """L-4 [SR-V-002]: file_path に `..` を含むパストラバーサルは検査対象外とする。
+
+        `_is_plan_report` で basename だけを見て通過させてしまうと、後段の
+        `open(file_path)` が任意のパスにアクセスする経路が成立する。
+        防御として `..` セグメントを含むパスは silent exit 0 で拒否する。
+        """
+        result = _run_hook(_payload("Write", "../../plan-report-malicious.md"))
+        assert result.returncode == 0
+        assert result.stderr == ""
+
+    def test_path_traversal_with_subdir_is_ignored(self, tmp_path: Path) -> None:
+        """`subdir/../../plan-report-foo.md` のような中間 `..` も拒否する。"""
+        result = _run_hook(
+            _payload("Write", "subdir/../../plan-report-malicious.md")
+        )
+        assert result.returncode == 0
+        assert result.stderr == ""
+
+    def test_u2028_in_task_id_is_sanitized_from_output(self, tmp_path: Path) -> None:
+        """L-5 [SR-V-001]: task id に U+2028/U+2029 を含むと WARN 出力から除去される。
+
+        `_sanitize` が U+2028 (Line Separator) / U+2029 (Paragraph Separator) を
+        除去する。これらの文字が一部の JS/JSON パーサで行区切りとして扱われ
+        JSON 解析エラーになる問題を防ぐ。
+        """
+        # task id に U+2028 ( ) を埋め込んだ R4 違反シナリオ
+        report_path = _write_plan_report(
+            tmp_path,
+            "u2028-task-id",
+            """
+            po_plan_version: "0.1"
+            name: "u2028 sanitize test"
+            tasks:
+              - id: "t1 malicious"
+                agent: developer
+                writes:
+                  - src/foo.py
+                prompt: "first"
+              - id: t2
+                agent: developer
+                writes:
+                  - src/foo.py
+                prompt: "second"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        # stderr / stdout のいずれにも U+2028 が含まれないこと
+        assert " " not in result.stderr, (
+            "stderr に U+2028 (Line Separator) が残っている"
+        )
+        assert " " not in result.stdout, (
+            "stdout に U+2028 (Line Separator) が残っている"
+        )
+
+    def test_u2029_in_task_id_is_sanitized_from_output(self, tmp_path: Path) -> None:
+        """U+2029 (Paragraph Separator) も同様に除去される。"""
+        report_path = _write_plan_report(
+            tmp_path,
+            "u2029-task-id",
+            """
+            po_plan_version: "0.1"
+            name: "u2029 sanitize test"
+            tasks:
+              - id: "t1 bad"
+                agent: developer
+                writes:
+                  - src/bar.py
+                prompt: "first"
+              - id: t2
+                agent: developer
+                writes:
+                  - src/bar.py
+                prompt: "second"
+            """,
+        )
+        result = _run_hook(_payload("Write", str(report_path)))
+        assert result.returncode == 0
+        assert " " not in result.stderr
+        assert " " not in result.stdout
+
+    def test_stdin_read_has_size_limit(self) -> None:
+        """L-1 [SR-V-001]: sys.stdin.read() がサイズ制限引数を持つ。
+
+        DoS 対策として stdin から読み取る最大バイト数を制限する。
+        実装は `sys.stdin.read(<MAX_BYTES>)` を想定。
+        """
+        import re
+        source = HOOK_PATH.read_text(encoding="utf-8")
+        # sys.stdin.read() に少なくとも 1 つの引数（整数式）があることを確認
+        assert re.search(
+            r"sys\.stdin\.read\(\s*[^\s)][^)]*\)", source
+        ), "sys.stdin.read() にサイズ制限引数がない（無制限読み取り）"
+
+    def test_file_read_has_size_limit(self) -> None:
+        """L-3 [SR-V-001]: plan-report ファイルの読み取りにサイズ制限がある。
+
+        実装は `fh.read(<MAX_BYTES>)`（リテラル数値または定数名）を想定。
+        """
+        import re
+        source = HOOK_PATH.read_text(encoding="utf-8")
+        # fh.read() 単独（無制限）は不可。fh.read(<引数>) を 1 件以上見つけられること。
+        # 引数はリテラル数値・定数名・式のいずれでもよい。
+        assert re.search(
+            r"fh\.read\(\s*[^\s)][^)]*\)", source
+        ), "plan-report ファイル読み取りにサイズ制限引数がない（無制限読み取り）"
+
+    def test_debug_log_path_is_absolute(self) -> None:
+        """L-6 [SR-NEW]: DEBUG_LOG_PATH が cwd 依存の相対パスでなく絶対パスである。
+
+        実装は `Path(__file__).resolve().parents[N]` ベースを想定。
+        """
+        source = HOOK_PATH.read_text(encoding="utf-8")
+        # __file__ ベースで絶対パスに変換する記法が含まれること
+        assert "__file__" in source, (
+            "hook ファイルが __file__ を参照していない（絶対パス変換に必要）"
+        )
+        # 相対パス文字列定数として DEBUG_LOG_PATH を持たないこと
+        # 具体的には ".claude/tmp/..." の文字列リテラルが直接代入されていないこと
+        import re
+        assert not re.search(
+            r'DEBUG_LOG_PATH\s*=\s*["\']\.claude/tmp/', source
+        ), "DEBUG_LOG_PATH が cwd 相対の文字列リテラルのまま"

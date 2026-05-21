@@ -99,6 +99,16 @@
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/check_agent_invocation.py"]
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -109,6 +119,11 @@
             "type": "command",
             "command": "python",
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post_tool.py"]
+          },
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
           }
         ]
       },
@@ -119,6 +134,11 @@
             "type": "command",
             "command": "python",
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post_tool.py"]
+          },
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
           }
         ]
       }

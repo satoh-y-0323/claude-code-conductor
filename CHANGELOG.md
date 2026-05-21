@@ -1,5 +1,115 @@
 # Changelog
 
+## [2.14.0] - 2026-05-21
+
+### ルール違反防止策の機械的強制（R5/R6 hook）
+
+2026-05-21 のフルワークフロー動作確認で露呈した 2 件のルール違反に対する構造的対策。
+LLM の暴走に対する防御層を強化した（D-012 実装履歴に追記）。
+
+#### 新規 hook（配布対象）
+
+- **`.claude/hooks/check_agent_invocation.py`** 新規（**R5**: PreToolUse Agent）
+  - `subagent_type=code-reviewer/security-reviewer` AND `isolation="worktree"` の組み合わせを **exit 2 でブロック**
+  - worktree 自動クリーンアップによる `.claude/reports/*.md`（gitignored）消失を防ぐ
+  - `tool_input` キー欠落時は exit 0 にフォールバック（fail-safe）。`C3_HOOK_DEBUG=1` で payload をログ出力可能
+- **`.claude/hooks/planner_check.py`** 新規（**R2/R4/R6**: PostToolUse Write/Edit）
+  - `.dev/_planner_check.py` から汎用ルール R2（reviewer タイムスタンプ禁止）/ R4（writes 衝突）を移植して配布対象化
+  - **R6 新規**: plan-report のタスク総数 >= 3 かつ reviewer 系タスク 0 件で **WARN**（レビュー全削除検出。閾値で小規模単発タスクは除外）
+
+#### 既存 hook の整理
+
+- **`.dev/hooks/_planner_check.py`**: C3 固有の R3（`src/c3/_template/` 書き込み禁止）のみに減量。R2/R4 は配布 hook へ移動
+
+#### 教育層の更新
+
+- **`rules/plan-design-guidelines.md`**: R5/R6 を明文化し、検査リストに追加
+- **`agents/planner.md`**: Workflow / Tools & Constraints で R5/R6 の hook 経由検出を明記
+- **`skills/parallel-agents/SKILL.md`**: 既存の R5 教育文に「hook で機械強制される」注記追加
+- **`docs/decisions.md`**: D-012 実装履歴に v2.14.0 hook 追加を追記
+
+#### テスト
+
+- **`tests/hooks/test_check_agent_invocation.py`** 新規（R5 BLOCK/PASS/fail-safe 15 件）
+- **`tests/hooks/test_planner_check.py`**: 配布 hook 対象に切り替え + R6 テスト 4 件追加
+- **`tests/hooks/test_planner_check_dev.py`** 新規（dev-only R3 テスト 6 件、既存テスト分離）
+
+#### Migration（既存利用先環境向け）
+
+`c3 update` で `.claude/settings.json` の hook 登録が追加されない場合、手動で以下を追加してください:
+
+**PreToolUse の Agent matcher（R5）:**
+```json
+{
+  "matcher": "Agent",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "python",
+      "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/check_agent_invocation.py"]
+    }
+  ]
+}
+```
+
+**PostToolUse の Write/Edit に planner_check 追加（R2/R4/R6）:**
+既存の post_tool.py に並べる形で planner_check.py を追加してください。
+
+詳細は `.claude/settings.json` の更新後の構造を参照。
+
+---
+
+## [2.13.0] - 2026-05-21
+
+### Agent 軽量化: 「ペルソナ」と「手順・テンプレート」の分離（D-012）
+
+v2.12.0 の「ファイル配置境界」整理に続き、**ファイル内容構造**を整理した。
+肥大化していた 2 つの agent 定義から「処理手順」「マークダウンテンプレート」を外出ししてペルソナ定義のみを残した。
+
+> **検証結果による方針修正**: 当初は `dev-workflow/SKILL.md` (642 行) を `phase-a〜phase-e/phase-debug` の 6 skill に分割する案も実装したが、フルワークフロー実走でレビューサイクル中の各 phase skill 重複読み込みによりモノリシック版よりコンテキストコストが高くなることを確認したため revert した。**単一 SKILL.md 維持の方がコンテキスト効率が良い**ことを D-012 に実測根拠として追記。
+
+#### Agent 軽量化
+
+- **`agents/planner.md`** (172 行 → 66 行): 並列実行設計指針・自動検査ルール R2-R4 を `.claude/rules/plan-design-guidelines.md` に外出し。Workflow Before で明示 Read することで二重防御
+- **`agents/project-setup.md`** (126 行 → 77 行): Markdown テンプレートと言語→拡張子マッピングを `skills/setup/templates/` と `skills/setup/reference.md` に外出し
+
+phase-a / phase-b / phase-c / phase-d / phase-e / phase-debug の 6 skill 分割を試行し、フルワークフロー実走で検証した結果、レビューループ中の重複読み込みでコンテキスト消費がモノリシック版より悪化することを確認したため revert した。`dev-workflow/SKILL.md` は v2.12.0 同様 642 行の単一ファイルに戻している。
+
+#### 新規ファイル
+
+- **`rules/plan-design-guidelines.md`** 新規（depends_on 設計指針・TDD 3-wave 分解・writes 衝突回避・自動検査 R2/R3/R4・出力直前の自己チェックリスト）
+- **`skills/setup/templates/coding-standards-template.md`** 新規（`{LANG_PATHS}` 等のプレースホルダを持つ雛形）
+- **`skills/setup/templates/project-conventions-template.md`** 新規
+- **`skills/setup/reference.md`** 新規（言語→拡張子 glob マッピング・公式スタイルガイド参照先）
+
+#### Skill 更新
+
+- **`skills/setup/SKILL.md`**: Step 3 のプロンプトを `templates/` と `reference.md` への参照を含む形に書き換え
+
+#### ドキュメント
+
+- **`docs/decisions.md`**: **D-012 追加**（Agent 本体の「ペルソナ」と「手順」分離ルール。フェーズ分割は revert した実測根拠も併記）
+- **`docs/taxonomy.md`**: 「Agent 定義の書き方」セクション追加、skill サブディレクトリ規約（`templates/` / `reference.md` / `scripts/` / `examples/`）の用途分担を明文化
+
+#### テスト
+
+- **`tests/skills/test_planner_lightweight.py`** 新規（planner.md 80 行制限 + 外出し済みセクション不在確認 + plan-design-guidelines.md 参照確認）
+- **`tests/skills/test_setup_templates.py`** 新規（templates/ と reference.md の存在・プレースホルダ検証）
+
+#### Migration（既存利用先環境向け）
+
+`c3 update` は配布物の **追加** には対応するが、ローカル改変済みファイルは手動マージが必要。
+カスタムで `.claude/agents/planner.md` / `.claude/agents/project-setup.md` を改変している場合は事前にバックアップしてください。
+
+1. `pip install -U claude-code-conductor`
+2. `c3 update --dry-run` で diff を確認
+3. ローカル改変がなければ `c3 update`
+4. ローカル改変があれば手動マージ
+
+ローカル改変が無い場合、既存ファイル（`agents/planner.md` / `agents/project-setup.md` / `skills/setup/SKILL.md`）が自動更新され、`rules/plan-design-guidelines.md` / `skills/setup/templates/` / `skills/setup/reference.md` が新規追加されます。
+
+---
+
 ## [2.12.0] - 2026-05-21
 
 ### タクソノミー棚卸（hooks/ 整理）
