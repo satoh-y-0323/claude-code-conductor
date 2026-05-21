@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.14.1] - 2026-05-21
+
+### Hotfix: worktrees ファイルの wheel 混入を防止
+
+v2.14.0 wheel に `.claude/worktrees/agent-*/` 配下の一時ファイル（旧 parallel-agents 実行残骸の code-review-report 等）が混入していた問題を修正。
+
+- `_excludes.py` および `hatch_build.py` の `EXCLUDE_PATTERNS` に `"worktrees/*"` を追加
+- 利用先環境への `c3 update` 時に不要な worktree レポートが配布されないことを確認
+- `.gitignore` には v2.13.0 時点で既に追加済みだったが、3 ファイル同期グループの `_excludes.py` / `hatch_build.py` 側が更新漏れだった
+
+#### Migration
+
+`pip install -U claude-code-conductor==2.14.1` で適用されます。
+v2.14.0 を既に `c3 update` で適用済みの場合、`.claude/worktrees/` 配下に不要ファイルが残っているため手動で `rm -rf .claude/worktrees/` で削除してください（次回 parallel-agents 実行時に必要な worktree は自動再作成されます）。
+
+---
+
 ## [2.14.0] - 2026-05-21
 
 ### ルール違反防止策の機械的強制（R5/R6 hook）

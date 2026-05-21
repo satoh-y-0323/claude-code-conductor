@@ -45,6 +45,10 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "logs/*",
     # state/* で v2.10.0 の recall.hnsw / recall_meta.json も自動除外
     "state/*",
+    # v2.14.1: parallel-agents skill が isolation:"worktree" で生成する一時 worktree。
+    # マージ後に削除されるが残骸が残ることがあり、wheel に混入すると利用先に
+    # 不要な agent worktree レポート（code-review-report-*.md 等）が配布される問題があった
+    "worktrees/*",
     # v2.1.0: tdd-develop / worktree-tdd-workflow 廃止（planner が TDD を 3-wave に分解する設計に統一）
     "agents/tdd-develop.md",
     "skills/worktree-tdd-workflow/*",
