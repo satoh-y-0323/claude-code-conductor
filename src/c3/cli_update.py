@@ -109,7 +109,15 @@ def handle(args: argparse.Namespace) -> int:
 
 
 def _warn_deprecated_paths(dest_root: Path) -> None:
-    """配布先で廃止済みの skill パスが残っていたら stderr に警告。"""
+    """配布先で廃止済み skill パスが残っていたら stderr に警告を出力。
+
+    DEPRECATED_PATHS の各エントリ (rel_path, reason) について
+    dest_root / rel_path の存在を確認し、見つかれば warning メッセージを stderr に出す。
+
+    本関数は読み取り専用（exists() チェックと stderr 出力のみ）で副作用がないため、
+    `--dry-run` 時にも常に実行される。削除は行わない（手動クリーンアップを促すのみ）。
+    `c3 update` の "削除を検出しない" 設計を尊重した実装。
+    """
     found = []
     for rel_path, reason in DEPRECATED_PATHS:
         candidate = dest_root / Path(rel_path)
