@@ -10,7 +10,7 @@ def test_keeps_framework_files():
     assert not should_skip("skills/dev-workflow.md")
     assert not should_skip("commands/develop.md")
     assert not should_skip("hooks/pre_tool.py")
-    assert not should_skip("rules/code-review-checklist.md")
+    assert not should_skip("skills/dev-workflow/references/code-review-checklist.md")
     assert not should_skip("settings.json")
     assert not should_skip("CLAUDE.md")
     assert not should_skip("docs/settings.json.md")

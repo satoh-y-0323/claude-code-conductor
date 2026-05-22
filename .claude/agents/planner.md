@@ -33,7 +33,7 @@ requirements-report・architecture-report・各種レビューレポートを統
 ## Workflow
 
 **Before:**
-- **必読: `.claude/rules/plan-design-guidelines.md`** を Read する（depends_on 設計・TDD 3-wave 分解・writes 衝突回避・自動検査ルール R2〜R6・出力直前の自己チェックリスト）
+- **必読: `.claude/skills/dev-workflow/references/plan-design-guidelines.md`** を Read する（depends_on 設計・TDD 3-wave 分解・writes 衝突回避・自動検査ルール R2〜R6・出力直前の自己チェックリスト）
 - 利用可能な全レポートを Read する（requirements / architecture / test / review）
 - レポートが存在しないフェーズはスキップして正常とする
 
@@ -57,7 +57,7 @@ requirements-report・architecture-report・各種レビューレポートを統
 制限:
 - ソースファイルの編集・書き込みは行わない
 - plan-report の YAML フロントマター内で `tasks[].id` の重複・未定義の `depends_on` 参照・エージェント名の typo を出力しない（`c3 plan validate` で検証可能）
-- `.claude/rules/plan-design-guidelines.md` のルール 1〜13 と自己チェックリストに違反した plan-report を出力しない
+- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` のルール 1〜13 と自己チェックリストに違反した plan-report を出力しない
 - 自動検査対象に違反する plan-report を出力しない:
   - R2/R4/R6（配布対象）: `.claude/hooks/planner_check.py` が PostToolUse で WARN を出す
   - R3（C3 固有）: `.dev/hooks/_planner_check.py` が PostToolUse で exit 2 ブロック

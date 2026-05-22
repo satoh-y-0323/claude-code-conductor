@@ -10,7 +10,7 @@ from tests.skills._skill_helpers import WORKTREE_ROOT
 
 
 PLANNER_AGENT = WORKTREE_ROOT / ".claude" / "agents" / "planner.md"
-PLAN_DESIGN_GUIDELINES = WORKTREE_ROOT / ".claude" / "rules" / "plan-design-guidelines.md"
+PLAN_DESIGN_GUIDELINES = WORKTREE_ROOT / ".claude" / "skills" / "dev-workflow" / "references" / "plan-design-guidelines.md"
 
 
 def _read(path: Path) -> str:
@@ -23,7 +23,7 @@ def test_planner_agent_under_80_lines():
     line_count = len(content.splitlines())
     assert line_count <= 80, (
         f"planner.md は {line_count} 行（80 行上限超過）。"
-        " 処理手順は rules/plan-design-guidelines.md に外出ししてください（D-012）。"
+        " 処理手順は skills/dev-workflow/references/plan-design-guidelines.md に外出ししてください（D-012）。"
     )
 
 
@@ -47,7 +47,7 @@ def test_planner_references_plan_design_guidelines():
 def test_plan_design_guidelines_exists_and_has_rules():
     """rules/plan-design-guidelines.md が存在し、ルール 1〜13 と R2〜R6 を含む。"""
     content = _read(PLAN_DESIGN_GUIDELINES)
-    assert content, "rules/plan-design-guidelines.md が存在しない"
+    assert content, "skills/dev-workflow/references/plan-design-guidelines.md が存在しない"
     required_concepts = (
         "depends_on の付け方",
         "TDD タスクは 3-wave に分解",
@@ -79,7 +79,7 @@ def test_planner_no_longer_contains_extracted_sections():
     found = [h for h in forbidden_headings if h in content]
     assert not found, (
         f"planner.md に外出し済みのセクションが残っている: {found}. "
-        "rules/plan-design-guidelines.md に移動してください。"
+        "skills/dev-workflow/references/plan-design-guidelines.md に移動してください。"
     )
 
 

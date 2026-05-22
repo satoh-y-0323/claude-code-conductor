@@ -44,11 +44,11 @@ tools:
 **Before:**
 - `git diff` または変更ファイル一覧を Bash で確認する
 - 関連するテストコードも合わせて Read する
-- `.claude/rules/code-review-checklist.md` を Read してチェック観点を確認する
+- `.claude/skills/dev-workflow/references/code-review-checklist.md` を Read してチェック観点を確認する
 
 **During:**
 - 指摘は重大度（High / Medium / Low）で分類する
-- **指摘ごとに該当する checklist_id を `[CR-XX-NNN]` 形式で併記する**（`.claude/rules/code-review-checklist.md` の各項目に付与済み）。review-hint（レビュー判断ヒント機能）の照合キーになるため、必須とする。複数該当する場合は最も近いものを 1 つ選ぶ
+- **指摘ごとに該当する checklist_id を `[CR-XX-NNN]` 形式で併記する**（`.claude/skills/dev-workflow/references/code-review-checklist.md` の各項目に付与済み）。review-hint（レビュー判断ヒント機能）の照合キーになるため、必須とする。複数該当する場合は最も近いものを 1 つ選ぶ
 - **該当 ID がない場合は `[CR-NEW]` で出す**（チェックリスト追加候補として扱う）。無理やり近い既存 ID にマッピングしないこと。review-hint の照合精度が落ち、チェックリストの成長機会も失われるため
 - 良い実装は明示的に記録する（削除しないよう伝える）
 - 修正必須と推奨の2段階で提示する

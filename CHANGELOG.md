@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.15.0 (2026-05-22)
+
+### 変更
+- planner / code-reviewer / security-reviewer 用の長文ガイドライン 3 ファイルを
+  `.claude/rules/` から `.claude/skills/dev-workflow/references/` に移動。
+  Claude Code 公式仕様で `.claude/rules/*.md` が全文自動ロードされコンテキストを
+  常時 ~10.8k tokens 圧迫していた問題を解消。
+  - `plan-design-guidelines.md`
+  - `code-review-checklist.md`
+  - `security-review-checklist.md`
+
+### 配布先での手動クリーンアップ手順（必須）
+
+`c3 update` は配布物の削除を検出しないため、配布先プロジェクトで以下を手動実行:
+
+```bash
+rm .claude/rules/plan-design-guidelines.md
+rm .claude/rules/code-review-checklist.md
+rm .claude/rules/security-review-checklist.md
+```
+
+### ドキュメント
+- taxonomy.md に「長文ガイドラインは skills/<name>/references/ に置く」設計指針を明記
+- decisions.md に新 ADR を追加
+
+---
+
 ## [2.14.2] - 2026-05-22
 
 ### 個人ドキュメントの wheel 配布除外

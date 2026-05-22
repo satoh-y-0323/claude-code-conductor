@@ -146,6 +146,12 @@ paths:
 
 - `promoted/` — `/promote-pattern` スキルが昇格させたルールを配置する。`index.md` が `CLAUDE.md` から `@` インクルードされ、常時注入される。
 
+> **注意（v2.15.0+）**: 長文のチェックリスト・ガイドライン（目安: 1k tokens 超）は `rules/` ではなく
+> `skills/<name>/references/` に置く。`.claude/rules/*.md` は Claude Code 公式仕様で `CLAUDE.md` と
+> 同等の優先度で**全文自動ロード**され、長文を置くと全セッションのコンテキストを圧迫するため。
+> skill のサブファイルは Claude Code 公式仕様で「必要時 Read」が保証される。
+> 詳細経緯は `decisions.md` の **D-013** を参照。
+
 ---
 
 ### `skills/`
