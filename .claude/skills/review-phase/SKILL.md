@@ -2,7 +2,7 @@
 description: 実装済みコードの code-reviewer・security-reviewer によるレビュー（フェーズ E）を実行する。
 ---
 
-# code-review
+# review-phase
 
 実装済みコードのレビューを行う。
 

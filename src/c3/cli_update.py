@@ -13,6 +13,13 @@ from c3.adapters import print_adapter_actions, scaffold_adapters
 from c3.paths import templates_dir
 from c3.platforms import PLATFORM_CHOICES, expand_platforms
 
+# 廃止済み skill パス（リリース履歴）。
+# `c3 update` 完了時に配布先で残存していたら警告を stderr に表示する。
+# 削除はしない（`c3 update` の "削除を検出しない" 設計を尊重）。
+DEPRECATED_PATHS: tuple[tuple[str, str], ...] = (
+    (".claude/skills/code-review", "v2.15.1 で /review-phase にリネーム（Built-in /code-review と衝突回避）"),
+)
+
 
 def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
@@ -97,7 +104,25 @@ def handle(args: argparse.Namespace) -> int:
         print("up to date")
     elif not args.dry_run:
         print(f"{changed} file(s) updated")
+    _warn_deprecated_paths(target_root)
     return 0
+
+
+def _warn_deprecated_paths(dest_root: Path) -> None:
+    """配布先で廃止済みの skill パスが残っていたら stderr に警告。"""
+    found = []
+    for rel_path, reason in DEPRECATED_PATHS:
+        candidate = dest_root / Path(rel_path)
+        if candidate.exists():
+            found.append((rel_path, reason))
+    if not found:
+        return
+    print("", file=sys.stderr)
+    print("warning: deprecated path(s) detected (manual cleanup recommended):", file=sys.stderr)
+    for rel_path, reason in found:
+        print(f"  - {rel_path}: {reason}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("  c3 update does not delete files. Remove the path(s) manually.", file=sys.stderr)
 
 
 def _walk_diff(template: Path, dest: Path):

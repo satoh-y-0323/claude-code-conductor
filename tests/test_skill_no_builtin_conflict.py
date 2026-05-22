@@ -1,6 +1,7 @@
 """skill ディレクトリと Claude Code Built-in コマンドの衝突回避を保証する回帰テスト。"""
 from pathlib import Path
 
+# tests/ 直下からの相対パスを前提とする（test_planner_lightweight.py と同じ流儀）
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
