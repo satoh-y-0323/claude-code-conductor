@@ -287,7 +287,7 @@ def main() -> None:
             "[PlannerCheck WARN] plan-report の検査で違反を検出しました:\n"
             + "\n".join(f"  - {msg}" for msg in sanitized_warnings)
             + "\n\n"
-            + "ルールの詳細は .claude/rules/plan-design-guidelines.md を参照。"
+            + "ルールの詳細は .claude/skills/dev-workflow/references/plan-design-guidelines.md を参照。"
             + "意図的に許容する場合はユーザーに確認を取ること。"
         )
         output = {

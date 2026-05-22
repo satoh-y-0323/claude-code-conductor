@@ -21,6 +21,13 @@ rm .claude/rules/code-review-checklist.md
 rm .claude/rules/security-review-checklist.md
 ```
 
+**PowerShell (Windows):**
+```powershell
+Remove-Item .claude\rules\plan-design-guidelines.md
+Remove-Item .claude\rules\code-review-checklist.md
+Remove-Item .claude\rules\security-review-checklist.md
+```
+
 ### ドキュメント
 - taxonomy.md に「長文ガイドラインは skills/<name>/references/ に置く」設計指針を明記
 - decisions.md に新 ADR を追加

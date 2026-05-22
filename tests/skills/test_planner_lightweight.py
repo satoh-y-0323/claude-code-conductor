@@ -2,7 +2,7 @@
 tests/skills/test_planner_lightweight.py
 
 v2.13.0 で planner.md を 172 行 → ~66 行に軽量化した検証。
-並列実行設計指針・自動検査ルールは rules/plan-design-guidelines.md に外出しされている。
+並列実行設計指針・自動検査ルールは skills/dev-workflow/references/plan-design-guidelines.md に外出しされている。
 """
 from pathlib import Path
 
@@ -45,7 +45,7 @@ def test_planner_references_plan_design_guidelines():
 
 
 def test_plan_design_guidelines_exists_and_has_rules():
-    """rules/plan-design-guidelines.md が存在し、ルール 1〜13 と R2〜R6 を含む。"""
+    """skills/dev-workflow/references/plan-design-guidelines.md が存在し、ルール 1〜13 と R2〜R6 を含む。"""
     content = _read(PLAN_DESIGN_GUIDELINES)
     assert content, "skills/dev-workflow/references/plan-design-guidelines.md が存在しない"
     required_concepts = (
