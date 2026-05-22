@@ -10,7 +10,7 @@ C3 のスラッシュコマンドはすべてスキル（`.claude/skills/{name}/
 | `/setup` | コーディング規約の設定（`coding-standards.md` / `project-conventions.md` を生成） |
 | `/start` | 開発ワークフローの入口。開始地点（標準ワークフロー / 実装 / デバッグ / レビュー）を選んで対応する dev-workflow フェーズへ遷移 |
 | `/develop` | TDD フェーズ（D）から直接開始 |
-| `/code-review` | レビューフェーズ（E）から直接開始（code-reviewer + security-reviewer） |
+| `/review-phase` | レビューフェーズ（E）から直接開始（code-reviewer + security-reviewer） |
 | `/promote-pattern` | 蓄積されたパターンを `rules/promoted/` または `skills/promoted-*/` に昇格 |
 
 ## ユーティリティ系
@@ -78,7 +78,7 @@ v2.0.0 以降、外部の parallel-orchestra プロセスは不要で、Claude C
 - [skills/init-session/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/init-session/SKILL.md)
 - [skills/start/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/start/SKILL.md)
 - [skills/dev-workflow/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/dev-workflow/SKILL.md)
-- [skills/code-review/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/code-review/SKILL.md)
+- [skills/review-phase/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/review-phase/SKILL.md)
 - [skills/develop/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/develop/SKILL.md)
 - [skills/promote-pattern/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/promote-pattern/SKILL.md)
 

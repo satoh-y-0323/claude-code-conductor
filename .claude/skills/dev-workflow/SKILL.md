@@ -1,5 +1,5 @@
 ---
-description: ヒアリング→設計→計画→実装→レビューの全フェーズワークフロー。/start・/develop・/code-review スキルが内部参照する。
+description: ヒアリング→設計→計画→実装→レビューの全フェーズワークフロー。/start・/develop・/review-phase スキルが内部参照する。
 disable-model-invocation: false
 user-invocable: false
 ---

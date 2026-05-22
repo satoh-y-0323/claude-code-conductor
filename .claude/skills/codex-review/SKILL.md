@@ -202,10 +202,10 @@ AskUserQuestion で確認する:
     "options": [
       { "label": "確認完了", "description": "レポートを確認した" },
       { "label": "別ファイルも続けてレビューする", "description": "Step 1 から再実行する" },
-      { "label": "C3 レビューフローへ引き継ぐ", "description": "code-review スキルへ引き継いでフェーズ E を実行する" }
+      { "label": "C3 レビューフローへ引き継ぐ", "description": "review-phase スキルへ引き継いでフェーズ E を実行する" }
     ]
   }]
 }
 ```
 
-「C3 レビューフローへ引き継ぐ」が選択された場合は Skill ツールで `code-review` を呼び出す。
+「C3 レビューフローへ引き継ぐ」が選択された場合は Skill ツールで `review-phase` を呼び出す。

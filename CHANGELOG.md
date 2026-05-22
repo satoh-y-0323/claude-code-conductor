@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.15.1 (2026-05-22)
+
+### 変更
+- C3 `/code-review` skill を `/review-phase` にリネーム。
+  Claude Code v2.1.147 で Built-in `/code-review` が新規追加され、
+  コマンド名が完全衝突したため。
+
+### 配布先での手動クリーンアップ手順（必須）
+
+`c3 update` は配布物の削除を検出しないため、配布先プロジェクトで以下を手動実行:
+
+**bash / macOS / Linux:**
+```bash
+rm -rf .claude/skills/code-review/
+```
+
+**PowerShell (Windows):**
+```powershell
+Remove-Item -Recurse -Force .claude\skills\code-review\
+```
+
+---
+
 ## v2.15.0 (2026-05-22)
 
 ### 変更

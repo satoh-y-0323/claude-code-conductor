@@ -135,7 +135,7 @@ c3 tier stats --recent N      # 直近 outcome の表示件数（デフォルト
 
 以下は Claude Code 内（スラッシュコマンド）で扱う領域:
 
-- `/init-session` / `/setup` / `/start` / `/develop` / `/code-review` / `/promote-pattern` / `/doc` / `/mcp-config` / `/extract-lib` / `/recall`
+- `/init-session` / `/setup` / `/start` / `/develop` / `/review-phase` / `/promote-pattern` / `/doc` / `/mcp-config` / `/extract-lib` / `/recall`
 - 詳細は [スキル一覧](skills.md) を参照
 
 Codex では `.agents/skills/` に生成された `$start` などの skills と `.codex/agents/` の custom agents を使う。Cursor では `.cursor/rules/c3-core.mdc` が `.claude/skills/` と `.claude/agents/` を参照する。
