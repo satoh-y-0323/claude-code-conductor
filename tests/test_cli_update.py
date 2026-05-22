@@ -1,8 +1,6 @@
 """src/c3/cli_update.py の _warn_deprecated_paths と DEPRECATED_PATHS のテスト。"""
 from __future__ import annotations
 
-import sys
-from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -39,4 +37,5 @@ def test_warning_when_deprecated_path_present(tmp_path: Path, capsys: pytest.Cap
     captured = capsys.readouterr()
     assert "deprecated" in captured.err.lower()
     assert rel_path in captured.err
-    assert "manual" in captured.err.lower() or "remove" in captured.err.lower()
+    assert "manual" in captured.err.lower()
+    assert "remove" in captured.err.lower()
