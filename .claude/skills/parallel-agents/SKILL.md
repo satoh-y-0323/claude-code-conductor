@@ -41,8 +41,7 @@ Claude Code のサブエージェントは **更にサブエージェントを s
 
 - plan-report が `.claude/reports/plan-report-*.md` の形式で配置され、YAML フロントマターを持つこと
 - フロントマターが無ければ `.claude/skills/dev-workflow/SKILL.md` の D-1〜D-5 ceremony へフォールバック
-- Claude Code の Agent ツールが `isolation: "worktree"` パラメータをサポートしていること（v2.1.x 以降）
-- **Claude Code 2.1.150 以降を推奨**。古いバージョン (< 2.1.150) では `isolation:"worktree"` の auto-cleanup が動作しないため、各 wave 終了時に 2-F-3 のフォールバック手順（`git worktree remove -f -f` + `git branch -D worktree-agent-{id}`）を手動で実行する必要がある。
+- Claude Code の Agent ツールが `isolation: "worktree"` パラメータをサポートしていること（**v2.1.150 以降を推奨**。古いバージョンでは auto-cleanup 不在のため 2-F-3 の手動クリーンアップが必要）
 
 ---
 

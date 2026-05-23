@@ -112,10 +112,18 @@ def test_locate_c3_db_invalid_env_falls_back_to_traversal(
     assert result == valid_db.resolve(), (
         "Invalid env path should fall through to parent traversal."
     )
-    assert "C3_DB_PATH" in caplog.text and (
-        "file not found" in caplog.text or "falling back to traversal" in caplog.text
-    ), (
-        "Invalid env path should emit a warning mentioning C3_DB_PATH and the fallback."
+    # NOTE: src/c3/db.py の現在の警告フォーマット
+    #   "%s set but file not found: %s (falling back to traversal)"
+    # を現状スナップショットとして固定する。将来ログメッセージを精緻化する場合は
+    # 本 assert を意図的に更新すること（caplog の片側 OR では検出できないため）。
+    assert "C3_DB_PATH" in caplog.text, "Warning must mention env var name C3_DB_PATH."
+    assert "file not found" in caplog.text, (
+        "Warning must mention 'file not found' (current db.py message). "
+        "If db.py message is intentionally refined, update this assertion."
+    )
+    assert "falling back to traversal" in caplog.text, (
+        "Warning must mention 'falling back to traversal' (current db.py message). "
+        "If db.py message is intentionally refined, update this assertion."
     )
 
 
@@ -124,7 +132,13 @@ def test_locate_c3_db_env_pointing_to_directory_falls_back_to_traversal(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ):
-    """C3_DB_PATH がディレクトリを指す場合でも is_file() False → 警告して親遡り fallback。
+    """ディレクトリ指定のテスト（SR L-3 追加）。
+
+    `test_locate_c3_db_invalid_env_falls_back_to_traversal` は env が「存在しない
+    ファイルパス」を指すケースをカバーするが、本テストは env が「実在するディレクトリ」
+    を指すケースをカバーする（is_file() False の別経路）。setup は env に
+    `tmp_path/some_dir` (mkdir 済) を設定し、親遡り fallback 用に
+    `_make_fake_db(tmp_path)` で `tmp_path/.claude/state/c3.db` を別途用意する。
 
     SR L-3 指摘: ディレクトリ指定でも "file not found" のログが出る（診断メッセージの
     誤解可能性）。この挙動をテストとして固定し、将来の修正時に意図的な変更として検出する。
@@ -142,8 +156,16 @@ def test_locate_c3_db_env_pointing_to_directory_falls_back_to_traversal(
     assert result == valid_db.resolve(), (
         "Directory env path should fall through to parent traversal."
     )
-    assert "C3_DB_PATH" in caplog.text and (
-        "file not found" in caplog.text or "falling back to traversal" in caplog.text
-    ), (
-        "Directory env path should emit a warning (currently uses 'file not found' message)."
+    # NOTE: src/c3/db.py の現在の警告フォーマット
+    #   "%s set but file not found: %s (falling back to traversal)"
+    # を現状スナップショットとして固定する。将来ログメッセージを精緻化する場合は
+    # 本 assert を意図的に更新すること（caplog の片側 OR では検出できないため）。
+    assert "C3_DB_PATH" in caplog.text, "Warning must mention env var name C3_DB_PATH."
+    assert "file not found" in caplog.text, (
+        "Warning must mention 'file not found' (current db.py message). "
+        "If db.py message is intentionally refined, update this assertion."
+    )
+    assert "falling back to traversal" in caplog.text, (
+        "Warning must mention 'falling back to traversal' (current db.py message). "
+        "If db.py message is intentionally refined, update this assertion."
     )
