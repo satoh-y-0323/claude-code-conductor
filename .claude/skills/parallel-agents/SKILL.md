@@ -208,7 +208,7 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 }
 ```
 
-- 「リトライ」 → 失敗タスクのみ 2-C を再実行（成功 worktree はそのまま残し、失敗 worktree は事前に `git worktree remove -f -f` で削除）
+- 「リトライ」 → 失敗タスクのみ 2-C を再実行（Claude Code 2.1.x 以降、失敗 worktree は Agent 完了時に auto-cleanup されているはず。残留があった場合のみ事前に `git worktree remove -f -f` で削除）
 - 「スキップして次の wave へ」 → 失敗内容をセッションファイルの `## 試みたが失敗したアプローチ` に追記して次の wave へ
 - 「中断」 → セッションファイルの該当 wave 行は `- [ ]` のままにしてスキル終了
 
@@ -241,15 +241,26 @@ git commit -m "Wave {N}: {要約}"
 
 メッセージには各タスクの目的を簡潔にまとめる（例: 「Wave 1: auth ログイン/ログアウト実装」）。
 
-#### 2-F-3: worktree クリーンアップ
+#### 2-F-3: worktree クリーンアップ（残留チェックのみ）
 
-各 worktree を削除する。**`-f -f` フラグが必須**（Claude Code が worktree を `claude agent` lock で残すため）:
+Claude Code 2.1.x（少なくとも 2.1.150 で実測確認、2026-05-23）以降、`isolation:"worktree"` 付き Agent は完了時に **物理ディレクトリ・worktree 登録・`worktree-agent-*` ブランチが自動削除** される（foreground / background / 並列 / 失敗ケース全パターンで検証済み。詳細: `.claude/reports/worktree-cleanup-verification-20260523-234110.md`）。
+
+そのため明示的な `git worktree remove` は **不要**。auto-cleanup が race や障害でスキップされた場合のセーフティとして残留チェックのみ行う:
 
 ```bash
-git worktree remove -f -f .claude/worktrees/agent-{id}
-git worktree remove -f -f .claude/worktrees/agent-{id2}
+# 念のため worktree 登録の残留を確認、あれば prune（物理ディレクトリも片付く）
+git worktree list --porcelain
 git worktree prune
-git branch -D worktree-agent-{id} worktree-agent-{id2}
+
+# 念のため worktree-agent-* ブランチの残留チェック（あれば手動削除を検討）
+git branch -a | grep -E "worktree-agent-" || true
+```
+
+残留があった場合のみ手動 cleanup（古い Claude Code バージョン互換 or auto-cleanup 失敗ケース）:
+
+```bash
+git worktree remove -f -f .claude/worktrees/agent-{id}  # -f -f は claude agent lock 残留対策
+git branch -D worktree-agent-{id}
 ```
 
 #### 2-F-4: セッション記録
@@ -285,5 +296,5 @@ checkpoint の summary には KEEP ルール（設計判断・決定事項・解
 - 並列実行で **特定パターンが詰まりがち** と気付いたら、セッションファイルの `## 試みたが失敗したアプローチ` に追記し `patterns` に登録する
 - 並列度を増やして race の兆候が出た場合は本 skill の上限値 15 を見直す（PoC では 15 並列まで 0 失敗確認済み）
 - agent ツール並列起動の `<task-notification>` の到着順序は保証されないため、結果集約の表は task_id でソートして提示する
-- worktree クリーンアップを忘れると `.claude/worktrees/` に dead worktree が積もる。`-f -f` フラグの必要性は PoC で実証済み
+- Claude Code 2.1.x 以降は Agent 完了時に worktree auto-cleanup されるため、明示的な `git worktree remove` は基本不要（2-F-3 参照）。`.claude/worktrees/` に dead worktree が残る場合は古い Claude Code バージョンで作成された残骸の可能性が高い
 

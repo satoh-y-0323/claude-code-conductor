@@ -39,6 +39,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "docs/ruflo_research_result.md",
     "docs/C3_hnsw_機能追加詳細設計.md",
     "docs/C3_利用状況可視化.md",
+    "docs/C3_tier_routing_cost_integration_設計.md",
     "docs/grill-me機能を実装する際の考慮点とC3との相性や超えるべき壁.md",
     "docs/C3のconfig_policyとversion_upgradeの考慮点と超えるべき壁.md",
     "docs/codex対応/*",

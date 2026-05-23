@@ -206,3 +206,32 @@ def test_block_message_sanitizes_ansi_escapes(tmp_path: Path):
         "[sec-Low] Block message must not contain raw ANSI escape sequences. "
         f"stderr preview: {result.stderr[:300]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 5. env gate: PO_WORKTREE_GUARD 未設定なら CWD が worktree 内でも no-op
+# ---------------------------------------------------------------------------
+
+
+def test_guard_disabled_when_env_not_set(tmp_path: Path):
+    """env 未設定なら CWD が worktree 配下でも no-op (exit 0)。
+
+    worktree_guard.py L40 の env gate 契約を固定する回帰テスト。
+    将来 env gate を外す変更（auto activation のみ）に切り替える場合は
+    このテストが落ちることで設計変更を検出する。
+    """
+    worktree = _make_worktree_cwd(tmp_path)
+    outside = tmp_path / "outside_file.txt"
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(outside)},
+    }
+    result = _run_guard(payload, cwd=str(worktree), enable_guard=False)
+
+    assert result.returncode == 0, (
+        f"Guard must be inactive without PO_WORKTREE_GUARD=1 even with CWD "
+        f"inside worktree, got exit={result.returncode}\nstderr: {result.stderr}"
+    )
+    assert not result.stderr.strip(), (
+        f"Inactive guard must produce NO stderr, got: {result.stderr!r}"
+    )
