@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.15.2 (2026-05-24)
+
+### 改善
+
+- **parallel-agents skill Step 2-F-3 を縮小**: Claude Code 2.1.150 で
+  `isolation:"worktree"` 付き Agent 完了時の worktree auto-cleanup 動作を
+  4 シナリオ (foreground / background / 並列 / 失敗 exit 1) で確定検証。
+  従来の「親 Claude が `git worktree remove -f -f` を毎回実行」を
+  「残留チェック + `git worktree prune` のみ」に縮小。
+  古い Claude Code バージョン (< 2.1.150) や稀な外部要因による cleanup
+  失敗時のフォールバック手順は残置。
+- Step 2-E (リトライ) と 知識蓄積セクションも同方針に整合化。
+
+### 追加
+
+- **`.claude/docs/parallel-agents-setup.md` 新規**: parallel-agents
+  利用者向けの推奨個人設定リファレンス。`worktree.baseRef: "head"` /
+  Claude Code バージョン要件 / トラブルシュート手順を集約。
+- **README.md に「推奨個人設定」セクション**: 最小設定例と詳細 docs への
+  リンクを `parallel-agents` 紹介の直後に追加。
+
+### 回帰防御
+
+- `tests/test_db.py` 新規 (4 + 1 件): `locate_c3_db` の env 優先 /
+  C3_PO_DB_PATH legacy fallback / 親遡り / 無効 env fallback /
+  ディレクトリ指定 fallback の各経路を契約として固定。
+- `tests/test_worktree_guard.py` に env gate 未設定時の no-op テスト
+  追加 (PO_WORKTREE_GUARD env 廃止移行を機械検出する番犬テスト)。
+- 合計 5 件追加で 928 → 934 PASS (回帰なし)。
+
+### 配布
+
+- `.claude/docs/C3_tier_routing_cost_integration_設計.md` (個人作業ノート)
+  を 3 ファイル同期 (.gitignore / `_excludes.py` / `hatch_build.py`) で
+  配布除外。
+
+### 内部整理
+
+- SKILL.md (LLM 向け) と人間向け推奨ドキュメントの責務を文書ヒエラルキー
+  思想 (SKILL.md = LLM 行動指針 / docs = 人間リファレンス) に従って分離。
+
+---
+
 ## v2.15.1 (2026-05-22)
 
 ### 変更
