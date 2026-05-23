@@ -11,6 +11,7 @@ C3 側の env-aware path 解決の壊れにくさを担保する。
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,11 @@ from c3.db import locate_c3_db
 
 
 def _make_fake_db(base: Path) -> Path:
-    """`base/.claude/state/c3.db` を作って返す（空ファイルで OK）."""
+    """`base/.claude/state/c3.db` を作って返す。
+
+    locate_c3_db は is_file() 判定のみ行い中身を読まないため、
+    空ファイルで十分。
+    """
     db_path = base / ".claude" / "state" / "c3.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.touch()
@@ -48,19 +53,26 @@ def test_locate_c3_db_env_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_locate_c3_db_legacy_env_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ):
-    """C3_DB_PATH 未設定で C3_PO_DB_PATH が設定されていれば legacy 経路で解決."""
+    """C3_DB_PATH 未設定で C3_PO_DB_PATH が設定されていれば legacy 経路で解決。
+    またこのとき deprecation 警告が WARNING で発火する。"""
     legacy_db = _make_fake_db(tmp_path / "legacy_root")
 
     monkeypatch.delenv("C3_DB_PATH", raising=False)
     monkeypatch.setenv("C3_PO_DB_PATH", str(legacy_db))
 
-    result = locate_c3_db(start=tmp_path)
+    with caplog.at_level(logging.WARNING, logger="c3.db"):
+        result = locate_c3_db(start=tmp_path)
 
     assert result == legacy_db.resolve(), (
         f"C3_PO_DB_PATH should resolve when C3_DB_PATH is unset. "
         f"Expected {legacy_db.resolve()}, got {result}"
+    )
+    assert "C3_PO_DB_PATH is deprecated" in caplog.text, (
+        "Legacy env path should emit a deprecation warning."
     )
 
 
@@ -84,7 +96,9 @@ def test_locate_c3_db_parent_traversal(
 
 
 def test_locate_c3_db_invalid_env_falls_back_to_traversal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ):
     """env が設定されていても指すパスが無効ならば親遡り fallback に進む."""
     valid_db = _make_fake_db(tmp_path)
@@ -92,8 +106,44 @@ def test_locate_c3_db_invalid_env_falls_back_to_traversal(
     monkeypatch.setenv("C3_DB_PATH", str(tmp_path / "nonexistent.db"))
     monkeypatch.delenv("C3_PO_DB_PATH", raising=False)
 
-    result = locate_c3_db(start=tmp_path)
+    with caplog.at_level(logging.WARNING, logger="c3.db"):
+        result = locate_c3_db(start=tmp_path)
 
     assert result == valid_db.resolve(), (
         "Invalid env path should fall through to parent traversal."
+    )
+    assert "C3_DB_PATH" in caplog.text and (
+        "file not found" in caplog.text or "falling back to traversal" in caplog.text
+    ), (
+        "Invalid env path should emit a warning mentioning C3_DB_PATH and the fallback."
+    )
+
+
+def test_locate_c3_db_env_pointing_to_directory_falls_back_to_traversal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """C3_DB_PATH がディレクトリを指す場合でも is_file() False → 警告して親遡り fallback。
+
+    SR L-3 指摘: ディレクトリ指定でも "file not found" のログが出る（診断メッセージの
+    誤解可能性）。この挙動をテストとして固定し、将来の修正時に意図的な変更として検出する。
+    """
+    some_dir = tmp_path / "some_dir"
+    some_dir.mkdir()
+    valid_db = _make_fake_db(tmp_path)
+
+    monkeypatch.setenv("C3_DB_PATH", str(some_dir))
+    monkeypatch.delenv("C3_PO_DB_PATH", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="c3.db"):
+        result = locate_c3_db(start=tmp_path)
+
+    assert result == valid_db.resolve(), (
+        "Directory env path should fall through to parent traversal."
+    )
+    assert "C3_DB_PATH" in caplog.text and (
+        "file not found" in caplog.text or "falling back to traversal" in caplog.text
+    ), (
+        "Directory env path should emit a warning (currently uses 'file not found' message)."
     )

@@ -5,6 +5,7 @@ Tests are organised around the CWD-based activation scheme:
 2. CWD inside .claude/worktrees/ + Write inside worktree → exits 0
 3. CWD inside .claude/worktrees/ + Write outside worktree → exits 2 + stderr
 4. Block message sanitizes ANSI escapes in file_path (sec-Low)
+5. env gate: PO_WORKTREE_GUARD 未設定 → no-op (CWD が worktree 内でも exit 0)
 """
 
 from __future__ import annotations
@@ -219,6 +220,11 @@ def test_guard_disabled_when_env_not_set(tmp_path: Path):
     worktree_guard.py L40 の env gate 契約を固定する回帰テスト。
     将来 env gate を外す変更（auto activation のみ）に切り替える場合は
     このテストが落ちることで設計変更を検出する。
+
+    Note (env gate 廃止移行時):
+        env gate を外して CWD ベース自動有効化に切り替える場合は、
+        先に本テスト自体を更新（または削除）してから worktree_guard.py 側を変更すること。
+        順序を逆にすると本テストが先に落ちて hook の正常な改修と区別できなくなる。
     """
     worktree = _make_worktree_cwd(tmp_path)
     outside = tmp_path / "outside_file.txt"

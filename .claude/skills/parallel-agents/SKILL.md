@@ -42,6 +42,7 @@ Claude Code のサブエージェントは **更にサブエージェントを s
 - plan-report が `.claude/reports/plan-report-*.md` の形式で配置され、YAML フロントマターを持つこと
 - フロントマターが無ければ `.claude/skills/dev-workflow/SKILL.md` の D-1〜D-5 ceremony へフォールバック
 - Claude Code の Agent ツールが `isolation: "worktree"` パラメータをサポートしていること（v2.1.x 以降）
+- **Claude Code 2.1.150 以降を推奨**。古いバージョン (< 2.1.150) では `isolation:"worktree"` の auto-cleanup が動作しないため、各 wave 終了時に 2-F-3 のフォールバック手順（`git worktree remove -f -f` + `git branch -D worktree-agent-{id}`）を手動で実行する必要がある。
 
 ---
 
@@ -208,7 +209,7 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 }
 ```
 
-- 「リトライ」 → 失敗タスクのみ 2-C を再実行（Claude Code 2.1.x 以降、失敗 worktree は Agent 完了時に auto-cleanup されているはず。残留があった場合のみ事前に `git worktree remove -f -f` で削除）
+- 「リトライ」 → 失敗タスクのみ 2-C を再実行（失敗 worktree は auto-cleanup 済みのことが多いが、2-F-3 の残留チェックを実施してから再開すること。残留があった場合のみ事前に `git worktree remove -f -f` で削除）
 - 「スキップして次の wave へ」 → 失敗内容をセッションファイルの `## 試みたが失敗したアプローチ` に追記して次の wave へ
 - 「中断」 → セッションファイルの該当 wave 行は `- [ ]` のままにしてスキル終了
 
@@ -253,7 +254,10 @@ git worktree list --porcelain
 git worktree prune
 
 # 念のため worktree-agent-* ブランチの残留チェック（あれば手動削除を検討）
+# Windows PowerShell では grep 未インストール時に動作しないため、代替として
+# `git branch --list "worktree-agent-*"` を使う:
 git branch -a | grep -E "worktree-agent-" || true
+# Windows 代替: git branch --list "worktree-agent-*"
 ```
 
 残留があった場合のみ手動 cleanup（古い Claude Code バージョン互換 or auto-cleanup 失敗ケース）:
