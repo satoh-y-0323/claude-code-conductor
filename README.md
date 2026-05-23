@@ -328,6 +328,27 @@ Copy-Item -Recurse claude-code-conductor\.claude your-project\
 
 TDD を伴う機能実装は、planner が「test- → impl- → confirm-」の 3 タスクペアに分解し、各 wave 内で独立機能間で並列起動されます。並列実行時は worktree 専用の `wt_tester` / `wt_developer` / `wt_systematic-debugger` agent が使用され、レポートは `task_id` ベースのファイル名で出力されます。
 
+### 推奨個人設定 (`~/.claude/settings.json`)
+
+`parallel-agents` を快適に使うため、以下 2 点を **個人設定として** 推奨します（C3 配布物には含めません）:
+
+| 項目 | 推奨値 | 理由 |
+|---|---|---|
+| Claude Code バージョン | 2.1.150 以降 | worktree auto-cleanup の安定動作 |
+| `worktree.baseRef` | `"head"` | push 前のローカルコミットを worktree に含める |
+
+最小設定例:
+
+```json
+{
+  "worktree": {
+    "baseRef": "head"
+  }
+}
+```
+
+詳細（背景・副作用・トラブルシュート）は [`.claude/docs/parallel-agents-setup.md`](./.claude/docs/parallel-agents-setup.md) を参照してください。
+
 ---
 
 ## セッション管理
