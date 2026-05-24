@@ -1,5 +1,62 @@
 # Changelog
 
+## v2.17.0 (2026-05-24)
+
+**基盤整備リリース第 1 弾**: 設定階層と配布判断ルールを canonical 化する。
+コード変更は最小（docstring 追記のみ）、API 互換性完全維持、利用先への影響なし。
+
+### 追加
+
+- **`.claude/docs/config-policy.md` を新規作成（308 行）**: 設定階層と配布判断ルールを
+  canonical 化する。主要構成は以下:
+  - §1 設定ファイル所在マップ（配布元と利用先での所在を一覧化）
+  - §2 設定優先順位（3 レイヤー: ツール権限 / 自動承認パターン / LLM 指示）と書き込み権限マトリクス
+  - §3 配布判断マトリクス（12 カテゴリ、`_excludes.py` の `EXCLUDE_PATTERNS` / `KEEP_PATTERNS`
+    と完全照合済み）
+  - §4 `settings.local.json` 運用の原則（`git add -f` リスク警告 / `c3 init` は `.gitignore`
+    を自動編集しないため手動追記が必要な点を明記）
+  - §5 プラットフォーム別 config 整合（canonical は `.claude/`、`.codex/` / `.cursor/` /
+    `.agents/` は adapter 生成物）
+  - §6 3 ファイル同期ルール（`.gitignore` / `_excludes.py` / `hatch_build.py`）
+  - §7 既知の落とし穴（`hooks` セクションの完全上書き / `taxonomy.md` の特殊扱い /
+    `rules/promoted/` を `c3 update` が触らない / `permission_rules.json` の `auto_allow`
+    過度設定リスク）
+  - §8 参照先
+- **`src/c3/_excludes.py` / `hatch_build.py` の docstring**:
+  両ファイル冒頭の docstring 末尾に「See `.claude/docs/config-policy.md`」参照を
+  完全一致 1 文で追記（3 ファイル同期の精神に則る）。定数 `EXCLUDE_PATTERNS` /
+  `KEEP_PATTERNS` は変更なし。
+- **`.claude/CLAUDE.md`**: Directory Structure セクション末尾に config-policy.md
+  への参照を 1 行追加。
+
+### 背景・経緯
+
+`.claude/docs/C3のconfig_policyとversion_upgradeの考慮点と超えるべき壁.md`（2026-05-22
+作成、配布元専用）で整理された「基盤整備 3 連発」のうち、規模「小 × 2」の高優先項目
+を 1 リリースで完結させた。アーキテクト段階の実装照合で以下 3 点を初期素案から
+訂正:
+- 配布判断マトリクス 10 → 12 カテゴリ（`permission_rules.json` 独立追加、例外 3 件明示）
+- 章数 7 → 8（§7「既知の落とし穴」追加）
+- 「5 段優先順位」→「3 レイヤー」（実装と乖離していたため修正）
+
+### 次リリース予告
+
+- **v2.18.0** (予定): `c3 update` が削除を検出しない問題（`c3_update_no_delete_detection`
+  パターン）の解消。`deletions.txt` 方式で配布物に削除すべきパス一覧を含める。
+- **v2.19.0** (予定): Breaking changes 警告 + バージョン checkpoint。`c3 update`
+  実行時に前回バージョンとの diff から breaking changes 一覧を表示する。
+
+### 影響
+
+- 既存利用先: なし。doc 追加 + docstring 追記のみで、コード挙動・CLI 挙動・wheel
+  配布物の構造（`_template/.claude/docs/` 配下に `config-policy.md` 追加のみ）に
+  破壊的変更はない。
+- 既存テスト: 944 PASS / 4 skip 維持。
+- レビュー対応: Round 1 code-review 4 件（M-01 / M-02 / L-01 / L-02）+ Round 2
+  security-review 3 件（SR-M-01 / SR-L-01 / SR-L-02）を計 3 ラウンドで全件解消。
+
+---
+
 ## v2.16.0 (2026-05-24)
 
 ### 修正
