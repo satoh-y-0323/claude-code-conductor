@@ -11,7 +11,7 @@ import re
 import tempfile
 from datetime import date, datetime, timezone
 
-from session_utils import SESSION_JSON_MARKER, is_worktree, create_session_template, SESSIONS_DIR, ensure_session_initialized
+from session_utils import SESSION_JSON_MARKER, is_worktree, create_session_template, SESSIONS_DIR, ensure_session_initialized, extract_section
 
 try:
     sys.stdin.reconfigure(encoding='utf-8')
@@ -39,6 +39,72 @@ def get_session_path(date_str: str) -> str:
     return os.path.join(SESSIONS_DIR, f'{date_str}.tmp')
 
 
+def _inherit_backlog_from_latest_session(new_path: str, today_str: str) -> None:
+    """新規セッションファイルに、直近過去セッションの未完了バックログを引き継ぐ。
+
+    過去ファイルの ``## 残タスク`` セクションから ``- [ ]`` 行のみ抽出し、
+    新規ファイルの ``## 残タスク`` セクションに追記する。``- [x]`` 行は対象外。
+
+    本ヘルパーは `ensure_session_file` の新規作成パスからのみ呼ばれる。既存当日
+    ファイルが存在する場合は呼ばれないため、ユーザー編集を上書きする危険はない。
+    """
+    if not os.path.isdir(SESSIONS_DIR):
+        return
+
+    # 今日より前で最大の日付（= 直近過去セッション）を選ぶ
+    past_dates = [
+        fname[:-4] for fname in os.listdir(SESSIONS_DIR)
+        if fname.endswith('.tmp') and fname[:-4] < today_str
+    ]
+    if not past_dates:
+        return
+    latest_past_path = os.path.join(SESSIONS_DIR, f'{max(past_dates)}.tmp')
+
+    try:
+        with open(latest_past_path, 'r', encoding='utf-8') as f:
+            past_content = f.read()
+    except OSError:
+        return
+
+    backlog_section = extract_section(past_content, '残タスク')
+    pending_tasks = [
+        line for line in backlog_section.splitlines()
+        if line.lstrip().startswith('- [ ]')
+    ]
+    if not pending_tasks:
+        return
+
+    with open(new_path, 'r', encoding='utf-8') as f:
+        new_content = f.read()
+
+    inheritance_block = '\n'.join(pending_tasks) + '\n'
+    updated = new_content.replace(
+        '## 残タスク\n',
+        f'## 残タスク\n{inheritance_block}',
+        1,
+    )
+
+    if updated == new_content:
+        return
+
+    # アトミック書き込み: _apply_session_updates と同じ tempfile + os.replace パターン
+    dir_ = os.path.dirname(new_path)
+    tmp_path = None
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_, suffix='.tmp')
+        try:
+            with os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_f:
+                tmp_f.write(updated)
+        except Exception:
+            os.close(tmp_fd)
+            raise
+        os.replace(tmp_path, new_path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 def ensure_session_file(date_str: str) -> None:
     os.makedirs(SESSIONS_DIR, exist_ok=True)
     path = get_session_path(date_str)
@@ -46,6 +112,10 @@ def ensure_session_file(date_str: str) -> None:
     try:
         with open(path, 'x', encoding='utf-8') as f:
             f.write(create_session_template(date_str))
+        # 新規作成時のみ、直近過去セッションから未完了タスクを引き継ぐ。
+        # 既存ファイルがある場合 (FileExistsError ブランチ) はユーザー編集を尊重し
+        # 引き継ぎを発動しない。
+        _inherit_backlog_from_latest_session(path, date_str)
         print(f'[Stop] セッションファイルを作成しました: {path}', file=sys.stderr)
     except FileExistsError:
         # /exit による中断等でファイルが空の場合はテンプレートを書き直す（DRY: session_utils へ委譲）
@@ -65,8 +135,12 @@ def _apply_session_updates(path: str, content: str, message: str = '') -> None:
     now = datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S')
     updated = re.sub(r'(- 記録時刻: ).*', rf'\g<1>{now}', content)
 
-    # 最終応答を追記（メッセージがあり、まだ存在しない場合のみ）
-    if message and '- 最終応答:' not in updated:
+    # 最終応答を最新メッセージに更新する（既存があれば上書き、なければ追記）。
+    # 同一 stop hook 呼び出し内の冪等性は session_stop.py が stop.run を 1 回だけ呼ぶ
+    # + stop_hook_active 早期 return (run() 内) で担保されているため、過去セッションの
+    # 古い応答は積極的に上書きしてよい。古い `not in updated` ガードは「最初の応答が
+    # 一日中残る」問題を引き起こしていた。
+    if message:
         single_line = ' '.join(message.split())
         # サロゲート文字など UTF-8 非互換文字を除去（JSON デコード時に生成される場合がある）
         single_line = single_line.encode('utf-8', errors='replace').decode('utf-8')
@@ -76,11 +150,20 @@ def _apply_session_updates(path: str, content: str, message: str = '') -> None:
         # --> をサニタイズして <!-- C3:SESSION:JSON ... --> ブロックを保護する
         truncated = truncated.replace('-->', '-- >')
 
-        updated = re.sub(
-            r'(- 記録時刻: [^\n]*)',
-            lambda m: m.group(0) + f'\n- 最終応答: {truncated}',
-            updated
-        )
+        if '- 最終応答:' in updated:
+            updated = re.sub(
+                r'- 最終応答: [^\n]*',
+                f'- 最終応答: {truncated}',
+                updated,
+                count=1,
+            )
+        else:
+            updated = re.sub(
+                r'(- 記録時刻: [^\n]*)',
+                lambda m: m.group(0) + f'\n- 最終応答: {truncated}',
+                updated,
+                count=1,
+            )
 
     if updated != content:
         dir_ = os.path.dirname(path)

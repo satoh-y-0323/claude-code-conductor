@@ -567,3 +567,250 @@ class TestAppendLastMessageEscapesCommentCloser:
             "as it would break the JSON comment block. "
             f"Got: {response_line!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestAppendLastMessageOverwrite
+# ---------------------------------------------------------------------------
+
+
+class TestAppendLastMessageOverwrite:
+    """[Round 8] 別 Claude セッションからの 2 回目以降の _append_last_message 呼び出しは
+    既存の最終応答を最新メッセージで上書きする。
+
+    退行: 修正前は `if '- 最終応答:' not in updated` ガードにより、最初のセッションの
+    最終応答が一日中残り続けた。
+    """
+
+    def test_second_call_overwrites_existing_last_response(self, tmp_path):
+        """同じセッションファイルに 2 回追記すると、最後の呼び出しの応答だけが残る。"""
+        session_file = tmp_path / f"{TODAY_STR}.tmp"
+        session_file.write_text(
+            _session_file_with_timestamp(TODAY_STR), encoding="utf-8"
+        )
+
+        mod = _load_stop_module(f"_stop_overwrite_{tmp_path.name}")
+        mod._append_last_message(str(session_file), "first session response")
+        # 別 Claude セッションを想定してプロセス境界をシミュレート
+        mod._last_message_applied_paths.clear()
+        mod._append_last_message(
+            str(session_file), "second session response - the latest"
+        )
+
+        content = session_file.read_text(encoding="utf-8")
+        last_response_lines = [
+            ln for ln in content.splitlines() if ln.startswith("- 最終応答:")
+        ]
+        assert len(last_response_lines) == 1, (
+            f"最終応答行は常に 1 件のみであるべき。"
+            f"Got {len(last_response_lines)}: {last_response_lines!r}"
+        )
+        assert "second session response - the latest" in last_response_lines[0]
+        assert "first session response" not in content
+
+    def test_overwrite_preserves_json_block_and_other_sections(self, tmp_path):
+        """上書き時に C3:SESSION:JSON ブロックや他セクションが破壊されない。"""
+        session_file = tmp_path / f"{TODAY_STR}.tmp"
+        mod = _load_stop_module(f"_stop_overwrite_json_{tmp_path.name}")
+        # create_session_template でフルテンプレート初期化 + 記録時刻を埋める
+        session_file.write_text(
+            mod.create_session_template(TODAY_STR).replace(
+                "- 記録時刻: ",
+                "- 記録時刻: 2026-05-24 10:00:00",
+            ),
+            encoding="utf-8",
+        )
+
+        mod._append_last_message(str(session_file), "initial")
+        mod._last_message_applied_paths.clear()
+        mod._append_last_message(str(session_file), "updated")
+
+        content = session_file.read_text(encoding="utf-8")
+        assert "<!-- C3:SESSION:JSON" in content, (
+            "JSON ブロック開始マーカーが残っているべき"
+        )
+        assert "-- >" in content, "JSON ブロック閉じタグ（サニタイズ済み）が残っているべき"
+        assert "## うまくいったアプローチ" in content
+        assert "## 残タスク" in content
+        assert content.count("- 最終応答:") == 1
+        assert "updated" in content
+        assert "initial" not in content
+
+    def test_idempotency_within_same_process(self, tmp_path):
+        """同一プロセスで同じメッセージを 2 回呼んでも安全（冪等）。"""
+        session_file = tmp_path / f"{TODAY_STR}.tmp"
+        session_file.write_text(
+            _session_file_with_timestamp(TODAY_STR), encoding="utf-8"
+        )
+
+        mod = _load_stop_module(f"_stop_idem_{tmp_path.name}")
+        mod._append_last_message(str(session_file), "same message")
+        # 別プロセス模擬でキャッシュをクリア
+        mod._last_message_applied_paths.clear()
+        mod._append_last_message(str(session_file), "same message")
+
+        content = session_file.read_text(encoding="utf-8")
+        assert content.count("- 最終応答: same message") == 1
+        assert content.count("- 最終応答:") == 1
+
+
+# ---------------------------------------------------------------------------
+# TestInheritBacklogFromLatestSession
+# ---------------------------------------------------------------------------
+
+
+def _write_past_session_with_backlog(
+    sessions_dir: Path, date_str: str, backlog_lines: list
+) -> None:
+    """Write a past .tmp session file with the given backlog lines in '## 残タスク'."""
+    backlog_block = "\n".join(backlog_lines)
+    if backlog_block:
+        backlog_block += "\n"
+    content = (
+        f"SESSION: {date_str}\n"
+        f"AGENT: \n"
+        f"DURATION: \n"
+        f"\n"
+        f"## うまくいったアプローチ\n"
+        f"\n"
+        f"## 試みたが失敗したアプローチ\n"
+        f"\n"
+        f"## 残タスク\n"
+        f"{backlog_block}\n"
+        f"## 事実ログ（自動生成 / stop.py）\n"
+        f"- 記録時刻: 2026-05-23 23:59:59\n"
+        f"- 最終応答: previous response\n"
+        f"\n"
+        f"<!-- C3:SESSION:JSON\n"
+        f"{{\n"
+        f'  "session": "{date_str}",\n'
+        f'  "patterns": [],\n'
+        f'  "successes": [],\n'
+        f'  "failures": [],\n'
+        f'  "todos": []\n'
+        f"}}\n"
+        f"-- >\n"
+    )
+    (sessions_dir / f"{date_str}.tmp").write_text(content, encoding="utf-8")
+
+
+class TestInheritBacklogFromLatestSession:
+    """[Round 8] ensure_session_file が新規ファイル作成時に、直近過去セッションの
+    未完了タスク（- [ ]）を自動で当日ファイルに引き継ぐ。
+
+    退行: 修正前は前日の未完了タスクが当日に引き継がれず、init-session の
+    git log 照合が空ファイルでは何も検出できなかった。
+    """
+
+    YESTERDAY_STR = (TODAY - timedelta(days=1)).strftime("%Y%m%d")
+
+    def _setup(self, tmp_path: Path, tag: str) -> tuple:
+        """Create isolated SESSIONS_DIR + fresh stop module pointing at it."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        mod = _load_stop_module(f"_stop_inherit_{tag}_{tmp_path.name}")
+        mod.SESSIONS_DIR = str(sessions_dir)
+        return mod, sessions_dir
+
+    def test_pending_tasks_carried_over_to_new_file(self, tmp_path):
+        """前日ファイルの - [ ] 行が引き継がれ、- [x] は引き継がれない。"""
+        mod, sessions_dir = self._setup(tmp_path, "carry")
+        _write_past_session_with_backlog(
+            sessions_dir,
+            self.YESTERDAY_STR,
+            [
+                "- [ ] tier-routing コスト統合の実装",
+                "- [ ] /usage TUI 利用量計測",
+                "- [x] v2.15.2 リリース完了 → done",
+            ],
+        )
+
+        mod.ensure_session_file(TODAY_STR)
+
+        new_file = sessions_dir / f"{TODAY_STR}.tmp"
+        assert new_file.exists(), "新規セッションファイルが作成されているべき"
+        content = new_file.read_text(encoding="utf-8")
+
+        # ## 残タスク セクションを抽出して中身を確認
+        from session_utils import extract_section as _extract  # type: ignore
+
+        backlog = _extract(content, "残タスク")
+        pending_lines = [
+            ln for ln in backlog.splitlines() if ln.lstrip().startswith("- [ ]")
+        ]
+        assert len(pending_lines) == 2, (
+            f"未完了タスク 2 件が引き継がれているべき。Got: {pending_lines!r}"
+        )
+        assert any("tier-routing" in ln for ln in pending_lines)
+        assert any("/usage" in ln for ln in pending_lines)
+        # 完了済みタスクは引き継がない
+        assert "v2.15.2 リリース完了" not in content
+        assert "- [x]" not in backlog
+
+    def test_no_past_session_does_not_fail(self, tmp_path):
+        """SESSIONS_DIR が空でも ensure_session_file はエラーにならない。"""
+        mod, sessions_dir = self._setup(tmp_path, "empty")
+
+        # 例外を出さないこと、ファイルが作成されることを確認
+        mod.ensure_session_file(TODAY_STR)
+
+        new_file = sessions_dir / f"{TODAY_STR}.tmp"
+        assert new_file.exists()
+        content = new_file.read_text(encoding="utf-8")
+        # ## 残タスク セクションは空のまま
+        assert "## 残タスク" in content
+
+    def test_existing_today_file_is_not_modified(self, tmp_path):
+        """既に当日ファイルが存在する場合、引き継ぎは発動せず内容は保持される。"""
+        mod, sessions_dir = self._setup(tmp_path, "exist")
+        # 前日ファイルに未完了タスクあり
+        _write_past_session_with_backlog(
+            sessions_dir,
+            self.YESTERDAY_STR,
+            ["- [ ] should NOT be carried over"],
+        )
+        # 当日ファイルが既に存在（手動編集された状態をシミュレート）
+        today_file = sessions_dir / f"{TODAY_STR}.tmp"
+        existing_content = (
+            f"SESSION: {TODAY_STR}\n"
+            f"## 残タスク\n"
+            f"- [ ] manually added today\n"
+            f"## 事実ログ（自動生成 / stop.py）\n"
+            f"- 記録時刻: 2026-05-24 12:00:00\n"
+        )
+        today_file.write_text(existing_content, encoding="utf-8")
+
+        mod.ensure_session_file(TODAY_STR)
+
+        content = today_file.read_text(encoding="utf-8")
+        assert "should NOT be carried over" not in content, (
+            "既存当日ファイルがある場合は前日からの引き継ぎを発動してはいけない"
+        )
+        assert "manually added today" in content
+
+    def test_skips_when_past_section_has_no_pending_tasks(self, tmp_path):
+        """前日ファイルの残タスクが全て - [x] の場合、当日の残タスクは空のまま。"""
+        mod, sessions_dir = self._setup(tmp_path, "alldone")
+        _write_past_session_with_backlog(
+            sessions_dir,
+            self.YESTERDAY_STR,
+            [
+                "- [x] done A",
+                "- [x] done B",
+            ],
+        )
+
+        mod.ensure_session_file(TODAY_STR)
+
+        new_file = sessions_dir / f"{TODAY_STR}.tmp"
+        content = new_file.read_text(encoding="utf-8")
+
+        from session_utils import extract_section as _extract  # type: ignore
+
+        backlog = _extract(content, "残タスク")
+        assert backlog.strip() == "", (
+            f"前日に未完了がない場合、当日の残タスクは空のまま。Got: {backlog!r}"
+        )
+        # 完了済み行が漏れ出していないことも確認
+        assert "done A" not in content
+        assert "done B" not in content
