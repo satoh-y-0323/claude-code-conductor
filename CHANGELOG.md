@@ -1,5 +1,68 @@
 # Changelog
 
+## v2.18.0 (2026-05-24)
+
+**基盤整備リリース第 2 弾**: `c3 update` の削除検出を `deletions.txt` 方式で導入する。
+v2.0.0 以来の `c3_update_no_delete_detection` defect（リリースで廃止した
+skill / hook / agent が利用先に残り続ける問題）を構造的に解消する。
+
+### 追加
+
+- **`.claude/deletions.txt`**（新規）: 利用先で削除すべきファイルパス一覧。
+  1 行 1 パス、`#` でコメント、`.claude/` 相対 POSIX パス。v2.1.0 / v2.11.0 /
+  v2.12.0 / v2.15.1 までの過去廃止 16 ファイルを初期エントリとして同梱。
+- **`c3 update` の自動削除機能**: `_template/.claude/deletions.txt` を読み、
+  利用先の該当ファイルを削除候補として扱う。`--dry-run` で予告のみ、通常実行は
+  確認プロンプト `y/N`、`--yes` / `-y` フラグでプロンプトスキップ可。
+- **`--yes` / `-y` フラグ**（新規）: 削除確認プロンプトをスキップする。
+  **CI / 自動化ワークフロー専用**。対話環境での常用は推奨しない。
+  `--dry-run` と同時指定しても効果なし。
+- **13 段セーフガード**: 削除対象パスに対する 13 種類の事前検査
+  - 文字列レベル: 空パス / 絶対パス / `~` / バックスラッシュ / Windows ドライブレター /
+    `.claude/` プレフィックス禁止 / ANSI エスケープシーケンス検出（ECMA-48 §5.4 全網羅）
+  - 構造レベル: `..` `.` 含み / null byte / `Path.is_symlink()` でシンボリックリンク拒否 /
+    `Path.resolve()` で `.claude/` 配下確認 / `Path.is_dir()` でディレクトリ拒否 /
+    `deletions.txt` 自身の自己削除拒否（Windows NTFS case-insensitive 対応）
+- **新規テスト 35 件**: `tests/test_cli_update_deletions.py` に A: ユニット 14 件 /
+  B: 結合 8 件 / C: 攻撃 10 件 / D: CLI 4 件 = 計 36 件（既存 DEPRECATED_PATHS
+  テスト 3 件削除 → 純増 32 件）
+
+### 撤去
+
+- **`cli_update.py` の `DEPRECATED_PATHS` 定数 + `_warn_deprecated_paths()`
+  関数**: v2.15.1 で導入した「stderr 警告のみ・削除しない」方式を完全撤去し、
+  `deletions.txt` 方式に一元化。
+
+### ドキュメント
+
+- **`.claude/docs/config-policy.md`**:
+  - §3 配布判断マトリクス 12 → 13 カテゴリ（`deletions.txt` 追加）
+  - §7「既知の落とし穴」5 項目目「`deletions.txt` 自身は削除されない・
+    絶対パスは無視される」追加
+  - §8 残課題から「v2.18.0 予定」を完了化
+
+### セキュリティ
+
+- パストラバーサル / 絶対パス / Home (`~`) / Windows ドライブレター /
+  バックスラッシュ / `.claude/` プレフィックス / 親遡り / シンボリックリンク経由 /
+  ディレクトリ削除 / Windows case-insensitive バイパス / ANSI CSI シーケンス /
+  null byte / `deletions.txt` 自身 — 計 12 種の攻撃面を構造的に防御
+- Round 1 + Round 2 + Round 3 で計 17 件のレビュー指摘（CR 10 + SR 7）全件対応
+
+### 次リリース予告
+
+- **v2.19.0**（予定）: Breaking changes 警告 + バージョン checkpoint。
+  `c3 update` 実行時に前回バージョンとの diff から breaking changes 一覧を表示する。
+
+### 影響
+
+- **既存利用先**: `c3 update` 実行時に過去廃止 16 ファイルの削除候補が表示される。
+  デフォルトは確認プロンプト（`N`）のため、誤削除事故は発生しない。
+- **CI / 自動化環境**: `--yes` フラグを明示しない限り従来通り（プロンプトで止まる）。
+- **既存テスト**: 944 → 979 PASS（純増 35 件）、API 互換性完全維持。
+
+---
+
 ## v2.17.0 (2026-05-24)
 
 **基盤整備リリース第 1 弾**: 設定階層と配布判断ルールを canonical 化する。
