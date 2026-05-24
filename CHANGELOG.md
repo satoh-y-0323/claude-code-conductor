@@ -1,5 +1,79 @@
 # Changelog
 
+## [2.19.0] - 2026-05-24
+
+**基盤整備リリース第 3 弾**: `c3 update` 実行時に breaking changes 表示 + MAJOR 承認プロンプトを導入する。
+v2.11.0 の `summarize-memory` 廃止のように利用先設定の手動修正が必要なケースで、
+利用者が破壊的変更を見逃すリスクを構造的に防ぐ。
+
+### 機能追加
+
+- **`c3 update` 実行時の breaking changes 表示 + MAJOR 承認プロンプト**:
+  利用先 `.claude/state/c3_version.txt`（バージョン checkpoint）と配布元バージョン
+  (`c3.__version__`) を比較し、その区間にある breaking changes を
+  `.claude/breaking-changes.txt` から抽出して表示する。
+  - **initial（初回）**: 全件表示。プロンプト非発火。
+  - **minor / patch**: 区間内 breaking changes を表示。プロンプト非発火。
+  - **MAJOR**: 区間内 breaking changes を表示後、`Proceed with major version update? [y/N]:` プロンプトを発火。
+    N または非対話環境（EOF）で `exit 0`（add/update / deletions / checkpoint 更新のいずれも実行されない）。
+  - **downgrade**: stderr に 1 行 warning のみ。checkpoint 不変。プロンプト非発火。
+  - `--yes` フラグで MAJOR プロンプトをスキップ可（CI / 自動化用）。
+  - `--dry-run` では MAJOR プロンプト非発火（`(dry-run: confirmation would be required)` 表示）。
+  - `--platform codex` 等 claude 以外単独実行時は発火しない。
+
+- **`.claude/breaking-changes.txt`（新規）**: breaking changes ログファイル。
+  フォーマット: `vX.Y.Z|<English summary>|<Japanese summary>` の pipe 区切り 1 行 1 エントリ。
+  v2.11.0（`summarize-memory` 廃止）を初期エントリとして同梱。
+  `KEEP_PATTERNS` で明示配布。`c3 update` で利用先に伝播。
+
+- **`.claude/state/c3_version.txt`（新規、利用先生成）**: バージョン checkpoint ファイル。
+  `c3 update` の claude block 成功時（non-dry-run / non-downgrade）に自動更新。
+  `state/*` 一括除外により配布対象外（利用先で生成、git 管理は推奨しない）。
+
+- **`scripts/extract_breaking_changes.py`（新規）**: CHANGELOG.md の `### 破壊的変更` セクションを抽出し、
+  `.claude/breaking-changes.txt` に未記載のエントリを追記するリリースワークフロースクリプト。
+  - `--check`: 未記載があれば `exit 1` + stderr に未記載 version 列挙（CI 用）
+  - `--dry-run`: 候補表示のみ、書き込まない
+  - 対話モード: en サマリ必須入力（空入力はエラー）
+  - atomic write (tmp + `os.replace`) で安全に追記
+
+- **`KEEP_PATTERNS` への `breaking-changes.txt` 追加**: `src/c3/_excludes.py` / `hatch_build.py` の
+  `KEEP_PATTERNS` に `"breaking-changes.txt"` を追加（3 ファイル同期ルール準拠）。
+
+### 変更
+
+- **`src/c3/__init__.py`**: `__version__` を `"2.18.0"` から `"2.19.0"` に更新。
+
+### ドキュメント
+
+- **`.claude/docs/config-policy.md`**:
+  - §3 配布判断マトリクス 13 → 14 カテゴリ（`breaking-changes.txt` 追加）
+  - §11（`state/*`）に「v2.19.0 で `c3_version.txt` を追加」と注記
+  - §6 3 ファイル同期ルールに `breaking-changes.txt` のメンテ責任を追記
+- **`/CLAUDE.md`**（配布元 gitignored）:
+  - §6「リリース前 breaking changes チェック」を新規追加
+  - `scripts/extract_breaking_changes.py --check` 手順 / wheel 検証コマンドを含む
+
+### ドキュメント訂正（v2.17.0 / v2.18.0 で配布した記述の誤りを訂正）
+
+- **`hooks` のマージ挙動**: v2.17.0 / v2.18.0 で配布した `.claude/docs/config-policy.md` §2 / §4 / §7 と
+  `.claude/docs/settings.json.md` 冒頭・末尾の「`settings.local.json` の hooks が `settings.json` の
+  hooks を完全上書きする」記述は **誤り**。実機検証で両ファイルの hooks は **マージされる** ことを確認
+  （本配布元リポでも `settings.json` の lifecycle hooks と `settings.local.json` の `.dev/hooks/*` が並走）。
+  Claude Code 公式 docs では hooks のマージ挙動が明記されていないため、チーム全体で必要な hook は
+  `settings.json` 側に集約するのが安全、という方針に変更。
+- **`.claude/rules/*.md` の注入挙動**: v2.17.0 で配布した `.claude/docs/config-policy.md` §2 の
+  「`paths:` フロントマターがあればパスマッチ時のみ、なければ常時注入」記述は誤り。実機では `rules/*.md`
+  は常時全文注入され、`paths:` は「適用範囲のドキュメント」であって注入タイミングは変わらない。
+
+### 影響
+
+- **既存利用先**: `c3 update` 実行時に「初回 checkpoint 作成」ヘッダ + v2.11.0 の breaking change が表示される。
+  MAJOR バンプ確認プロンプトは発火しない（v2.11.0 → v2.19.0 は minor bump）。
+  `.claude/state/c3_version.txt` が自動生成されるが、`state/*` は gitignore 推奨。
+
+---
+
 ## v2.18.0 (2026-05-24)
 
 **基盤整備リリース第 2 弾**: `c3 update` の削除検出を `deletions.txt` 方式で導入する。

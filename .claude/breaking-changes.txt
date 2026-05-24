@@ -1,0 +1,7 @@
+# C3 breaking changes log
+# Format: vX.Y.Z|<English summary>|<Japanese summary>
+# Note: extra '|' characters in the Japanese field are allowed (parser uses maxsplit=2).
+# Note: English field must not contain '|' (validated by scripts/extract_breaking_changes.py).
+# Lines starting with '#' are comments. Blank lines ignored.
+
+v2.11.0|summarize-memory agent + skill removed; replaced by `c3 recall`|summarize-memory エージェント / skill を完全廃止。代替は `c3 recall` の意味検索。

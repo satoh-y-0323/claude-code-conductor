@@ -4,19 +4,408 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import os
 import re
 import shutil
 import sys
+import uuid
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[\x20-\x3f]*[\x40-\x7e]')
 
+import c3
 from c3._excludes import should_skip
-from c3._terminal import supports_color
+from c3._terminal import sanitize_terminal_text, supports_color
 from c3.adapters import print_adapter_actions, scaffold_adapters
 from c3.paths import templates_dir
 from c3.platforms import PLATFORM_CHOICES, expand_platforms
+
+
+# ---------------------------------------------------------------------------
+# Breaking changes dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class BreakingChange:
+    """1 エントリの breaking change 情報。immutable / hashable。"""
+    version: str  # "X.Y.Z" 形式（先頭 'v' は strip 済み）
+    en: str       # サニタイズ済み英語サマリ
+    ja: str       # サニタイズ済み日本語サマリ
+
+
+# ---------------------------------------------------------------------------
+# Version comparison utilities
+# ---------------------------------------------------------------------------
+
+def _semver_tuple(v: str) -> tuple[int, int, int]:
+    """`_compare_versions` でバリデーション済みの version 文字列を (major, minor, patch) に変換する。
+
+    前提: v は _compare_versions の _parse() によるバリデーション済み入力。
+    責務は「バリデーション済みトリプル整数化のみ」であり、エラーメッセージ詳細化は
+    _compare_versions._parse() 側が担う（責務分離）。
+    """
+    s = v.lstrip("v")
+    p = s.split(".")
+    return (int(p[0]), int(p[1]), int(p[2]))
+
+
+def _compare_versions(a: str, b: str) -> int:
+    """2 つのバージョン文字列を比較する。
+
+    Args:
+        a: バージョン文字列（先頭 'v' 任意）
+        b: バージョン文字列（先頭 'v' 任意）
+    Returns:
+        -1 (a < b) / 0 (a == b) / 1 (a > b)
+    Raises:
+        ValueError: SemVer 純粋形式 (X.Y.Z) でない場合（pre-release / build metadata 含む）
+    """
+    def _parse(v: str) -> tuple[int, int, int]:
+        s = v.lstrip("v")
+        # pre-release / build metadata は未サポート
+        if "-" in s or "+" in s:
+            raise ValueError(f"pre-release/build metadata not supported: {v!r}")
+        parts = s.split(".")
+        if len(parts) != 3:
+            raise ValueError(f"not a 3-part SemVer: {v!r}")
+        try:
+            return (int(parts[0]), int(parts[1]), int(parts[2]))
+        except ValueError:
+            raise ValueError(f"non-integer version component: {v!r}")
+
+    ta = _parse(a)
+    tb = _parse(b)
+    if ta < tb:
+        return -1
+    elif ta > tb:
+        return 1
+    return 0
+
+
+def _bump_level(
+    prev: str | None,
+    curr: str,
+) -> Literal["initial", "major", "minor", "patch", "same", "downgrade"]:
+    """prev と curr を比較してバンプレベルを返す。
+
+    Args:
+        prev: 前バージョン文字列（None なら初回）
+        curr: 現バージョン文字列
+    Returns:
+        "initial" / "major" / "minor" / "patch" / "same" / "downgrade"
+    """
+    if prev is None:
+        return "initial"
+
+    try:
+        cmp = _compare_versions(prev, curr)
+    except ValueError:
+        # 不正な version は initial フォールバック（_load_version_checkpoint で None 化済みのため通常未到達）
+        return "initial"
+
+    if cmp == 0:
+        return "same"
+    if cmp > 0:
+        return "downgrade"
+
+    # prev < curr: major / minor / patch を判定（_semver_tuple は _compare_versions でバリデーション済み前提）
+    pa = _semver_tuple(prev)
+    pb = _semver_tuple(curr)
+    if pb[0] > pa[0]:
+        return "major"
+    if pb[1] > pa[1]:
+        return "minor"
+    return "patch"
+
+
+# ---------------------------------------------------------------------------
+# breaking-changes.txt loader
+# ---------------------------------------------------------------------------
+
+def _load_breaking_changes(
+    template_dir: Path,
+) -> tuple[list[BreakingChange], list[str]]:
+    """`breaking-changes.txt` を読み込みエントリと警告を返す。
+
+    Returns:
+        (entries, warnings):
+          entries:  パース成功した BreakingChange のリスト（重複除外済み、ファイル記載順）
+          warnings: パース時点で検出した警告の人間可読メッセージリスト
+    Notes:
+        - ファイル不在時は ([], []) を返す（古い wheel 互換）
+        - 読み込み失敗（OSError）は ([], [warning]) を返し処理続行
+        - BOM 検出時はファイル全体破棄 + warning（_load_deletions と同一挙動）
+        - 副作用なし（読み取り専用）
+    """
+    bc_file = template_dir / "breaking-changes.txt"
+    if not bc_file.exists():
+        return [], []
+
+    try:
+        raw = bc_file.read_bytes()
+    except OSError as exc:
+        return [], [f"breaking-changes.txt: failed to read: {exc}"]
+
+    # BOM チェック
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return [], ["breaking-changes.txt: UTF-8 BOM detected; entire file ignored (re-save without BOM)"]
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return [], [f"breaking-changes.txt: UTF-8 decode error: {exc}"]
+
+    warnings: list[str] = []
+    seen: set[str] = set()
+    entries: list[BreakingChange] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+
+        # 空行・コメント行をスキップ
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # pipe で分割（最大 3 フィールド、過剰な pipe は ja に統合）
+        parts = stripped.split("|", maxsplit=2)
+        if len(parts) < 3:
+            warnings.append(
+                f"breaking-changes.txt: insufficient pipe separators (expected 2), skipping: {stripped!r}"
+            )
+            continue
+
+        version_raw, en_raw, ja_raw = parts
+
+        # version の SemVer バリデーション (lstrip("v") 後に一度だけ実行)
+        version_norm = version_raw.strip().lstrip("v")
+        try:
+            _compare_versions(version_norm, version_norm)
+        except ValueError as exc:
+            warnings.append(
+                f"breaking-changes.txt: invalid SemVer version {version_raw.strip()!r}, skipping ({exc})"
+            )
+            continue
+
+        # 重複 version は先勝ち
+        if version_norm in seen:
+            warnings.append(
+                f"breaking-changes.txt: duplicate version {version_norm!r}, skipping (first entry wins)"
+            )
+            continue
+
+        # 制御文字サニタイズ（strip 後にサニタイズ: L-02）
+        en = sanitize_terminal_text(en_raw.strip())
+        ja = sanitize_terminal_text(ja_raw.strip())
+
+        seen.add(version_norm)
+        entries.append(BreakingChange(version=version_norm, en=en, ja=ja))
+
+    return entries, warnings
+
+
+# ---------------------------------------------------------------------------
+# Breaking changes range extraction
+# ---------------------------------------------------------------------------
+
+def _extract_breaking_changes_between(
+    prev: str | None,
+    curr: str,
+    entries: list[BreakingChange],
+) -> list[BreakingChange]:
+    """半開区間 (prev, curr] に含まれる breaking changes を返す。
+
+    Args:
+        prev: 前バージョン（None なら全件を対象とする）
+        curr: 現バージョン
+        entries: _load_breaking_changes() の戻り値
+    Returns:
+        該当する BreakingChange のリスト（バージョン昇順）
+    Notes:
+        - prev >= curr (downgrade/same) の場合は [] を返す
+        - prev=None の場合は curr 以下の全件を返す（initial）
+    """
+    if prev is not None:
+        try:
+            cmp = _compare_versions(prev, curr)
+        except ValueError:
+            return []
+        if cmp >= 0:
+            return []
+
+    result: list[BreakingChange] = []
+    for entry in entries:
+        try:
+            cmp_curr = _compare_versions(entry.version, curr)
+        except ValueError:
+            continue
+        # curr より大きいエントリは除外
+        if cmp_curr > 0:
+            continue
+        # prev がある場合は prev より大きいものだけ（半開区間: prev は除外）
+        if prev is not None:
+            try:
+                cmp_prev = _compare_versions(entry.version, prev)
+            except ValueError:
+                continue
+            if cmp_prev <= 0:
+                continue
+        result.append(entry)
+
+    # バージョン昇順ソート
+    result.sort(key=lambda e: tuple(int(x) for x in e.version.split(".")))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Breaking changes printer
+# ---------------------------------------------------------------------------
+
+def _print_breaking_changes(
+    relevant: list[BreakingChange],
+    *,
+    bump: str,
+    prev: str | None,
+    curr: str,
+    parse_warnings: list[str],
+) -> None:
+    """Breaking changes を bump レベルに応じて表示する。
+
+    Args:
+        relevant:      表示対象の BreakingChange リスト
+        bump:          _bump_level() の戻り値
+        prev:          前バージョン（None なら初回）
+        curr:          現バージョン
+        parse_warnings: _load_breaking_changes() の警告リスト
+    Notes:
+        - bump == "same" は何も表示しない（parse_warnings がある場合のみ stderr に表示）
+        - bump == "downgrade" は stderr に 1 行 warning のみ
+        - initial / major は relevant が空でもヘッダを表示する（bump 発生通知のため）。
+          ただし initial + relevant 空の場合は「エントリなし」のヘッダを表示する（L-03）。
+        - minor / patch は count==0 で早期 return する（UX: 不要なヘッダを抑制）。
+        - parse_warnings は常に stderr に出力する（M-03: CLI 慣習: 警告は stderr へ集約）。
+    """
+    # F-03: バージョン表示文字列を予防的にサニタイズする（ESC シーケンス等の注入防止）
+    prev_disp = sanitize_terminal_text(
+        f"v{prev}" if prev and not prev.startswith("v") else (prev or "(none)")
+    )
+    curr_disp = sanitize_terminal_text(
+        f"v{curr}" if not curr.startswith("v") else curr
+    )
+
+    if bump == "downgrade":
+        print(
+            f"warning: downgrade detected ({prev_disp} → {curr_disp}); checkpoint will not be updated",
+            file=sys.stderr,
+        )
+        if parse_warnings:
+            for w in parse_warnings:
+                print(f"breaking-changes.txt warning: {w}", file=sys.stderr)
+        return
+
+    if bump == "same":
+        if parse_warnings:
+            for w in parse_warnings:
+                print(f"breaking-changes.txt warning: {w}", file=sys.stderr)
+        return
+
+    # initial / major / minor / patch
+    if bump == "initial":
+        # L-03: initial + relevant 空の場合はエントリなしを明示する
+        if relevant:
+            header_text = f"初回 checkpoint 作成: breaking changes を全件表示します ({curr_disp})"
+        else:
+            header_text = f"初回 checkpoint 作成 ({curr_disp}): breaking-changes.txt にエントリなし"
+        header = _color(header_text, "\033[33m")
+        print(header)
+    elif bump == "major":
+        header_text = (
+            f"MAJOR バージョン bump が検出されました ({prev_disp} → {curr_disp})"
+        )
+        header = _color(header_text, "\033[31m")
+        print(header)
+    else:
+        # minor / patch: 表示すべきエントリが無ければ早期 return
+        count = len(relevant)
+        if count == 0:
+            # M-03: parse_warnings は stderr に統一
+            if parse_warnings:
+                for w in parse_warnings:
+                    print(f"breaking-changes.txt warning: {w}", file=sys.stderr)
+            return
+        header_text = f"{count} 件の breaking changes ({prev_disp} → {curr_disp})"
+        header = _color(header_text, "\033[33m")
+        print(header)
+
+    for entry in relevant:
+        print(f"  - v{entry.version}:")
+        print(f"      [en] {entry.en}")
+        print(f"      [ja] {entry.ja}")
+
+    # M-03: parse_warnings は stderr に統一
+    if parse_warnings:
+        print("breaking-changes.txt warnings:", file=sys.stderr)
+        for w in parse_warnings:
+            print(f"  - {w}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Version checkpoint I/O
+# ---------------------------------------------------------------------------
+
+def _load_version_checkpoint(claude_root: Path) -> str | None:
+    """`.claude/state/c3_version.txt` からバージョンを読み込む。
+
+    Returns:
+        バージョン文字列（先頭 'v' strip 済み）、または None（不在・破損・SemVer 不適合）
+    """
+    checkpoint = claude_root / "state" / "c3_version.txt"
+    if not checkpoint.exists():
+        return None
+
+    try:
+        text = checkpoint.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+    if not text:
+        return None
+
+    version = text.lstrip("v")
+    try:
+        _compare_versions(version, version)
+    except ValueError:
+        return None
+
+    return version
+
+
+def _save_version_checkpoint(claude_root: Path, version: str) -> None:
+    """`.claude/state/c3_version.txt` にバージョンを atomic write する。
+
+    Args:
+        claude_root: 利用先の `.claude/` ディレクトリパス
+        version:     保存するバージョン文字列
+    Notes:
+        - `state/` ディレクトリが無ければ作成する
+        - tmp ファイルに書き出し → os.replace で atomic write
+        - OSError は再 raise せず stderr warning に変換
+    """
+    path = claude_root / "state" / "c3_version.txt"
+    # F-02: PID + uuid4 の組み合わせで並走時の tmp パス衝突を実質ゼロにする
+    tmp = path.with_name(f"c3_version.txt.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(f"{version}\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"warning: failed to save version checkpoint: {exc}", file=sys.stderr)
+        # tmp が残っている場合は除去を試みる
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -70,6 +459,31 @@ def handle(args: argparse.Namespace) -> int:
     changed = 0
     if "claude" in platforms:
         template = templates_dir()
+
+        # === 新規: breaking changes 表示 + MAJOR 承認ブロック ===
+        # add/update の前に実行することで、MAJOR cancel 時にファイル変更も防ぐ (Q-01 確定)
+        prev = _load_version_checkpoint(dest)
+        curr = c3.__version__
+        bc_entries, bc_parse_warns = _load_breaking_changes(template)
+        bump = _bump_level(prev, curr)
+        relevant = _extract_breaking_changes_between(prev, curr, bc_entries)
+        _print_breaking_changes(relevant, bump=bump, prev=prev, curr=curr, parse_warnings=bc_parse_warns)
+
+        if bump == "major" and relevant:
+            if args.dry_run:
+                print("(dry-run: confirmation would be required for major bump)")
+            elif args.yes:
+                print("(--yes: skipping prompt)")
+            else:
+                try:
+                    answer = input("Proceed with major version update? [y/N]: ").strip().lower()
+                except EOFError:
+                    answer = ""
+                if answer not in ("y", "yes"):
+                    print("major version update cancelled by user")
+                    return 0
+        # ===================================================
+
         actions = list(_walk_diff(template, dest))
         changed += len(actions)
 
@@ -105,6 +519,16 @@ def handle(args: argparse.Namespace) -> int:
         # 削除件数を全体カウンタに反映
         if not args.dry_run:
             changed += len(result["deleted"])
+
+        # === 新規: version checkpoint 書き込み (claude block の最終ステップ) ===
+        # Q-02 確定: adapter 失敗時も claude block 成功なら checkpoint 更新
+        # MAJOR cancel 時は上の `return 0` で早期 return されており、ここに到達しない（暗黙的スキップ）
+        # deletions cancel 時は result["cancelled"] == True でスキップ
+        # downgrade 時は checkpoint を更新しない (AC-F-05)
+        # dry_run 時は checkpoint を更新しない
+        if not args.dry_run and bump != "downgrade" and not result.get("cancelled", False):
+            _save_version_checkpoint(dest, curr)
+        # ===================================================
 
     adapter_platforms = tuple(p for p in platforms if p != "claude")
     if adapter_platforms:

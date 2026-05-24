@@ -69,6 +69,7 @@ KEEP_PATTERNS: tuple[str, ...] = (
     "tmp/.gitkeep",
     "state/.gitkeep",
     "deletions.txt",  # 新規: c3 update が読む削除指示書
+    "breaking-changes.txt",  # v2.19.0: c3 update が読む破壊的変更ログ
 )
 
 
