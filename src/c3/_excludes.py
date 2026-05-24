@@ -65,6 +65,7 @@ KEEP_PATTERNS: tuple[str, ...] = (
     "memory/archive/.gitkeep",
     "tmp/.gitkeep",
     "state/.gitkeep",
+    "deletions.txt",  # 新規: c3 update が読む削除指示書
 )
 
 

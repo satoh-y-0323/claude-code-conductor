@@ -12,8 +12,8 @@ def _run_init(target: Path, *, force: bool = False, platform: str = "claude") ->
     return cli_init.handle(argparse.Namespace(target=target, force=force, platform=platform))
 
 
-def _run_update(target: Path, *, dry_run: bool = False, platform: str = "claude") -> int:
-    return cli_update.handle(argparse.Namespace(target=target, dry_run=dry_run, platform=platform))
+def _run_update(target: Path, *, dry_run: bool = False, platform: str = "claude", yes: bool = False) -> int:
+    return cli_update.handle(argparse.Namespace(target=target, dry_run=dry_run, platform=platform, yes=yes))
 
 
 def test_init_scaffolds_claude_dir(tmp_path: Path, capsys):

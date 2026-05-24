@@ -1,0 +1,39 @@
+# C3 c3 update 削除リスト
+# このファイルに記載されたパスは `c3 update` 実行時に
+# 利用先の .claude/ から削除候補として扱われる。
+#
+# 仕様:
+# - 1 行 1 パス、.claude/ 相対表記
+# - # で始まる行はコメント、空行はスキップ
+# - 絶対パス / ../ を含むパス / シンボリックリンク は無視
+# - ディレクトリは削除しない（ファイルのみ）
+#
+# 詳細は .claude/docs/config-policy.md §3 #13 と §7 落とし穴 5 を参照。
+
+# ---- v2.1.0: tdd-develop / worktree-tdd-workflow 廃止 ----
+agents/tdd-develop.md
+skills/worktree-tdd-workflow/SKILL.md
+
+# ---- v2.11.0: summarize-memory 廃止 ----
+agents/summarize-memory.md
+skills/summarize-memory/SKILL.md
+
+# ---- v2.12.0: タクソノミー棚卸（hooks/ → skills/dev-workflow/scripts/ へ移動） ----
+hooks/record_review_decision.py
+hooks/record_tier_outcome.py
+hooks/review_hint_inject.py
+hooks/subagent_log.py
+
+# ---- (v2.x): task-routing skill 廃止 ----
+skills/task-routing/SKILL.md
+
+# ---- v2.15.1: /code-review skill を /review-phase にリネーム ----
+skills/code-review/SKILL.md
+
+# ---- 短期 revert（一時配布された可能性あり） ----
+skills/phase-a-requirements/SKILL.md
+skills/phase-b-architecture/SKILL.md
+skills/phase-c-plan/SKILL.md
+skills/phase-d-implement/SKILL.md
+skills/phase-debug/SKILL.md
+skills/phase-e-review/SKILL.md
