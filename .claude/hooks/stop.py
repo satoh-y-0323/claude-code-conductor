@@ -31,6 +31,14 @@ MAX_ID_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 500
 MAX_LAST_MSG = 500
 
+# 過去セッションファイルから引き継ぐ - [ ] 行のサニタイズ用パターン。
+# C0/C1 制御文字 (タブ 	 と通常スペース   は保持) と U+2028 / U+2029 を除去する。
+# 過去ファイルの ## 残タスク はユーザー編集領域のため信頼境界として扱う [SR-V-001]。
+# raw string は \uXXXX を解釈しないため、U+2028 / U+2029 は chr() で生成して連結する。
+_INHERIT_SANITIZE_RE = re.compile(
+    r'[\x00-\x08\x0b-\x1f\x7f-\x9f' + chr(0x2028) + chr(0x2029) + r']'
+)
+
 # _append_last_message が処理済みのパスを記録するキャッシュ（重複 read/write 防止）。
 _last_message_applied_paths: set = set()
 
@@ -39,43 +47,68 @@ def get_session_path(date_str: str) -> str:
     return os.path.join(SESSIONS_DIR, f'{date_str}.tmp')
 
 
-def _inherit_backlog_from_latest_session(new_path: str, today_str: str) -> None:
+def _inherit_backlog_from_latest_session(
+    new_path: str, today_str: str, sessions_dir: str | None = None
+) -> None:
     """新規セッションファイルに、直近過去セッションの未完了バックログを引き継ぐ。
 
     過去ファイルの ``## 残タスク`` セクションから ``- [ ]`` 行のみ抽出し、
     新規ファイルの ``## 残タスク`` セクションに追記する。``- [x]`` 行は対象外。
+    マルチライン継続行（インデントされた `- [ ]` 以外の継続行）は引き継がない。
 
     本ヘルパーは `ensure_session_file` の新規作成パスからのみ呼ばれる。既存当日
     ファイルが存在する場合は呼ばれないため、ユーザー編集を上書きする危険はない。
+
+    過去ファイルから引き継ぐ行は `_INHERIT_SANITIZE_RE` で制御文字・ANSI エスケープ・
+    U+2028/U+2029 を除去してから書き込むため、過去ファイルの改ざんによる端末
+    インジェクションは構造的に防御される [SR-V-001]。
+
+    Args:
+        new_path: 新規作成された当日セッションファイルのパス。
+        today_str: 今日の日付（YYYYMMDD）。これ未満の日付の .tmp が対象。
+        sessions_dir: SESSIONS_DIR を上書きしたい場合のテスト用引数。
+            None の場合はモジュールグローバル SESSIONS_DIR を使う。
     """
-    if not os.path.isdir(SESSIONS_DIR):
+    _sessions_dir = sessions_dir if sessions_dir is not None else SESSIONS_DIR
+    if not os.path.isdir(_sessions_dir):
         return
 
     # 今日より前で最大の日付（= 直近過去セッション）を選ぶ
     past_dates = [
-        fname[:-4] for fname in os.listdir(SESSIONS_DIR)
+        fname[:-4] for fname in os.listdir(_sessions_dir)
         if fname.endswith('.tmp') and fname[:-4] < today_str
     ]
     if not past_dates:
         return
-    latest_past_path = os.path.join(SESSIONS_DIR, f'{max(past_dates)}.tmp')
+    latest_past_path = os.path.join(_sessions_dir, f'{max(past_dates)}.tmp')
 
     try:
+        # universal newlines（デフォルト）で読み込む。攻撃により \r 単体が混入しても
+        # この時点で \n に変換されるため、\r 単体は構造的に防御される。
+        # ただし Python の str.splitlines() は \n に加え \v / \f / \x1c / \x1d / \x1e /
+        # \x85 / U+2028 / U+2029 でも分割する。これらは _INHERIT_SANITIZE_RE で
+        # 事前に除去してから splitlines に渡す必要がある。
         with open(latest_past_path, 'r', encoding='utf-8') as f:
             past_content = f.read()
     except OSError:
         return
 
+    # U+2028/U+2029 等の行区切り文字を事前にサニタイズしてから splitlines するため、
+    # 過去ファイルに混入した行区切り文字によって意図しない行分割が発生しない。
     backlog_section = extract_section(past_content, '残タスク')
+    sanitized_section = _INHERIT_SANITIZE_RE.sub('', backlog_section)
     pending_tasks = [
-        line for line in backlog_section.splitlines()
+        line for line in sanitized_section.splitlines()
         if line.lstrip().startswith('- [ ]')
     ]
     if not pending_tasks:
         return
 
-    with open(new_path, 'r', encoding='utf-8') as f:
-        new_content = f.read()
+    try:
+        with open(new_path, 'r', encoding='utf-8') as f:
+            new_content = f.read()
+    except OSError:
+        return
 
     inheritance_block = '\n'.join(pending_tasks) + '\n'
     updated = new_content.replace(
@@ -87,11 +120,13 @@ def _inherit_backlog_from_latest_session(new_path: str, today_str: str) -> None:
     if updated == new_content:
         return
 
-    # アトミック書き込み: _apply_session_updates と同じ tempfile + os.replace パターン
+    # アトミック書き込み: _apply_session_updates と同じ tempfile + os.replace パターン。
+    # suffix='.writing' は SESSIONS_DIR 内の `.tmp` 一覧フィルタに引っかからないよう
+    # 構造的に隔離する [SR-NEW L-1]。
     dir_ = os.path.dirname(new_path)
     tmp_path = None
     try:
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_, suffix='.tmp')
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_, suffix='.writing')
         try:
             with os.fdopen(tmp_fd, 'w', encoding='utf-8') as tmp_f:
                 tmp_f.write(updated)
@@ -114,8 +149,9 @@ def ensure_session_file(date_str: str) -> None:
             f.write(create_session_template(date_str))
         # 新規作成時のみ、直近過去セッションから未完了タスクを引き継ぐ。
         # 既存ファイルがある場合 (FileExistsError ブランチ) はユーザー編集を尊重し
-        # 引き継ぎを発動しない。
-        _inherit_backlog_from_latest_session(path, date_str)
+        # 引き継ぎを発動しない。sessions_dir を明示渡しにすることで、引き継ぎ関数内
+        # の SESSIONS_DIR 直参照を排除し、テスト時のグローバル差し替え依存を減らす。
+        _inherit_backlog_from_latest_session(path, date_str, sessions_dir=SESSIONS_DIR)
         print(f'[Stop] セッションファイルを作成しました: {path}', file=sys.stderr)
     except FileExistsError:
         # /exit による中断等でファイルが空の場合はテンプレートを書き直す（DRY: session_utils へ委譲）
@@ -150,10 +186,13 @@ def _apply_session_updates(path: str, content: str, message: str = '') -> None:
         # --> をサニタイズして <!-- C3:SESSION:JSON ... --> ブロックを保護する
         truncated = truncated.replace('-->', '-- >')
 
+        # 置換文字列に truncated（LLM 出力由来）を直接埋め込むと \1 等が後方参照として
+        # 解釈される。両分岐とも lambda で構造的に防御する [SR-V-001 Info-1]。
         if '- 最終応答:' in updated:
+            replacement = f'- 最終応答: {truncated}'
             updated = re.sub(
                 r'- 最終応答: [^\n]*',
-                f'- 最終応答: {truncated}',
+                lambda _: replacement,
                 updated,
                 count=1,
             )

@@ -36,6 +36,10 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
+# conftest.py が .claude/hooks/ を sys.path.insert(0, ...) で追加するため
+# session_utils をテストから直接 import できる（mypy/pyright は静的解析できない）。
+from session_utils import extract_section as _extract  # type: ignore[import-not-found]
+
 # ---------------------------------------------------------------------------
 # Constants / module loader
 # ---------------------------------------------------------------------------
@@ -575,11 +579,11 @@ class TestAppendLastMessageEscapesCommentCloser:
 
 
 class TestAppendLastMessageOverwrite:
-    """[Round 8] 別 Claude セッションからの 2 回目以降の _append_last_message 呼び出しは
-    既存の最終応答を最新メッセージで上書きする。
+    """最終応答の上書き動作を検証する退行防止テスト。
 
-    退行: 修正前は `if '- 最終応答:' not in updated` ガードにより、最初のセッションの
-    最終応答が一日中残り続けた。
+    修正前は `if '- 最終応答:' not in updated` ガードにより、別 Claude セッションが
+    新しい応答を出しても最初のセッションの最終応答が一日中残り続けた。本クラスは
+    その挙動が再発しないことを保証する。
     """
 
     def test_second_call_overwrites_existing_last_response(self, tmp_path):
@@ -695,16 +699,16 @@ def _write_past_session_with_backlog(
 
 
 class TestInheritBacklogFromLatestSession:
-    """[Round 8] ensure_session_file が新規ファイル作成時に、直近過去セッションの
-    未完了タスク（- [ ]）を自動で当日ファイルに引き継ぐ。
+    """ensure_session_file が新規ファイル作成時に直近過去セッションの未完了タスク
+    （- [ ]）を自動で当日ファイルに引き継ぐことを検証する退行防止テスト。
 
-    退行: 修正前は前日の未完了タスクが当日に引き継がれず、init-session の
-    git log 照合が空ファイルでは何も検出できなかった。
+    修正前は前日の未完了タスクが当日に引き継がれず、init-session の git log
+    照合が空ファイルでは何も検出できなかった。
     """
 
     YESTERDAY_STR = (TODAY - timedelta(days=1)).strftime("%Y%m%d")
 
-    def _setup(self, tmp_path: Path, tag: str) -> tuple:
+    def _setup(self, tmp_path: Path, tag: str) -> tuple[types.ModuleType, Path]:
         """Create isolated SESSIONS_DIR + fresh stop module pointing at it."""
         sessions_dir = tmp_path / "sessions"
         sessions_dir.mkdir()
@@ -732,8 +736,6 @@ class TestInheritBacklogFromLatestSession:
         content = new_file.read_text(encoding="utf-8")
 
         # ## 残タスク セクションを抽出して中身を確認
-        from session_utils import extract_section as _extract  # type: ignore
-
         backlog = _extract(content, "残タスク")
         pending_lines = [
             ln for ln in backlog.splitlines() if ln.lstrip().startswith("- [ ]")
@@ -805,8 +807,6 @@ class TestInheritBacklogFromLatestSession:
         new_file = sessions_dir / f"{TODAY_STR}.tmp"
         content = new_file.read_text(encoding="utf-8")
 
-        from session_utils import extract_section as _extract  # type: ignore
-
         backlog = _extract(content, "残タスク")
         assert backlog.strip() == "", (
             f"前日に未完了がない場合、当日の残タスクは空のまま。Got: {backlog!r}"
@@ -814,3 +814,260 @@ class TestInheritBacklogFromLatestSession:
         # 完了済み行が漏れ出していないことも確認
         assert "done A" not in content
         assert "done B" not in content
+
+
+# ---------------------------------------------------------------------------
+# TestInheritBacklogControlCharSanitize (M-1 / SR-V-001 退行防止)
+# ---------------------------------------------------------------------------
+
+
+class TestInheritBacklogControlCharSanitize:
+    """_inherit_backlog_from_latest_session が過去ファイルから引き継ぐ - [ ] 行に対し
+    制御文字を除去することを検証する退行防止テスト。
+
+    確認する挙動:
+      - ANSI エスケープ (\x1b[31m 等) が除去される
+      - C0 制御文字 (\x00, \x0b, \r) が除去される
+      - U+2028 (LINE SEPARATOR) / U+2029 (PARAGRAPH SEPARATOR) が除去される
+      - タブ (\t) と通常スペース ( ) は保持される
+
+    修正前は _inherit_backlog_from_latest_session がサニタイズを行わず、
+    過去セッションの改ざんによる端末インジェクションを許していた [SR-V-001]。
+    """
+
+    YESTERDAY_STR = (TODAY - timedelta(days=1)).strftime("%Y%m%d")
+
+    def _setup(self, tmp_path: Path, tag: str) -> tuple[types.ModuleType, Path]:
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        mod = _load_stop_module(f"_stop_ctrl_sanitize_{tag}_{tmp_path.name}")
+        mod.SESSIONS_DIR = str(sessions_dir)
+        return mod, sessions_dir
+
+    def test_control_chars_removed_from_inherited_backlog(self, tmp_path):
+        """過去セッションの - [ ] 行に埋め込まれた制御文字が除去されて当日ファイルへ引き継がれる。
+
+        タブ (\t) と通常スペースは保持される。
+        """
+        mod, sessions_dir = self._setup(tmp_path, "ctrl")
+
+        # 制御文字を含む - [ ] 行を持つ過去セッションファイルを作成する
+        ansi_escape = "\x1b[31m"          # ANSI red color escape
+        null_char = "\x00"                 # NUL (C0)
+        vt_char = "\x0b"                   # Vertical Tab (C0)
+        cr_char = "\r"                     # Carriage Return (C0)
+        ls_char = " "                 # LINE SEPARATOR
+        ps_char = " "                 # PARAGRAPH SEPARATOR
+        tab_char = "\t"                    # タブ（保持すべき）
+        space_char = " "                   # スペース（保持すべき）
+
+        # 制御文字を含む - [ ] 行。
+        # Python の universal newlines は `\r` を `\n` に変換するため、`\r` より後の
+        # 部分は別行として分離される。`\t with space` を `\r` より前に配置することで、
+        # サニタイズ後にタブ・スペースが保持されることを検証できる構造にする。
+        dirty_task = (
+            f"- [ ] {ansi_escape}重要タスク{null_char}"
+            f"\twith{space_char}tab and space"
+            f"{vt_char}継続中{cr_char}{ls_char}{ps_char}"
+        )
+        backlog_block = f"{dirty_task}\n"
+        past_content = (
+            f"SESSION: {self.YESTERDAY_STR}\n"
+            f"## 残タスク\n"
+            f"{backlog_block}\n"
+            f"## 事実ログ（自動生成 / stop.py）\n"
+            f"- 記録時刻: 2026-05-23 23:59:59\n"
+        )
+        past_file = sessions_dir / f"{self.YESTERDAY_STR}.tmp"
+        past_file.write_bytes(past_content.encode("utf-8"))
+
+        mod.ensure_session_file(TODAY_STR)
+
+        new_file = sessions_dir / f"{TODAY_STR}.tmp"
+        assert new_file.exists(), "新規セッションファイルが作成されているべき"
+        content = new_file.read_text(encoding="utf-8")
+
+        backlog = _extract(content, "残タスク")
+        pending_lines = [
+            ln for ln in backlog.splitlines() if ln.lstrip().startswith("- [ ]")
+        ]
+        assert len(pending_lines) >= 1, (
+            f"引き継ぎタスクが 1 件以上存在するべき。Got: {pending_lines!r}"
+        )
+
+        inherited_line = pending_lines[0]
+
+        # 制御文字が除去されていること
+        assert "\x1b" not in inherited_line, (
+            f"[SR-V-001] ANSI エスケープ (\x1b) が除去されていない。Got: {inherited_line!r}"
+        )
+        assert "\x00" not in inherited_line, (
+            f"[SR-V-001] NUL 文字 (\x00) が除去されていない。Got: {inherited_line!r}"
+        )
+        assert "\x0b" not in inherited_line, (
+            f"[SR-V-001] Vertical Tab (\x0b) が除去されていない。Got: {inherited_line!r}"
+        )
+        assert "\r" not in inherited_line, (
+            f"[SR-V-001] Carriage Return (\r) が除去されていない。Got: {inherited_line!r}"
+        )
+        assert " " not in inherited_line, (
+            f"[SR-V-001] LINE SEPARATOR (U+2028) が除去されていない。Got: {inherited_line!r}"
+        )
+        assert " " not in inherited_line, (
+            f"[SR-V-001] PARAGRAPH SEPARATOR (U+2029) が除去されていない。Got: {inherited_line!r}"
+        )
+
+        # タブとスペースは保持されること
+        assert "\t" in inherited_line, (
+            f"[SR-V-001] タブ (\t) は保持されるべき。Got: {inherited_line!r}"
+        )
+        assert " " in inherited_line, (
+            f"[SR-V-001] スペース ( ) は保持されるべき。Got: {inherited_line!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestInheritBacklogSessionsDirArg (M-02 / CR-Q-001 退行防止)
+# ---------------------------------------------------------------------------
+
+
+class TestInheritBacklogSessionsDirArg:
+    """_inherit_backlog_from_latest_session の sessions_dir 引数経路を検証する退行防止テスト。
+
+    シグネチャ:
+        _inherit_backlog_from_latest_session(
+            new_path: str, today_str: str, sessions_dir: str | None = None
+        ) -> None
+
+    sessions_dir が None の場合はグローバル SESSIONS_DIR を使う（後方互換）。
+    明示的に渡した sessions_dir が優先される。
+
+    修正前はモジュールグローバル SESSIONS_DIR を直接参照しており、テスト時に
+    グローバル差し替えが必要だった [CR-Q-001]。
+    """
+
+    YESTERDAY_STR = (TODAY - timedelta(days=1)).strftime("%Y%m%d")
+
+    def test_sessions_dir_argument_routes_correctly(self, tmp_path):
+        """sessions_dir 引数を明示的に渡すと、SESSIONS_DIR グローバルを上書きせずに
+        引き継ぎが正常に動作する。
+
+        手順:
+          1. sessions_dir_a にグローバルを向ける（過去ファイルなし）
+          2. sessions_dir_b に前日ファイルを置く（- [ ] あり）
+          3. _inherit_backlog_from_latest_session(new_path, today_str, sessions_dir=sessions_dir_b)
+             を呼び出す
+          4. sessions_dir_b の過去ファイルから引き継ぎが行われることを assert する
+        """
+        mod = _load_stop_module(f"_stop_sdir_arg_{tmp_path.name}")
+
+        # sessions_dir_a: グローバル設定先（過去ファイルなし）
+        sessions_dir_a = tmp_path / "sessions_a"
+        sessions_dir_a.mkdir()
+        mod.SESSIONS_DIR = str(sessions_dir_a)
+
+        # sessions_dir_b: 引数で渡す先（前日ファイルあり）
+        sessions_dir_b = tmp_path / "sessions_b"
+        sessions_dir_b.mkdir()
+        _write_past_session_with_backlog(
+            sessions_dir_b,
+            self.YESTERDAY_STR,
+            ["- [ ] sessions_dir_b からの引き継ぎタスク"],
+        )
+
+        # 新規当日ファイルを sessions_dir_b に作成
+        from session_utils import create_session_template  # type: ignore
+
+        new_file = sessions_dir_b / f"{TODAY_STR}.tmp"
+        new_file.write_text(create_session_template(TODAY_STR), encoding="utf-8")
+
+        # sessions_dir 引数を明示的に渡して呼び出す
+        # （シグネチャ: new_path, today_str, sessions_dir=None）
+        mod._inherit_backlog_from_latest_session(
+            str(new_file), TODAY_STR, sessions_dir=str(sessions_dir_b)
+        )
+
+        content = new_file.read_text(encoding="utf-8")
+        backlog = _extract(content, "残タスク")
+        pending_lines = [
+            ln for ln in backlog.splitlines() if ln.lstrip().startswith("- [ ]")
+        ]
+        assert any("sessions_dir_b からの引き継ぎタスク" in ln for ln in pending_lines), (
+            "[CR-Q-001] sessions_dir 引数経由で sessions_dir_b の過去ファイルから "
+            "引き継ぎが行われるべき。\n"
+            f"Got pending_lines: {pending_lines!r}\n"
+            f"sessions_dir_a (global) には過去ファイルなし、"
+            f"sessions_dir_b (引数) には過去ファイルあり。"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestInheritBacklogNewPathOSErrorGuard (M-01 / CR-E-001 / SR-NEW 退行防止)
+# ---------------------------------------------------------------------------
+
+
+class TestInheritBacklogNewPathOSErrorGuard:
+    """_inherit_backlog_from_latest_session が new_path 読み込み OSError を黙って無視する
+    ことを検証する退行防止テスト。
+
+    確認する挙動:
+        new_path open 時に OSError → 例外を伝播させず黙って return する。
+
+    実装方針（テスト側）:
+        builtins.open を monkeypatch し、new_path のみ OSError を送出させる。
+        過去ファイル (latest_past_path) の open は本物の動作を維持することで、
+        バックログが存在する状態まで処理を進めてから new_path 読み込みを失敗させる。
+
+    修正前は new_path 読み込みの OSError が try/except なしで伝播し、
+    Stop hook プロセスが異常終了するリスクがあった [CR-E-001 / SR-NEW]。
+    """
+
+    YESTERDAY_STR = (TODAY - timedelta(days=1)).strftime("%Y%m%d")
+
+    def test_new_path_oserror_does_not_propagate(self, tmp_path):
+        """new_path の open が OSError を送出しても _inherit_backlog_from_latest_session は
+        例外を伝播させず黙って return する。
+
+        設定:
+          - 過去ファイル: 前日ファイルに - [ ] タスクあり（引き継ぎ前半は正常に進む）
+          - new_path: open() 時に OSError を送出するようにモンキーパッチ
+        """
+        mod = _load_stop_module(f"_stop_newpath_err_{tmp_path.name}")
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        mod.SESSIONS_DIR = str(sessions_dir)
+
+        # 前日ファイルに - [ ] タスクを置く（処理がバックログ抽出まで進むように）
+        _write_past_session_with_backlog(
+            sessions_dir,
+            self.YESTERDAY_STR,
+            ["- [ ] new_path OSError テスト用タスク"],
+        )
+
+        # new_path を用意する（実際には読み込み時に OSError にする）
+        from session_utils import create_session_template  # type: ignore
+
+        new_file = sessions_dir / f"{TODAY_STR}.tmp"
+        new_file.write_text(create_session_template(TODAY_STR), encoding="utf-8")
+        new_path_str = str(new_file)
+
+        original_open = open
+
+        def patched_open(file, mode="r", **kwargs):
+            # new_path への 'r' モードのオープンだけ OSError を送出する
+            if str(file) == new_path_str and "r" in mode and "w" not in mode:
+                raise OSError(f"[Test] Simulated OSError for new_path: {file}")
+            return original_open(file, mode, **kwargs)
+
+        # 例外が伝播しないことを assert する
+        try:
+            with mock.patch("builtins.open", side_effect=patched_open):
+                mod._inherit_backlog_from_latest_session(new_path_str, TODAY_STR)
+        except OSError as exc:
+            raise AssertionError(
+                "[CR-E-001 / SR-NEW] _inherit_backlog_from_latest_session が "
+                "new_path 読み込み時の OSError を伝播させた。\n"
+                "期待: 例外を伝播させず黙って return する。\n"
+                f"実際の例外: {exc}"
+            ) from exc
