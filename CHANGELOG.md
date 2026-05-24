@@ -1,5 +1,72 @@
 # Changelog
 
+## v2.16.0 (2026-05-24)
+
+### 修正
+
+- **stop.py: 最終応答が古いまま残るバグを修正**:
+  `_apply_session_updates` の `if message and '- 最終応答:' not in updated:`
+  ガードにより、1 日に複数 Claude セッションがあると最初のセッションの最終
+  応答が一日中残り続けていた。`re.sub` で最新メッセージに上書きする方式に
+  変更。同一 stop hook 呼び出し内の冪等性は `session_stop.py` の単一プロセス +
+  `stop_hook_active` 早期 return で従来通り担保されている。
+
+### 追加
+
+- **stop.py: 残タスクの前日自動引き継ぎ機能**:
+  新規ヘルパー `_inherit_backlog_from_latest_session` を追加し、
+  `ensure_session_file` の新規作成パスで `SESSIONS_DIR` 内の直近過去 `.tmp`
+  から `## 残タスク` セクションの `- [ ]` 行のみを抽出して当日ファイルに
+  引き継ぐ。既存当日ファイルがある場合 (`FileExistsError` ブランチ) は
+  発動せずユーザー編集を尊重する。`init-session` Step 1.5（git log 照合）が
+  これまで空ファイルでは何も検出できなかった問題を構造的に解消。
+- **過去ファイル由来の制御文字サニタイズ** [SR-V-001]:
+  `_INHERIT_SANITIZE_RE` を導入し、過去ファイルから引き継ぐ `- [ ]` 行に
+  含まれる C0/C1 制御文字 (`\x00-\x08` / `\x0b-\x1f` / `\x7f-\x9f`) と
+  U+2028 / U+2029 を除去。タブ (`\x09`) と通常スペース (`\x20`) は保持。
+  universal newlines による `\r` の `\n` 変換と二層で防御することで、
+  過去ファイル改ざんによる端末インジェクションを構造的に防ぐ。
+- **新規ヘルパー `_inherit_backlog_from_latest_session` の `sessions_dir`
+  引数**: テスト時にモジュールグローバル `SESSIONS_DIR` を差し替えずに
+  動作確認できるよう、`sessions_dir: str | None = None` 引数を追加。
+  `ensure_session_file` からは `sessions_dir=SESSIONS_DIR` を明示渡し。
+
+### 改善
+
+- **`_apply_session_updates` の `re.sub` 置換文字列を lambda 形式に統一**:
+  上書き分岐 / 追記分岐の両方で `lambda _: replacement` または
+  `lambda m: ...` 形式に統一し、LLM 出力由来の `\1` 等が後方参照として
+  解釈されるリスクを構造的に防御。
+- **アトミック書き込みの tempfile suffix を `.writing` に変更**:
+  `_inherit_backlog_from_latest_session` 内の一時ファイルが `.tmp`
+  フィルタと誤検出される可能性を排除（書き込み途中の一時ファイルを
+  `YYYYMMDD.tmp` として誤認することを構造的に防ぐ）。
+
+### 回帰防御
+
+- `tests/test_stop_additional.py` に新規 10 件のテスト追加:
+  - `TestAppendLastMessageOverwrite` (3 件): 最終応答上書き / 他セクション
+    保全 / 冪等性
+  - `TestInheritBacklogFromLatestSession` (4 件): 引き継ぎ動作 / 過去
+    ファイル無し / 既存当日ファイル保護 / 完了済みのみケース
+  - `TestInheritBacklogControlCharSanitize` (1 件): 制御文字・ANSI・
+    U+2028/U+2029 の除去とタブ・スペース保持
+  - `TestInheritBacklogSessionsDirArg` (1 件): `sessions_dir` 引数経路
+  - `TestInheritBacklogNewPathOSErrorGuard` (1 件): `new_path` 読み込み
+    OSError の伝播防止
+- pytest フル実行: **944 passed** / 4 skipped / 0 regression
+
+### 内部
+
+- `_inherit_backlog_from_latest_session` の `new_path` 読み込みに
+  `try/except OSError: return` を追加。Stop hook プロセスの異常終了を防ぐ。
+- `_INHERIT_SANITIZE_RE` の U+2028 / U+2029 は `chr(0x2028)` + `chr(0x2029)`
+  の連結で構築（raw string が `\uXXXX` を解釈しないため、表記揺れを排除）。
+- `tests/test_stop_additional.py`: `from session_utils import extract_section`
+  をファイル先頭に集約 / `_setup` 戻り値型ヒントを精緻化。
+
+---
+
 ## v2.15.2 (2026-05-24)
 
 ### 改善
