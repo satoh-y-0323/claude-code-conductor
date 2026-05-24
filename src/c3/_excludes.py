@@ -11,6 +11,9 @@ Used by:
 Patterns are POSIX-style and relative to the ``.claude/`` directory itself
 (e.g. ``"reports/*"``, not ``".claude/reports/*"``). ``KEEP_PATTERNS`` win
 over ``EXCLUDE_PATTERNS`` so that placeholder ``.gitkeep`` files survive.
+
+See ``.claude/docs/config-policy.md`` for the distribution decision matrix
+and the rationale behind each excluded pattern.
 """
 
 from __future__ import annotations

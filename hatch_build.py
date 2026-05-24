@@ -6,6 +6,9 @@ than rely on ``[tool.hatch.build] exclude`` patterns - which do not propagate
 into ``force-include`` sources - we copy the wanted subset into a staging
 location during ``initialize()`` and the wheel target packages that staged tree
 verbatim.
+
+See ``.claude/docs/config-policy.md`` for the distribution decision matrix
+and the rationale behind each excluded pattern.
 """
 
 from __future__ import annotations

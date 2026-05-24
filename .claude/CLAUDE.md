@@ -49,6 +49,7 @@
 
 `.claude/docs/` は人間向けリファレンスのためエージェントは読まなくてよい。
 詳細は `.claude/docs/taxonomy.md` を参照。
+設定の優先順位・配布判断は `.claude/docs/config-policy.md` を参照。
 
 ## Platform Compatibility
 
