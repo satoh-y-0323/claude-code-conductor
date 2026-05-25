@@ -31,6 +31,7 @@ import os
 import random
 import re
 import sys
+from typing import NamedTuple
 from pathlib import Path
 
 try:
@@ -109,6 +110,69 @@ def _mask_secrets(text: str) -> str:
 _PROMPT_HISTORY_SCAN_LINES = 1000
 
 TIERS: tuple[str, ...] = ("haiku", "sonnet", "opus")
+
+# cost-aware tie-break の拮抗判定閾値（v2.23.0）。
+# Beta サンプルは 0〜1 スケール。成功率 5pt 以内＝実質同等とみなす拮抗判定閾値。
+# 過大は成功率犠牲リスク、過小は無発動。調整可能化は v2.24.0。
+EPSILON: float = 0.05
+
+
+class SelectionResult(NamedTuple):
+    """select_tier_detailed の戻り値（NamedTuple = immutable）。
+
+    tier: 選択された tier 名。
+    mode: "uniform" または "thompson"。
+    cost_tiebreak: Thompson 分岐で cost tie-break が発動した場合 True。
+    contenders: 拮抗判定に入った tier のタプル（observability/デバッグ用）。
+        frozen 安全のため list ではなく tuple を使用。
+    """
+
+    tier: str
+    mode: str
+    cost_tiebreak: bool = False
+    contenders: tuple[str, ...] = ()
+
+
+def _cost_tiebreak(
+    samples: dict[str, float],
+    cost_map: dict[str, float] | None,
+    *,
+    epsilon: float = EPSILON,
+) -> tuple[str, bool, tuple[str, ...]]:
+    """Thompson サンプル拮抗群内で min-max 正規化コストが最安の tier を返す。
+
+    Args:
+        samples: {tier: beta_sample} の dict（Thompson Sampling 結果）。
+        cost_map: {tier: cost} の dict。None なら cost を見ず従来挙動。
+            cost は実測 avg_cost_usd または静的参照単価（ハイブリッド）。
+            混在スケール（USD vs per-MTok）の厳密化は v2.24.0。
+            ``cost_map`` は None、または contenders 全件をキーとして含む dict を
+            渡すこと。partial dict を渡すと ``cost_map[t]`` で KeyError が発生する。
+            ``select_tier_detailed`` 経由では呼び出し側（main）が全 TIERS 分を
+            構築して保証する。
+        epsilon: 拮抗判定の閾値（デフォルト EPSILON=0.05）。
+
+    Returns:
+        (chosen, did_tiebreak, contenders) のタプル。
+        - chosen: 選択された tier 名。
+        - did_tiebreak: cost tie-break が発動した場合 True。
+        - contenders: 拮抗判定に入った tier のタプル。
+    """
+    max_sample = max(samples.values())
+    contenders = [t for t in samples if max_sample - samples[t] <= epsilon]
+
+    if len(contenders) <= 1 or cost_map is None:
+        # 従来挙動と完全一致: max(samples, key=lambda t: samples[t]) と同じ式
+        chosen = max(samples, key=lambda t: samples[t])
+        return chosen, False, tuple(contenders)
+
+    # 拮抗群内で min-max 正規化コストを計算し最安 tier を選ぶ
+    costs = {t: cost_map[t] for t in contenders}
+    lo, hi = min(costs.values()), max(costs.values())
+    norm = {t: ((costs[t] - lo) / (hi - lo) if hi > lo else 0.0) for t in contenders}
+    # 同値安定 tie-break: norm 同値時はサンプル大（=従来選好）を優先 → 決定論
+    chosen = min(contenders, key=lambda t: (norm[t], -samples[t]))
+    return chosen, True, tuple(contenders)
 
 
 def _prompt_prefix_and_hash(prompt: str) -> tuple[str, str]:
@@ -226,10 +290,48 @@ def estimate_complexity(prompt: str) -> str:
     return "medium"
 
 
+def select_tier_detailed(
+    params: dict[str, tuple[float, float, int]],
+    *,
+    rng: random.Random | None = None,
+    cost_map: dict[str, float] | None = None,
+) -> SelectionResult:
+    """Beta サンプリングまたは uniform 選択で推奨 Tier を SelectionResult で返す。
+
+    Args:
+        params: ``read_tier_params`` の戻り値。
+            ``{"haiku": (alpha, beta, trials), ...}``
+        rng: テスト用に決定論的にしたい場合は ``random.Random(seed)`` を渡す。
+        cost_map: {tier: cost} の dict、または None。
+            None（cost を見ない＝従来 Thompson）または「params の全 tier キーを
+            含む完全な dict」のいずれか。partial dict は渡されない前提
+            （呼び出し側が全 TIERS 分を構築して保証する）。
+            uniform 分岐では cost_map の有無に関わらず完全無視する（探索保護）。
+
+    Returns:
+        SelectionResult（tier, mode, cost_tiebreak, contenders）。
+        mode は ``"thompson"`` / ``"uniform"``。
+    """
+    rng = rng or random
+    total_trials = sum(p[2] for p in params.values())
+    if total_trials < LEARNING_THRESHOLD:
+        # uniform: cost を完全無視・従来挙動完全維持
+        return SelectionResult(rng.choice(TIERS), "uniform", False, ())
+
+    # Thompson Sampling: rng の消費順序を従来 select_tier と完全一致させる
+    samples = {
+        tier: rng.betavariate(p[0], p[1])
+        for tier, p in params.items()
+    }
+    chosen, did_tiebreak, contenders = _cost_tiebreak(samples, cost_map)
+    return SelectionResult(chosen, "thompson", did_tiebreak, contenders)
+
+
 def select_tier(
     params: dict[str, tuple[float, float, int]],
     *,
     rng: random.Random | None = None,
+    cost_map: dict[str, float] | None = None,
 ) -> tuple[str, str]:
     """Beta サンプリングまたは uniform 選択で推奨 Tier を返す。
 
@@ -237,23 +339,18 @@ def select_tier(
         params: ``read_tier_params`` の戻り値。
             ``{"haiku": (alpha, beta, trials), ...}``
         rng: テスト用に決定論的にしたい場合は ``random.Random(seed)`` を渡す。
+        cost_map: {tier: cost} の dict、または None。
+            None なら cost を見ず従来の Thompson Sampling と完全一致。
+            uniform 分岐では cost_map の有無に関わらず完全無視する。
+            詳細は :func:`select_tier_detailed` を参照。
 
     Returns:
         ``(tier, mode)`` のタプル。``mode`` は ``"thompson"`` / ``"uniform"`` で、
         プロンプトに「学習データ収集中」と表示するかの分岐に使う。
+        戻り値型は v2.22.0 以前と完全に不変。
     """
-    rng = rng or random
-    total_trials = sum(p[2] for p in params.values())
-    if total_trials < LEARNING_THRESHOLD:
-        return rng.choice(TIERS), "uniform"
-
-    # 純 Thompson Sampling: 各 tier の Beta(α, β) からサンプリング、最大値を選ぶ
-    samples = {
-        tier: rng.betavariate(p[0], p[1])
-        for tier, p in params.items()
-    }
-    chosen = max(samples, key=lambda t: samples[t])
-    return chosen, "thompson"
+    result = select_tier_detailed(params, rng=rng, cost_map=cost_map)
+    return result.tier, result.mode
 
 
 # Phase 2-B: 失敗率による昇格マッピング（haiku → sonnet, sonnet → opus）。
@@ -324,6 +421,7 @@ def write_tier_selection(
     prompt_prefix: str | None = None,
     prompt_hash: str | None = None,
     session_id: str | None = None,
+    cost_tiebreak: bool = False,
 ) -> None:
     """直近の選択結果を ``tier_selection.json`` に書く。
 
@@ -339,6 +437,10 @@ def write_tier_selection(
 
     ``session_id`` を任意で含める。UserPromptSubmit payload の session UUID。
     None のときは tier_selection.json のキー自体を省略する（後方互換）。
+
+    ``cost_tiebreak`` を任意で含める（v2.23.0）。
+    Thompson Sampling の拮抗群内で cost tie-break が発動した場合のみ True。
+    False のときはキー自体を省略する（escalated/session_id と同パターン）。
     """
     os.makedirs(os.path.dirname(TIER_SELECTION_PATH), exist_ok=True)
     payload: dict[str, object] = {
@@ -360,6 +462,8 @@ def write_tier_selection(
         payload["prompt_hash"] = prompt_hash
     if session_id is not None:
         payload["session_id"] = session_id
+    if cost_tiebreak:
+        payload["cost_tiebreak"] = True
     try:
         with open(TIER_SELECTION_PATH, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -376,8 +480,13 @@ def build_additional_context(
     *,
     escalation_reason: str | None = None,
     complexity_source: str | None = None,
+    cost_tiebreak: bool = False,
 ) -> str:
-    """親 Claude に追加注入する文字列を組み立てる。"""
+    """親 Claude に追加注入する文字列を組み立てる。
+
+    ``cost_tiebreak`` が True のとき、suffix に cost-aware 発動を示す文言を追加する（v2.23.0）。
+    False のときは不変（既存文言と完全一致）。
+    """
     trials = sum(p[2] for p in params.values())
     if mode == "uniform":
         confidence = f"学習データ収集中（合計 {trials}/{LEARNING_THRESHOLD} 試行）"
@@ -390,6 +499,8 @@ def build_additional_context(
         suffix += f" [Phase 2-B 昇格: {escalation_reason}]"
     if complexity_source:
         suffix += f" [複雑度判定: {complexity_source}]"
+    if cost_tiebreak:
+        suffix += " [cost-aware: 成功率拮抗のため低コスト Tier を選択]"
 
     return (
         f"[tier-routing 推奨] 複雑度: {complexity} / 推奨 Tier: {tier}（{confidence}）。"
@@ -445,7 +556,28 @@ def main() -> int:
     else:
         params = c3_db.read_tier_params(complexity)
 
-    tier, mode = select_tier(params)
+    # v2.23.0: cost_map をハイブリッド解決（実測 avg_cost を主に、欠損 tier は静的単価で補完）。
+    # c3_db が None または pricing import 失敗時は cost_map=None で従来 Thompson にデグレード。
+    # cost_map=None の場合、select_tier_detailed/_cost_tiebreak は従来 Thompson 挙動と完全一致（引数定義参照）。
+    cost_map = None
+    if c3_db is not None:
+        try:
+            from c3 import pricing  # type: ignore[import-not-found]
+            measured = c3_db.read_tier_cost_for_complexity(complexity)  # {tier: avg} 実測>0 のみ
+            cost_map = {}
+            for tier_name in TIERS:
+                if tier_name in measured and measured[tier_name] > 0:
+                    cost_map[tier_name] = measured[tier_name]
+                else:
+                    # tier_reference_cost は未知 tier に 0.0 を返すが、TIERS と _TIER_REFERENCE_KEY は
+                    # 同期前提のため現行 3 tier（haiku/sonnet/opus）では 0.0 混入は起きない。
+                    cost_map[tier_name] = pricing.tier_reference_cost(tier_name)  # 静的 fallback
+        except ImportError:
+            cost_map = None
+
+    result = select_tier_detailed(params, cost_map=cost_map)
+    tier, mode = result.tier, result.mode
+    cost_tiebreak = result.cost_tiebreak
 
     # Phase 2-B: failure rate に基づく escalation
     effective_tier, escalation_reason = maybe_escalate(complexity, tier)
@@ -457,12 +589,14 @@ def main() -> int:
         prompt_prefix=prompt_prefix,
         prompt_hash=prompt_hash,
         session_id=session_id,
+        cost_tiebreak=cost_tiebreak,
     )
 
     context_text = build_additional_context(
         complexity, effective_tier, mode, params,
         escalation_reason=escalation_reason,
         complexity_source=complexity_source,
+        cost_tiebreak=cost_tiebreak,
     )
     output = {
         "hookSpecificOutput": {

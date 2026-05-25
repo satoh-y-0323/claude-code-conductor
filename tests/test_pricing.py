@@ -12,13 +12,17 @@ v2.21.0 pricing.py の単体テスト（8 件）。
   P8:    compute_cost_usd: Sonnet / Haiku 現行の手計算一致
   P9:    compute_cost_usd: 不明モデルは (0.0, False) で非例外
   P10:   known_models が単価表キーを全て含む
+  P15:   tier_reference_cost: 単調性（haiku < sonnet < opus）
+  P16:   tier_reference_cost: 既知 3 tier が > 0
+  P17:   tier_reference_cost: 未知 tier は 0.0
+  P18:   tier_reference_cost: 値が _PRICING の input+output 和に一致
 """
 
 from __future__ import annotations
 
 import pytest
 
-from c3.pricing import compute_cost_usd, known_models, resolve_tier
+from c3.pricing import compute_cost_usd, known_models, resolve_tier, tier_reference_cost
 
 
 class TestResolveTier:
@@ -223,3 +227,44 @@ class TestOpusGenerationRegression:
         assert cost == pytest.approx(5.0, rel=1e-6), (
             f"Opus 4.7 が現行 ($5) に分類されなかった: cost={cost}"
         )
+
+
+class TestTierReferenceCost:
+    """P15〜P18: tier_reference_cost のテスト（v2.23.0 T1）。
+
+    AC-10: haiku<sonnet<opus の単調性・未知 tier は 0.0。
+    tie-break 静的 fallback 用のため、絶対値より順位が重要。
+    """
+
+    def test_monotonicity_haiku_lt_sonnet_lt_opus(self):
+        """P15: haiku < sonnet < opus の単調性が成立する（AC-10）。"""
+        haiku = tier_reference_cost("haiku")
+        sonnet = tier_reference_cost("sonnet")
+        opus = tier_reference_cost("opus")
+        assert haiku < sonnet < opus, (
+            f"単調性違反: haiku={haiku}, sonnet={sonnet}, opus={opus}"
+        )
+
+    def test_known_tiers_are_positive(self):
+        """P16: 既知 3 tier（haiku/sonnet/opus）はすべて > 0。"""
+        assert tier_reference_cost("haiku") > 0
+        assert tier_reference_cost("sonnet") > 0
+        assert tier_reference_cost("opus") > 0
+
+    def test_unknown_tier_returns_zero(self):
+        """P17: 未知 tier（"gpt"・"unknown"）は 0.0 を返す。"""
+        assert tier_reference_cost("gpt") == 0.0
+        assert tier_reference_cost("unknown") == 0.0
+        assert tier_reference_cost("") == 0.0
+
+    def test_values_match_pricing_input_plus_output(self):
+        """P18: 値が _PRICING の input+output 単価和に一致する。
+
+        _PRICING 参照値:
+          haiku-4-5:  input=1.0, output=5.0  → 合計 6.0
+          sonnet-4-5: input=3.0, output=15.0 → 合計 18.0
+          opus-4-5:   input=5.0, output=25.0 → 合計 30.0
+        """
+        assert tier_reference_cost("haiku") == pytest.approx(6.0, rel=1e-9)
+        assert tier_reference_cost("sonnet") == pytest.approx(18.0, rel=1e-9)
+        assert tier_reference_cost("opus") == pytest.approx(30.0, rel=1e-9)

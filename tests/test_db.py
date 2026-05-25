@@ -22,6 +22,7 @@ from c3.db import (
     locate_c3_db,
     read_agent_cost_summary,
     read_tier_cost_summary,
+    read_tier_cost_for_complexity,
     record_tier_recent_outcome,
     set_ingest_offset,
 )
@@ -516,3 +517,148 @@ class TestTierCostHelpers:
         absent_db = tmp_path / "no_such.db"
         result = read_tier_cost_summary(db_path=absent_db)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# I 群: read_tier_cost_for_complexity (v2.23.0 T2)
+# ---------------------------------------------------------------------------
+
+
+class TestReadTierCostForComplexity:
+    """I 群: read_tier_cost_for_complexity のテスト。
+
+    read_tier_cost_summary の薄いラッパーであるため、DB セットアップは
+    H 群の _make_c3_db_v003 / _seed_cost_run / record_tier_recent_outcome を流用する。
+    """
+
+    def _seed_session(
+        self,
+        db: Path,
+        *,
+        complexity: str,
+        tier: str,
+        cost_usd: float,
+        session_id: str,
+    ) -> None:
+        """outcome + cost_run を 1 セッション分まとめて seed するヘルパー。"""
+        record_tier_recent_outcome(
+            complexity=complexity,
+            tier=tier,
+            success=True,
+            session_id=session_id,
+            db_path=db,
+        )
+        _seed_cost_run(
+            db,
+            session_id=session_id,
+            agent_id="agent-i",
+            agent_type="developer",
+            total_cost_usd=cost_usd,
+        )
+
+    def test_complexity_filter_returns_matching_rows_only(self, tmp_path: Path):
+        """I1: complexity が一致する行のみ {tier: avg_cost} で返す。
+
+        medium を指定したら medium 行の {tier: avg_cost} のみを返し、
+        他の complexity (simple/complex) は含まない。
+        """
+        db = _make_c3_db_v003(tmp_path)
+
+        self._seed_session(db, complexity="medium", tier="sonnet",
+                           cost_usd=0.02, session_id="i1-medium-sonnet")
+        self._seed_session(db, complexity="simple", tier="haiku",
+                           cost_usd=0.01, session_id="i1-simple-haiku")
+        self._seed_session(db, complexity="complex", tier="opus",
+                           cost_usd=0.05, session_id="i1-complex-opus")
+
+        result = read_tier_cost_for_complexity("medium", db_path=db)
+
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"sonnet"}
+        assert abs(result["sonnet"] - 0.02) < 1e-9
+        # simple / complex は含まない
+        assert "haiku" not in result
+        assert "opus" not in result
+
+    def test_avg_cost_zero_or_negative_excluded(self, tmp_path: Path):
+        """I2: avg_cost_usd <= 0 の行は除外される。
+
+        0 コストのセッションを seed しても結果に含まれないことを確認する。
+        ただし read_tier_cost_summary は avg_cost_usd が 0.0 の行を返しうるため、
+        本関数がそれを除外することを直接テストする。
+        本テストでは read_tier_cost_summary をモックして avg_cost_usd=0 の
+        データを注入することで、フィルタ動作を独立して検証する。
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        fake_rows = [
+            {"complexity": "medium", "tier": "haiku",
+             "sessions": 1, "total_cost_usd": 0.0, "avg_cost_usd": 0.0},
+            {"complexity": "medium", "tier": "sonnet",
+             "sessions": 1, "total_cost_usd": 0.01, "avg_cost_usd": 0.01},
+        ]
+        with patch("c3.db.read_tier_cost_summary", return_value=fake_rows):
+            result = read_tier_cost_for_complexity("medium")
+
+        # avg_cost_usd=0 の haiku は除外、sonnet のみ返る
+        assert "haiku" not in result
+        assert "sonnet" in result
+        assert abs(result["sonnet"] - 0.01) < 1e-9
+
+    def test_no_matching_complexity_returns_empty_dict(self, tmp_path: Path):
+        """I3: 該当 complexity のデータが無い場合は {} を返す。"""
+        db = _make_c3_db_v003(tmp_path)
+
+        # simple のみ seed
+        self._seed_session(db, complexity="simple", tier="haiku",
+                           cost_usd=0.01, session_id="i3-simple")
+
+        result = read_tier_cost_for_complexity("complex", db_path=db)
+        assert result == {}
+
+    def test_db_absent_returns_empty_dict(self, tmp_path: Path):
+        """I4: DB 不在（存在しないパスを db_path に渡す）で {} を返す。"""
+        absent_db = tmp_path / "no_such_i4.db"
+        result = read_tier_cost_for_complexity("medium", db_path=absent_db)
+        assert result == {}
+
+    def test_multiple_tiers_same_complexity(self, tmp_path: Path):
+        """I5: 同一 complexity で複数 tier が存在する場合、全て返る。"""
+        db = _make_c3_db_v003(tmp_path)
+
+        self._seed_session(db, complexity="medium", tier="haiku",
+                           cost_usd=0.01, session_id="i5-haiku")
+        self._seed_session(db, complexity="medium", tier="sonnet",
+                           cost_usd=0.02, session_id="i5-sonnet")
+
+        result = read_tier_cost_for_complexity("medium", db_path=db)
+
+        assert set(result.keys()) == {"haiku", "sonnet"}
+        assert abs(result["haiku"] - 0.01) < 1e-9
+        assert abs(result["sonnet"] - 0.02) < 1e-9
+
+    def test_existing_read_tier_cost_summary_tests_still_pass(self, tmp_path: Path):
+        """I6: read_tier_cost_summary 既存テストの代表例が本関数追加後も green（不変確認）。
+
+        H3 と同等のシナリオを再実行し、read_tier_cost_summary が
+        read_tier_cost_for_complexity の実装で一切変更されていないことを確認する。
+        """
+        db = _make_c3_db_v003(tmp_path)
+        sess = "i6-backward-compat"
+
+        record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=True,
+            session_id=sess, db_path=db,
+        )
+        _seed_cost_run(db, session_id=sess, agent_id="agent-x",
+                       agent_type="developer", total_cost_usd=0.01)
+
+        # read_tier_cost_summary は変更なしに動作する
+        summary = read_tier_cost_summary(db_path=db)
+        assert len(summary) == 1
+        assert summary[0]["complexity"] == "medium"
+        assert abs(summary[0]["avg_cost_usd"] - 0.01) < 1e-9
+
+        # read_tier_cost_for_complexity も同じ結果を反映する
+        for_complexity = read_tier_cost_for_complexity("medium", db_path=db)
+        assert abs(for_complexity["sonnet"] - 0.01) < 1e-9

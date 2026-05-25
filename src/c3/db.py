@@ -759,6 +759,39 @@ def read_tier_cost_summary(
     ]
 
 
+def read_tier_cost_for_complexity(
+    complexity: str,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, float]:
+    """complexity 別の tier 平均コストを {tier: avg_cost_usd} で返す。
+
+    tie-break のハイブリッド cost 源（実測 avg_cost）。
+    complexity 一致 & avg_cost_usd > 0 のみ。
+    ``read_tier_cost_summary`` の薄いラッパー。
+
+    DB アクセスは ``read_tier_cost_summary`` に委譲するため、
+    DB 例外処理・busy_timeout・read 規約は同関数から継承される。
+    データ/DB 不在で ``read_tier_cost_summary`` が ``[]`` を返す場合、
+    本関数は ``{}`` を返す。
+
+    Args:
+        complexity: フィルタ対象の complexity 値（"simple" / "medium" / "complex"）。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索
+                 （``read_tier_cost_summary`` に委譲）。
+
+    Returns:
+        ``{tier: avg_cost_usd}`` の dict。
+        該当データ不在・DB 不在・エラー時は ``{}``。
+    """
+    rows = read_tier_cost_summary(db_path=db_path)
+    return {
+        r["tier"]: r["avg_cost_usd"]
+        for r in rows
+        if r["complexity"] == complexity and r["avg_cost_usd"] > 0
+    }
+
+
 def get_ingest_offset(
     file_key: str,
     *,

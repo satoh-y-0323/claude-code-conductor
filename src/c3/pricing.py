@@ -10,6 +10,7 @@
   - resolve_tier(model) -> str | None
   - compute_cost_usd(...) -> tuple[float, bool]
   - known_models() -> tuple[str, ...]
+  - tier_reference_cost(tier) -> float
 
 設計判断（plan-report T1 §2):
   Opus は世代で単価が約 3 倍異なる（4.1/4 = $15 系、4.5/4.6/4.7 = $5 系）ため、
@@ -146,6 +147,46 @@ def compute_cost_usd(
         + cache_create_tokens / 1_000_000 * cache_write_price
     )
     return (cost, True)
+
+
+# ---------------------------------------------------------------------------
+# tier → 参照単価マッピング（v2.23.0 T1）
+# tie-break 静的 fallback 用。tier 名から _PRICING キーへの対応表。
+# 注意: select_tier.py の TIERS と同期必須。新 tier を TIERS に追加する場合は
+# 本 dict も更新すること（未更新だと tier_reference_cost が未知 tier に 0.0 を返し、
+# cost_map に混入して min-max 正規化で最安誤判定につながる）。
+# ---------------------------------------------------------------------------
+_TIER_REFERENCE_KEY: dict[str, str] = {
+    "haiku":  "haiku-4-5",
+    "sonnet": "sonnet-4-5",
+    "opus":   "opus-4-5",
+}
+
+
+def tier_reference_cost(tier: str) -> float:
+    """tier 名から静的参照単価（input + output 単価和、USD/MTok）を返す。
+
+    tie-break の static fallback 用。実測 avg_cost が利用可能な場合は
+    実測値を優先し、本関数はデータ不足/欠損 tier の補完にのみ使用すること。
+
+    min-max 正規化で使用するため、絶対値より haiku < sonnet < opus の
+    順位が重要（_PRICING の現行世代単価で単調性が保証される）。
+
+    Args:
+        tier: "haiku" / "sonnet" / "opus" のいずれか。
+
+    Returns:
+        _PRICING[_TIER_REFERENCE_KEY[tier]] の input + output 単価和（USD/MTok）。
+        未知 tier（_TIER_REFERENCE_KEY に存在しないキー）は 0.0 を返す。
+    """
+    key = _TIER_REFERENCE_KEY.get(tier)
+    if key is None:
+        return 0.0
+    pricing = _PRICING.get(key)
+    if pricing is None:
+        return 0.0
+    inp_price, out_price, _cache_write, _cache_read = pricing
+    return inp_price + out_price
 
 
 def known_models() -> tuple[str, ...]:
