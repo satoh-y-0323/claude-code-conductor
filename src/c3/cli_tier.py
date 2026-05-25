@@ -194,7 +194,7 @@ def _render_human(snapshot: dict[str, Any]) -> None:
             )
     print()
 
-    print("== Tier 別平均コスト（粗い概算 / 精度向上は v2.23.0） ==")
+    print("== Tier 別平均コスト（粗い概算 / 精度向上は v2.24.0） ==")
     tier_cost = snapshot.get("tier_cost", [])
     if not tier_cost:
         print("（cost 紐づけデータ未収集）")
@@ -208,4 +208,4 @@ def _render_human(snapshot: dict[str, Any]) -> None:
                 f"${row['total_cost_usd']:>9.4f}"
             )
     print()
-    print("（注: データ紐づけ蓄積。cost-aware routing 本体は v2.23.0 予定）")
+    print("（注: cost-aware routing 本体（tie-break）実装済み。精度向上は v2.24.0 予定）")

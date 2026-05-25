@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.23.0] - 2026-05-25
+
+**tier-routing cost-aware tie-break**: `select_tier` の Thompson Sampling 分岐に「拮抗 tier 群内コスト tie-break」を追加する。サンプル最大から ε(=0.05) 以内の拮抗 tier が複数ある場合のみ、min-max 正規化コストが最安の tier を選ぶ。単独最大なら従来通り（挙動不変）。成功率を犠牲にしない最小スコープの cost 統合。
+
+**スコープ注記**:
+- **最小スコープ＝tie-break のみ**。精度向上（model 一致集計・agent_id 単位紐づけ）と `tier_bandit.total_cost_usd`/`cost_samples` への書き込みは **v2.24.0**。
+- cost は**ハイブリッド源**（実測 avg_cost を主・欠損 tier は静的参照単価で補完）。実測 USD と静的 per-MTok の混在スケールは min-max 正規化で**拮抗群内の概算順位**に畳む（厳密な単位整合は v2.24.0）。
+- LEARNING_THRESHOLD(30) 未満は cost 完全無視（uniform のまま・探索保護）。escalation は不変。
+- migration なし（読み出しのみ・書き込みなし）。**破壊的変更なし**（optional kw-only 引数追加・None/False 時従来動作・出力キー条件付き追加のみ）。
+
+### 機能追加
+
+- **`src/c3/pricing.py`: `tier_reference_cost(tier) -> float`（新規）**: tier 名から input+output 静的参照単価和を返す純関数。haiku < sonnet < opus の単調性を保証。未知 tier は 0.0 を返す。`_TIER_REFERENCE_KEY` 定数で TIERS との同期チェックを明示。
+
+- **`src/c3/db.py`: `read_tier_cost_for_complexity(complexity, *, db_path=None) -> dict[str, float]`（新規）**: `read_tier_cost_summary` を complexity 一致・avg_cost_usd > 0 でフィルタし `{tier: avg_cost_usd}` を返す薄いラッパー。テーブル不在・データ不在・DB 不在で `{}`。
+
+- **`.claude/hooks/select_tier.py`**: `EPSILON=0.05` 定数 / `SelectionResult`（NamedTuple: tier/mode/cost_tiebreak/contenders）/ `_cost_tiebreak`（拮抗群 min-max 最安・同値はサンプル大優先で決定論）/ `select_tier_detailed(params, *, rng, cost_map)`（2 層 API の詳細版）を追加。
+
+### 変更
+
+- **`.claude/hooks/select_tier.py`**: `select_tier` に kw-only `cost_map=None` を追加し `select_tier_detailed` への委譲に変更（**戻り値型 (tier, mode) 不変**）。`write_tier_selection`/`build_additional_context` に `cost_tiebreak: bool = False` を追加（True 時のみ json キー追加 / context suffix「[cost-aware: 成功率拮抗のため低コスト Tier を選択]」追記）。`main()` で cost_map をハイブリッド解決し `select_tier_detailed` を使用（c3_db/pricing import 失敗時は cost_map=None で従来 Thompson にデグレード）。
+
+- **`src/c3/__init__.py`**: `__version__` を `"2.22.0"` から `"2.23.0"` に更新。
+
+- **注記更新**: `c3 tier stats` の「精度向上は v2.23.0」を「精度向上は v2.24.0」へ、「cost-aware routing 本体は v2.23.0 予定」を「cost-aware routing 本体（tie-break）実装済み。精度向上は v2.24.0 予定」へ更新。
+
 ## [2.22.0] - 2026-05-25
 
 **tier-routing cost 紐づけデータ蓄積**: tier_recent_outcomes に session_id 列を追加し、agent_cost_runs と JOIN できるデータ基盤を整備する。`c3 tier stats` に complexity×tier 別の平均コストセクションを追加する。cost-aware routing 本体は v2.23.0。

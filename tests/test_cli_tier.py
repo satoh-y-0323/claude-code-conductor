@@ -398,7 +398,7 @@ class TestTierCostSection:
         out = capsys.readouterr().out
         assert "Tier 別平均コスト" in out
         assert "粗い概算" in out
-        assert "v2.23.0" in out
+        assert "v2.24.0" in out
 
     def test_render_human_tier_cost_with_data(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
