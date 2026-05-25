@@ -923,7 +923,7 @@ class TestMainCostMapIntegration:
     ) -> None:
         """cost_tiebreak が発動する状況で main 経由の tier_selection.json に cost_tiebreak=true が出る（AC-2）。
 
-        c3_db.read_tier_cost_for_complexity をモックして measured を注入し、
+        c3_db.read_tier_cost_rate_for_complexity をモックして measured を注入し、
         拮抗する params + 安い tier が選ばれるケースを検証する。
         """
         mod = _load_hook_module()
@@ -931,7 +931,7 @@ class TestMainCostMapIntegration:
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
 
         # haiku と sonnet が拮抗する params (同一 Beta パラメータ、trials >= 30)
-        # read_tier_cost_for_complexity は measured={} を返す（全て静的 fallback）
+        # read_tier_cost_rate_for_complexity は measured={} を返す（全て静的 fallback）
         tiebreak_params = {
             "haiku": (10.0, 10.0, 30),
             "sonnet": (10.0, 10.0, 30),
@@ -940,7 +940,7 @@ class TestMainCostMapIntegration:
 
         mock_c3_db = types.SimpleNamespace(
             read_tier_params=lambda complexity, **kw: tiebreak_params,
-            read_tier_cost_for_complexity=lambda complexity, **kw: {},  # 実測なし → 全て静的 fallback
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},  # 実測なし → 全て静的 fallback
             read_tier_failure_rate=lambda complexity, tier: (None, 0),  # escalation しない
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
@@ -988,7 +988,7 @@ class TestMainCostMapIntegration:
         }
         mock_c3_db = types.SimpleNamespace(
             read_tier_params=lambda complexity, **kw: dominant_params,
-            read_tier_cost_for_complexity=lambda complexity, **kw: {},
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
             read_tier_failure_rate=lambda complexity, tier: (None, 0),  # escalation しない
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
@@ -1003,3 +1003,80 @@ class TestMainCostMapIntegration:
         # 単独最大 → cost_tiebreak キーが出ないはず
         assert "cost_tiebreak" not in sel
         assert sel["tier"] == "haiku"
+
+    def test_main_rate_cost_map_no_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """main() が read_tier_cost_rate_for_complexity を呼び AttributeError なく完了する（AC-6 単位整合）。
+
+        v2.24.0 で cost_map 源を read_tier_cost_for_complexity から
+        read_tier_cost_rate_for_complexity に切り替えたため、
+        SimpleNamespace に read_tier_cost_rate_for_complexity が存在しないと
+        AttributeError が発生する。この属性名が正しく解決されることを確認。
+        """
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        params = {
+            "haiku": (5.0, 5.0, 20),
+            "sonnet": (5.0, 5.0, 20),
+            "opus": (5.0, 5.0, 20),
+        }
+        # read_tier_cost_rate_for_complexity（旧名なし）のみ定義 → 旧名があると AttributeError
+        mock_c3_db = types.SimpleNamespace(
+            read_tier_params=lambda complexity, **kw: params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},  # rate 関数・実測なし
+            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "テスト"})))
+        random.seed(0)
+
+        # AttributeError が発生しないこと、かつ rc=0 であること
+        rc = mod.main()
+        assert rc == 0
+        assert target.is_file()
+
+    def test_main_rate_cost_map_with_measured_uses_rate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """main() が rate 実測値を cost_map に使い、静的 fallback と同次元で比較する（AC-6）。
+
+        read_tier_cost_rate_for_complexity が haiku=6.0 USD/MTok を返す場合、
+        cost_map['haiku'] は 6.0 になる（tier_reference_cost('haiku')=6.0 の静的値と同次元）。
+        単位混在が解消されており crash なく rc=0 で完了することを確認。
+
+        NOTE: cost_tiebreak の発動 assert は
+        ``test_main_cost_tiebreak_appears_in_json_when_triggered`` で担保。
+        本テストは rate 関数への切替が AttributeError なく完了することの確認が主眼。
+        """
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        # haiku に実測 rate を返す（tier_reference_cost と同次元 USD/MTok）
+        measured_rates = {"haiku": 6.0}
+
+        params = {
+            "haiku": (10.0, 10.0, 30),
+            "sonnet": (10.0, 10.0, 30),
+            "opus": (1.0, 10.0, 10),
+        }
+        mock_c3_db = types.SimpleNamespace(
+            read_tier_params=lambda complexity, **kw: params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: dict(measured_rates),
+            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "テスト"})))
+        random.seed(0)
+
+        rc = mod.main()
+        assert rc == 0
+        assert target.is_file()
+        sel = json.loads(target.read_text(encoding="utf-8"))
+        # 拮抗群が存在するので cost_tiebreak が発動する可能性があるが crash しないことが重要
+        assert sel.get("tier") in ("haiku", "sonnet", "opus")

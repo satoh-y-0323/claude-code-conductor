@@ -22,6 +22,7 @@ import sys
 from typing import Any
 
 from c3 import db as c3_db
+from c3._terminal import sanitize_terminal_text
 
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,8 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
 
     tier_cost: list[dict[str, Any]] = c3_db.read_tier_cost_summary(db_path=db_path)
 
+    tier_cost_rate: list[dict[str, Any]] = c3_db.read_tier_cost_rate_summary(db_path=db_path)
+
     if total_trials < _LEARNING_THRESHOLD:
         mode = "uniform"
     else:
@@ -133,6 +136,7 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
         "recent_outcomes": recent_outcomes,
         "agent_cost": agent_cost,
         "tier_cost": tier_cost,
+        "tier_cost_rate": tier_cost_rate,
     }
 
 
@@ -184,9 +188,10 @@ def _render_human(snapshot: dict[str, Any]) -> None:
             f"{'in_tok':>9}  {'out_tok':>9}  {'cache_r':>9}  {'cache_w':>9}"
         )
         for row in agent_cost:
-            note = "  （マクロ集計・tier 学習対象外）" if row["agent_type"] == "mainline" else ""
+            agent_type_safe = sanitize_terminal_text(str(row["agent_type"]))
+            note = "  （マクロ集計・tier 学習対象外）" if agent_type_safe == "mainline" else ""
             print(
-                f"{row['agent_type']:<16} {row['runs']:>5}  "
+                f"{agent_type_safe:<16} {row['runs']:>5}  "
                 f"${row['total_cost_usd']:>9.4f}  "
                 f"{row['input_tokens']:>9}  {row['output_tokens']:>9}  "
                 f"{row['cache_read_tokens']:>9}  {row['cache_create_tokens']:>9}"
@@ -194,18 +199,37 @@ def _render_human(snapshot: dict[str, Any]) -> None:
             )
     print()
 
-    print("== Tier 別平均コスト（粗い概算 / 精度向上は v2.24.0） ==")
+    print("== Tier 別平均コスト（粗い概算・session 合計 USD） ==")
     tier_cost = snapshot.get("tier_cost", [])
     if not tier_cost:
         print("（cost 紐づけデータ未収集）")
     else:
         print(f"{'complexity':<12} {'tier':<8} {'sessions':>8}  {'avg_usd':>10}  {'total_usd':>10}")
         for row in tier_cost:
+            complexity_safe = sanitize_terminal_text(str(row["complexity"]))
+            tier_safe = sanitize_terminal_text(str(row["tier"]))
             print(
-                f"{row['complexity']:<12} {row['tier']:<8} "
+                f"{complexity_safe:<12} {tier_safe:<8} "
                 f"{row['sessions']:>8}  "
                 f"${row['avg_cost_usd']:>9.4f}  "
                 f"${row['total_cost_usd']:>9.4f}"
             )
     print()
-    print("（注: cost-aware routing 本体（tie-break）実装済み。精度向上は v2.24.0 予定）")
+    print("（注: 粗い概算・session 合計 USD。v2.24.0 より rate セクション追加済み）")
+    print()
+
+    print("== Tier 別 USD/MTok レート（model 一致・tie-break が使用） ==")
+    tier_cost_rate = snapshot.get("tier_cost_rate", [])
+    if not tier_cost_rate:
+        print("（rate データ未収集）")
+    else:
+        print(f"{'complexity':<12} {'tier':<8} {'sessions':>8}  {'rate_usd_per_mtok':>18}")
+        for row in tier_cost_rate:
+            complexity_safe = sanitize_terminal_text(str(row["complexity"]))
+            tier_safe = sanitize_terminal_text(str(row["tier"]))
+            print(
+                f"{complexity_safe:<12} {tier_safe:<8} "
+                f"{row['sessions']:>8}  "
+                f"{row['rate_usd_per_mtok']:>18.4f}"
+            )
+    print()

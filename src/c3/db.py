@@ -792,6 +792,241 @@ def read_tier_cost_for_complexity(
     }
 
 
+# ---------------------------------------------------------------------------
+# v2.24.0: model 一致集計・USD/MTok レート化（精度向上版）
+# ---------------------------------------------------------------------------
+
+
+def _compute_tier_cost_rate_summary(
+    cost_rows: list[tuple],
+    outcome_rows: list[tuple],
+) -> list[dict]:
+    """agent_cost_runs 行リストと tier_recent_outcomes 行リストから
+    (complexity, tier) 別 USD/MTok レートを集計して返す（DB 非依存の純関数）。
+
+    DB に依存しないため、単体テストで任意のデータを直接渡せる。
+
+    集計ステップ:
+      1. cost_rows の各行を pricing.resolve_tier(model) で tier に振り分け。
+         resolve_tier が None の未知モデル行はスキップ。
+      2. (session_id, tier) 粒度で cost_sum と billable_tokens を集約。
+         PK=(session_id, agent_id, model) のため行は元々一意 → 重複排除は構造的に成立。
+      3. outcome_rows の各行 (session_id, task_complexity, tier) を
+         (session_id, tier) バケットと突合し (complexity, tier) 別に集約。
+      4. rate 化: rate_usd_per_mtok = total_cost_usd / (billable_tokens / 1_000_000)。
+         billable_tokens == 0 の (complexity, tier) は除外。
+
+    分母の定義:
+        billable_tokens = input_tokens + output_tokens のみ（cache tokens 除外）。
+        tier_reference_cost が input+output 単価和である次元に揃えるため。
+
+    分子の注記:
+        total_cost_usd は cache コストも含むが、cache 単価は input の約 1/10 と小さく
+        tier 間順位（min-max が見る対象）の単調性は保たれる。
+        厳密な cache 分離は過剰最適化のためスコープ外（v2.24.0 許容）。
+
+    cross-outcome 重複の残存許容:
+        1 session が同一 tier で複数の complexity outcome を持つレアケースでは、
+        その session のコストが複数 (complexity, tier) に重複加算される。
+        session_id JOIN では帰属先 complexity が原理的に不明なため按分は恣意的であり
+        精度を逆に損なう。残存許容・docstring 明記（按分は将来検討）。
+
+    Args:
+        cost_rows: agent_cost_runs の行タプル。
+            各要素: (session_id, model, total_cost_usd, input_tokens, output_tokens)。
+        outcome_rows: tier_recent_outcomes の行タプル。
+            各要素: (session_id, task_complexity, tier)。
+            DISTINCT 化・session_id NOT NULL フィルタ済み想定。
+
+    Returns:
+        dict リスト。キー: complexity / tier / sessions / total_cost_usd /
+        billable_tokens / rate_usd_per_mtok。
+        billable_tokens == 0 の (complexity, tier) は除外。
+        返却順は ``rate_usd_per_mtok`` 降順（既存 ``read_tier_cost_summary`` の
+        ``ORDER BY total_cost_usd DESC`` と対称）。
+    """
+    from c3 import pricing  # noqa: PLC0415
+
+    # Step 1-2: (session_id, tier) 粒度でコスト集約
+    # bucket: {(session_id, tier): {"cost_sum": float, "billable": int}}
+    bucket: dict[tuple[str, str], dict] = {}
+    for row in cost_rows:
+        sess_id, model, total_cost, input_tok, output_tok = row
+        tier = pricing.resolve_tier(model)
+        if tier is None:
+            continue  # 未知モデルはスキップ（read 規約: ログなし）
+        key = (sess_id, tier)
+        if key not in bucket:
+            bucket[key] = {"cost_sum": 0.0, "billable": 0}
+        bucket[key]["cost_sum"] += float(total_cost) if total_cost is not None else 0.0
+        bucket[key]["billable"] += (
+            (int(input_tok) if input_tok else 0)
+            + (int(output_tok) if output_tok else 0)
+        )
+
+    # Step 3: outcome を (complexity, tier) 別に集約
+    # agg: {(complexity, tier): {"sessions": int, "cost_sum": float, "billable": int}}
+    agg: dict[tuple[str, str], dict] = {}
+    for row in outcome_rows:
+        sess_id, complexity, tier = row
+        key_bucket = (sess_id, tier)
+        if key_bucket not in bucket:
+            continue  # cost データがない session は集計対象外
+        agg_key = (complexity, tier)
+        if agg_key not in agg:
+            agg[agg_key] = {"sessions": 0, "cost_sum": 0.0, "billable": 0}
+        agg[agg_key]["sessions"] += 1
+        agg[agg_key]["cost_sum"] += bucket[key_bucket]["cost_sum"]
+        agg[agg_key]["billable"] += bucket[key_bucket]["billable"]
+
+    # Step 4: rate 化・billable == 0 を除外
+    result = []
+    for (complexity, tier), vals in agg.items():
+        billable = vals["billable"]
+        if billable == 0:
+            continue
+        rate = vals["cost_sum"] / (billable / 1_000_000)
+        result.append(
+            {
+                "complexity": complexity,
+                "tier": tier,
+                "sessions": vals["sessions"],
+                "total_cost_usd": vals["cost_sum"],
+                "billable_tokens": billable,
+                "rate_usd_per_mtok": rate,
+            }
+        )
+    result.sort(key=lambda r: r["rate_usd_per_mtok"], reverse=True)
+    return result
+
+
+def read_tier_cost_rate_summary(
+    *,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """model 一致集計で (complexity, tier) 別 USD/MTok レートを返す（精度向上版）。
+
+    v2.23.0 までの ``read_tier_cost_summary`` は session 全体の非 mainline コストを
+    合算しており、outcome の tier の model に限定していなかった（H5 テストが確認）。
+    本関数はこの不正確性を解消し、``pricing.resolve_tier(model)`` による model 一致
+    集計と USD/MTok レート化（``tier_reference_cost`` と同次元）を行う。
+
+    集計アルゴリズム（内部実装は :func:`_compute_tier_cost_rate_summary` 参照）:
+      1. ``agent_cost_runs`` を ``agent_type <> 'mainline'`` で素読み。
+      2. Python 側で各行を ``pricing.resolve_tier(model)`` で tier に振り分け。
+         ``resolve_tier`` が ``None`` の未知モデル行はスキップ。
+      3. ``(session_id, tier)`` 粒度で ``cost_sum`` と
+         ``billable_tokens = input_tokens + output_tokens`` を集約。
+         PK=(session_id, agent_id, model) のため行は元々一意 → 重複排除は構造的に成立。
+      4. ``tier_recent_outcomes`` を
+         ``DISTINCT (session_id, task_complexity, tier)``（``session_id IS NOT NULL``）で読み、
+         ``(session_id, tier)`` バケットと突合して ``(complexity, tier)`` 別に集約。
+      5. rate 化: ``rate_usd_per_mtok = total_cost_usd / (billable_tokens / 1_000_000)``。
+         ``billable_tokens == 0`` の ``(complexity, tier)`` は除外。
+
+    分母の定義:
+        ``billable_tokens = input_tokens + output_tokens`` のみ（cache tokens 除外）。
+        ``tier_reference_cost`` が input+output 単価和である次元に揃えるため。
+
+    分子の注記:
+        ``total_cost_usd`` は cache コストも含むが、cache 単価は input の約 1/10 と小さく
+        tier 間順位（min-max が見る対象）の単調性は保たれる（v2.24.0 許容）。
+
+    cross-outcome 重複の残存許容:
+        1 session が同一 tier で複数の complexity outcome を持つレアケースでは、
+        その session のコストが複数 ``(complexity, tier)`` に重複加算される。
+        session_id JOIN では帰属先 complexity が原理的に不明なため按分は恣意的であり
+        精度を逆に損なう。残存許容・docstring 明記（按分は将来検討）。
+
+    Args:
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+
+    Returns:
+        各行を dict にしたリスト。キー:
+        ``complexity``(str) / ``tier``(str) / ``sessions``(int) /
+        ``total_cost_usd``(float) / ``billable_tokens``(int) /
+        ``rate_usd_per_mtok``(float)。
+        ``billable_tokens == 0`` の行は除外。
+        テーブル不在 / データ不在 / DB 不在 / エラー時は空リストを返す。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # WAL は書き込みヘルパー呼び出し時または migrate 時に設定済みの前提
+            # （read_agent_cost_summary 等の read ヘルパーと同方針 / CR-M-001）
+            _apply_busy_timeout(conn)
+            cost_rows = conn.execute(
+                "SELECT session_id, model, total_cost_usd, "
+                "       input_tokens, output_tokens "
+                "FROM agent_cost_runs "
+                "WHERE agent_type <> 'mainline'"
+            ).fetchall()
+            outcome_rows = conn.execute(
+                "SELECT DISTINCT session_id, task_complexity, tier "
+                "FROM tier_recent_outcomes "
+                "WHERE session_id IS NOT NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        # テーブル不在（no such table）は [] を返す（DB 未初期化でも止めない）
+        logger.debug(
+            "read_tier_cost_rate_summary: table not found or inaccessible: %s",
+            type(exc).__name__,
+        )
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "read_tier_cost_rate_summary: unexpected error: %s", type(exc).__name__
+        )
+        return []
+
+    return _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+
+
+def read_tier_cost_rate_for_complexity(
+    complexity: str,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, float]:
+    """complexity 別の tier USD/MTok レートを {tier: rate_usd_per_mtok} で返す（精度向上版）。
+
+    tie-break のハイブリッド cost 源（model 一致集計・rate 化）。
+    complexity 一致 & rate_usd_per_mtok > 0 のみ。
+    ``read_tier_cost_rate_summary`` の薄いラッパー。
+
+    v2.23.0 の ``read_tier_cost_for_complexity``（session 合計 avg_cost_usd）と対称な構造を持ち、
+    cost_map の値を「絶対 USD」から「USD/MTok レート」へ精度向上させた代替関数。
+    これにより fallback の ``tier_reference_cost``（静的 per-MTok 単価）と同次元になり、
+    tie-break の min-max 正規化が同スケールで比較可能になる。
+
+    DB アクセスは ``read_tier_cost_rate_summary`` に委譲するため、
+    DB 例外処理・busy_timeout・read 規約は同関数から継承される。
+    データ/DB 不在で ``read_tier_cost_rate_summary`` が ``[]`` を返す場合、
+    本関数は ``{}`` を返す。
+
+    Args:
+        complexity: フィルタ対象の complexity 値（"simple" / "medium" / "complex"）。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索
+                 （``read_tier_cost_rate_summary`` に委譲）。
+
+    Returns:
+        ``{tier: rate_usd_per_mtok}`` の dict。
+        該当データ不在・DB 不在・エラー時は ``{}``。
+    """
+    rows = read_tier_cost_rate_summary(db_path=db_path)
+    return {
+        r["tier"]: r["rate_usd_per_mtok"]
+        for r in rows
+        if r["complexity"] == complexity and r["rate_usd_per_mtok"] > 0
+    }
+
+
 def get_ingest_offset(
     file_key: str,
     *,

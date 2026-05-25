@@ -17,10 +17,13 @@ from pathlib import Path
 import pytest
 
 from c3.db import (
+    _compute_tier_cost_rate_summary,
     get_ingest_offset,
     insert_agent_cost_run,
     locate_c3_db,
     read_agent_cost_summary,
+    read_tier_cost_rate_for_complexity,
+    read_tier_cost_rate_summary,
     read_tier_cost_summary,
     read_tier_cost_for_complexity,
     record_tier_recent_outcome,
@@ -662,3 +665,658 @@ class TestReadTierCostForComplexity:
         # read_tier_cost_for_complexity も同じ結果を反映する
         for_complexity = read_tier_cost_for_complexity("medium", db_path=db)
         assert abs(for_complexity["sonnet"] - 0.01) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# J 群: _compute_tier_cost_rate_summary (純関数) + read_tier_cost_rate_summary
+# ---------------------------------------------------------------------------
+
+
+def _seed_cost_run_with_tokens(
+    db: "Path",
+    *,
+    session_id: str,
+    agent_id: str,
+    agent_type: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    total_cost_usd: float,
+) -> None:
+    """agent_cost_runs に token 列付き seed を挿入するヘルパー（J 群専用）。"""
+    insert_agent_cost_run(
+        session_id=session_id,
+        agent_id=agent_id,
+        agent_type=agent_type,
+        description=None,
+        model=model,
+        attribution_skill=None,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=0,
+        cache_create_tokens=0,
+        total_cost_usd=total_cost_usd,
+        db_path=db,
+    )
+
+
+class TestComputeTierCostRateSummary:
+    """J1 群: _compute_tier_cost_rate_summary 純関数の単体テスト（DB 不要）。"""
+
+    def test_rate_formula_hand_calculation(self):
+        """J1-1: AC-2 rate 式手計算検証。
+
+        input=100 / output=50 / total_cost_usd=0.0075
+        → billable=150 → rate = 0.0075 / (150 / 1_000_000) = 50.0 USD/MTok
+        """
+        cost_rows = [
+            ("sess-j1", "claude-sonnet-4-6-20260101", 0.0075, 100, 50),
+        ]
+        outcome_rows = [
+            ("sess-j1", "medium", "sonnet"),
+        ]
+        result = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+        assert len(result) == 1
+        row = result[0]
+        assert row["complexity"] == "medium"
+        assert row["tier"] == "sonnet"
+        assert row["sessions"] == 1
+        assert abs(row["total_cost_usd"] - 0.0075) < 1e-12
+        assert row["billable_tokens"] == 150
+        assert abs(row["rate_usd_per_mtok"] - 50.0) < 1e-9
+
+    def test_model_match_haiku_not_in_opus(self):
+        """J1-2: AC-1 model 一致のみ集計 — haiku モデル行が opus 集計に混ざらない。
+
+        H5 テストが「session 全体の non-mainline 合算」を固定しているのに対し、
+        新関数は resolve_tier(model) で tier を振り分けるため、
+        haiku モデル行は haiku バケットにのみ集計される。
+        """
+        cost_rows = [
+            # opus 行
+            ("sess-j2", "claude-opus-4-7-20260101", 0.03, 100, 50),
+            # 同 session 内の haiku 行（別 agent_id）
+            ("sess-j2", "claude-haiku-4-5-20260101", 0.001, 100, 50),
+        ]
+        outcome_rows = [
+            ("sess-j2", "complex", "opus"),
+        ]
+        result = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+
+        # opus outcome に haiku コストは混ざらない
+        assert len(result) == 1
+        row = result[0]
+        assert row["tier"] == "opus"
+        # opus モデル行のコストのみ: 0.03 USD / (150/1e6) = 200.0 USD/MTok
+        assert abs(row["total_cost_usd"] - 0.03) < 1e-12
+        assert row["billable_tokens"] == 150
+        assert abs(row["rate_usd_per_mtok"] - 200.0) < 1e-9
+
+    def test_unknown_model_skipped(self):
+        """J1-3: AC-3 未知 model（resolve_tier が None）はスキップされる。"""
+        cost_rows = [
+            ("sess-j3a", "claude-sonnet-4-6-20260101", 0.01, 100, 50),
+            ("sess-j3b", "unknown-model-xyz", 0.99, 200, 100),  # unknown
+        ]
+        outcome_rows = [
+            ("sess-j3a", "medium", "sonnet"),
+            ("sess-j3b", "medium", "sonnet"),  # cost バケットが存在しないため除外される
+        ]
+        result = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+
+        # sonnet セッションのみ集計される（unknown は bucket に入らず outcome も除外）
+        assert len(result) == 1
+        row = result[0]
+        assert row["tier"] == "sonnet"
+        assert row["sessions"] == 1
+
+    def test_mainline_agent_type_excluded(self):
+        """J1-4: AC-3 mainline は SQL で除外される前提（純関数は agent_type を受け取らない）。
+
+        純関数は SQL フィルタ後のデータを受け取るため、
+        mainline 行が渡ってきた場合でも resolve_tier で tier が振り分けられてしまう。
+        実際には read_tier_cost_rate_summary の SQL が WHERE agent_type <> 'mainline' で除外するため、
+        純関数にはmainline 行が渡らないことを DB テストで確認する（J2-2 参照）。
+        本テストは pure function の境界確認のみ: agent_type 情報なしに model で振り分けること。
+        """
+        # mainline でも model が sonnet なら sonnet バケットに集計される（SQL フィルタ前提）
+        cost_rows = [
+            ("sess-j4", "claude-sonnet-4-6-20260101", 0.01, 100, 50),
+        ]
+        outcome_rows = [
+            ("sess-j4", "simple", "sonnet"),
+        ]
+        result = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+        assert len(result) == 1
+
+    def test_session_tier_deduplication(self):
+        """J1-5: AC-3 (session, tier) 重複排除 — 同一 session で複数 agent_id 行の cost が 1 回集約される。
+
+        PK=(session_id, agent_id, model) のため行は一意だが、
+        同一 (session_id, tier) の複数行は cost_sum に加算集約される。
+        """
+        cost_rows = [
+            # 同一 session、同 tier（sonnet）、別 agent_id
+            ("sess-j5", "claude-sonnet-4-6-20260101", 0.01, 100, 50),
+            ("sess-j5", "claude-sonnet-4-6-20260202", 0.02, 200, 100),
+        ]
+        outcome_rows = [
+            ("sess-j5", "medium", "sonnet"),
+        ]
+        result = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+
+        # sessions=1（同一 session）、cost は両行の合計 0.03
+        assert len(result) == 1
+        row = result[0]
+        assert row["sessions"] == 1
+        assert abs(row["total_cost_usd"] - 0.03) < 1e-12
+        assert row["billable_tokens"] == 450  # 150 + 300
+        expected_rate = 0.03 / (450 / 1_000_000)
+        assert abs(row["rate_usd_per_mtok"] - expected_rate) < 1e-9
+
+    def test_billable_tokens_zero_excluded(self):
+        """J1-6: AC-4 billable_tokens == 0 の (complexity, tier) は除外される。"""
+        cost_rows = [
+            ("sess-j6", "claude-haiku-4-5-20260101", 0.001, 0, 0),  # billable=0
+        ]
+        outcome_rows = [
+            ("sess-j6", "simple", "haiku"),
+        ]
+        result = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+        assert result == [], "billable_tokens=0 の行は除外されるべき"
+
+    def test_empty_inputs_returns_empty(self):
+        """J1-7: 空の入力で空リストを返す。"""
+        assert _compute_tier_cost_rate_summary([], []) == []
+        assert _compute_tier_cost_rate_summary([], [("s", "c", "t")]) == []
+        assert _compute_tier_cost_rate_summary([("s", "m", 0.1, 100, 50)], []) == []
+
+    def test_multiple_complexity_tiers(self):
+        """J1-8: 複数 (complexity, tier) が存在する場合、それぞれ独立して集計される。"""
+        cost_rows = [
+            ("sess-j8a", "claude-haiku-4-5-20260101", 0.001, 100, 50),
+            ("sess-j8b", "claude-opus-4-7-20260101", 0.10, 1000, 500),
+        ]
+        outcome_rows = [
+            ("sess-j8a", "simple", "haiku"),
+            ("sess-j8b", "complex", "opus"),
+        ]
+        result = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+        assert len(result) == 2
+        result_by_tier = {r["tier"]: r for r in result}
+        assert "haiku" in result_by_tier
+        assert "opus" in result_by_tier
+        # haiku: 0.001 / (150/1e6) ≈ 6.667 USD/MTok
+        assert abs(result_by_tier["haiku"]["rate_usd_per_mtok"] - 0.001 / (150 / 1_000_000)) < 1e-9
+        # opus: 0.10 / (1500/1e6) ≈ 66.667 USD/MTok
+        assert abs(result_by_tier["opus"]["rate_usd_per_mtok"] - 0.10 / (1500 / 1_000_000)) < 1e-9
+
+    def test_result_sorted_by_rate_descending(self):
+        """J1-9: CR-Q-004 返却順が rate_usd_per_mtok 降順であること。
+
+        既存 read_tier_cost_summary の ORDER BY total_cost_usd DESC と対称。
+        """
+        cost_rows = [
+            # haiku: rate ≈ 6.667 USD/MTok (低)
+            ("sess-j9a", "claude-haiku-4-5-20260101", 0.001, 100, 50),
+            # opus: rate ≈ 66.667 USD/MTok (高)
+            ("sess-j9b", "claude-opus-4-7-20260101", 0.10, 1000, 500),
+        ]
+        outcome_rows = [
+            ("sess-j9a", "simple", "haiku"),
+            ("sess-j9b", "complex", "opus"),
+        ]
+        result = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+        assert len(result) == 2
+        # 先頭が最大 rate（opus ≈ 66.667）、末尾が最小 rate（haiku ≈ 6.667）
+        assert result[0]["rate_usd_per_mtok"] >= result[1]["rate_usd_per_mtok"]
+        assert result[0]["tier"] == "opus"
+        assert result[1]["tier"] == "haiku"
+
+
+class TestReadTierCostRateSummary:
+    """J2 群: read_tier_cost_rate_summary の DB 統合テスト。"""
+
+    def test_rate_formula_via_db(self, tmp_path):
+        """J2-1: AC-2 DB 経由での rate 式手計算検証。
+
+        input=100, output=50, total_cost_usd=0.0075 → rate = 50.0 USD/MTok
+        """
+        db = _make_c3_db_v003(tmp_path)
+        sess = "j2-1-rate"
+
+        record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=True,
+            session_id=sess, db_path=db,
+        )
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=sess,
+            agent_id="agent-j21",
+            agent_type="developer",
+            model="claude-sonnet-4-6-20260101",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.0075,
+        )
+
+        result = read_tier_cost_rate_summary(db_path=db)
+        assert len(result) == 1
+        row = result[0]
+        assert row["complexity"] == "medium"
+        assert row["tier"] == "sonnet"
+        assert row["sessions"] == 1
+        assert abs(row["total_cost_usd"] - 0.0075) < 1e-12
+        assert row["billable_tokens"] == 150
+        assert abs(row["rate_usd_per_mtok"] - 50.0) < 1e-9
+
+    def test_mainline_excluded(self, tmp_path):
+        """J2-2: AC-3 mainline agent_type の行は集計から除外される。"""
+        db = _make_c3_db_v003(tmp_path)
+        sess = "j2-2-mainline"
+
+        record_tier_recent_outcome(
+            complexity="simple", tier="haiku", success=True,
+            session_id=sess, db_path=db,
+        )
+        # mainline のみ seed（SQL フィルタで除外される）
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=sess,
+            agent_id="mainline",
+            agent_type="mainline",
+            model="claude-haiku-4-5-20260101",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.05,
+        )
+
+        result = read_tier_cost_rate_summary(db_path=db)
+        assert result == [], "mainline のみの session は除外されるべき"
+
+    def test_model_match_only(self, tmp_path):
+        """J2-3: AC-1 model 一致のみ集計 — haiku モデル行が opus 集計に入らない。
+
+        H5 テスト（既存）では session 全体の non-mainline コストを合算するため
+        haiku モデル行も opus 集計に入る。本テストでは新関数がそれを排除することを確認する。
+        """
+        db = _make_c3_db_v003(tmp_path)
+        sess = "j2-3-model-match"
+
+        record_tier_recent_outcome(
+            complexity="complex", tier="opus", success=True,
+            session_id=sess, db_path=db,
+        )
+        # opus モデル行
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=sess,
+            agent_id="agent-opus",
+            agent_type="developer",
+            model="claude-opus-4-7-20260101",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.03,
+        )
+        # haiku モデル行（同 session）— opus 集計に混ざってはいけない
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=sess,
+            agent_id="agent-haiku",
+            agent_type="developer",
+            model="claude-haiku-4-5-20260101",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.001,
+        )
+
+        result = read_tier_cost_rate_summary(db_path=db)
+        # opus outcome → opus バケットのみ
+        opus_rows = [r for r in result if r["tier"] == "opus"]
+        assert len(opus_rows) == 1
+        # opus コストのみ: 0.03 USD（haiku の 0.001 は含まれない）
+        assert abs(opus_rows[0]["total_cost_usd"] - 0.03) < 1e-12
+        assert opus_rows[0]["billable_tokens"] == 150
+
+    def test_unknown_model_skipped(self, tmp_path):
+        """J2-4: AC-3 未知モデルの行はスキップされる。"""
+        db = _make_c3_db_v003(tmp_path)
+        sess = "j2-4-unknown"
+
+        record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=True,
+            session_id=sess, db_path=db,
+        )
+        # 未知モデル行のみ seed
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=sess,
+            agent_id="agent-unknown",
+            agent_type="developer",
+            model="unknown-model-xyz",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.99,
+        )
+
+        result = read_tier_cost_rate_summary(db_path=db)
+        assert result == [], "未知モデルのみの session は除外されるべき"
+
+    def test_billable_tokens_zero_excluded(self, tmp_path):
+        """J2-5: AC-4 billable_tokens == 0 の (complexity, tier) は除外される。"""
+        db = _make_c3_db_v003(tmp_path)
+        sess = "j2-5-billable-zero"
+
+        record_tier_recent_outcome(
+            complexity="simple", tier="haiku", success=True,
+            session_id=sess, db_path=db,
+        )
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=sess,
+            agent_id="agent-j25",
+            agent_type="developer",
+            model="claude-haiku-4-5-20260101",
+            input_tokens=0,
+            output_tokens=0,
+            total_cost_usd=0.001,
+        )
+
+        result = read_tier_cost_rate_summary(db_path=db)
+        assert result == [], "billable_tokens=0 の行は除外されるべき"
+
+    def test_db_absent_returns_empty_list(self, tmp_path):
+        """J2-6: DB 不在で [] を返す。"""
+        absent_db = tmp_path / "no_such_j26.db"
+        result = read_tier_cost_rate_summary(db_path=absent_db)
+        assert result == []
+
+    def test_table_absent_returns_empty_list(self, tmp_path):
+        """J2-7: テーブル不在（DB ファイルはあるが migration 未適用）で [] を返す。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = tmp_path / "empty_j27.db"
+        # 空の DB ファイルだけ作成（migration なし = テーブルなし）
+        conn = _sqlite3.connect(str(db))
+        conn.close()
+
+        result = read_tier_cost_rate_summary(db_path=db)
+        assert result == []
+
+    def test_busy_timeout_applied(self, tmp_path, monkeypatch):
+        """J2-8: read 規約 — busy_timeout が設定されること。
+
+        _apply_busy_timeout が呼ばれることを monkeypatch で確認する。
+        """
+        import c3.db as c3_db  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        timeout_called = []
+        original = c3_db._apply_busy_timeout
+
+        def recording_apply_busy_timeout(conn):
+            timeout_called.append(True)
+            original(conn)
+
+        monkeypatch.setattr(c3_db, "_apply_busy_timeout", recording_apply_busy_timeout)
+
+        read_tier_cost_rate_summary(db_path=db)
+        assert timeout_called, "_apply_busy_timeout が呼ばれるべき"
+
+    def test_return_keys_structure(self, tmp_path):
+        """J2-9: 戻り値 dict のキーが仕様通りであることを確認する。"""
+        db = _make_c3_db_v003(tmp_path)
+        sess = "j2-9-keys"
+
+        record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=True,
+            session_id=sess, db_path=db,
+        )
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=sess,
+            agent_id="agent-j29",
+            agent_type="developer",
+            model="claude-sonnet-4-6-20260101",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.01,
+        )
+
+        result = read_tier_cost_rate_summary(db_path=db)
+        assert len(result) == 1
+        row = result[0]
+        expected_keys = {
+            "complexity", "tier", "sessions",
+            "total_cost_usd", "billable_tokens", "rate_usd_per_mtok",
+        }
+        assert set(row.keys()) == expected_keys
+
+    def test_empty_tables_returns_empty_list(self, tmp_path):
+        """J2-10: テーブル空（seed なし）で [] を返す。"""
+        db = _make_c3_db_v003(tmp_path)
+        result = read_tier_cost_rate_summary(db_path=db)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# K 群: read_tier_cost_rate_for_complexity (v2.24.0 T2)
+# ---------------------------------------------------------------------------
+
+
+class TestReadTierCostRateForComplexity:
+    """K 群: read_tier_cost_rate_for_complexity のテスト。
+
+    read_tier_cost_rate_summary の薄いラッパーであるため、DB セットアップは
+    J 群の _make_c3_db_v003 / _seed_cost_run_with_tokens /
+    record_tier_recent_outcome を流用する。
+    I 群（read_tier_cost_for_complexity）と対称な構造で記述する。
+    """
+
+    def _seed_session_with_tokens(
+        self,
+        db: "Path",
+        *,
+        complexity: str,
+        tier_for_outcome: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_cost_usd: float,
+        session_id: str,
+    ) -> None:
+        """outcome + cost_run (token 付き) を 1 セッション分まとめて seed するヘルパー。"""
+        record_tier_recent_outcome(
+            complexity=complexity,
+            tier=tier_for_outcome,
+            success=True,
+            session_id=session_id,
+            db_path=db,
+        )
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=session_id,
+            agent_id=f"agent-k-{session_id}",
+            agent_type="developer",
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_cost_usd=total_cost_usd,
+        )
+
+    def test_complexity_filter_returns_matching_rows_only(self, tmp_path: "Path"):
+        """K1: complexity が一致する行のみ {tier: rate_usd_per_mtok} で返す。
+
+        medium を指定したら medium 行の {tier: rate} のみを返し、
+        他の complexity (simple/complex) は含まない。
+        """
+        db = _make_c3_db_v003(tmp_path)
+
+        # medium/sonnet: billable=150 → rate = 0.0075 / (150/1e6) = 50.0 USD/MTok
+        self._seed_session_with_tokens(
+            db,
+            complexity="medium",
+            tier_for_outcome="sonnet",
+            model="claude-sonnet-4-6-20260101",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.0075,
+            session_id="k1-medium-sonnet",
+        )
+        # simple/haiku: 別 complexity
+        self._seed_session_with_tokens(
+            db,
+            complexity="simple",
+            tier_for_outcome="haiku",
+            model="claude-haiku-4-5",
+            input_tokens=200,
+            output_tokens=100,
+            total_cost_usd=0.0009,
+            session_id="k1-simple-haiku",
+        )
+        # complex/opus: 別 complexity
+        self._seed_session_with_tokens(
+            db,
+            complexity="complex",
+            tier_for_outcome="opus",
+            model="claude-opus-4-7-20250514",
+            input_tokens=300,
+            output_tokens=150,
+            total_cost_usd=0.0135,
+            session_id="k1-complex-opus",
+        )
+
+        result = read_tier_cost_rate_for_complexity("medium", db_path=db)
+
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"sonnet"}
+        assert abs(result["sonnet"] - 50.0) < 1e-6
+        # simple / complex は含まない
+        assert "haiku" not in result
+        assert "opus" not in result
+
+    def test_rate_zero_or_negative_excluded(self, tmp_path: "Path"):
+        """K2: rate_usd_per_mtok <= 0 の行は除外される。
+
+        read_tier_cost_rate_summary をモックして rate=0 のデータを注入し、
+        フィルタ動作を独立して検証する（I2 の rate 版）。
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        fake_rows = [
+            {
+                "complexity": "medium",
+                "tier": "haiku",
+                "sessions": 1,
+                "total_cost_usd": 0.0,
+                "billable_tokens": 0,
+                "rate_usd_per_mtok": 0.0,
+            },
+            {
+                "complexity": "medium",
+                "tier": "sonnet",
+                "sessions": 1,
+                "total_cost_usd": 0.01,
+                "billable_tokens": 200,
+                "rate_usd_per_mtok": 50.0,
+            },
+        ]
+        with patch("c3.db.read_tier_cost_rate_summary", return_value=fake_rows):
+            result = read_tier_cost_rate_for_complexity("medium")
+
+        # rate_usd_per_mtok=0 の haiku は除外、sonnet のみ返る
+        assert "haiku" not in result
+        assert "sonnet" in result
+        assert abs(result["sonnet"] - 50.0) < 1e-9
+
+    def test_no_matching_complexity_returns_empty_dict(self, tmp_path: "Path"):
+        """K3: 該当 complexity のデータが無い場合は {} を返す。"""
+        db = _make_c3_db_v003(tmp_path)
+
+        # simple のみ seed
+        self._seed_session_with_tokens(
+            db,
+            complexity="simple",
+            tier_for_outcome="haiku",
+            model="claude-haiku-4-5",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.0009,
+            session_id="k3-simple",
+        )
+
+        result = read_tier_cost_rate_for_complexity("complex", db_path=db)
+        assert result == {}
+
+    def test_db_absent_returns_empty_dict(self, tmp_path: "Path"):
+        """K4: DB 不在（存在しないパスを db_path に渡す）で {} を返す。"""
+        absent_db = tmp_path / "no_such_k4.db"
+        result = read_tier_cost_rate_for_complexity("medium", db_path=absent_db)
+        assert result == {}
+
+    def test_multiple_tiers_same_complexity(self, tmp_path: "Path"):
+        """K5: 同一 complexity で複数 tier が存在する場合、全て返る。"""
+        db = _make_c3_db_v003(tmp_path)
+
+        self._seed_session_with_tokens(
+            db,
+            complexity="medium",
+            tier_for_outcome="haiku",
+            model="claude-haiku-4-5",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.0009,
+            session_id="k5-haiku",
+        )
+        self._seed_session_with_tokens(
+            db,
+            complexity="medium",
+            tier_for_outcome="sonnet",
+            model="claude-sonnet-4-6-20260101",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.0075,
+            session_id="k5-sonnet",
+        )
+
+        result = read_tier_cost_rate_for_complexity("medium", db_path=db)
+
+        assert set(result.keys()) == {"haiku", "sonnet"}
+        # haiku: rate = 0.0009 / (150/1e6) = 6.0 USD/MTok
+        assert abs(result["haiku"] - 6.0) < 1e-6
+        # sonnet: rate = 0.0075 / (150/1e6) = 50.0 USD/MTok
+        assert abs(result["sonnet"] - 50.0) < 1e-6
+
+    def test_read_tier_cost_rate_summary_not_modified(self, tmp_path: "Path"):
+        """K6: read_tier_cost_rate_summary が本関数追加後も不変（回帰なし）。
+
+        J 群の代表シナリオを再実行し、read_tier_cost_rate_summary が
+        read_tier_cost_rate_for_complexity の実装で一切変更されていないことを確認する。
+        """
+        db = _make_c3_db_v003(tmp_path)
+        sess = "k6-backward-compat"
+
+        record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=True,
+            session_id=sess, db_path=db,
+        )
+        _seed_cost_run_with_tokens(
+            db,
+            session_id=sess,
+            agent_id="agent-k6",
+            agent_type="developer",
+            model="claude-sonnet-4-6-20260101",
+            input_tokens=100,
+            output_tokens=50,
+            total_cost_usd=0.0075,
+        )
+
+        # read_tier_cost_rate_summary は変更なしに動作する
+        summary = read_tier_cost_rate_summary(db_path=db)
+        assert len(summary) == 1
+        assert summary[0]["complexity"] == "medium"
+        assert summary[0]["tier"] == "sonnet"
+        assert abs(summary[0]["rate_usd_per_mtok"] - 50.0) < 1e-6
+
+        # read_tier_cost_rate_for_complexity も同じ結果を反映する
+        for_complexity = read_tier_cost_rate_for_complexity("medium", db_path=db)
+        assert abs(for_complexity["sonnet"] - 50.0) < 1e-6

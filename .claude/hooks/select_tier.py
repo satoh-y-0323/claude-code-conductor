@@ -144,8 +144,8 @@ def _cost_tiebreak(
     Args:
         samples: {tier: beta_sample} の dict（Thompson Sampling 結果）。
         cost_map: {tier: cost} の dict。None なら cost を見ず従来挙動。
-            cost は実測 avg_cost_usd または静的参照単価（ハイブリッド）。
-            混在スケール（USD vs per-MTok）の厳密化は v2.24.0。
+            cost は実測 rate_usd_per_mtok または静的参照単価（ハイブリッド）。
+            v2.24.0 で rate 化（USD/MTok）により実測・静的とも同次元で整合済み。
             ``cost_map`` は None、または contenders 全件をキーとして含む dict を
             渡すこと。partial dict を渡すと ``cost_map[t]`` で KeyError が発生する。
             ``select_tier_detailed`` 経由では呼び出し側（main）が全 TIERS 分を
@@ -556,14 +556,15 @@ def main() -> int:
     else:
         params = c3_db.read_tier_params(complexity)
 
-    # v2.23.0: cost_map をハイブリッド解決（実測 avg_cost を主に、欠損 tier は静的単価で補完）。
+    # v2.24.0: cost_map をハイブリッド解決（実測 rate USD/MTok を主に、欠損 tier は静的単価で補完）。
+    # rate 化により measured(実測)と tier_reference_cost(静的)が同次元（USD/MTok）になり単位整合済み。
     # c3_db が None または pricing import 失敗時は cost_map=None で従来 Thompson にデグレード。
     # cost_map=None の場合、select_tier_detailed/_cost_tiebreak は従来 Thompson 挙動と完全一致（引数定義参照）。
     cost_map = None
     if c3_db is not None:
         try:
             from c3 import pricing  # type: ignore[import-not-found]
-            measured = c3_db.read_tier_cost_for_complexity(complexity)  # {tier: avg} 実測>0 のみ
+            measured = c3_db.read_tier_cost_rate_for_complexity(complexity)  # {tier: rate USD/MTok} 実測>0 のみ
             cost_map = {}
             for tier_name in TIERS:
                 if tier_name in measured and measured[tier_name] > 0:
