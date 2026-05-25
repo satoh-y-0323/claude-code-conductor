@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.25.0] - 2026-05-26
+
+**tier_bandit cost 蓄積・EPSILON 調整可能化・例外ログ統一**: v2.22.0 で列確保済みの `tier_bandit.total_cost_usd`/`cost_samples` へ実測値を materialize する同期関数を追加。cost-aware tie-break の拮抗判定閾値を定数 SSOT 化し環境変数で上書き可能にする。db.py 既存 6 関数の例外ログを型名統一（SR-R-001）。routing 挙動は不変。cost-weighted Thompson 本格統合は v2.26.0。
+
+### 機能追加
+
+- **`src/c3/db.py`: `sync_tier_bandit_cost(*, db_path=None) -> None`（新規）**: `read_tier_cost_rate_summary` 由来の model 一致集計値を `tier_bandit` テーブルへ materialize する冪等な同期関数。「全クリア(total_cost_usd=0, cost_samples=0) → 集計 SET」の UPDATE-only 実装（INSERT なし）。session_stop の usage ingest 直後に実行。tier_bandit 行が存在しない複合キー (complexity, tier) は無視（INSERT は行わない）。
+
+- **`.claude/hooks/select_tier.py`: `db.EPSILON_TIEBREAK`（0.05）定数 SSOT 化・環境変数 `C3_TIER_EPSILON` 対応**: 従来 `EPSILON=0.05` をモジュールローカルで持っていた値を `c3.db.EPSILON_TIEBREAK` に移し Single Source of Truth 化。`select_tier.py` は `db.EPSILON_TIEBREAK` を参照するよう変更。環境変数 `C3_TIER_EPSILON` に数値が設定されている場合は実行時にその値で上書き可能。NaN・範囲外(0 < x <= 1 の外)・非数値は default 値（0.05）に fallback。env 未設定時の routing 挙動は v2.24.0 と完全一致。
+
+### 変更
+
+- **`src/c3/cli_tier.py`**: `c3 tier stats` の tier_bandit セクションに `total_cost_usd`（合計コスト USD）および `cost_samples`（計上セッション数）列を追加。値は `sync_tier_bandit_cost` 蓄積値を表示。データ未蓄積（0/0）時はセルを「-」表示。
+
+- **`src/c3/db.py`: 例外ログ型名統一（SR-R-001）**: 既存 6 関数 7 箇所の `except Exception as exc` ログを `logger.warning("...: %s", exc)` から `logger.warning("...: %s", type(exc).__name__)` に統一。生 exc message（外部 path・SQL 文・行データ等）の意図しない流出を防止。関数シグネチャ・戻り値・呼び出し元への影響なし。
+
+### 後方互換
+
+- 既存関数シグネチャ不変（`read_tier_params`・`read_tier_cost_rate_summary` 等）。
+- `select_tier_detailed`/`select_tier` の `epsilon` は optional kwarg（省略時 `db.EPSILON_TIEBREAK` を参照）。
+- migration 不要（`tier_bandit` の cost 列は v2.22.0 の 003 migration で確保済み）。
+- **破壊的変更なし**。
+
 ## [2.24.0] - 2026-05-25
 
 **tier-routing cost 精度向上**: tie-break が使う cost データを model 一致集計・USD/MTok レート化により信頼できるものにする。新関数 2 つを追加し、`select_tier` の cost_map 源を rate 関数へ切替。既存関数・tie-break ロジックは完全不変。
