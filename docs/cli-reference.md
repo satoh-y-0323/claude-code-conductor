@@ -133,6 +133,18 @@ c3 tier stats --recent N      # 直近 outcome の表示件数（デフォルト
 
 学習データは dev-workflow フェーズ E（最終承認時）の `record_tier_outcome.py` でのみ記録されます。直接指示作業ではデータが溜まりません（設計通り）。コストデータは session 終了時に `session_stop.py` のセッションログ ingester（v2.21.0〜）が自動集計し、`tier_bandit` への materialize は v2.25.0〜（`sync_tier_bandit_cost`）。
 
+### Tier ルーティングのチューニング（環境変数）
+
+tier-routing の挙動は以下の環境変数で調整できます。**すべて未設定の場合は安定動作する既定値**で動き、設定は任意です（不正値は警告を出して既定値にフォールバック）。
+
+| 環境変数 | 既定 | 範囲 | 役割 |
+|---|---|---|---|
+| `C3_TIER_COST_LAMBDA` | 未設定（cost-aware tie-break のみ） | `0 ≤ λ ≤ 1` | **cost-weighted Thompson の重み係数（v2.26.0〜）**。`λ>0` で全 tier の `score = 成功率サンプル − λ × 正規化コスト` を比較し、成功率とコストをトレードオフして選択。`λ=0` 明示でコスト無視（純 Thompson）。**未設定時は v2.25.0 と同じ「成功率が拮抗した群でのみ低コストを選ぶ」挙動**。 |
+| `C3_TIER_EPSILON` | `0.05` | `0 < x ≤ 1` | tie-break の拮抗判定閾値（v2.25.0〜）。最大サンプルからこの差以内の Tier を「拮抗」とみなす。 |
+| `C3_ESCALATION_THRESHOLD` | `0.5` | `0 < x ≤ 1` | failure-rate がこの値以上で 1 段上位 Tier へ昇格する閾値（v2.26.0〜）。 |
+
+`λ` を大きくするほど安価な Tier が選ばれやすくなり（成功率を犠牲にしうる）、小さいほど成功率優先になります。cost-weighted 発動時は `tier_selection.json` と親 Claude 注入コンテキストに `cost_weighted` / `cost_lambda` が記録されます。
+
 ## CLI で扱われない項目
 
 以下は Claude Code 内（スラッシュコマンド）で扱う領域:

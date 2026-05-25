@@ -1309,3 +1309,834 @@ class TestEpsilonEnvUnsetMatchesLegacy:
         mod = _load_hook_module()
         from c3 import db as c3_db
         assert mod.EPSILON == pytest.approx(c3_db.EPSILON_TIEBREAK)
+
+
+class TestResolveCostLambda:
+    """_resolve_cost_lambda() の env パース・バリデーションテスト（T3 AC）。"""
+
+    def test_cost_lambda_default_is_none(self) -> None:
+        """COST_LAMBDA_DEFAULT は None（db 由来・センチネル値）。"""
+        mod = _load_hook_module()
+        assert mod.COST_LAMBDA_DEFAULT is None
+
+    def test_unset_returns_none_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """未設定 → None・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+        result = mod._resolve_cost_lambda()
+        assert result is None
+        assert capsys.readouterr().err == ""
+
+    def test_empty_string_returns_none_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """空文字 → None・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "")
+        result = mod._resolve_cost_lambda()
+        assert result is None
+        assert capsys.readouterr().err == ""
+
+    def test_zero_returns_0_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"0" → 0.0（x == 0 は許容・cost 無視の明示オプト）・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "0")
+        result = mod._resolve_cost_lambda()
+        assert result == pytest.approx(0.0)
+        assert capsys.readouterr().err == ""
+
+    def test_valid_middle_value(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"0.3" → 0.3・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "0.3")
+        result = mod._resolve_cost_lambda()
+        assert result == pytest.approx(0.3)
+        assert capsys.readouterr().err == ""
+
+    def test_valid_upper_boundary(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"1.0" → 1.0（上限境界・許容）・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "1.0")
+        result = mod._resolve_cost_lambda()
+        assert result == pytest.approx(1.0)
+        assert capsys.readouterr().err == ""
+
+    def test_non_numeric_returns_none_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"abc" → None + stderr 警告。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "abc")
+        result = mod._resolve_cost_lambda()
+        assert result is None
+        err = capsys.readouterr().err
+        assert "C3_TIER_COST_LAMBDA" in err
+        assert "abc" in err
+
+    def test_negative_returns_none_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"- 0.1" → None + stderr 警告（x < 0 は拒否）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "-0.1")
+        result = mod._resolve_cost_lambda()
+        assert result is None
+        err = capsys.readouterr().err
+        assert "C3_TIER_COST_LAMBDA" in err
+
+    def test_above_1_returns_none_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"1.5" → None + stderr 警告（x > 1 は拒否）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "1.5")
+        result = mod._resolve_cost_lambda()
+        assert result is None
+        err = capsys.readouterr().err
+        assert "C3_TIER_COST_LAMBDA" in err
+
+    def test_nan_returns_none_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"nan" → None + stderr 警告。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "nan")
+        result = mod._resolve_cost_lambda()
+        assert result is None
+        err = capsys.readouterr().err
+        assert "C3_TIER_COST_LAMBDA" in err
+        assert "NaN" in err
+
+
+# ---------------------------------------------------------------------------
+# T4 (v2.26.0): cost-weighting 本体 — SelectionResult.cost_weighted /
+#               _cost_tiebreak 3 経路 / select_tier_detailed lam kwarg
+# ---------------------------------------------------------------------------
+
+
+class TestCostWeightingBackwardCompat:
+    """① 後方互換（最重要）: lam 省略時の _cost_tiebreak が v2.25.0 と完全一致。
+
+    既存 TestCostTiebreak 群が無修正で green であることが後方互換の証明。
+    本クラスはその補強として「lam=None 明示で既存挙動が変わらない」を確認する。
+    """
+
+    def test_lam_none_explicit_single_contender(self) -> None:
+        """lam=None 明示でも lam 省略と同一結果（経路 1: contenders<=1 → argmax）。"""
+        mod = _load_hook_module()
+        samples = {"haiku": 0.9, "sonnet": 0.5, "opus": 0.3}
+        cost_map = {"haiku": 30.0, "sonnet": 18.0, "opus": 6.0}
+        # lam 省略
+        chosen_omit, did_omit, contenders_omit = mod._cost_tiebreak(samples, cost_map)
+        # lam=None 明示
+        chosen_none, did_none, contenders_none = mod._cost_tiebreak(samples, cost_map, lam=None)
+        assert chosen_omit == chosen_none == "haiku"
+        assert did_omit is False
+        assert did_none is False
+        assert contenders_omit == contenders_none
+
+    def test_lam_none_explicit_tiebreak_picks_cheapest(self) -> None:
+        """lam=None 明示でも拮抗群内で最安 tier が選ばれる（経路 1）。"""
+        mod = _load_hook_module()
+        epsilon = mod.EPSILON  # 0.05
+        base = 0.85
+        samples = {"haiku": base, "sonnet": base - epsilon + 0.01, "opus": base - 0.2}
+        cost_map = {"haiku": 30.0, "sonnet": 6.0, "opus": 1.0}
+        # lam 省略
+        chosen_omit, did_omit, _ = mod._cost_tiebreak(samples, cost_map)
+        # lam=None 明示
+        chosen_none, did_none, _ = mod._cost_tiebreak(samples, cost_map, lam=None)
+        assert chosen_omit == chosen_none == "sonnet"
+        assert did_omit is True
+        assert did_none is True
+
+    def test_lam_none_seed_loop_matches_default(self) -> None:
+        """② seed 一致: lam=None の select_tier_detailed が lam 省略と seed 0-49 で全一致。"""
+        mod = _load_hook_module()
+        params = {
+            "haiku": (10.0, 10.0, 30),
+            "sonnet": (10.0, 10.0, 30),
+            "opus": (5.0, 5.0, 30),
+        }
+        cost_map = {"haiku": 18.0, "sonnet": 6.0, "opus": 30.0}
+        for seed in range(50):
+            rng1 = random.Random(seed)
+            rng2 = random.Random(seed)
+            r_omit = mod.select_tier_detailed(params, rng=rng1, cost_map=cost_map)
+            r_lam_none = mod.select_tier_detailed(params, rng=rng2, cost_map=cost_map, lam=None)
+            assert r_omit.tier == r_lam_none.tier, f"seed={seed}: tier 不一致"
+            assert r_omit.cost_tiebreak == r_lam_none.cost_tiebreak, f"seed={seed}: cost_tiebreak 不一致"
+            assert r_omit.cost_weighted is False, f"seed={seed}: lam 省略時 cost_weighted は False であるべき"
+            assert r_lam_none.cost_weighted is False, f"seed={seed}: lam=None 時 cost_weighted は False であるべき"
+
+
+class TestCostTiebreakLambdaZero:
+    """③ λ=0: cost 無視（経路 0）。拮抗群でも argmax(sample)・did_tiebreak=False。"""
+
+    def test_lam_zero_ignores_cost_single_contender(self) -> None:
+        """lam=0 で contenders が 1 件のとき argmax(sample)・did_tiebreak=False。"""
+        mod = _load_hook_module()
+        samples = {"haiku": 0.9, "sonnet": 0.5, "opus": 0.3}
+        cost_map = {"haiku": 30.0, "sonnet": 18.0, "opus": 6.0}
+        chosen, did_tiebreak, _ = mod._cost_tiebreak(samples, cost_map, lam=0)
+        assert chosen == "haiku"
+        assert did_tiebreak is False
+
+    def test_lam_zero_ignores_cost_multiple_contenders(self) -> None:
+        """lam=0 で拮抗群が複数あっても cost を無視してargmax(sample)。did_tiebreak=False。"""
+        mod = _load_hook_module()
+        epsilon = mod.EPSILON  # 0.05
+        base = 0.85
+        # haiku と sonnet が拮抗。cost は sonnet の方が安い。lam=0 なら haiku（max sample）を選ぶ。
+        samples = {"haiku": base, "sonnet": base - epsilon + 0.01, "opus": base - 0.2}
+        cost_map = {"haiku": 30.0, "sonnet": 6.0, "opus": 1.0}
+        chosen, did_tiebreak, _ = mod._cost_tiebreak(samples, cost_map, lam=0)
+        # lam=0 → cost 無視 → argmax = haiku（lam=None なら sonnet が選ばれる）
+        assert chosen == "haiku"
+        assert did_tiebreak is False
+
+    def test_lam_zero_float_comparison(self) -> None:
+        """lam=0.0（float）でも経路 0 に入る（None == 0 は Python では False）。"""
+        mod = _load_hook_module()
+        samples = {"haiku": 0.81, "sonnet": 0.80, "opus": 0.79}
+        cost_map = {"haiku": 6.0, "sonnet": 18.0, "opus": 30.0}
+        chosen, did_tiebreak, _ = mod._cost_tiebreak(samples, cost_map, lam=0.0)
+        assert chosen == "haiku"  # argmax
+        assert did_tiebreak is False
+
+
+class TestCostTiebreakLambdaPositive:
+    """④⑤ λ>0 weighting テスト（経路 2・全 tier）。"""
+
+    _SAMPLES = {"haiku": 0.55, "sonnet": 0.60, "opus": 0.62}
+    _COST_MAP = {"haiku": 6.0, "sonnet": 18.0, "opus": 30.0}
+
+    def test_lam_positive_prefers_cheaper_tier(self) -> None:
+        """④ λ>0 大のとき安い tier（haiku）に寄る決定論ケース。cost_weighted=True。"""
+        mod = _load_hook_module()
+        # opus が argmax(sample=0.62)、haiku が最安(6.0)。λ 大ならコスト寄り。
+        # λ=0.5 で score: haiku=0.55-0.5*0=0.55, sonnet=0.60-0.5*0.5=0.35, opus=0.62-0.5*1.0=0.12
+        # → haiku が最大 score
+        chosen, did_tiebreak, _ = mod._cost_tiebreak(self._SAMPLES, self._COST_MAP, lam=0.5)
+        assert chosen == "haiku"
+
+    def test_lam_positive_cost_weighted_true_in_select_tier_detailed(self) -> None:
+        """④ select_tier_detailed(lam>0) で cost_weighted=True。"""
+        mod = _load_hook_module()
+        # trials >= 30 で Thompson 分岐に入る params
+        params = {
+            "haiku": (1.0, 1.0, 30),
+            "sonnet": (1.0, 1.0, 30),
+            "opus": (1.0, 1.0, 30),
+        }
+        # rng を固定して samples が _SAMPLES と同等になるのは難しいため
+        # _cost_tiebreak 直接呼び出しで cost_weighted を確認する代わりに
+        # select_tier_detailed で lam>0 かつ cost_map 有効 → cost_weighted=True を確認
+        rng = random.Random(42)
+        result = mod.select_tier_detailed(params, rng=rng, cost_map=self._COST_MAP, lam=0.5)
+        assert result.cost_weighted is True
+        assert result.mode == "thompson"
+
+    def test_lam_large_vs_small_changes_chosen(self) -> None:
+        """⑤ λ 大小で chosen が変わる（λ=0.1 vs λ=1.0）。
+
+        サンプル設定: opus が argmax(0.90)、haiku が最安(6.0)、opus が最高コスト(30.0)。
+        コスト min-max 正規化: haiku=0.0, sonnet=0.5, opus=1.0。
+
+        λ=0.1:
+            score_opus  = 0.90 - 0.1*1.0 = 0.80  ← 最大
+            score_sonnet= 0.70 - 0.1*0.5 = 0.65
+            score_haiku = 0.70 - 0.1*0.0 = 0.70
+            → opus が選ばれる
+
+        λ=1.0:
+            score_haiku = 0.70 - 1.0*0.0 = 0.70  ← 最大
+            score_sonnet= 0.70 - 1.0*0.5 = 0.20
+            score_opus  = 0.90 - 1.0*1.0 = -0.10
+            → haiku が選ばれる
+        """
+        mod = _load_hook_module()
+        samples = {"haiku": 0.70, "sonnet": 0.70, "opus": 0.90}
+        cost_map = {"haiku": 6.0, "sonnet": 18.0, "opus": 30.0}
+
+        chosen_small, _, _ = mod._cost_tiebreak(samples, cost_map, lam=0.1)
+        chosen_large, _, _ = mod._cost_tiebreak(samples, cost_map, lam=1.0)
+        assert chosen_small != chosen_large, (
+            f"λ=0.1 ({chosen_small}) と λ=1.0 ({chosen_large}) で chosen が変わるはず"
+        )
+        assert chosen_small == "opus"   # λ=0.1 では opus（サンプル最大）が score 最大
+        assert chosen_large == "haiku"  # λ=1.0 では haiku（最安）が score 最大
+
+
+class TestCostTiebreakCostMapNone:
+    """⑥ cost_map=None: lam 値（None/0/0.5）に関わらず argmax(sample)。"""
+
+    _SAMPLES = {"haiku": 0.55, "sonnet": 0.60, "opus": 0.62}
+
+    def test_cost_map_none_lam_none(self) -> None:
+        mod = _load_hook_module()
+        chosen, did_tiebreak, _ = mod._cost_tiebreak(self._SAMPLES, None, lam=None)
+        assert chosen == "opus"  # argmax
+        assert did_tiebreak is False
+
+    def test_cost_map_none_lam_zero(self) -> None:
+        mod = _load_hook_module()
+        chosen, did_tiebreak, _ = mod._cost_tiebreak(self._SAMPLES, None, lam=0)
+        assert chosen == "opus"  # argmax
+        assert did_tiebreak is False
+
+    def test_cost_map_none_lam_positive(self) -> None:
+        """cost_map=None なら lam>0 でも argmax(sample)（経路 0 が優先）。"""
+        mod = _load_hook_module()
+        chosen, did_tiebreak, _ = mod._cost_tiebreak(self._SAMPLES, None, lam=0.5)
+        assert chosen == "opus"  # argmax
+        assert did_tiebreak is False
+
+
+class TestSelectionResultCostWeighted:
+    """⑦ SelectionResult: cost_weighted default False・既存属性アクセス不変・uniform 不可侵。"""
+
+    def test_cost_weighted_default_false(self) -> None:
+        """cost_weighted のデフォルトは False（末尾追加・既存コード互換）。"""
+        mod = _load_hook_module()
+        r = mod.SelectionResult("haiku", "thompson")
+        assert r.cost_weighted is False
+
+    def test_existing_attributes_unchanged(self) -> None:
+        """既存属性（tier/mode/cost_tiebreak/contenders）アクセスが不変。"""
+        mod = _load_hook_module()
+        r = mod.SelectionResult("sonnet", "thompson", True, ("haiku", "sonnet"), True)
+        assert r.tier == "sonnet"
+        assert r.mode == "thompson"
+        assert r.cost_tiebreak is True
+        assert r.contenders == ("haiku", "sonnet")
+        assert r.cost_weighted is True
+
+    def test_uniform_branch_cost_weighted_false(self) -> None:
+        """uniform 分岐では cost_weighted は常に False（不可侵）。"""
+        mod = _load_hook_module()
+        # total_trials = 7 < 30 → uniform
+        params = {
+            "haiku": (1.0, 1.0, 3),
+            "sonnet": (1.0, 1.0, 2),
+            "opus": (1.0, 1.0, 2),
+        }
+        cost_map = {"haiku": 6.0, "sonnet": 18.0, "opus": 30.0}
+        # lam>0 かつ cost_map 有効でも uniform 分岐なら cost_weighted=False
+        rng = random.Random(42)
+        result = mod.select_tier_detailed(params, rng=rng, cost_map=cost_map, lam=0.5)
+        assert result.mode == "uniform"
+        assert result.cost_weighted is False
+        assert result.cost_tiebreak is False
+        assert result.contenders == ()
+
+    def test_cost_weighted_false_when_lam_none(self) -> None:
+        """lam=None（env 未設定）では cost_map があっても cost_weighted=False。"""
+        mod = _load_hook_module()
+        params = {
+            "haiku": (10.0, 10.0, 30),
+            "sonnet": (10.0, 10.0, 30),
+            "opus": (5.0, 5.0, 30),
+        }
+        cost_map = {"haiku": 6.0, "sonnet": 18.0, "opus": 30.0}
+        rng = random.Random(42)
+        result = mod.select_tier_detailed(params, rng=rng, cost_map=cost_map, lam=None)
+        assert result.cost_weighted is False
+
+    def test_cost_weighted_false_when_cost_map_none(self) -> None:
+        """cost_map=None では lam>0 でも cost_weighted=False（経路 0 → weighting 未適用）。"""
+        mod = _load_hook_module()
+        params = {
+            "haiku": (10.0, 10.0, 30),
+            "sonnet": (10.0, 10.0, 30),
+            "opus": (5.0, 5.0, 30),
+        }
+        rng = random.Random(42)
+        result = mod.select_tier_detailed(params, rng=rng, cost_map=None, lam=0.5)
+        assert result.cost_weighted is False
+
+
+# ---------------------------------------------------------------------------
+# T5 (v2.26.0): observability + main 統合
+#   - build_additional_context の cost_weighted kw
+#   - write_tier_selection の cost_weighted / cost_lambda kw
+#   - main() の lam 配線（E2E 後方互換・λ 設定 E2E・degrade）
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAdditionalContextCostWeighted:
+    """② build_additional_context の cost_weighted kw テスト（T5 AC）。
+
+    cost_weighted=False のとき現行（v2.25.0 以前）と完全一致であることが後方互換の核心。
+    """
+
+    def _params(self) -> dict:
+        return {
+            "haiku": (10.0, 5.0, 30),
+            "sonnet": (5.0, 5.0, 20),
+            "opus": (2.0, 8.0, 20),
+        }
+
+    def test_cost_weighted_false_default_matches_legacy(self) -> None:
+        """② cost_weighted=False（デフォルト）で既存テスト（cost_tiebreak=False）と完全一致。
+
+        cost_weighted 引数追加前の呼び出し結果と同一であることを確認（後方互換）。
+        """
+        mod = _load_hook_module()
+        # cost_weighted 引数なし（既存スタイル）
+        text_legacy = mod.build_additional_context(
+            "medium", "sonnet", "thompson", self._params(),
+        )
+        # cost_weighted=False を明示
+        text_false = mod.build_additional_context(
+            "medium", "sonnet", "thompson", self._params(),
+            cost_weighted=False,
+        )
+        assert text_legacy == text_false
+        assert "cost-weighted" not in text_false
+        assert "cost-aware" not in text_false
+
+    def test_cost_weighted_false_with_cost_tiebreak_true_shows_legacy_suffix(self) -> None:
+        """② cost_weighted=False かつ cost_tiebreak=True なら従来の cost-aware 文言（v2.25.0 一致）。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context(
+            "medium", "sonnet", "thompson", self._params(),
+            cost_tiebreak=True,
+            cost_weighted=False,
+        )
+        assert "cost-aware" in text
+        assert "成功率拮抗のため低コスト Tier を選択" in text
+        assert "cost-weighted" not in text
+
+    def test_cost_weighted_true_shows_new_suffix(self) -> None:
+        """② cost_weighted=True で cost-weighted 文言が追加される。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context(
+            "medium", "sonnet", "thompson", self._params(),
+            cost_weighted=True,
+        )
+        assert "cost-weighted" in text
+        assert "成功率とコストを加重して選択" in text
+
+    def test_cost_weighted_true_overrides_cost_tiebreak(self) -> None:
+        """② cost_weighted=True の場合 cost_tiebreak=True でも cost-weighted 文言が優先される。
+
+        cost_weighted=True の排他条件: cost-aware 文言は出ない。
+        """
+        mod = _load_hook_module()
+        text = mod.build_additional_context(
+            "medium", "sonnet", "thompson", self._params(),
+            cost_tiebreak=True,
+            cost_weighted=True,
+        )
+        # cost-weighted が出る
+        assert "cost-weighted" in text
+        assert "成功率とコストを加重して選択" in text
+        # cost-aware は出ない（cost_weighted が優先）
+        assert "cost-aware" not in text
+
+    def test_cost_weighted_true_combined_with_escalation(self) -> None:
+        """② cost_weighted=True と escalation_reason が両方あると両方の suffix が出る。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context(
+            "medium", "sonnet", "thompson", self._params(),
+            escalation_reason="haiku_failure_rate=0.60 (10 試行) → sonnet に昇格",
+            cost_weighted=True,
+        )
+        assert "Phase 2-B 昇格" in text
+        assert "cost-weighted" in text
+
+
+class TestWriteTierSelectionCostWeighted:
+    """③ write_tier_selection の cost_weighted / cost_lambda kw テスト（T5 AC）。
+
+    既存テスト（cost_tiebreak / session_id）が無修正で green であることが後方互換の証明。
+    """
+
+    def test_cost_weighted_false_no_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """③ cost_weighted=False（デフォルト）かつ cost_lambda=None で新キーが出ない（後方互換）。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("complex", "opus", "thompson")
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert "cost_weighted" not in data
+        assert "cost_lambda" not in data
+        # 既存テストと同一の dict と完全一致
+        assert data == {
+            "complexity": "complex",
+            "tier": "opus",
+            "mode": "thompson",
+            "suggested_model": "opus",
+        }
+
+    def test_cost_weighted_true_adds_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """③ cost_weighted=True で cost_weighted: true が出る。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("medium", "haiku", "thompson", cost_weighted=True)
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert data["cost_weighted"] is True
+        assert "cost_lambda" not in data
+
+    def test_cost_lambda_non_none_adds_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """③ cost_lambda=0.5 で cost_lambda: 0.5 が出る。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("medium", "haiku", "thompson", cost_lambda=0.5)
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert data["cost_lambda"] == pytest.approx(0.5)
+        assert "cost_weighted" not in data
+
+    def test_cost_weighted_true_and_cost_lambda_both_appear(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """③ cost_weighted=True + cost_lambda=0.5 で両キーが出る。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection(
+            "medium", "haiku", "thompson",
+            cost_weighted=True, cost_lambda=0.5,
+        )
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert data["cost_weighted"] is True
+        assert data["cost_lambda"] == pytest.approx(0.5)
+
+    def test_cost_lambda_none_no_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """③ cost_lambda=None（デフォルト）では cost_lambda キーが出ない。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("medium", "haiku", "thompson", cost_lambda=None)
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert "cost_lambda" not in data
+
+    def test_existing_cost_tiebreak_behavior_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """③ 既存の cost_tiebreak 挙動が cost_weighted/cost_lambda 追加後も不変。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("medium", "sonnet", "thompson", cost_tiebreak=True)
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert data["cost_tiebreak"] is True
+        assert "cost_weighted" not in data
+        assert "cost_lambda" not in data
+
+
+class TestMainBackwardCompatE2E:
+    """① E2E 後方互換（最重要）: env 3 種未設定で v2.25.0 出力と一致。
+
+    env 3 種（C3_TIER_COST_LAMBDA / C3_TIER_EPSILON / C3_ESCALATION_THRESHOLD）が
+    すべて未設定のとき、tier_selection.json に新キー（cost_weighted / cost_lambda）が
+    出ないことを確認する。
+    """
+
+    def test_env_unset_no_new_keys_in_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """① env 3 種未設定で tier_selection.json に cost_weighted / cost_lambda が出ない。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        # env 3 種をすべて削除
+        monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+        monkeypatch.delenv("C3_ESCALATION_THRESHOLD", raising=False)
+
+        # haiku 単独優位（cost_tiebreak も出ない状況）
+        dominant_params = {
+            "haiku": (50.0, 1.0, 51),
+            "sonnet": (5.0, 5.0, 20),
+            "opus": (2.0, 8.0, 20),
+        }
+        mock_c3_db = types.SimpleNamespace(
+            read_tier_params=lambda complexity, **kw: dominant_params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))
+        random.seed(0)
+
+        rc = mod.main()
+        assert rc == 0
+
+        data = json.loads(target.read_text(encoding="utf-8"))
+        # 新キーは出ない（v2.25.0 一致）
+        assert "cost_weighted" not in data
+        assert "cost_lambda" not in data
+
+    def test_env_unset_context_text_has_no_cost_weighted_suffix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """① env 3 種未設定で additionalContext に cost-weighted 文言が出ない。"""
+        mod = _load_hook_module()
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(tmp_path / "tier_selection.json"))
+
+        monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+        monkeypatch.delenv("C3_ESCALATION_THRESHOLD", raising=False)
+
+        dominant_params = {
+            "haiku": (50.0, 1.0, 51),
+            "sonnet": (5.0, 5.0, 20),
+            "opus": (2.0, 8.0, 20),
+        }
+        mock_c3_db = types.SimpleNamespace(
+            read_tier_params=lambda complexity, **kw: dominant_params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))
+        random.seed(0)
+
+        rc = mod.main()
+        assert rc == 0
+
+        out_data = json.loads(capsys.readouterr().out)
+        context = out_data["hookSpecificOutput"]["additionalContext"]
+        assert "cost-weighted" not in context
+
+
+class TestMainLambdaE2E:
+    """④ λ 設定 E2E: C3_TIER_COST_LAMBDA=0.5 で cost_weighted: true が json に出る。"""
+
+    def test_lambda_env_triggers_cost_weighted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """④ C3_TIER_COST_LAMBDA=0.5 + 拮抗 params で json に cost_weighted: true が出る。
+
+        trials >= 30 の Thompson 分岐に入るため seed ループで発動ケースを探す。
+        lam=0.5 のとき cost_map が存在すれば cost_weighted=True は確定するため、
+        uniform 分岐に入らなければ必ず True になる。
+        """
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "0.5")
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+        monkeypatch.delenv("C3_ESCALATION_THRESHOLD", raising=False)
+
+        # trials >= 30 で Thompson 分岐に入る params（cost_map も有効）
+        tiebreak_params = {
+            "haiku": (10.0, 10.0, 30),
+            "sonnet": (10.0, 10.0, 30),
+            "opus": (5.0, 5.0, 30),
+        }
+        mock_c3_db = types.SimpleNamespace(
+            read_tier_params=lambda complexity, **kw: tiebreak_params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},  # 静的 fallback 使用
+            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+
+        found = False
+        for seed in range(100):
+            if target.exists():
+                target.unlink()
+            monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))
+            random.seed(seed)
+            rc = mod.main()
+            assert rc == 0
+
+            data = json.loads(target.read_text(encoding="utf-8"))
+            if data.get("cost_weighted") is True:
+                # cost_lambda も出ているはず
+                assert data.get("cost_lambda") == pytest.approx(0.5)
+                found = True
+                break
+
+        assert found, "seed 0-99 で cost_weighted: true が出るケースが見つからない"
+
+    def test_lambda_env_context_shows_cost_weighted_suffix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """④ C3_TIER_COST_LAMBDA=0.5 で additionalContext に cost-weighted 文言が出る。
+
+        seed ループで Thompson 分岐（trials >= 30）に入り cost_weighted=True になるケースを確認。
+        """
+        mod = _load_hook_module()
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(tmp_path / "tier_selection.json"))
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "0.5")
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+        monkeypatch.delenv("C3_ESCALATION_THRESHOLD", raising=False)
+
+        tiebreak_params = {
+            "haiku": (10.0, 10.0, 30),
+            "sonnet": (10.0, 10.0, 30),
+            "opus": (5.0, 5.0, 30),
+        }
+        mock_c3_db = types.SimpleNamespace(
+            read_tier_params=lambda complexity, **kw: tiebreak_params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+
+        found = False
+        for seed in range(100):
+            if (tmp_path / "tier_selection.json").exists():
+                (tmp_path / "tier_selection.json").unlink()
+            monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))
+            random.seed(seed)
+            # capsys は累積するためここでは json の確認のみ
+            rc = mod.main()
+            assert rc == 0
+
+            data = json.loads((tmp_path / "tier_selection.json").read_text(encoding="utf-8"))
+            if data.get("cost_weighted") is True:
+                found = True
+                break
+
+        assert found, "seed 0-99 で cost_weighted=True になるケースが見つからない"
+        # cost_weighted=True になった最後のケースで stdout を確認する
+        # capsys.readouterr() は最後の main() 出力を返す
+        all_out = capsys.readouterr().out
+        # 最後の JSON 行を取得（複数 main 呼び出しで stdout が複数行になる場合）
+        last_line = [line for line in all_out.strip().splitlines() if line.strip()][-1]
+        out_data = json.loads(last_line)
+        context = out_data["hookSpecificOutput"]["additionalContext"]
+        assert "cost-weighted" in context
+
+
+class TestMainDegradeE2E:
+    """⑤ degrade: c3_db import 失敗でも crash せず従来 Thompson 動作（後方互換）。
+
+    既存 TestMainCostMapIntegration.test_main_no_crash_when_c3_db_import_fails
+    が既にカバーしているが、T5 追加後も確認する。
+    """
+
+    def test_c3_db_import_fail_no_cost_weighted_in_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """⑤ c3_db import 失敗時、cost_map=None → cost_weighted / cost_lambda はキーとして出ない。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: None)
+
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))
+        random.seed(0)
+
+        rc = mod.main()
+        assert rc == 0
+
+        data = json.loads(target.read_text(encoding="utf-8"))
+        # c3_db None → params が初期値 → trials=0 < 30 → uniform
+        assert data["mode"] == "uniform"
+        # cost_map=None → cost_weighted=False → キー出ない
+        assert "cost_weighted" not in data
+        # lam は _resolve_cost_lambda() で解決されるが cost_map=None で weighting 不発動
+        # cost_lambda は lam が None（env 未設定）なら出ない
+        assert "cost_lambda" not in data
+
+
+# ---------------------------------------------------------------------------
+# R2-T1 (v2.26.0 Round 2): CR-T-001 — lam=0.0 証跡テスト
+# ---------------------------------------------------------------------------
+
+
+class TestWriteTierSelectionLamZero:
+    """CR-T-001: write_tier_selection(cost_lambda=0.0) の証跡テスト。
+
+    lam=0.0 は「cost 無視の明示オプト」（経路 0）であり cost_lambda: 0.0 が json に出て
+    cost_weighted キーが出ないことを確認する。
+    cost_lambda is not None 判定（None のみスキップ）なので 0.0 でもキーが出る。
+    """
+
+    def test_cost_lambda_zero_appears_in_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """cost_lambda=0.0 で json に cost_lambda: 0.0 が出る。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("medium", "haiku", "thompson", cost_lambda=0.0)
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert "cost_lambda" in data
+        assert data["cost_lambda"] == pytest.approx(0.0)
+
+    def test_cost_weighted_absent_when_lam_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """cost_lambda=0.0（経路 0・cost 無視）のとき cost_weighted キーが出ない。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("medium", "haiku", "thompson", cost_lambda=0.0)
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert "cost_weighted" not in data
+
+
+class TestMainLamZeroE2E:
+    """CR-T-001: C3_TIER_COST_LAMBDA=0 の main E2E テスト。
+
+    lam=0.0 → 経路 0（cost 無視）のため cost_weighted は出ず、cost_lambda: 0.0 が出る。
+    """
+
+    def test_lambda_zero_env_cost_lambda_in_json_no_cost_weighted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """C3_TIER_COST_LAMBDA=0 で json に cost_lambda: 0.0 が出て cost_weighted が出ない。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "0")
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+        monkeypatch.delenv("C3_ESCALATION_THRESHOLD", raising=False)
+
+        # trials >= 30 で Thompson 分岐に入る params（lam=0.0 → 経路 0 → cost_weighted=False）
+        dominant_params = {
+            "haiku": (50.0, 1.0, 51),
+            "sonnet": (5.0, 5.0, 20),
+            "opus": (2.0, 8.0, 20),
+        }
+        mock_c3_db = types.SimpleNamespace(
+            read_tier_params=lambda complexity, **kw: dominant_params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))
+        random.seed(0)
+
+        rc = mod.main()
+        assert rc == 0
+
+        data = json.loads(target.read_text(encoding="utf-8"))
+        # lam=0.0 → cost_lambda: 0.0 が出る（cost_lambda is not None → True）
+        assert "cost_lambda" in data
+        assert data["cost_lambda"] == pytest.approx(0.0)
+        # lam=0.0 → 経路 0（cost 無視）→ cost_weighted=False → キーが出ない
+        assert "cost_weighted" not in data

@@ -49,9 +49,13 @@ try:
     from c3 import db as _c3_db_const  # type: ignore[import-not-found]
     LEARNING_THRESHOLD: int = _c3_db_const.LEARNING_THRESHOLD
     EPSILON: float = _c3_db_const.EPSILON_TIEBREAK
+    ESCALATION_THRESHOLD: float = _c3_db_const.ESCALATION_THRESHOLD_DEFAULT
+    COST_LAMBDA_DEFAULT: float | None = _c3_db_const.COST_LAMBDA_DEFAULT
 except ImportError:
     LEARNING_THRESHOLD = 30
     EPSILON = 0.05
+    ESCALATION_THRESHOLD = 0.5
+    COST_LAMBDA_DEFAULT = None
 
 # 複雑度推定のキーワード
 SIMPLE_KEYWORDS = frozenset({
@@ -127,12 +131,16 @@ class SelectionResult(NamedTuple):
     cost_tiebreak: Thompson 分岐で cost tie-break が発動した場合 True。
     contenders: 拮抗判定に入った tier のタプル（observability/デバッグ用）。
         frozen 安全のため list ではなく tuple を使用。
+    cost_weighted: λ>0 全 tier weighting が適用された場合 True（v2.26.0）。
+        lam=None（env 未設定）または cost_map=None の場合は False のまま。
+        uniform 分岐では常に False（探索保護・不可侵）。
     """
 
     tier: str
     mode: str
     cost_tiebreak: bool = False
     contenders: tuple[str, ...] = ()
+    cost_weighted: bool = False
 
 
 def _cost_tiebreak(
@@ -140,41 +148,79 @@ def _cost_tiebreak(
     cost_map: dict[str, float] | None,
     *,
     epsilon: float = EPSILON,
+    lam: float | None = None,
 ) -> tuple[str, bool, tuple[str, ...]]:
-    """Thompson サンプル拮抗群内で min-max 正規化コストが最安の tier を返す。
+    """Thompson サンプルから cost を考慮して最適な tier を返す（3 経路）。
+
+    lam（λ）の値によって 3 つの経路に分岐する:
+      - 経路 0（cost_map is None or lam == 0）: cost を見ない。argmax(sample) を返す。
+        lam=None を渡しても cost_map が None なら経路 0。lam=0.0 の明示オプトも経路 0。
+      - 経路 1（lam is None・既定）: v2.25.0 の ε-gated min-max 最安（後方互換）。
+        contenders ≤ 1 は argmax、複数 contenders は min-max 正規化コスト最安を選ぶ。
+        lam=None（env 未設定センチネル）がデフォルト→ v2.25.0 挙動と完全一致。
+      - 経路 2（lam > 0）: 全 tier weighting。
+        score[t] = sample[t] - lam * cost_norm[t] で全 tier を比較し最大を選ぶ。
+        cost_norm は全 tier の min-max 正規化（最安→0・最高→1）。
 
     Args:
         samples: {tier: beta_sample} の dict（Thompson Sampling 結果）。
-        cost_map: {tier: cost} の dict。None なら cost を見ず従来挙動。
+        cost_map: {tier: cost} の dict。None なら cost を見ず従来挙動（経路 0）。
             cost は実測 rate_usd_per_mtok または静的参照単価（ハイブリッド）。
             v2.24.0 で rate 化（USD/MTok）により実測・静的とも同次元で整合済み。
-            ``cost_map`` は None、または contenders 全件をキーとして含む dict を
-            渡すこと。partial dict を渡すと ``cost_map[t]`` で KeyError が発生する。
+            ``cost_map`` は None、または samples の全 tier キーを含む dict を渡すこと。
+            partial dict を渡すと ``cost_map[t]`` で KeyError が発生する。
             ``select_tier_detailed`` 経由では呼び出し側（main）が全 TIERS 分を
             構築して保証する。
-        epsilon: 拮抗判定の閾値（デフォルト EPSILON=0.05）。
+        epsilon: 拮抗判定の閾値（デフォルト EPSILON=0.05）。経路 0/1 で使用。
+            経路 2 では contenders 算出にのみ使用（選択自体は全 tier score 比較）。
+        lam: cost weighting 係数（λ）。None=センチネル（経路 1・後方互換）、
+            0.0=cost 無視明示（経路 0）、0 < lam <= 1=全 tier weighting（経路 2）。
+            デフォルト None で既存 2 引数呼び出しの挙動・シグネチャを完全不変にする。
 
     Returns:
         (chosen, did_tiebreak, contenders) のタプル。
         - chosen: 選択された tier 名。
-        - did_tiebreak: cost tie-break が発動した場合 True。
-        - contenders: 拮抗判定に入った tier のタプル。
+        - did_tiebreak: cost が選択に影響した場合 True。
+            経路 1: contenders 内 min-max で安い方を選んだ場合 True。
+            経路 2: 全 tier weighting で argmax(sample) と異なる選択になった場合 True。
+        - contenders: ε 拮抗判定に入った tier のタプル（observability 用）。
     """
     max_sample = max(samples.values())
     contenders = [t for t in samples if max_sample - samples[t] <= epsilon]
 
-    if len(contenders) <= 1 or cost_map is None:
-        # 従来挙動と完全一致: max(samples, key=lambda t: samples[t]) と同じ式
+    # 経路 0: cost を見ない（cost_map なし or λ=0 明示）。
+    # None == 0 は Python では False のため lam == 0 は float 0.0 のみ真（意図通り）。
+    if cost_map is None or lam == 0:
         chosen = max(samples, key=lambda t: samples[t])
         return chosen, False, tuple(contenders)
 
-    # 拮抗群内で min-max 正規化コストを計算し最安 tier を選ぶ
-    costs = {t: cost_map[t] for t in contenders}
+    # 経路 1（lam=None・既定）: v2.25.0 の ε-gated min-max 最安（現行ロジック完全踏襲）。
+    if lam is None:
+        if len(contenders) <= 1:
+            chosen = max(samples, key=lambda t: samples[t])
+            return chosen, False, tuple(contenders)
+        # 拮抗群内で min-max 正規化コストを計算し最安 tier を選ぶ
+        costs = {t: cost_map[t] for t in contenders}
+        lo, hi = min(costs.values()), max(costs.values())
+        norm = {t: ((costs[t] - lo) / (hi - lo) if hi > lo else 0.0) for t in contenders}
+        # 同値安定 tie-break: norm 同値時はサンプル大（=従来選好）を優先 → 決定論
+        # 注: 全 tier コスト同値（hi == lo → norm 全 0.0）でも did_tiebreak=True を返す。
+        # これは v2.25.0 のバイト互換維持のため意図的（フラグ意味の精緻化＝同値時 False は
+        # 後方互換を崩すため v2.27.0+ で扱う）。[CR-Q-001]
+        chosen = min(contenders, key=lambda t: (norm[t], -samples[t]))
+        return chosen, True, tuple(contenders)
+
+    # 経路 2（lam > 0）: 全 tier weighting。
+    # cost_norm は全 tier で min-max 正規化（最安→0・最高→1）。
+    costs = {t: cost_map[t] for t in samples}
     lo, hi = min(costs.values()), max(costs.values())
-    norm = {t: ((costs[t] - lo) / (hi - lo) if hi > lo else 0.0) for t in contenders}
-    # 同値安定 tie-break: norm 同値時はサンプル大（=従来選好）を優先 → 決定論
-    chosen = min(contenders, key=lambda t: (norm[t], -samples[t]))
-    return chosen, True, tuple(contenders)
+    norm = {t: ((costs[t] - lo) / (hi - lo) if hi > lo else 0.0) for t in samples}
+    score = {t: samples[t] - lam * norm[t] for t in samples}
+    # 同点は sample 大優先（決定論）
+    chosen = max(samples, key=lambda t: (score[t], samples[t]))
+    pure_max = max(samples, key=lambda t: samples[t])
+    cost_tiebreak = chosen != pure_max
+    return chosen, cost_tiebreak, tuple(contenders)
 
 
 def _prompt_prefix_and_hash(prompt: str) -> tuple[str, str]:
@@ -298,6 +344,7 @@ def select_tier_detailed(
     rng: random.Random | None = None,
     cost_map: dict[str, float] | None = None,
     epsilon: float | None = None,
+    lam: float | None = None,
 ) -> SelectionResult:
     """Beta サンプリングまたは uniform 選択で推奨 Tier を SelectionResult で返す。
 
@@ -311,15 +358,20 @@ def select_tier_detailed(
             （呼び出し側が全 TIERS 分を構築して保証する）。
             uniform 分岐では cost_map の有無に関わらず完全無視する（探索保護）。
         epsilon: 拮抗判定閾値。None なら module 定数 EPSILON を使う（C3_TIER_EPSILON で上書き可）。
+        lam: cost weighting 係数（λ）。None=センチネル（v2.25.0 ε-gated 後方互換）、
+            0.0=cost 無視明示、0<lam<=1=全 tier weighting 発動（C3_TIER_COST_LAMBDA で上書き可）。
+            None（デフォルト）では env 未設定時と完全一致する（後方互換の核心）。
+            uniform 分岐では lam の値に関わらず完全無視する（探索保護・不可侵）。
 
     Returns:
-        SelectionResult（tier, mode, cost_tiebreak, contenders）。
+        SelectionResult（tier, mode, cost_tiebreak, contenders, cost_weighted）。
         mode は ``"thompson"`` / ``"uniform"``。
+        cost_weighted は lam>0 かつ cost_map が有効な場合のみ True。
     """
     rng = rng or random
     total_trials = sum(p[2] for p in params.values())
     if total_trials < LEARNING_THRESHOLD:
-        # uniform: cost を完全無視・従来挙動完全維持
+        # uniform: cost/λ を完全無視・従来挙動完全維持（不可侵）
         return SelectionResult(rng.choice(TIERS), "uniform", False, ())
 
     # Thompson Sampling: rng の消費順序を従来 select_tier と完全一致させる
@@ -328,8 +380,9 @@ def select_tier_detailed(
         for tier, p in params.items()
     }
     eff_epsilon = epsilon if epsilon is not None else EPSILON
-    chosen, did_tiebreak, contenders = _cost_tiebreak(samples, cost_map, epsilon=eff_epsilon)
-    return SelectionResult(chosen, "thompson", did_tiebreak, contenders)
+    chosen, did_tiebreak, contenders = _cost_tiebreak(samples, cost_map, epsilon=eff_epsilon, lam=lam)
+    cost_weighted = (cost_map is not None and lam is not None and lam > 0)
+    return SelectionResult(chosen, "thompson", did_tiebreak, contenders, cost_weighted)
 
 
 def select_tier(
@@ -338,6 +391,7 @@ def select_tier(
     rng: random.Random | None = None,
     cost_map: dict[str, float] | None = None,
     epsilon: float | None = None,
+    lam: float | None = None,
 ) -> tuple[str, str]:
     """Beta サンプリングまたは uniform 選択で推奨 Tier を返す。
 
@@ -350,13 +404,15 @@ def select_tier(
             uniform 分岐では cost_map の有無に関わらず完全無視する。
             詳細は :func:`select_tier_detailed` を参照。
         epsilon: 拮抗判定閾値。None なら module 定数 EPSILON を使う。
+        lam: cost weighting 係数（λ）。select_tier_detailed に委譲する。
+            None=センチネル（v2.25.0 後方互換）、0.0=cost 無視、0<lam<=1=全 tier weighting。
 
     Returns:
         ``(tier, mode)`` のタプル。``mode`` は ``"thompson"`` / ``"uniform"`` で、
         プロンプトに「学習データ収集中」と表示するかの分岐に使う。
         戻り値型は v2.22.0 以前と完全に不変。
     """
-    result = select_tier_detailed(params, rng=rng, cost_map=cost_map, epsilon=epsilon)
+    result = select_tier_detailed(params, rng=rng, cost_map=cost_map, epsilon=epsilon, lam=lam)
     return result.tier, result.mode
 
 
@@ -368,7 +424,7 @@ _ESCALATION_MAP: dict[str, str] = {
 }
 
 # Phase 2-B: failure rate がこの値以上で escalation 判定。
-ESCALATION_THRESHOLD = 0.5
+# SSOT: db.ESCALATION_THRESHOLD_DEFAULT 由来（import 部で取得）。C3_ESCALATION_THRESHOLD env で上書き可（v2.26.0）。
 
 
 def _db_failure_rate(complexity: str, tier: str) -> tuple:
@@ -387,6 +443,7 @@ def maybe_escalate(
     chosen_tier: str,
     *,
     failure_rate_fn=None,
+    threshold: float | None = None,
 ) -> tuple[str, str | None]:
     """Phase 2-B: failure rate が高ければ 1 段昇格する。
 
@@ -396,6 +453,9 @@ def maybe_escalate(
         failure_rate_fn: テスト用に注入可能な
             ``(complexity, tier) -> (rate_or_None, sample_count)``。
             省略時は :func:`_db_failure_rate` を使う。
+        threshold: escalation 閾値（failure rate がこの値以上で昇格）。
+            None のとき module 定数 ``ESCALATION_THRESHOLD`` を使う。
+            ``main()`` は ``_resolve_escalation_threshold()`` で解決した値を渡す。
 
     Returns:
         ``(effective_tier, escalation_reason)``。
@@ -407,7 +467,8 @@ def maybe_escalate(
 
     effective_fn = failure_rate_fn or _db_failure_rate
     rate, samples = effective_fn(complexity, chosen_tier)
-    if rate is None or rate < ESCALATION_THRESHOLD:
+    eff_threshold = threshold if threshold is not None else ESCALATION_THRESHOLD
+    if rate is None or rate < eff_threshold:
         return chosen_tier, None
 
     escalated = _ESCALATION_MAP[chosen_tier]
@@ -429,6 +490,8 @@ def write_tier_selection(
     prompt_hash: str | None = None,
     session_id: str | None = None,
     cost_tiebreak: bool = False,
+    cost_weighted: bool = False,
+    cost_lambda: float | None = None,
 ) -> None:
     """直近の選択結果を ``tier_selection.json`` に書く。
 
@@ -448,6 +511,14 @@ def write_tier_selection(
     ``cost_tiebreak`` を任意で含める（v2.23.0）。
     Thompson Sampling の拮抗群内で cost tie-break が発動した場合のみ True。
     False のときはキー自体を省略する（escalated/session_id と同パターン）。
+
+    ``cost_weighted`` を任意で含める（v2.26.0）。
+    λ>0 の全 tier weighting が適用された場合のみ True。
+    False のときはキー自体を省略する（cost_tiebreak と同パターン）。
+
+    ``cost_lambda`` を任意で含める（v2.26.0）。
+    ``_resolve_cost_lambda()`` で解決した λ 値（None 以外のとき出力）。
+    None のときはキー自体を省略する（env 未設定時の後方互換）。
     """
     os.makedirs(os.path.dirname(TIER_SELECTION_PATH), exist_ok=True)
     payload: dict[str, object] = {
@@ -471,6 +542,10 @@ def write_tier_selection(
         payload["session_id"] = session_id
     if cost_tiebreak:
         payload["cost_tiebreak"] = True
+    if cost_weighted:
+        payload["cost_weighted"] = True
+    if cost_lambda is not None:
+        payload["cost_lambda"] = cost_lambda
     try:
         with open(TIER_SELECTION_PATH, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -488,11 +563,16 @@ def build_additional_context(
     escalation_reason: str | None = None,
     complexity_source: str | None = None,
     cost_tiebreak: bool = False,
+    cost_weighted: bool = False,
 ) -> str:
     """親 Claude に追加注入する文字列を組み立てる。
 
     ``cost_tiebreak`` が True のとき、suffix に cost-aware 発動を示す文言を追加する（v2.23.0）。
     False のときは不変（既存文言と完全一致）。
+
+    ``cost_weighted`` が True のとき、cost-weighted 文言を suffix に追加する（v2.26.0）。
+    True のときは cost_tiebreak の文言より優先される（λ>0 全 tier weighting を明示）。
+    False のときは cost_tiebreak による既存文言のみ（v2.25.0 以前と完全一致）。
     """
     trials = sum(p[2] for p in params.values())
     if mode == "uniform":
@@ -506,7 +586,9 @@ def build_additional_context(
         suffix += f" [Phase 2-B 昇格: {escalation_reason}]"
     if complexity_source:
         suffix += f" [複雑度判定: {complexity_source}]"
-    if cost_tiebreak:
+    if cost_weighted:
+        suffix += " [cost-weighted: 成功率とコストを加重して選択]"
+    elif cost_tiebreak:
         suffix += " [cost-aware: 成功率拮抗のため低コスト Tier を選択]"
 
     return (
@@ -561,6 +643,79 @@ def _resolve_epsilon() -> float:
             file=sys.stderr,
         )
         return EPSILON
+    return x
+
+
+def _resolve_escalation_threshold() -> float:
+    """``C3_ESCALATION_THRESHOLD`` を安全に解決する。
+
+    不正値（非数値 / 0 以下 / 1 超 / NaN）は受け付けず、stderr 警告 + デフォルト（ESCALATION_THRESHOLD）に戻す。
+    未設定 / 空文字は無警告でデフォルトを返す。
+    妥当域: 0 < x <= 1（_resolve_epsilon と同じ範囲）。区間表記: (0, 1]（x=0 拒否のため半開区間）。
+    """
+    raw = os.environ.get("C3_ESCALATION_THRESHOLD")
+    if raw is None or raw == "":
+        return ESCALATION_THRESHOLD
+    try:
+        x = float(raw)
+    except ValueError:
+        print(
+            f"[select_tier:escalation] invalid C3_ESCALATION_THRESHOLD={raw!r}, "
+            f"using default {ESCALATION_THRESHOLD}",
+            file=sys.stderr,
+        )
+        return ESCALATION_THRESHOLD
+    if math.isnan(x):
+        print(
+            f"[select_tier:escalation] C3_ESCALATION_THRESHOLD={raw!r} is NaN, "
+            f"using default {ESCALATION_THRESHOLD}",
+            file=sys.stderr,
+        )
+        return ESCALATION_THRESHOLD
+    if x <= 0 or x > 1:
+        print(
+            f"[select_tier:escalation] C3_ESCALATION_THRESHOLD={x!r} out of range (0, 1], "
+            f"using default {ESCALATION_THRESHOLD}",
+            file=sys.stderr,
+        )
+        return ESCALATION_THRESHOLD
+    return x
+
+
+def _resolve_cost_lambda() -> float | None:
+    """``C3_TIER_COST_LAMBDA`` を安全に解決する。
+
+    不正値（非数値 / 0 未満 / 1 超 / NaN）は受け付けず、stderr 警告 + デフォルト（COST_LAMBDA_DEFAULT）に戻す。
+    未設定 / 空文字は無警告でデフォルト（None）を返す。
+    妥当域: 0 <= x <= 1（x == 0 は許容＝cost 無視の明示オプト・_resolve_epsilon と異なり下限を含む）。区間表記: [0, 1]（x=0 許容のため閉区間）。
+    戻り値が None の場合は v2.25.0 互換の ε tie-break 経路を維持する（センチネル）。
+    """
+    raw = os.environ.get("C3_TIER_COST_LAMBDA")
+    if raw is None or raw == "":
+        return COST_LAMBDA_DEFAULT
+    try:
+        x = float(raw)
+    except ValueError:
+        print(
+            f"[select_tier:cost_lambda] invalid C3_TIER_COST_LAMBDA={raw!r}, "
+            f"using default {COST_LAMBDA_DEFAULT}",
+            file=sys.stderr,
+        )
+        return COST_LAMBDA_DEFAULT
+    if math.isnan(x):
+        print(
+            f"[select_tier:cost_lambda] C3_TIER_COST_LAMBDA={raw!r} is NaN, "
+            f"using default {COST_LAMBDA_DEFAULT}",
+            file=sys.stderr,
+        )
+        return COST_LAMBDA_DEFAULT
+    if x < 0 or x > 1:
+        print(
+            f"[select_tier:cost_lambda] C3_TIER_COST_LAMBDA={x!r} out of range [0, 1], "
+            f"using default {COST_LAMBDA_DEFAULT}",
+            file=sys.stderr,
+        )
+        return COST_LAMBDA_DEFAULT
     return x
 
 
@@ -619,12 +774,14 @@ def main() -> int:
             cost_map = None
 
     eps = _resolve_epsilon()
-    result = select_tier_detailed(params, cost_map=cost_map, epsilon=eps)
+    lam = _resolve_cost_lambda()
+    result = select_tier_detailed(params, cost_map=cost_map, epsilon=eps, lam=lam)
     tier, mode = result.tier, result.mode
     cost_tiebreak = result.cost_tiebreak
 
     # Phase 2-B: failure rate に基づく escalation
-    effective_tier, escalation_reason = maybe_escalate(complexity, tier)
+    esc_thr = _resolve_escalation_threshold()
+    effective_tier, escalation_reason = maybe_escalate(complexity, tier, threshold=esc_thr)
     escalated = effective_tier != tier
 
     write_tier_selection(
@@ -634,6 +791,8 @@ def main() -> int:
         prompt_hash=prompt_hash,
         session_id=session_id,
         cost_tiebreak=cost_tiebreak,
+        cost_weighted=result.cost_weighted,
+        cost_lambda=lam,
     )
 
     context_text = build_additional_context(
@@ -641,6 +800,7 @@ def main() -> int:
         escalation_reason=escalation_reason,
         complexity_source=complexity_source,
         cost_tiebreak=cost_tiebreak,
+        cost_weighted=result.cost_weighted,
     )
     output = {
         "hookSpecificOutput": {

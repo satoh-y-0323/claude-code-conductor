@@ -40,6 +40,16 @@ LEARNING_THRESHOLD = 30
 # 過大にすると成功率を犠牲にするリスク、過小にすると無発動になる。
 # C3_TIER_EPSILON 環境変数で上書き可（v2.25.0）。
 EPSILON_TIEBREAK = 0.05
+# cost-weighted Thompson の重み係数 λ の既定値。
+# None = v2.25.0 互換モード（ε tie-break を維持し全 tier weighting を発動しない）。
+# C3_TIER_COST_LAMBDA 環境変数で上書き可（v2.26.0）。
+# λ>0 で全 tier の score=sample-λ*cost_norm weighting が発動、λ=0 明示で cost 無視（純 Thompson）。
+# 本定数が SSOT。
+COST_LAMBDA_DEFAULT = None
+# failure rate がこの値以上で 1 段上位 tier へ escalation する閾値。
+# C3_ESCALATION_THRESHOLD 環境変数で上書き可（v2.26.0）。
+# 本定数が SSOT（select_tier.py はここから参照）。
+ESCALATION_THRESHOLD_DEFAULT = 0.5
 
 
 def _apply_busy_timeout(conn: sqlite3.Connection) -> None:

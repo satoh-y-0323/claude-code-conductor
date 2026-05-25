@@ -1721,3 +1721,22 @@ class TestReadTierBanditCost:
         db = _make_c3_db_v003(tmp_path)
         result = read_tier_bandit_cost(db_path=db)
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# M 群: v2.26.0 定数 SSOT（COST_LAMBDA_DEFAULT / ESCALATION_THRESHOLD_DEFAULT）
+# ---------------------------------------------------------------------------
+
+
+class TestV226Constants:
+    """M 群: v2.26.0 で追加した 2 つの定数の存在と値を確認する。"""
+
+    def test_cost_lambda_default_is_none(self):
+        """M1: COST_LAMBDA_DEFAULT は None（v2.25.0 互換センチネル）。"""
+        import c3.db as db  # noqa: PLC0415
+        assert db.COST_LAMBDA_DEFAULT is None
+
+    def test_escalation_threshold_default_is_0_5(self):
+        """M2: ESCALATION_THRESHOLD_DEFAULT は 0.5（既定 escalation 閾値）。"""
+        import c3.db as db  # noqa: PLC0415
+        assert db.ESCALATION_THRESHOLD_DEFAULT == 0.5
