@@ -54,6 +54,7 @@ def _seed_recent_outcome(
     tier: str,
     success: int,
     ts: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     if ts is None:
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -61,9 +62,9 @@ def _seed_recent_outcome(
     try:
         conn.execute(
             "INSERT INTO tier_recent_outcomes "
-            "(task_complexity, tier, success, ts) "
-            "VALUES (?, ?, ?, ?)",
-            (complexity, tier, success, ts),
+            "(task_complexity, tier, success, ts, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (complexity, tier, success, ts, session_id),
         )
         conn.commit()
     finally:
@@ -81,7 +82,7 @@ def _make_args(**overrides) -> argparse.Namespace:
 
 def _run(args: argparse.Namespace, db_path: Path,
          monkeypatch: pytest.MonkeyPatch) -> int:
-    monkeypatch.setattr(c3_db, "locate_c3_db", lambda: db_path)
+    monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
     return cli_tier.handle_stats(args)
 
 
@@ -230,7 +231,7 @@ class TestTierStatsCli:
         """DB 不在時は exit 1 + stderr エラーメッセージ。"""
         nonexistent = tmp_path / "nonexistent.db"
         # locate_c3_db は None または存在しないパスを返す
-        monkeypatch.setattr(c3_db, "locate_c3_db", lambda: nonexistent)
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: nonexistent)
 
         rc = cli_tier.handle_stats(_make_args())
 
@@ -346,3 +347,161 @@ class TestTierStatsCli:
         assert rc == 0
         out = capsys.readouterr().out
         assert "tier 学習対象外" in out
+
+
+# ---------------------------------------------------------------------------
+# v2.22.0: Tier 別コスト表示（tier_cost）のテスト
+# ---------------------------------------------------------------------------
+
+
+class TestTierCostSection:
+    """T5: _collect_snapshot の tier_cost キーと _render_human の Tier 別コストセクション。"""
+
+    def test_collect_snapshot_contains_tier_cost_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_collect_snapshot の snapshot に tier_cost キーが含まれる。"""
+        from c3 import db as c3_db
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db)
+
+        snapshot = cli_tier._collect_snapshot(db, recent_limit=10)
+
+        assert "tier_cost" in snapshot
+
+    def test_render_human_tier_cost_empty_shows_no_data_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """tier_cost が空のとき「（cost 紐づけデータ未収集）」文言が出る。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "cost 紐づけデータ未収集" in out
+
+    def test_render_human_tier_cost_section_heading(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """human 出力に Tier 別コストセクション見出しが含まれる。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Tier 別平均コスト" in out
+        assert "粗い概算" in out
+        assert "v2.23.0" in out
+
+    def test_render_human_tier_cost_with_data(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """read_tier_cost_summary がデータを返すとき sessions / avg_cost_usd が表示される。"""
+        from c3.db import insert_agent_cost_run
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+
+        # 同一 session_id で outcome + agent_cost_runs を seed
+        _seed_recent_outcome(
+            db, complexity="simple", tier="haiku", success=1,
+            session_id="sess-t5-0001",
+        )
+        insert_agent_cost_run(
+            session_id="sess-t5-0001",
+            agent_id="agent-001",
+            agent_type="developer",
+            description="test",
+            model="claude-haiku-4-7-20251101",
+            attribution_skill=None,
+            input_tokens=500,
+            output_tokens=200,
+            cache_read_tokens=0,
+            cache_create_tokens=0,
+            total_cost_usd=0.0020,
+            db_path=db,
+        )
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # セクション見出し
+        assert "Tier 別平均コスト" in out
+        # 「cost 紐づけデータ未収集」は出ない
+        assert "cost 紐づけデータ未収集" not in out
+        # ヘッダ行確認: sessions / avg_usd 列が出る
+        assert "sessions" in out
+        assert "avg_usd" in out
+        # データ行確認: simple と haiku が同一行に現れる（Tier 別コストセクションのデータ行）
+        lines = out.splitlines()
+        assert any("simple" in line and "haiku" in line for line in lines), \
+            "simple × haiku のデータ行が見つからない"
+
+    def test_render_human_tier_cost_with_data_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """--json 出力の tier_cost キーに complexity/tier/sessions/avg_cost_usd が含まれる。"""
+        from c3.db import insert_agent_cost_run
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+
+        _seed_recent_outcome(
+            db, complexity="medium", tier="sonnet", success=1,
+            session_id="sess-t5-0002",
+        )
+        insert_agent_cost_run(
+            session_id="sess-t5-0002",
+            agent_id="agent-002",
+            agent_type="developer",
+            description="test",
+            model="claude-sonnet-4-6-20251101",
+            attribution_skill=None,
+            input_tokens=1000,
+            output_tokens=400,
+            cache_read_tokens=0,
+            cache_create_tokens=0,
+            total_cost_usd=0.0050,
+            db_path=db,
+        )
+
+        rc = _run(_make_args(as_json=True), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+
+        assert "tier_cost" in data
+        assert len(data["tier_cost"]) >= 1
+        row = next(
+            r for r in data["tier_cost"]
+            if r["complexity"] == "medium" and r["tier"] == "sonnet"
+        )
+        assert row["sessions"] == 1
+        assert abs(row["avg_cost_usd"] - 0.0050) < 1e-9
+        assert abs(row["total_cost_usd"] - 0.0050) < 1e-9
+
+    def test_existing_sections_not_regressed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """既存セクション（tier_bandit / recent_outcomes / 学習データ記録チャネル / agent_cost）が回帰なし。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "== Tier 別累積（tier_bandit） ==" in out
+        assert "== 直近 outcome 履歴" in out
+        assert "== 学習データ記録チャネル ==" in out
+        assert "== Agent 別コスト集計（agent_cost_runs） ==" in out

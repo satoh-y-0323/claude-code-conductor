@@ -21,6 +21,8 @@ from c3.db import (
     insert_agent_cost_run,
     locate_c3_db,
     read_agent_cost_summary,
+    read_tier_cost_summary,
+    record_tier_recent_outcome,
     set_ingest_offset,
 )
 
@@ -318,3 +320,199 @@ class TestAgentCostHelpers:
 
         set_ok = set_ingest_offset("some-key", 10, db_path=absent_db)
         assert set_ok is False
+
+
+# ---------------------------------------------------------------------------
+# H 群: record_tier_recent_outcome session_id 拡張 + read_tier_cost_summary (v2.22.0)
+# ---------------------------------------------------------------------------
+
+
+def _make_c3_db_v003(tmp_path: Path) -> Path:
+    """tmp_path に c3.db を作成して 003 migration まで適用する。"""
+    from c3.migrate import apply_pending_migrations  # noqa: PLC0415
+    db_path = tmp_path / "c3.db"
+    apply_pending_migrations(db_path)
+    return db_path
+
+
+def _seed_cost_run(db: Path, *, session_id: str, agent_id: str,
+                   agent_type: str, total_cost_usd: float,
+                   model: str = "claude-sonnet-4-6-20260101") -> None:
+    """agent_cost_runs に seed を挿入するヘルパー。"""
+    insert_agent_cost_run(
+        session_id=session_id,
+        agent_id=agent_id,
+        agent_type=agent_type,
+        description=None,
+        model=model,
+        attribution_skill=None,
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=0,
+        cache_create_tokens=0,
+        total_cost_usd=total_cost_usd,
+        db_path=db,
+    )
+
+
+class TestTierCostHelpers:
+    """H 群: v2.22.0 で追加した session_id 拡張 + read_tier_cost_summary テスト。"""
+
+    def test_session_id_saved(self, tmp_path: Path):
+        """H1: session_id 付き呼び出しで DB に session_id が保存される。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        ok = record_tier_recent_outcome(
+            complexity="medium",
+            tier="sonnet",
+            success=True,
+            session_id="sess-h1",
+            db_path=db,
+        )
+        assert ok is True
+
+        conn = _sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT session_id FROM tier_recent_outcomes WHERE session_id = ?",
+            ("sess-h1",),
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == "sess-h1"
+
+    def test_session_id_null_backward_compat(self, tmp_path: Path):
+        """H2: session_id 省略（デフォルト None）で NULL 保存・既存呼び出しが壊れない。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        ok = record_tier_recent_outcome(
+            complexity="simple",
+            tier="haiku",
+            success=True,
+            db_path=db,
+        )
+        assert ok is True
+
+        conn = _sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT session_id FROM tier_recent_outcomes "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] is None, "session_id を省略したら NULL で保存されるべき"
+
+    def test_join_basic(self, tmp_path: Path):
+        """H3: JOIN 基本 — 同一 session_id で outcome + cost を seed → 期待コストが返る。"""
+        db = _make_c3_db_v003(tmp_path)
+        sess = "sess-h3"
+
+        record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=True,
+            session_id=sess, db_path=db,
+        )
+        _seed_cost_run(db, session_id=sess, agent_id="agent-x",
+                       agent_type="developer", total_cost_usd=0.01)
+
+        result = read_tier_cost_summary(db_path=db)
+        assert len(result) == 1
+        row = result[0]
+        assert row["complexity"] == "medium"
+        assert row["tier"] == "sonnet"
+        assert row["sessions"] == 1
+        assert abs(row["total_cost_usd"] - 0.01) < 1e-9
+        assert abs(row["avg_cost_usd"] - 0.01) < 1e-9
+
+    def test_mainline_excluded(self, tmp_path: Path):
+        """H4: mainline の cost 行は集計に含まれない。"""
+        db = _make_c3_db_v003(tmp_path)
+        sess = "sess-h4"
+
+        record_tier_recent_outcome(
+            complexity="simple", tier="haiku", success=True,
+            session_id=sess, db_path=db,
+        )
+        # mainline のみ seed（集計除外対象）
+        _seed_cost_run(db, session_id=sess, agent_id="mainline",
+                       agent_type="mainline", total_cost_usd=0.05)
+
+        result = read_tier_cost_summary(db_path=db)
+        assert result == [], "mainline のみの session は JOIN 後に残らないはず"
+
+    def test_no_duplicate_cost_multiple_agent_rows(self, tmp_path: Path):
+        """H5: 同一 session_id で複数 agent_id×model 行 → session cost が 1 回だけ計上される。"""
+        db = _make_c3_db_v003(tmp_path)
+        sess = "sess-h5"
+
+        record_tier_recent_outcome(
+            complexity="complex", tier="opus", success=True,
+            session_id=sess, db_path=db,
+        )
+        # 同一 session で 3 agent_id×model（合計 0.03 USD）
+        _seed_cost_run(db, session_id=sess, agent_id="agent-a",
+                       agent_type="developer", total_cost_usd=0.01)
+        _seed_cost_run(db, session_id=sess, agent_id="agent-b",
+                       agent_type="developer", total_cost_usd=0.01,
+                       model="claude-haiku-4-5-20260101")
+        _seed_cost_run(db, session_id=sess, agent_id="agent-c",
+                       agent_type="tester", total_cost_usd=0.01)
+
+        result = read_tier_cost_summary(db_path=db)
+        assert len(result) == 1
+        row = result[0]
+        # session_cost CTE で先に SUM → 0.03 USD が 1 回だけ計上される
+        assert abs(row["total_cost_usd"] - 0.03) < 1e-9
+        assert row["sessions"] == 1
+
+    def test_no_duplicate_sessions_multiple_outcome_rows(self, tmp_path: Path):
+        """H5b: 同一 (session,complexity,tier) の outcome 複数行 → sessions が二重カウントされない。"""
+        db = _make_c3_db_v003(tmp_path)
+        sess = "sess-h5b"
+
+        # 同じ session×complexity×tier の outcome を 2 行 INSERT
+        record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=True,
+            session_id=sess, db_path=db,
+        )
+        record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=False,
+            session_id=sess, db_path=db,
+        )
+        _seed_cost_run(db, session_id=sess, agent_id="agent-x",
+                       agent_type="developer", total_cost_usd=0.02)
+
+        result = read_tier_cost_summary(db_path=db)
+        assert len(result) == 1
+        row = result[0]
+        # outcome_sessions CTE の DISTINCT で 1 行に潰されるため sessions=1
+        assert row["sessions"] == 1
+        assert abs(row["total_cost_usd"] - 0.02) < 1e-9
+
+    def test_null_session_id_excluded(self, tmp_path: Path):
+        """H6: session_id=NULL の outcome は集計対象外。"""
+        db = _make_c3_db_v003(tmp_path)
+
+        # session_id=None（NULL）で outcome を記録
+        record_tier_recent_outcome(
+            complexity="simple", tier="haiku", success=True,
+            db_path=db,  # session_id 省略 → NULL
+        )
+        # cost も seed するが、NULL session は JOIN 不能
+        _seed_cost_run(db, session_id="some-other-sess", agent_id="agent-x",
+                       agent_type="developer", total_cost_usd=0.01)
+
+        result = read_tier_cost_summary(db_path=db)
+        assert result == [], "session_id=NULL の outcome は集計対象外"
+
+    def test_empty_tables_returns_empty_list(self, tmp_path: Path):
+        """H7: テーブル空（seed なし）で [] を返す。"""
+        db = _make_c3_db_v003(tmp_path)
+        result = read_tier_cost_summary(db_path=db)
+        assert result == []
+
+    def test_db_absent_returns_empty_list(self, tmp_path: Path):
+        """H8: DB 不在で [] を返す（静かに失敗）。"""
+        absent_db = tmp_path / "no_such.db"
+        result = read_tier_cost_summary(db_path=absent_db)
+        assert result == []

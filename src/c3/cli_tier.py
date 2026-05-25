@@ -89,7 +89,7 @@ def handle_stats(args: argparse.Namespace) -> int:
 
 
 def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
-    """DB から tier_bandit / tier_recent_outcomes / agent_cost を読み snapshot dict を返す。"""
+    """DB から tier_bandit / tier_recent_outcomes / agent_cost / tier_cost を読み snapshot dict を返す。"""
     bandit_rows: list[dict[str, Any]] = []
     total_trials = 0
 
@@ -116,6 +116,8 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
 
     agent_cost: list[dict[str, Any]] = c3_db.read_agent_cost_summary(db_path=db_path)
 
+    tier_cost: list[dict[str, Any]] = c3_db.read_tier_cost_summary(db_path=db_path)
+
     if total_trials < _LEARNING_THRESHOLD:
         mode = "uniform"
     else:
@@ -130,6 +132,7 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
         "tier_bandit": bandit_rows,
         "recent_outcomes": recent_outcomes,
         "agent_cost": agent_cost,
+        "tier_cost": tier_cost,
     }
 
 
@@ -190,4 +193,19 @@ def _render_human(snapshot: dict[str, Any]) -> None:
                 f"{note}"
             )
     print()
-    print("（注: 本リリースはデータ収集基盤のみ。cost-aware routing は v2.22.0 予定）")
+
+    print("== Tier 別平均コスト（粗い概算 / 精度向上は v2.23.0） ==")
+    tier_cost = snapshot.get("tier_cost", [])
+    if not tier_cost:
+        print("（cost 紐づけデータ未収集）")
+    else:
+        print(f"{'complexity':<12} {'tier':<8} {'sessions':>8}  {'avg_usd':>10}  {'total_usd':>10}")
+        for row in tier_cost:
+            print(
+                f"{row['complexity']:<12} {row['tier']:<8} "
+                f"{row['sessions']:>8}  "
+                f"${row['avg_cost_usd']:>9.4f}  "
+                f"${row['total_cost_usd']:>9.4f}"
+            )
+    print()
+    print("（注: データ紐づけ蓄積。cost-aware routing 本体は v2.23.0 予定）")

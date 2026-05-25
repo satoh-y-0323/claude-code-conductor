@@ -210,15 +210,19 @@ def main(argv: list[str] | None = None) -> int:
     # Phase 2-B: tier_recent_outcomes にも 1 件記録（escalation 判定の母数）。
     # tier_bandit 更新が失敗してもこちらは試みる（DB が一時的に詰まる程度なら
     # 片方だけ通る可能性もある）。
+    # v2.22.0: session_id を渡して cost 紐づけを可能にする。
+    # session_id キーが無い古い tier_selection.json の場合は None になる（後方互換）。
+    session_id = selection.get("session_id")
     try:
         c3_db.record_tier_recent_outcome(
             complexity=selection["complexity"],
             tier=selection["tier"],
             success=success,
+            session_id=session_id,
         )
     except Exception as exc:  # noqa: BLE001
         print(
-            f"[record_tier_outcome] tier_recent_outcomes record skipped: {exc}",
+            f"[record_tier_outcome] tier_recent_outcomes record skipped: {type(exc).__name__}",
             file=sys.stderr,
         )
 

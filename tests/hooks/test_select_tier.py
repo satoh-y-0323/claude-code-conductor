@@ -411,3 +411,85 @@ class TestMaskSecrets:
         data = json.loads((tmp_path / "tier_selection.json").read_text(encoding="utf-8"))
         assert "ghp_12345678abcdef" not in data.get("prompt_prefix", "")
         assert "token=***" in data.get("prompt_prefix", "")
+
+
+# ---------------------------------------------------------------------------
+# T3: session_id 記録（AC-3 / AC-9）
+# ---------------------------------------------------------------------------
+
+
+class TestSessionIdRecording:
+    """write_tier_selection / main の session_id 記録を検証する。"""
+
+    def test_write_tier_selection_with_session_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """session_id が渡されると tier_selection.json に session_id キーが入る。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("medium", "sonnet", "thompson", session_id="sess-abc123")
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert "session_id" in data
+        assert data["session_id"] == "sess-abc123"
+
+    def test_write_tier_selection_without_session_id_no_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """session_id が渡されない（None）ときは tier_selection.json に session_id キーが入らない。
+
+        既存の dict 完全一致テスト（test_write_tier_selection）と同形の確認。
+        """
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        mod.write_tier_selection("complex", "opus", "thompson")
+        data = json.loads(target.read_text(encoding="utf-8"))
+        # session_id キーが存在しないことを確認
+        assert "session_id" not in data
+        # 既存テストと同一の期待 dict と一致する
+        assert data == {
+            "complexity": "complex",
+            "tier": "opus",
+            "mode": "thompson",
+            "suggested_model": "opus",
+        }
+
+    def test_main_records_session_id_when_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """payload に session_id があるとき tier_selection.json に session_id が入る。"""
+        mod = _load_hook_module()
+        monkeypatch.setattr(
+            mod, "TIER_SELECTION_PATH",
+            str(tmp_path / "tier_selection.json"),
+        )
+        payload = {"prompt": "新しい機能を追加してください", "session_id": "sess-xyz-999"}
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+        rc = mod.main()
+        assert rc == 0
+
+        data = json.loads((tmp_path / "tier_selection.json").read_text(encoding="utf-8"))
+        assert "session_id" in data
+        assert data["session_id"] == "sess-xyz-999"
+
+    def test_main_no_session_id_in_payload_no_key_in_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """payload に session_id が無いとき tier_selection.json に session_id キーが入らず crash しない。"""
+        mod = _load_hook_module()
+        monkeypatch.setattr(
+            mod, "TIER_SELECTION_PATH",
+            str(tmp_path / "tier_selection.json"),
+        )
+        payload = {"prompt": "テストを書いてください"}
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+        rc = mod.main()
+        assert rc == 0
+
+        data = json.loads((tmp_path / "tier_selection.json").read_text(encoding="utf-8"))
+        assert "session_id" not in data

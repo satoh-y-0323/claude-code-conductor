@@ -323,6 +323,7 @@ def write_tier_selection(
     escalation_reason: str | None = None,
     prompt_prefix: str | None = None,
     prompt_hash: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     """直近の選択結果を ``tier_selection.json`` に書く。
 
@@ -335,6 +336,9 @@ def write_tier_selection(
 
     ``escalated`` / ``escalation_reason`` を任意で含める。
     failure rate に基づく昇格が起きた場合のみ True / 文字列が入る。
+
+    ``session_id`` を任意で含める。UserPromptSubmit payload の session UUID。
+    None のときは tier_selection.json のキー自体を省略する（後方互換）。
     """
     os.makedirs(os.path.dirname(TIER_SELECTION_PATH), exist_ok=True)
     payload: dict[str, object] = {
@@ -354,6 +358,8 @@ def write_tier_selection(
         payload["prompt_prefix"] = prompt_prefix
     if prompt_hash is not None:
         payload["prompt_hash"] = prompt_hash
+    if session_id is not None:
+        payload["session_id"] = session_id
     try:
         with open(TIER_SELECTION_PATH, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
@@ -415,6 +421,8 @@ def main() -> int:
     if not isinstance(prompt, str) or not prompt.strip():
         return 0
 
+    session_id = payload.get("session_id")
+
     # Phase 2-C: 類似度推定で complexity を補強
     heuristic_complexity = estimate_complexity(prompt)
     strong_complexity, weak_matches = similarity_boost(prompt)
@@ -448,6 +456,7 @@ def main() -> int:
         escalated=escalated, escalation_reason=escalation_reason,
         prompt_prefix=prompt_prefix,
         prompt_hash=prompt_hash,
+        session_id=session_id,
     )
 
     context_text = build_additional_context(

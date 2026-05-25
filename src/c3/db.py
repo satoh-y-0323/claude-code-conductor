@@ -358,11 +358,20 @@ def record_tier_recent_outcome(
     tier: str,
     success: bool,
     db_path: Path | None = None,
+    session_id: str | None = None,
 ) -> bool:
     """``tier_recent_outcomes`` に 1 件 INSERT する。
 
     Phase 2-B のエスカレーション判定用。tier_bandit の累積 α/β とは別に、
     直近 N 件の event を時系列で保持する。
+
+    Args:
+        complexity: 'simple' | 'medium' | 'complex'。
+        tier: 'haiku' | 'sonnet' | 'opus'。
+        success: True なら成功、False なら失敗。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        session_id: セッション UUID（v2.22.0+）。省略時は NULL で保存。
+            cost 紐づけに使用。None の場合は既存行との後方互換を維持する。
 
     Returns:
         INSERT 成功時 True、DB 不在 / エラー時 False。
@@ -382,15 +391,15 @@ def record_tier_recent_outcome(
             _apply_busy_timeout(conn)
             conn.execute(
                 "INSERT INTO tier_recent_outcomes "
-                "(task_complexity, tier, success, ts) VALUES (?, ?, ?, ?)",
-                (complexity, tier, 1 if success else 0, now_iso),
+                "(task_complexity, tier, success, ts, session_id) VALUES (?, ?, ?, ?, ?)",
+                (complexity, tier, 1 if success else 0, now_iso, session_id),
             )
             conn.commit()
         finally:
             conn.close()
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to record tier_recent_outcome: %s", exc)
+        logger.warning("failed to record tier_recent_outcome: %s", type(exc).__name__)
         return False
 
 
@@ -652,6 +661,99 @@ def read_agent_cost_summary(
             "output_tokens": row[4],
             "cache_read_tokens": row[5],
             "cache_create_tokens": row[6],
+        }
+        for row in rows
+    ]
+
+
+def read_tier_cost_summary(
+    *,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """tier_recent_outcomes × agent_cost_runs を session_id で JOIN し、
+    complexity×tier 別コストを返す（粗い概算 / 精度向上は v2.23.0）。
+
+    2 段 CTE で重複計上を防ぐ:
+      - ``session_cost`` CTE: agent_cost_runs を mainline 除外しつつ
+        session_id 単位で SUM（1 session = 1 行）→ cost の重複計上を構造的に防ぐ
+      - ``outcome_sessions`` CTE: tier_recent_outcomes を
+        (session_id, task_complexity, tier) で DISTINCT 化。
+        session_id が NULL（v2.22.0 移行前行）は除外
+      - JOIN して complexity×tier 別に sessions / total_cost_usd / avg_cost_usd を算出
+
+    既知の不正確性（v2.22.0 許容・精度向上は v2.23.0）:
+      - session が複数の (complexity, tier) outcome を持つ場合、同一 session の cost が
+        複数の (complexity,tier) 行に重複加算されうる（1 session 内での cost 重複は防ぐが、
+        複数 outcome を持つ session の cross-outcome 重複は未解決）
+      - cost は session 全体の non-mainline 合計であり、特定 tier の model 行に限定しない
+      - agent_id 単位の紐づけはしていない
+
+    Args:
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+
+    Returns:
+        各行を dict にしたリスト。キー:
+        ``complexity``(str) / ``tier``(str) / ``sessions``(int) /
+        ``total_cost_usd``(float) / ``avg_cost_usd``(float)。
+        ORDER BY total_cost_usd DESC。
+        テーブル不在 / データ不在 / session_id 全 NULL / JOIN 0 行 /
+        DB 不在 / エラー時は空リストを返す。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # WAL は書き込みヘルパー呼び出し時または migrate 時に設定済みの前提
+            # （read_agent_cost_summary 等の read ヘルパーと同方針 / CR-M-001）
+            _apply_busy_timeout(conn)
+            rows = conn.execute(
+                "WITH session_cost AS ("
+                "    SELECT session_id,"
+                "           SUM(total_cost_usd) AS session_cost_usd"
+                "    FROM agent_cost_runs"
+                "    WHERE agent_type <> 'mainline'"
+                "    GROUP BY session_id"
+                "),"
+                "outcome_sessions AS ("
+                "    SELECT DISTINCT session_id, task_complexity, tier"
+                "    FROM tier_recent_outcomes"
+                "    WHERE session_id IS NOT NULL"
+                ") "
+                "SELECT o.task_complexity            AS complexity,"
+                "       o.tier                       AS tier,"
+                "       COUNT(DISTINCT o.session_id) AS sessions,"
+                "       SUM(sc.session_cost_usd)     AS total_cost_usd,"
+                "       SUM(sc.session_cost_usd) / COUNT(DISTINCT o.session_id)"
+                "           AS avg_cost_usd "
+                "FROM outcome_sessions o "
+                "JOIN session_cost sc ON sc.session_id = o.session_id "
+                "GROUP BY o.task_complexity, o.tier "
+                "ORDER BY total_cost_usd DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        # テーブル不在（no such table）は [] を返す（DB 未初期化でも止めない）
+        logger.debug(
+            "read_tier_cost_summary: table not found or inaccessible: %s",
+            type(exc).__name__,
+        )
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("read_tier_cost_summary: unexpected error: %s", type(exc).__name__)
+        return []
+
+    return [
+        {
+            "complexity": row[0],
+            "tier": row[1],
+            "sessions": int(row[2]),
+            "total_cost_usd": float(row[3]) if row[3] is not None else 0.0,
+            "avg_cost_usd": float(row[4]) if row[4] is not None else 0.0,
         }
         for row in rows
     ]

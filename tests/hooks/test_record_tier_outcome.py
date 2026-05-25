@@ -499,3 +499,118 @@ class TestClaudeDirGuard:
 
         with pytest.raises(RuntimeError, match=r"_CLAUDE_DIR resolution broke"):
             self._load_from_path(wrong_hook)
+
+
+# ---------------------------------------------------------------------------
+# T4 (v2.22.0): session_id 受け渡し検証
+# ---------------------------------------------------------------------------
+
+
+class TestSessionIdPropagation:
+    """v2.22.0 T4: record_tier_outcome が tier_selection.json の session_id を
+    record_tier_recent_outcome に渡すことを検証する。"""
+
+    def _write_selection_with_session(
+        self,
+        path: Path,
+        *,
+        complexity: str,
+        tier: str,
+        session_id: str,
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "complexity": complexity,
+                "tier": tier,
+                "mode": "thompson",
+                "session_id": session_id,
+            }),
+            encoding="utf-8",
+        )
+
+    def test_session_id_passed_to_record_tier_recent_outcome(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tier_selection.json に session_id があるとき、
+        record_tier_recent_outcome に session_id が渡されること。
+        monkeypatch で呼び出し引数をキャプチャして検証する。
+        """
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        self._write_selection_with_session(
+            sel_path,
+            complexity="simple",
+            tier="haiku",
+            session_id="test-session-abc123",
+        )
+
+        mod = _load_hook_module("record_tier_outcome_t4_a")
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
+
+        from c3 import db as c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        # record_tier_recent_outcome の呼び出し引数をキャプチャ
+        captured: list[dict] = []
+        original_fn = c3_db.record_tier_recent_outcome
+
+        def _capture(**kwargs):  # type: ignore[no-untyped-def]
+            captured.append(kwargs)
+            return original_fn(**kwargs)
+
+        monkeypatch.setattr(c3_db, "record_tier_recent_outcome", _capture)
+
+        rc = mod.main(["--outcome", "success"])
+        assert rc == 0
+
+        assert len(captured) == 1
+        assert captured[0]["session_id"] == "test-session-abc123"
+        assert captured[0]["complexity"] == "simple"
+        assert captured[0]["tier"] == "haiku"
+        assert captured[0]["success"] is True
+
+    def test_no_session_id_in_json_passes_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """session_id キーが無い古い tier_selection.json（旧フォーマット）でも
+        crash せず、record_tier_recent_outcome に session_id=None が渡ること。
+        既存の tier_bandit 更新・recent_outcomes 記録が従来通り行われること。
+        """
+        db_path = tmp_path / "c3.db"
+        _create_c3_db(db_path)
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        # session_id キーを含まない旧フォーマット
+        _write_selection(sel_path, "medium", "sonnet")
+
+        mod = _load_hook_module("record_tier_outcome_t4_b")
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
+
+        from c3 import db as c3_db
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        # record_tier_recent_outcome の呼び出し引数をキャプチャ
+        captured: list[dict] = []
+        original_fn = c3_db.record_tier_recent_outcome
+
+        def _capture(**kwargs):  # type: ignore[no-untyped-def]
+            captured.append(kwargs)
+            return original_fn(**kwargs)
+
+        monkeypatch.setattr(c3_db, "record_tier_recent_outcome", _capture)
+
+        rc = mod.main(["--outcome", "success"])
+        assert rc == 0
+
+        # crash していない & session_id=None が渡されている
+        assert len(captured) == 1
+        assert captured[0]["session_id"] is None
+        assert captured[0]["complexity"] == "medium"
+        assert captured[0]["tier"] == "sonnet"
+
+        # tier_bandit が従来通り更新されている
+        params = c3_db.read_tier_params("medium", db_path=db_path)
+        assert params["sonnet"] == (2.0, 1.0, 1)
+        # tier_selection.json も削除されている
+        assert not sel_path.exists()

@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.22.0] - 2026-05-25
+
+**tier-routing cost 紐づけデータ蓄積**: tier_recent_outcomes に session_id 列を追加し、agent_cost_runs と JOIN できるデータ基盤を整備する。`c3 tier stats` に complexity×tier 別の平均コストセクションを追加する。cost-aware routing 本体は v2.23.0。
+
+**スコープ注記**: 単価テーブル自動更新は公式 price API が非提供のため pricing.py の手動メンテ継続。tier_bandit の total_cost_usd / cost_samples 列は v2.23.0 用に確保のみ（書き込み・読み出しなし）。
+
+### 機能追加
+
+- **`src/c3/migrations/003_tier_cost.sql`（新規）**: `tier_recent_outcomes` に `session_id TEXT` 列と `idx_tier_recent_session` インデックスを追加。`tier_bandit` に `total_cost_usd REAL DEFAULT 0.0` / `cost_samples INTEGER DEFAULT 0` 列を追加（v2.23.0 用確保のみ）。既存データは ADD COLUMN DEFAULT で保持（破壊的変更なし）。
+
+- **`src/c3/db.py`: `record_tier_recent_outcome` に `session_id` 追加**: kw-only 引数 `session_id: str | None = None` を追加。既存呼び出しは後方互換（省略時 NULL 保存）。
+
+- **`src/c3/db.py`: `read_tier_cost_summary` 追加**: tier_recent_outcomes × agent_cost_runs を session_id で JOIN し、complexity×tier 別の sessions / total_cost_usd / avg_cost_usd を返す。2 段 CTE で session コストの 1 session 内重複計上を防ぐ（mainline 除外・session 単位 SUM → DISTINCT JOIN）。テーブル不在・データ不在・session_id 全 NULL で `[]`。
+
+- **`.claude/hooks/select_tier.py`: session_id 記録**: UserPromptSubmit payload から session_id を取得し tier_selection.json に追記。session_id が None のときはキーを省略（既存テスト互換）。
+
+- **`.claude/skills/dev-workflow/scripts/record_tier_outcome.py`: session_id 受け渡し**: tier_selection.json から session_id を読み `record_tier_recent_outcome` に渡す。session_id キーが無い古い json でも動作（None として扱う）。
+
+- **`c3 tier stats` に Tier 別平均コストセクション追加**: `_collect_snapshot()` に `read_tier_cost_summary()` の結果を `tier_cost` キーで追加。human 表示に「Tier 別平均コスト（粗い概算 / 精度向上は v2.23.0）」セクションを追加。tier_cost が空のときは「（cost 紐づけデータ未収集）」と表示。`--json` 出力の `tier_cost` キーにも自動反映。
+
+### 変更
+
+- **`src/c3/__init__.py`**: `__version__` を `"2.21.0"` から `"2.22.0"` に更新。
+
+- **注記更新**: `c3 tier stats` の「cost-aware routing は v2.22.0 予定」を「データ紐づけ蓄積。cost-aware routing 本体は v2.23.0 予定」へ更新。
+
 ## [2.21.0] - 2026-05-25
 
 **tier-routing コスト統合（データ収集基盤）**: Claude Code セッションログ（`~/.claude/projects/<slug>/<session>.jsonl` + subagent jsonl）を読み込み、モデル単価で USD 換算して c3.db に蓄積するデータ収集基盤を整備する。将来の cost-aware routing（v2.22.0）の土台。

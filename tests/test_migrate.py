@@ -7,6 +7,7 @@ C 群 (2 件): 統合テスト - 既存 DB（v2.19.0 想定）からの upgrade
 D 群 (3 件): 失敗系テスト（ROLLBACK / MigrationError / FileNotFoundError）
 E 群 (1 件): _ensure_schema_migrations_table 冪等性単体テスト（Round 2 追加）
 F 群 (1 件): 002 migration 適用テスト（v2.21.0 追加）
+G 群 (4 件): 003 migration 適用テスト（v2.22.0 追加）
 """
 from __future__ import annotations
 
@@ -518,4 +519,154 @@ class TestMigrate002AgentCostRuns:
         # schema_migrations に '002' が記録されている
         assert "002" in migration_versions, (
             f"schema_migrations に '002' が記録されていません: {migration_versions}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# G 群: 003 migration 適用テスト (4 件、v2.22.0 追加)
+# ---------------------------------------------------------------------------
+
+class TestMigrate003TierCost:
+    """G 群: 003_tier_cost.sql の適用テスト。"""
+
+    def test_apply_003_returns_version_in_applied(self, tmp_path: Path):
+        """G1: apply_pending_migrations の戻り値に '003' が含まれる。
+
+        空 DB に 001+002+003 を適用し、戻り値リストに '003' が入ることを確認する。
+        """
+        db_path = tmp_path / "c3.db"
+        applied = apply_pending_migrations(db_path)
+
+        assert "003" in applied, f"003 が applied に含まれない: {applied}"
+        # 適用順も確認（001 < 002 < 003）
+        assert applied.index("001") < applied.index("003"), "001 が 003 より前に来るはず"
+        assert applied.index("002") < applied.index("003"), "002 が 003 より前に来るはず"
+
+    def test_apply_003_adds_columns_and_index(self, tmp_path: Path):
+        """G2: 003 適用後、tier_recent_outcomes に session_id 列と idx_tier_recent_session が、
+        tier_bandit に total_cost_usd / cost_samples 列が存在する。
+
+        total_cost_usd / cost_samples は v2.23.0 用確保のみ
+        （v2.22.0 では値の書き込み・読み出しなし）。
+        """
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # tier_recent_outcomes の列名一覧を取得
+            tro_columns = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(tier_recent_outcomes)"
+                ).fetchall()
+            }
+            # tier_bandit の列名一覧を取得
+            tb_columns = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(tier_bandit)"
+                ).fetchall()
+            }
+            # tier_recent_outcomes のインデックス一覧を取得
+            tro_indexes = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA index_list(tier_recent_outcomes)"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "session_id" in tro_columns, (
+            f"tier_recent_outcomes に session_id 列がありません: {tro_columns}"
+        )
+        assert "total_cost_usd" in tb_columns, (
+            f"tier_bandit に total_cost_usd 列がありません: {tb_columns}"
+        )
+        assert "cost_samples" in tb_columns, (
+            f"tier_bandit に cost_samples 列がありません: {tb_columns}"
+        )
+        assert "idx_tier_recent_session" in tro_indexes, (
+            f"idx_tier_recent_session INDEX がありません: {tro_indexes}"
+        )
+
+    def test_apply_003_preserves_existing_rows_with_defaults(self, tmp_path: Path):
+        """G3: 003 適用前に挿入した既存行が 003 適用後も保持され、追加列が DEFAULT 値になる。
+
+        - tier_bandit の既存行: total_cost_usd=0.0 / cost_samples=0
+        - tier_recent_outcomes の既存行: session_id=NULL
+        """
+        db_path = tmp_path / "c3.db"
+
+        # 001+002 まで適用してデータを挿入
+        from c3.migrate import _DEFAULT_MIGRATIONS_DIR
+        mdir_real = _DEFAULT_MIGRATIONS_DIR
+
+        # 実 migrations ディレクトリから 001+002 のみ適用するため、tmp に 001+002 だけコピーして使用
+        import shutil
+        mdir_tmp = tmp_path / "migrations_partial"
+        mdir_tmp.mkdir()
+        shutil.copy(mdir_real / "001_initial.sql", mdir_tmp / "001_initial.sql")
+        shutil.copy(mdir_real / "002_agent_cost_runs.sql", mdir_tmp / "002_agent_cost_runs.sql")
+
+        apply_pending_migrations(db_path, migrations_dir=mdir_tmp)
+
+        # 003 適用前にデータを挿入
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO tier_bandit (task_complexity, tier, alpha, beta, trials)"
+                " VALUES ('simple', 'haiku', 1.0, 1.0, 5)"
+            )
+            conn.execute(
+                "INSERT INTO tier_recent_outcomes (task_complexity, tier, success, ts)"
+                " VALUES ('simple', 'haiku', 1, '2026-01-01T00:00:00')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 003 を適用（実 migrations ディレクトリから。001+002 は schema_migrations に記録済みのためスキップ）
+        apply_pending_migrations(db_path)
+
+        # 003 適用後のデータ確認
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tb_row = conn.execute(
+                "SELECT total_cost_usd, cost_samples FROM tier_bandit"
+                " WHERE task_complexity='simple' AND tier='haiku'"
+            ).fetchone()
+            tro_row = conn.execute(
+                "SELECT session_id FROM tier_recent_outcomes"
+                " WHERE task_complexity='simple' AND tier='haiku'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert tb_row is not None, "tier_bandit の既存行が消えています"
+        assert tb_row[0] == 0.0, f"total_cost_usd の DEFAULT 値が不正: {tb_row[0]}"
+        assert tb_row[1] == 0, f"cost_samples の DEFAULT 値が不正: {tb_row[1]}"
+
+        assert tro_row is not None, "tier_recent_outcomes の既存行が消えています"
+        assert tro_row[0] is None, f"session_id の DEFAULT 値が NULL でない: {tro_row[0]}"
+
+    def test_apply_003_schema_migrations_records_003(self, tmp_path: Path):
+        """G4: 003 適用後 schema_migrations に '003' 行が記録されている。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            migration_versions = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "003" in migration_versions, (
+            f"schema_migrations に '003' が記録されていません: {migration_versions}"
         )
