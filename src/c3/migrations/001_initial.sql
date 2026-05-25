@@ -1,15 +1,13 @@
--- C3 SQLite schema (duckdb-hybrid: DuckDB ハイブリッド構成の基盤)
+-- C3 SQLite migration 001: 初期スキーマ定義
 --
--- このファイルは session_start.py の _run_init_c3_db ハンドラから読まれ、
--- `.claude/state/c3.db` に対して冪等に CREATE TABLE IF NOT EXISTS で適用される。
--- WAL モードへの切り替えは session_start.py 側で PRAGMA journal_mode=WAL を実行する。
+-- .claude/hooks/schema.sql (v2.19.0 まで使用) の DDL を逐語移植し、
+-- schema_migrations テーブル (v2.20.0 新規) を追加する。
+-- 旧 schema_version テーブルは末尾で DROP する。
 --
 -- 書き込みは Python の sqlite3 経由、読み・分析は DuckDB の sqlite_scanner で
 -- ATTACH してアクセスする想定（書き込みフローは sqlite3 に統一する）。
---
--- スキーマ変更時は schema_version を上げて、session_start.py の apply_schema()
--- にマイグレーション処理を追加すること（CREATE TABLE IF NOT EXISTS だけで
--- 表現できない変更が必要になった場合の備え）。
+
+BEGIN;
 
 -- ---------------------------------------------------------------------------
 -- v2.0.0 マイグレーション: PO（Parallel Orchestra）廃止に伴うテーブル削除
@@ -20,12 +18,15 @@ DROP TABLE IF EXISTS po_results;
 DROP TABLE IF EXISTS po_status;
 
 -- ---------------------------------------------------------------------------
--- スキーマバージョン管理
+-- スキーマバージョン管理 (v2.20.0 新規)
 -- ---------------------------------------------------------------------------
+-- 旧 schema_version (version INTEGER PK) の代わりに、適用済み migration の
+-- 一覧を保持する schema_migrations テーブルを定義する。
+-- version は NNN_xxx.sql のファイル名先頭 3 桁の文字列（例: '001'）。
 
-CREATE TABLE IF NOT EXISTS schema_version (
-    version     INTEGER PRIMARY KEY,
-    applied_at  TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    TEXT PRIMARY KEY,
+    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ---------------------------------------------------------------------------
@@ -101,3 +102,20 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_session
     ON agent_runs(session_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_agent
     ON agent_runs(agent_id, ts DESC);
+
+-- ---------------------------------------------------------------------------
+-- bootstrap: この migration 自体を schema_migrations に記録する
+-- ---------------------------------------------------------------------------
+-- apply_pending_migrations() の Python 側でも INSERT OR IGNORE を実行するが、
+-- 既存 DB（schema_version あり）からの初回 upgrade 時に SQL 内で先行記録しておく。
+-- Python 側の INSERT と二重になるが OR IGNORE で吸収される。
+INSERT OR IGNORE INTO schema_migrations (version) VALUES ('001');
+
+-- ---------------------------------------------------------------------------
+-- 旧 schema_version テーブルの削除 (v2.19.0 以前の DB からの upgrade)
+-- ---------------------------------------------------------------------------
+-- v2.19.0 以前の c3.db には schema_version (version INTEGER PK) が存在する。
+-- v2.20.0 では schema_migrations に一本化するため DROP する。
+DROP TABLE IF EXISTS schema_version;
+
+COMMIT;

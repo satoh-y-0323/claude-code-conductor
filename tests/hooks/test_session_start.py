@@ -20,30 +20,33 @@ SessionStart hook の統合エントリポイント。3 つの責務を 1 ファ
   4. シンボリックリンク削除（unlink、TOCTOU 安全）
   5. リンク先が外部のシンボリックリンク: スキップ
   6. FileNotFoundError は黙って続行
+  7. 削除失敗時に stderr へパスを漏洩しない（SR L-1 / Round 4）
 
  _run_enable_sandbox:
-  7. worktree 内: スキップ
-  8. settings.json 不在: 作成しない
-  9. JSON 壊れている: スキップ
- 10. sandbox 設定済み: 変更しない
- 11. sandbox 未設定: FULL_SANDBOX_CONFIG を書き込む
+  8. worktree 内: スキップ
+  9. settings.json 不在: 作成しない
+ 10. JSON 壊れている: スキップ
+ 11. sandbox 設定済み: 変更しない
+ 12. sandbox 未設定: FULL_SANDBOX_CONFIG を書き込む
 
  _run_init_c3_db / apply_schema:
- 12. DB ファイルが新規作成される
- 13. 全テーブルが作られる
- 14. WAL モード有効化
- 15. schema_version 記録
- 16. 再実行で crash しない
- 17. 既存データ保持
- 18. schema_version 重複しない
- 19. schema.sql 不在でも main() は exit 0
- 20. DuckDB 連携で SELECT できる
+ 13. DB ファイルが新規作成される
+ 14. 全テーブルが作られる
+ 15. WAL モード有効化
+ 16. schema_migrations に '001' が記録される（v2.20.0+）
+ 17. 再実行で crash しない
+ 18. 既存データ保持
+ 19. schema_migrations は重複しない（v2.20.0+）
+ 20. migrations_dir 不在でも main() は exit 0（v2.20.0+）
+ 21. apply_schema が FileNotFoundError でパスを漏洩しない（SR M-1 / Round 2）
+ 22. DuckDB 連携で SELECT できる
 
  main() オーケストレータ:
- 21. 3 ハンドラが呼ばれる
- 22. 1 つが例外を投げても他が実行される
- 23. 全成功でも exit 0
- 24. 全失敗でも exit 0
+ 23. 3 ハンドラが呼ばれる
+ 24. 1 つが例外を投げても他が実行される
+ 25. 全成功でも exit 0
+ 26. 全失敗でも exit 0
+ 27. main() がハンドラ例外でパスを漏洩しない（SR M-1 / Round 3）
 """
 
 from __future__ import annotations
@@ -60,13 +63,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from c3.migrate import apply_pending_migrations
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 WORKTREE_ROOT = Path(__file__).parents[2]
 HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "session_start.py"
-SCHEMA_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "schema.sql"
 
 
 def _load_hook_module() -> types.ModuleType:
@@ -216,6 +220,40 @@ class TestClearFileHistory:
             # 例外は外に漏れない
             module._run_clear_file_history()
 
+    def test_clear_file_history_does_not_leak_path_on_delete_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ):
+        """SR L-1: 削除失敗時の例外メッセージにパスが含まれても、stderr には
+        例外型名のみ出力され、ホームディレクトリパスが漏洩しないこと。
+
+        - stderr に '削除に失敗' と例外型名（PermissionError）が含まれること
+        - stderr に 'secretuser' / 'C:/Users' / '.claude' のパス断片が含まれないこと
+        - 例外が外に漏れず関数が正常終了すること
+        """
+        module = _load_hook_module()
+        fake_history = tmp_path / "file-history"
+        fake_history.mkdir()
+        (fake_history / "locked.json").write_text("{}", encoding="utf-8")
+
+        leak_path = "C:/Users/secretuser/.claude/file-history/locked.json"
+
+        def _raising_unlink(path: str) -> None:
+            raise PermissionError(f"[Errno 13] Permission denied: '{leak_path}'")
+
+        with (
+            patch.object(module, "FILE_HISTORY_DIR", str(fake_history)),
+            patch.object(module.os, "unlink", side_effect=_raising_unlink),
+        ):
+            module._run_clear_file_history()  # 例外は外に漏れない
+
+        captured = capsys.readouterr()
+        assert "削除に失敗" in captured.err
+        assert "PermissionError" in captured.err
+        for fragment in ("secretuser", "C:/Users", ".claude"):
+            assert fragment not in captured.err, (
+                f"パス断片 {fragment!r} が stderr に漏洩しています。stderr={captured.err!r}"
+            )
+
 
 # ===========================================================================
 # 2. _run_enable_sandbox
@@ -305,7 +343,7 @@ class TestInitC3Db:
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        module.apply_schema(db_path=str(db_path))
 
         assert db_path.exists()
 
@@ -313,11 +351,12 @@ class TestInitC3Db:
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        module.apply_schema(db_path=str(db_path))
 
         tables = _list_tables(db_path)
+        # v2.20.0+: schema_version は廃止、schema_migrations に置換
         expected = {
-            'schema_version',
+            'schema_migrations',
             'review_decisions',
             'tier_bandit',
             'tier_recent_outcomes',
@@ -326,16 +365,16 @@ class TestInitC3Db:
         missing = expected - tables
         assert not missing, f"作られていないテーブル: {missing}"
         # v2.0.0 で削除済みのテーブルが復活していないこと
-        legacy_dropped = {'po_results', 'po_status'}
+        legacy_dropped = {'po_results', 'po_status', 'schema_version'}
         assert not (legacy_dropped & tables), (
-            f"v2.0.0 で削除されたはずのテーブルが残っている: {legacy_dropped & tables}"
+            f"廃止済みのテーブルが残っている: {legacy_dropped & tables}"
         )
 
     def test_wal_mode_is_enabled(self, tmp_path: Path):
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        module.apply_schema(db_path=str(db_path))
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -344,35 +383,41 @@ class TestInitC3Db:
             conn.close()
         assert mode.lower() == 'wal'
 
-    def test_schema_version_is_recorded(self, tmp_path: Path):
+    def test_schema_migrations_records_version(self, tmp_path: Path):
+        """v2.20.0+: schema_migrations テーブルに '001' が記録される."""
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        applied = module.apply_schema(db_path=str(db_path))
 
+        # 戻り値に '001' が含まれる
+        assert '001' in applied
+        # schema_migrations テーブルにも記録される
         conn = sqlite3.connect(str(db_path))
         try:
-            rows = conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
+            rows = conn.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
         finally:
             conn.close()
-        assert rows == [(module.SCHEMA_VERSION,)]
+        assert rows == [('001',)]
 
     def test_reapply_does_not_crash(self, tmp_path: Path):
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        module.apply_schema(db_path=str(db_path))
+        module.apply_schema(db_path=str(db_path))
 
         tables = _list_tables(db_path)
-        assert 'schema_version' in tables
+        assert 'schema_migrations' in tables
         assert 'agent_runs' in tables
 
     def test_existing_data_is_preserved(self, tmp_path: Path):
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        module.apply_schema(db_path=str(db_path))
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -386,7 +431,7 @@ class TestInitC3Db:
         finally:
             conn.close()
 
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        module.apply_schema(db_path=str(db_path))
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -395,38 +440,125 @@ class TestInitC3Db:
             conn.close()
         assert count == 1
 
-    def test_schema_version_not_duplicated(self, tmp_path: Path):
+    def test_schema_migrations_not_duplicated(self, tmp_path: Path):
+        """v2.20.0+: 複数回適用しても schema_migrations の '001' 行は 1 件のみ."""
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        module.apply_schema(db_path=str(db_path))
+        module.apply_schema(db_path=str(db_path))
+        module.apply_schema(db_path=str(db_path))
 
         conn = sqlite3.connect(str(db_path))
         try:
-            count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
         finally:
             conn.close()
         assert count == 1
 
-    def test_main_returns_zero_when_schema_missing(
+    def test_main_returns_zero_when_migrations_dir_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """schema.sql が無くても main() は exit 0 を返す."""
+        """migrations_dir が不在でも main() は exit 0 を返す（v2.20.0+）."""
         module = _load_hook_module()
 
         # 全ハンドラが副作用を起こさないように差し替え
         monkeypatch.setattr(module, '_run_clear_file_history', lambda: None)
         monkeypatch.setattr(module, '_run_enable_sandbox', lambda: None)
-        # init_c3_db のみ schema を欠落させる
-        monkeypatch.setattr(module, 'SCHEMA_PATH', str(tmp_path / "missing.sql"))
+        # STATE_DIR / DB_PATH を tmp に変更（state dir 作成の副作用を隔離）
         monkeypatch.setattr(module, 'STATE_DIR', str(tmp_path / "state"))
         monkeypatch.setattr(module, 'DB_PATH', str(tmp_path / "state" / "c3.db"))
 
-        # apply_schema が ValueError を投げる状況でも main() は exit 0
-        result = module.main()
+        # NOTE: apply_schema は関数内 `from c3.migrate import apply_pending_migrations`
+        # を使うため、c3.migrate.apply_pending_migrations へのパッチが有効になる。
+        # 将来 apply_schema がモジュールトップレベル import にリファクタされた場合は
+        # パッチ対象を 'session_start.apply_pending_migrations' 等に変える必要がある。
+        import unittest.mock as mock
+        with mock.patch(
+            'c3.migrate.apply_pending_migrations',
+            side_effect=FileNotFoundError("migrations dir not found"),
+        ):
+            result = module.main()
         assert result == 0
+
+    def test_apply_schema_does_not_leak_path_on_missing_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ):
+        """SR M-1: apply_schema が FileNotFoundError（パス入り）を受けても
+        stderr に固定文言のみ出力し、ユーザー名・インストールパスを漏洩しない。
+
+        - stderr に固定文言 'c3 migrations directory not found (wheel may be corrupted)' が含まれる
+        - stderr に 'secretuser' / 'site-packages' / 'C:/Users' のようなパス断片が含まれない
+        - apply_schema(...) が [] を返す
+        """
+        module = _load_hook_module()
+        db_path = tmp_path / "c3.db"
+
+        # ユーザー名を含む詳細パスを持つ例外を raise するよう mock
+        import unittest.mock as mock
+        leak_path = "C:/Users/secretuser/AppData/Local/Programs/Python/site-packages/c3/migrations"
+        with mock.patch(
+            'c3.migrate.apply_pending_migrations',
+            side_effect=FileNotFoundError(
+                f"migrations_dir が存在しません: {leak_path}"
+            ),
+        ):
+            result = module.apply_schema(db_path=str(db_path))
+
+        captured = capsys.readouterr()
+        # 戻り値が空リスト
+        assert result == [], f"戻り値が [] であるはずが {result!r}"
+        # 固定文言が含まれる
+        assert "c3 migrations directory not found (wheel may be corrupted)" in captured.err, (
+            f"固定文言が stderr に含まれていない。stderr={captured.err!r}"
+        )
+        # パス断片が漏洩していない
+        for fragment in ("secretuser", "site-packages", "C:/Users"):
+            assert fragment not in captured.err, (
+                f"パス断片 {fragment!r} が stderr に漏洩しています。stderr={captured.err!r}"
+            )
+
+    def test_main_does_not_leak_path_on_handler_exception(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ):
+        """SR M-1: main() のハンドラが db_path を含む例外を raise しても
+        stderr に例外型名のみ出力され、パス断片が含まれないこと。
+        また main() の戻り値が 0（セッション継続）であること。
+
+        - stderr に例外型名（例: OperationalError）が含まれること
+        - stderr に 'secretuser' / 'C:/Users' / 'c3.db' 等のパス断片が含まれないこと
+        - main() の戻り値が 0 であること
+        """
+        module = _load_hook_module()
+
+        # _run_clear_file_history と _run_enable_sandbox は副作用なし
+        import unittest.mock as mock
+        with (
+            mock.patch.object(module, '_run_clear_file_history', lambda: None),
+            mock.patch.object(module, '_run_enable_sandbox', lambda: None),
+            mock.patch.object(
+                module,
+                '_run_init_c3_db',
+                side_effect=sqlite3.OperationalError(
+                    "unable to open database file:"
+                    " C:/Users/secretuser/project/.claude/state/c3.db"
+                ),
+            ),
+        ):
+            result = module.main()
+
+        captured = capsys.readouterr()
+        # main() はセッションを止めない
+        assert result == 0, f"main() は 0 を返すはずが {result!r}"
+        # 例外型名が stderr に含まれること
+        assert "OperationalError" in captured.err, (
+            f"例外型名 'OperationalError' が stderr に含まれていない。stderr={captured.err!r}"
+        )
+        # パス断片が漏洩していないこと
+        for fragment in ("secretuser", "C:/Users", "c3.db"):
+            assert fragment not in captured.err, (
+                f"パス断片 {fragment!r} が stderr に漏洩しています。stderr={captured.err!r}"
+            )
 
     def test_duckdb_can_attach_and_query(self, tmp_path: Path):
         try:
@@ -436,7 +568,7 @@ class TestInitC3Db:
 
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
-        module.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+        module.apply_schema(db_path=str(db_path))
 
         conn = sqlite3.connect(str(db_path))
         try:

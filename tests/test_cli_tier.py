@@ -16,16 +16,12 @@ from c3 import db as c3_db
 
 
 WORKTREE_ROOT = Path(__file__).parents[1]
-SCHEMA_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "schema.sql"
 INIT_HOOK_PATH = WORKTREE_ROOT / ".claude" / "hooks" / "session_start.py"
 
 
 def _create_c3_db(db_path: Path) -> None:
-    spec = importlib.util.spec_from_file_location("init_c3_db_clitier", INIT_HOOK_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
-    mod.apply_schema(db_path=str(db_path), schema_path=str(SCHEMA_PATH))
+    from c3.migrate import apply_pending_migrations
+    apply_pending_migrations(db_path)
 
 
 def _seed_bandit(

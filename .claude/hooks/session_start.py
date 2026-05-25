@@ -12,21 +12,22 @@
 設計判断:
 - 旧 3 ファイルを統合することで SessionStart hook は本ファイル 1 本のみで完結
 - init-session SKILL.md からの手動 2 回呼び出しが不要になる
-- 旧 init_c3_db.py の `apply_schema()` / `SCHEMA_VERSION` は test 互換性のため
-  module レベルでそのまま公開する
+- v2.20.0 で apply_schema() を c3.migrate.apply_pending_migrations() に委譲。
+  SCHEMA_VERSION / SCHEMA_PATH 定数および schema.sql は廃止。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
-from datetime import datetime, timezone
 
 from session_utils import is_worktree
+
+logger = logging.getLogger(__name__)
 
 try:
     sys.stdin.reconfigure(encoding="utf-8")
@@ -71,7 +72,11 @@ def _run_clear_file_history() -> None:
         except FileNotFoundError:
             pass  # already deleted by another process between listdir and unlink/rmtree
         except Exception as e:
-            print(f'[clear-file-history] 削除に失敗: {name} ({e})', file=sys.stderr)
+            # [SR-R-001] shutil.rmtree / os.unlink のエラーメッセージには失敗したパス
+            # （FILE_HISTORY_DIR はホームディレクトリ配下のためユーザー名を含む）が
+            # 含まれる可能性がある。main() の SR M-1 修正と一貫して例外型名のみ出力する。
+            logger.debug('[clear-file-history] delete failed: %s', name, exc_info=True)
+            print(f'[clear-file-history] 削除に失敗: {name} ({type(e).__name__})', file=sys.stderr)
 
     print(f'[clear-file-history] {deleted} 件削除しました。')
 
@@ -113,7 +118,9 @@ def _run_enable_sandbox() -> None:
         try:
             settings = json.load(f)
         except json.JSONDecodeError as e:
-            print(f'[enable-sandbox] settings.json の JSON 解析に失敗しました: {e}')
+            # [SR-R-001] 一貫性のため例外型名のみ出力（JSONDecodeError 自体はパスを含まない
+            # が、SR M-1 / _run_clear_file_history と方針を統一する）。
+            print(f'[enable-sandbox] settings.json の JSON 解析に失敗しました: {type(e).__name__}')
             return
 
     if settings.get('sandbox', {}).get('enabled') is True:
@@ -132,7 +139,14 @@ def _run_enable_sandbox() -> None:
                 json.dump(settings, tmp_f, ensure_ascii=False, indent=2)
                 tmp_f.write('\n')
         except Exception:
-            os.close(fd)
+            # [CR-E-001] os.fdopen 成功後の書き込み例外では with __exit__ が既に
+            # fd を閉じているため、ここでの os.close(fd) は OSError(Bad file
+            # descriptor) を raise し元の例外を上書きしてしまう。os.fdopen 自体が
+            # 失敗して with に入らなかった場合のみ fd 解放が必要なので OSError を無視する。
+            try:
+                os.close(fd)
+            except OSError:
+                pass
             raise
         os.replace(tmp_path, settings_path)
         tmp_path = None  # os.replace が成功したので finally でのクリーンアップ不要
@@ -147,19 +161,10 @@ def _run_enable_sandbox() -> None:
 # 3. C3 SQLite DB 初期化（旧 init_c3_db.py）
 # =============================================================================
 
-# 現行スキーマバージョン。schema.sql に破壊的変更を入れたら +1 して
-# マイグレーションロジックを apply_schema() に追加する。
-SCHEMA_VERSION = 3  # v2.0.0 で PO 廃止に伴い po_results / po_status を削除
-
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 STATE_DIR = os.path.join(_CLAUDE_DIR, 'state')
 DB_PATH = os.path.join(STATE_DIR, 'c3.db')
-SCHEMA_PATH = os.path.join(_HOOKS_DIR, 'schema.sql')
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')
 
 
 def _ensure_state_dir() -> None:
@@ -167,38 +172,36 @@ def _ensure_state_dir() -> None:
     os.makedirs(STATE_DIR, exist_ok=True)
 
 
-def apply_schema(db_path: str = DB_PATH, schema_path: str = SCHEMA_PATH) -> None:
-    """schema_path の DDL を db_path の SQLite に適用する。
+def apply_schema(db_path: str = DB_PATH) -> list[str]:
+    """SQLite DB にスキーマ migration を適用する。
 
-    - WAL モードに切り替える
-    - schema.sql の CREATE TABLE IF NOT EXISTS 等を実行
-    - schema_version テーブルに現行バージョンを INSERT OR IGNORE
+    v2.20.0+: 実体は c3.migrate.apply_pending_migrations() に委譲。
+    schema.sql は廃止され、src/c3/migrations/ の連番 SQL ファイルで管理される。
 
-    冪等: 既存 DB に何度呼んでもエラーにならない。
+    戻り値: 今回新たに適用した migration version のリスト（例: ['001']）
     """
-    with open(schema_path, 'r', encoding='utf-8') as f:
-        ddl = f.read()
-
-    conn = sqlite3.connect(db_path, timeout=30)
+    from c3.migrate import apply_pending_migrations
     try:
-        # WAL モードを有効化（reader が writer をブロックしない）
-        conn.execute('PRAGMA journal_mode=WAL')
-        # 全 DDL を一括実行（CREATE TABLE IF NOT EXISTS なので冪等）
-        conn.executescript(ddl)
-        # スキーマバージョンを記録（既存なら無視）
-        conn.execute(
-            'INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, ?)',
-            (SCHEMA_VERSION, _now_iso()),
+        return apply_pending_migrations(db_path)
+    except FileNotFoundError:
+        # migrations ディレクトリ不在（wheel が壊れている等）でもセッションは続行。
+        # [SR-R-001] 例外 e にはインストールパス（ユーザー名含む）が含まれるため
+        # stderr には固定文言のみ出力する。詳細は内部 logger（DEBUG）に残す。
+        logger.debug('apply_schema: migrations directory not found', exc_info=True)
+        print(
+            'warning: c3 migrations directory not found (wheel may be corrupted)',
+            file=sys.stderr,
         )
-        conn.commit()
-    finally:
-        conn.close()
+        return []
 
 
 def _run_init_c3_db() -> None:
     """C3 SQLite DB を初期化する."""
     _ensure_state_dir()
-    apply_schema()
+    # [CR-M-003] apply_schema() の戻り値（適用した migration version の list[str]）は
+    # 現状ログ・利用しない。セッション開始を妨げないことを最優先し、適用結果の通知は
+    # 行わない設計（将来 welcome メッセージ等で利用する場合はここで受ける）。
+    _ = apply_schema()
 
 
 # =============================================================================
@@ -222,7 +225,14 @@ def main() -> int:
             handler()
         except Exception as e:
             # 各ハンドラ失敗時は警告のみ（次のハンドラを継続）
-            print(f'[session_start:{label}] failed: {e}', file=sys.stderr)
+            # [SR-R-001] 例外メッセージには db_path 等のプロジェクトパスが含まれる
+            # 可能性がある（例: sqlite3.OperationalError）。stderr には例外型名のみ
+            # 出力し、詳細は内部 logger（DEBUG）に残す。
+            # NOTE(SR Info-2): exc_info=True は現状ハンドラ未設定で出力されないが、
+            # 将来 logging ハンドラを追加する場合はスタックトレースにインストールパスが
+            # 含まれる点に留意する。
+            logger.debug('[session_start:%s] handler failed', label, exc_info=True)
+            print(f'[session_start:{label}] failed: {type(e).__name__}', file=sys.stderr)
     return 0
 
 

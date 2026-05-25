@@ -37,3 +37,6 @@ skills/phase-c-plan/SKILL.md
 skills/phase-d-implement/SKILL.md
 skills/phase-debug/SKILL.md
 skills/phase-e-review/SKILL.md
+
+# ---- v2.20.0: schema.sql を c3/migrations/ へ移行 ----
+hooks/schema.sql

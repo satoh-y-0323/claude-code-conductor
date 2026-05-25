@@ -5,3 +5,4 @@
 # Lines starting with '#' are comments. Blank lines ignored.
 
 v2.11.0|summarize-memory agent + skill removed; replaced by `c3 recall`|summarize-memory エージェント / skill を完全廃止。代替は `c3 recall` の意味検索。
+v2.20.0|hooks/schema.sql removed; SQLite schema is now managed by c3/migrations/ (auto-applied at session_start)|hooks/schema.sql を削除しました。SQLite スキーマは c3/migrations/ (wheel 内) で管理され session_start で自動適用されます。

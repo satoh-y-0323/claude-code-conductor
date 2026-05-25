@@ -1,5 +1,69 @@
 # Changelog
 
+## [2.20.0] - 2026-05-25
+
+**SQLite schema migration 枠組み導入**: `.claude/hooks/schema.sql` の「冪等 DDL 一発実行」から、`src/c3/migrations/` の「連番 NNN_xxx.sql migration runner」へ移行する基盤を整備する。
+v2.18.0 の `deletions.txt` 機構・v2.19.0 の `breaking-changes.txt` 機構の初の実運用ドッグフーディングでもある。
+
+### 機能追加
+
+- **`src/c3/migrate.py`（新規）**: SQLite migration runner。
+  公開 API `apply_pending_migrations(db_path, migrations_dir=None) -> list[str]` および例外クラス `MigrationError(RuntimeError)` を提供。
+  `src/c3/migrations/` 配下の連番 SQL ファイルを昇順に適用し、適用済み migration を `schema_migrations` テーブルで管理する。
+  WAL モード / busy_timeout=5000ms を冒頭で設定（既存 `c3.db.BUSY_TIMEOUT_MS` を SSOT として参照）。
+
+- **`src/c3/migrations/001_initial.sql`（新規）**: 既存 `hooks/schema.sql` の DDL を逐語移植 + bootstrap。
+  `schema_migrations` テーブル新設、旧 `schema_version` テーブル DROP、`BEGIN;` / `COMMIT;` 明示記述による transaction 境界保証を含む。
+
+- **`src/c3/migrations/__init__.py`（新規）**: Python package marker（wheel 自動同梱のため）。
+
+- **`src/c3/migrations/README.md`（新規）**: 命名規約（`NNN_xxx.sql`）・`BEGIN;`/`COMMIT;` 必須運用ルール・002 以降の追加手順を記載。
+
+- **`schema_migrations` テーブル（新規）**: 適用済み migration の一覧を保持（`version TEXT PK`, `applied_at TIMESTAMP`）。
+  旧 `schema_version (version INTEGER PK, applied_at TEXT)` を置換。
+
+### 変更
+
+- **`.claude/hooks/session_start.py`**: `apply_schema(db_path)` の実体を `c3.migrate.apply_pending_migrations()` に委譲。
+  戻り値が `None` → `list[str]`（適用した migration version のリスト）に変更。
+  migrations_dir 不在時は `FileNotFoundError` を warning として stderr に出力し、セッションは続行する（exit 0 維持の既存方針踏襲）。
+
+- **`src/c3/__init__.py`**: `__version__` を `"2.19.0"` から `"2.20.0"` に更新。
+
+### 破壊的変更
+
+- **`hooks/schema.sql` 削除**: `.claude/hooks/schema.sql` をリポジトリから削除。
+  SQLite スキーマは `src/c3/migrations/` (wheel 内) で管理され、`session_start` で自動適用される。
+  利用先からの削除は `deletions.txt` 機構（v2.18.0）によって `c3 update` 実行時に処理される。
+
+- **`apply_schema` の `schema_path` 引数削除**: `session_start.py::apply_schema()` から `schema_path` 引数を完全削除（deprecation 期間なし）。
+  呼び出し側で `schema_path=` を渡している場合は削除が必要（`c3 update` 実行後のテストコード等）。
+
+### ドキュメント
+
+- **`.claude/docs/config-policy.md`**:
+  - §1-1 配布元ディレクトリ表に `src/c3/migrations/` を追加（Python package・wheel 同梱・3 ファイル同期対象外）
+  - §3 カテゴリ #1 hooks 備考に「v2.20.0 で `hooks/schema.sql` を削除、SQLite スキーマは `src/c3/migrations/` に移管」を追記
+
+- **`.claude/breaking-changes.txt`**: v2.20.0 エントリ追記（`hooks/schema.sql` 削除）
+
+- **`.claude/deletions.txt`**: `hooks/schema.sql` 追記（利用先からの自動削除を `c3 update` 経由で実現）
+
+### ドッグフーディング
+
+- **v2.18.0 `deletions.txt` 機構**: `hooks/` 配下の非テスト SQL ファイル削除の初の実運用事例（過去は `agents/` / `skills/` の `.md` のみ）。
+- **v2.19.0 `breaking-changes.txt` 機構**: v2.20.0 エントリを新規追加して MINOR bump 表示路を初通過させる。
+- **`scripts/extract_breaking_changes.py`**: `--dry-run` / 通常実行 / `--check` のフルライフサイクル運用。
+
+### 影響
+
+- **既存利用先**: `c3 update` 実行時に v2.20.0 breaking change が表示される（v2.19.0 以降の利用先）。
+  `.claude/hooks/schema.sql` は `c3 update` 実行時に自動削除される。
+  次回セッション開始時に `apply_pending_migrations` が `schema_migrations` テーブルを新設し 001 を適用する。
+  既存データ（`review_decisions` 等）は保持される。`schema_version` テーブルは削除される。
+
+---
+
 ## [2.19.0] - 2026-05-24
 
 **基盤整備リリース第 3 弾**: `c3 update` 実行時に breaking changes 表示 + MAJOR 承認プロンプトを導入する。
