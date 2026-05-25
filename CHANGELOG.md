@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.24.0] - 2026-05-25
+
+**tier-routing cost 精度向上**: tie-break が使う cost データを model 一致集計・USD/MTok レート化により信頼できるものにする。新関数 2 つを追加し、`select_tier` の cost_map 源を rate 関数へ切替。既存関数・tie-break ロジックは完全不変。
+
+**スコープ注記**:
+- `tier_bandit.total_cost_usd`/`cost_samples` への書き込み・cost-weighted Thompson 本格統合は **v2.25.0+**。
+- migration なし。**破壊的変更なし**（新関数追加・cost_map 値の意味変更のみ・既存関数 docstring 含め完全不変）。
+
+### 機能追加
+
+- **`src/c3/db.py`: `read_tier_cost_rate_summary(*, db_path=None) -> list[dict]`（新規）**: model 一致集計・(session, tier) 重複排除・USD/MTok レート化を行う精度向上版の cost 集計関数。`agent_cost_runs` を `agent_type <> 'mainline'` で読み、Python 側で `pricing.resolve_tier(model)` により tier 振り分け。`(session_id, tier)` 粒度で集約後、`tier_recent_outcomes` と突合して `(complexity, tier)` 別に集計。`rate_usd_per_mtok = total_cost_usd / (billable_tokens / 1_000_000)`（`billable_tokens = input_tokens + output_tokens`）で `tier_reference_cost`（USD/MTok）と同次元にする。`billable_tokens == 0` の (complexity,tier) は除外。未知 model 行はスキップ。戻り値 dict キー: `complexity / tier / sessions / total_cost_usd / billable_tokens / rate_usd_per_mtok`。内部畳み込み部は DB 非依存の純関数 `_compute_tier_cost_rate_summary` に分離。
+
+- **`src/c3/db.py`: `read_tier_cost_rate_for_complexity(complexity, *, db_path=None) -> dict[str, float]`（新規）**: `read_tier_cost_rate_summary` を complexity 一致 & `rate_usd_per_mtok > 0` でフィルタし `{tier: rate_usd_per_mtok}` を返す薄いラッパー（v2.23.0 の `read_tier_cost_for_complexity` と対称）。データ/DB 不在で `{}`。
+
+### 変更
+
+- **`.claude/hooks/select_tier.py`**: `main()` の cost_map 構築で `read_tier_cost_for_complexity` → `read_tier_cost_rate_for_complexity` に切替。tie-break ロジック不変・cost_map の値の意味が絶対 USD → USD/MTok レートに変化し、静的 `tier_reference_cost` と単位整合。コメント更新（「混在スケール・厳密化は v2.24.0」→「v2.24.0 で rate 化により整合済み」）。
+
+- **`src/c3/cli_tier.py`**: `c3 tier stats` に「Tier 別 USD/MTok レート（model 一致・tie-break が使用）」セクションを追加（complexity/tier/sessions/rate_usd_per_mtok 表示・データなしで「（rate データ未収集）」）。既存 session 合計 USD セクションも維持。「精度向上は v2.24.0」注記を「（粗い概算・session 合計 USD）」に更新。`--json` 出力に `tier_cost_rate` キー自動反映。DB 由来テキストへ `sanitize_terminal_text` 適用。
+
+- **`src/c3/__init__.py`**: `__version__` を `"2.23.0"` から `"2.24.0"` に更新。
+
+### 後方互換
+
+- 既存 `read_tier_cost_summary` / `read_tier_cost_for_complexity` は docstring 含め完全不変。
+- migration なし（`agent_cost_runs` の token 4 列 + model 列は v2.21.0 (002 migration) で既存）。
+
 ## [2.23.0] - 2026-05-25
 
 **tier-routing cost-aware tie-break**: `select_tier` の Thompson Sampling 分岐に「拮抗 tier 群内コスト tie-break」を追加する。サンプル最大から ε(=0.05) 以内の拮抗 tier が複数ある場合のみ、min-max 正規化コストが最安の tier を選ぶ。単独最大なら従来通り（挙動不変）。成功率を犠牲にしない最小スコープの cost 統合。
