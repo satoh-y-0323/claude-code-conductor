@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.26.0] - 2026-05-26
+
+**cost-weighted Thompson 本格統合（全 tier）・ESCALATION_THRESHOLD 調整可能化**: Thompson Sampling のサンプル値を全 tier でコスト重み付けして routing する機能を導入。failure-rate escalation 閾値を環境変数で調整可能にする。環境変数 3 種すべて未設定で v2.25.0 と完全一致。**破壊的変更なし**。
+
+### 機能追加
+
+- **`.claude/hooks/select_tier.py`: cost-weighted Thompson Sampling（全 tier 対象）**: スコアを `score = sample − λ·cost_norm`（cost_norm は全 tier の min-max 正規化）とし最大 tier を選ぶ routing を導入。λ は環境変数 `C3_TIER_COST_LAMBDA`（0〜1）で設定。λ>0 で発動し、安い tier が成功率優位な tier に勝ちうる（成功率 vs コストのトレードオフ）。λ=0 明示でコスト無視（純 Thompson）。`db.COST_LAMBDA_DEFAULT`（None）が SSOT。
+
+- **`.claude/hooks/select_tier.py`: `C3_ESCALATION_THRESHOLD` 対応**: failure-rate escalation の閾値を環境変数 `C3_ESCALATION_THRESHOLD`（0 < x ≤ 1）で設定可能に。`db.ESCALATION_THRESHOLD_DEFAULT`（0.5）が SSOT。NaN・範囲外・非数値は default 値に fallback。
+
+### 変更
+
+- **`.claude/hooks/select_tier.py`**: `SelectionResult` に `cost_weighted: bool` / `cost_lambda: float | None` を末尾追加（既存フィールド不変）。`write_tier_selection`/`build_additional_context` に cost-weighted 発動時 `cost_weighted` / `cost_lambda` を記録（既存 `cost_tiebreak` キーは不変）。
+
+- **`src/c3/db.py`**: `COST_LAMBDA_DEFAULT = None`・`ESCALATION_THRESHOLD_DEFAULT = 0.5` 定数を追加（環境変数オーバーライドの SSOT）。
+
+### 後方互換
+
+- `C3_TIER_COST_LAMBDA` 未設定（デフォルト None）時は v2.25.0 の ε tie-break 挙動を完全維持（routing 出力はバイト互換）。
+- `C3_TIER_EPSILON`・`C3_ESCALATION_THRESHOLD` 未設定時も v2.25.0 と完全一致。
+- 既存関数シグネチャ不変（`select_tier_detailed`/`select_tier` の λ は optional kwarg・`SelectionResult` は末尾フィールド追加）。
+- migration 不要（v2.22.0 の 003 で列確保済み）。**破壊的変更なし**。
+
 ## [2.25.0] - 2026-05-26
 
 **tier_bandit cost 蓄積・EPSILON 調整可能化・例外ログ統一**: v2.22.0 で列確保済みの `tier_bandit.total_cost_usd`/`cost_samples` へ実測値を materialize する同期関数を追加。cost-aware tie-break の拮抗判定閾値を定数 SSOT 化し環境変数で上書き可能にする。db.py 既存 6 関数の例外ログを型名統一（SR-R-001）。routing 挙動は不変。cost-weighted Thompson 本格統合は v2.26.0。
