@@ -89,6 +89,23 @@ def main() -> int:
     except Exception as e:
         print(f"[session_stop:consolidate_memory] failed: {e}", file=sys.stderr)
 
+    # Phase 3: usage_ingester — セッションログからコスト集計データを ingestion
+    # worktree session では起動しない（stop.run の is_worktree 判定と整合）
+    # 安全側動作: session_utils ロード失敗時や is_worktree 判定失敗時は ingester をスキップする。
+    # worktree 判定不能で誤起動するより skip を優先（except Exception で捕捉 → 早期終了）。
+    try:
+        session_utils_module = _load_module("session_utils")
+        if not session_utils_module.is_worktree(os.getcwd()):
+            session_id = payload.get("session_id")
+            transcript_path = payload.get("transcript_path")
+            if session_id and transcript_path:
+                from pathlib import Path as _Path  # noqa: PLC0415
+                from c3.usage_ingester import ingest_session  # noqa: PLC0415
+                project_dir = _Path(transcript_path).parent
+                ingest_session(session_id=session_id, project_dir=project_dir)
+    except Exception as e:
+        print(f"[session_stop:usage_ingester] failed: {type(e).__name__}", file=sys.stderr)
+
     return 0
 
 

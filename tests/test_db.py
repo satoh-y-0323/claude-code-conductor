@@ -1,12 +1,12 @@
-"""Tests for src/c3/db.py:locate_c3_db()
+"""Tests for src/c3/db.py:locate_c3_db() + v2.21.0 usage-ingester ヘルパー
 
 `locate_c3_db()` の 3 経路を契約として固定する回帰テスト:
   1. C3_DB_PATH env (worktree 内子プロセス用、v2.0.0+)
   2. C3_PO_DB_PATH env (legacy, v1.x 互換)
   3. CWD からの親遡り fallback
 
-worktree 環境変化（Claude Code v2.1.149 sandbox 厳格化など）に対する
-C3 側の env-aware path 解決の壊れにくさを担保する。
+G 群 (6 件): insert_agent_cost_run / read_agent_cost_summary /
+             get_ingest_offset / set_ingest_offset のヘルパーテスト
 """
 
 from __future__ import annotations
@@ -16,7 +16,13 @@ from pathlib import Path
 
 import pytest
 
-from c3.db import locate_c3_db
+from c3.db import (
+    get_ingest_offset,
+    insert_agent_cost_run,
+    locate_c3_db,
+    read_agent_cost_summary,
+    set_ingest_offset,
+)
 
 
 def _make_fake_db(base: Path) -> Path:
@@ -164,3 +170,151 @@ def test_locate_c3_db_env_pointing_to_directory_falls_back_to_traversal(
         "Directory env path should fall through to parent traversal."
     )
     _assert_fallback_warning(caplog)
+
+
+# ---------------------------------------------------------------------------
+# G 群: insert_agent_cost_run / read_agent_cost_summary / offset ヘルパー (6 件)
+# ---------------------------------------------------------------------------
+
+
+def _make_c3_db(tmp_path: Path) -> Path:
+    """tmp_path に c3.db を作成して 001+002 migration を適用する。"""
+    from c3.migrate import apply_pending_migrations  # noqa: PLC0415
+    db_path = tmp_path / "c3.db"
+    apply_pending_migrations(db_path)
+    return db_path
+
+
+class TestAgentCostHelpers:
+    """G 群: v2.21.0 で追加した 4 ヘルパーのテスト。"""
+
+    def test_insert_and_summary(self, tmp_path: Path):
+        """G1: insert_agent_cost_run → read_agent_cost_summary で集計が返る。"""
+        db = _make_c3_db(tmp_path)
+
+        ok = insert_agent_cost_run(
+            session_id="aaaabbbb-cccc-dddd-eeee-000000000001",
+            agent_id="agent-abc",
+            agent_type="developer",
+            description="Test agent",
+            model="claude-sonnet-4-6-20260101",
+            attribution_skill=None,
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=200,
+            cache_create_tokens=100,
+            total_cost_usd=0.005,
+            db_path=db,
+        )
+        assert ok is True
+
+        summary = read_agent_cost_summary(db_path=db)
+        assert len(summary) == 1
+        row = summary[0]
+        assert row["agent_type"] == "developer"
+        assert row["runs"] == 1
+        assert abs(row["total_cost_usd"] - 0.005) < 1e-9
+        assert row["input_tokens"] == 1000
+        assert row["output_tokens"] == 500
+
+    def test_upsert_overwrites_not_appends(self, tmp_path: Path):
+        """G2: 同一 PK で upsert すると上書きされ行が増えない。"""
+        db = _make_c3_db(tmp_path)
+
+        kwargs = dict(
+            session_id="aaaabbbb-cccc-dddd-eeee-000000000002",
+            agent_id="agent-abc",
+            agent_type="developer",
+            description=None,
+            model="claude-sonnet-4-6-20260101",
+            attribution_skill=None,
+            db_path=db,
+        )
+        insert_agent_cost_run(
+            **kwargs,
+            input_tokens=100, output_tokens=50,
+            cache_read_tokens=0, cache_create_tokens=0,
+            total_cost_usd=0.001,
+        )
+        insert_agent_cost_run(
+            **kwargs,
+            input_tokens=200, output_tokens=100,
+            cache_read_tokens=0, cache_create_tokens=0,
+            total_cost_usd=0.002,
+        )
+
+        summary = read_agent_cost_summary(db_path=db)
+        assert len(summary) == 1
+        assert summary[0]["runs"] == 1, "upsert で行が増えてはいけない"
+        assert summary[0]["input_tokens"] == 200, "最新値に上書きされるはず"
+
+    def test_different_model_creates_separate_row(self, tmp_path: Path):
+        """G3: 別 model は別行になる（PK に model が含まれる）。"""
+        db = _make_c3_db(tmp_path)
+
+        base = dict(
+            session_id="aaaabbbb-cccc-dddd-eeee-000000000003",
+            agent_id="agent-abc",
+            agent_type="developer",
+            description=None,
+            attribution_skill=None,
+            input_tokens=100, output_tokens=50,
+            cache_read_tokens=0, cache_create_tokens=0,
+            total_cost_usd=0.001,
+            db_path=db,
+        )
+        insert_agent_cost_run(**base, model="claude-sonnet-4-6-20260101")
+        insert_agent_cost_run(**base, model="claude-haiku-4-5-20260101")
+
+        summary = read_agent_cost_summary(db_path=db)
+        total_runs = sum(r["runs"] for r in summary)
+        assert total_runs == 2, f"別 model が別行にならなかった: {summary}"
+
+    def test_get_ingest_offset_unset_returns_zero(self, tmp_path: Path):
+        """G4: get_ingest_offset — 未設定キーは 0 を返す。"""
+        db = _make_c3_db(tmp_path)
+        offset = get_ingest_offset("nonexistent-key", db_path=db)
+        assert offset == 0
+
+    def test_set_get_ingest_offset_round_trip(self, tmp_path: Path):
+        """G5: set_ingest_offset → get_ingest_offset round-trip。"""
+        db = _make_c3_db(tmp_path)
+
+        ok = set_ingest_offset("session-abc:mainline", 42, db_path=db)
+        assert ok is True
+
+        offset = get_ingest_offset("session-abc:mainline", db_path=db)
+        assert offset == 42
+
+        # 更新も確認
+        set_ingest_offset("session-abc:mainline", 99, db_path=db)
+        assert get_ingest_offset("session-abc:mainline", db_path=db) == 99
+
+    def test_db_absent_returns_silent_failures(self, tmp_path: Path):
+        """G6: DB 不在パスで insert/summary/get/set が False/[]/0/False（静かに失敗）。"""
+        absent_db = tmp_path / "nonexistent.db"
+
+        insert_ok = insert_agent_cost_run(
+            session_id="aaaabbbb-cccc-dddd-eeee-000000000006",
+            agent_id="mainline",
+            agent_type="mainline",
+            description=None,
+            model="claude-opus-4-7-20260101",
+            attribution_skill=None,
+            input_tokens=10,
+            output_tokens=5,
+            cache_read_tokens=0,
+            cache_create_tokens=0,
+            total_cost_usd=0.0,
+            db_path=absent_db,
+        )
+        assert insert_ok is False
+
+        summary = read_agent_cost_summary(db_path=absent_db)
+        assert summary == []
+
+        offset = get_ingest_offset("some-key", db_path=absent_db)
+        assert offset == 0
+
+        set_ok = set_ingest_offset("some-key", 10, db_path=absent_db)
+        assert set_ok is False

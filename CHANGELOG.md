@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.21.0] - 2026-05-25
+
+**tier-routing コスト統合（データ収集基盤）**: Claude Code セッションログ（`~/.claude/projects/<slug>/<session>.jsonl` + subagent jsonl）を読み込み、モデル単価で USD 換算して c3.db に蓄積するデータ収集基盤を整備する。将来の cost-aware routing（v2.22.0）の土台。
+
+**スコープ注記**: 本リリースはデータ収集基盤のみ。cost-aware routing と tier_bandit のコスト列は v2.22.0 予定。
+
+### 機能追加
+
+- **`src/c3/pricing.py`（新規）**: Claude API モデルの USD/MTok 単価から token コストを計算する純関数モジュール。
+  `resolve_tier(model)`・`compute_cost_usd(...) -> tuple[float, bool]`・`known_models()` を提供。
+  Opus は世代で単価が 3 倍異なる（4.1/4=$15 系、4.5/4.6/4.7=$5 系）ため、具体パターン優先マッチ → tier 部分一致 fallback の 2 段構成を採用。
+  単価は 2026-05-25 公式取得値（出典 URL を docstring に明記）。
+
+- **`src/c3/migrations/002_agent_cost_runs.sql`（新規）**: `agent_cost_runs` テーブル・`usage_ingest_state` テーブル・インデックスを追加する migration。
+  PK=(session_id, agent_id, model) で「1 エージェント × 1 モデル = 1 行」の集約設計。
+  既存 event-based `agent_runs`（001）は一切変更しない。
+
+- **`src/c3/usage_ingester.py`（新規）**: セッションログ取り込みモジュール。
+  公開 API `ingest_session(*, session_id, project_dir, db_path=None) -> IngestResult`。
+  mainline / subagent jsonl を走査し、model 単位でトークンを合算して `insert_agent_cost_run` で upsert する。
+  session_id UUID validate・パストラバーサル防止・symlink スキップ・例外 type 名のみログ（SR-R-001 準拠）。
+
+- **`.claude/hooks/session_stop.py` Phase 3 追加**: セッション終了時に `ingest_session` を呼ぶ Phase 3 を追加。
+  worktree session では起動しない。例外握りつぶしで exit 0 を維持する。
+
+- **`c3 tier stats` の Agent 別コスト集計セクション追加**: `_collect_snapshot()` に `read_agent_cost_summary()` を追加し、human / JSON 両出力に `agent_cost` セクションを表示する。
+  mainline 行には「（マクロ集計・tier 学習対象外）」を明示。0 件のときは「（コストデータ未収集）」を表示。
+
+### 変更
+
+- **`src/c3/db.py`**: 4 ヘルパー追加（`insert_agent_cost_run` / `read_agent_cost_summary` / `get_ingest_offset` / `set_ingest_offset`）。既存 tier ヘルパー規約（DB 不在で静かに False/0/[]・WAL・busy_timeout）に準拠。
+
+- **`src/c3/__init__.py`**: `__version__` を `"2.20.0"` から `"2.21.0"` に更新。
+
 ## [2.20.0] - 2026-05-25
 
 **SQLite schema migration 枠組み導入**: `.claude/hooks/schema.sql` の「冪等 DDL 一発実行」から、`src/c3/migrations/` の「連番 NNN_xxx.sql migration runner」へ移行する基盤を整備する。

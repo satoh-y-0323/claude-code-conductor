@@ -6,6 +6,7 @@ B 群 (3 件): 統合テスト - 空 DB への適用
 C 群 (2 件): 統合テスト - 既存 DB（v2.19.0 想定）からの upgrade
 D 群 (3 件): 失敗系テスト（ROLLBACK / MigrationError / FileNotFoundError）
 E 群 (1 件): _ensure_schema_migrations_table 冪等性単体テスト（Round 2 追加）
+F 群 (1 件): 002 migration 適用テスト（v2.21.0 追加）
 """
 from __future__ import annotations
 
@@ -455,3 +456,66 @@ class TestEnsureSchemaMigrationsTable:
             assert "applied_at" in columns, "applied_at 列が存在するはず"
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# F 群: 002 migration 適用テスト (1 件、v2.21.0 追加)
+# ---------------------------------------------------------------------------
+
+class TestMigrate002AgentCostRuns:
+    """F 群: 002_agent_cost_runs.sql の適用テスト。"""
+
+    def test_apply_002_creates_agent_cost_tables_and_index(self, tmp_path: Path):
+        """F1: 空 DB に 001+002 を適用すると両テーブル・INDEX・schema_migrations 行が揃う。
+
+        - apply_pending_migrations の戻り値が ['001', '002']（昇順）
+        - agent_cost_runs テーブルが存在する
+        - usage_ingest_state テーブルが存在する
+        - idx_agent_cost_runs_agent_type INDEX が存在する
+        - schema_migrations に '002' 行が存在する
+        """
+        db_path = tmp_path / "c3.db"
+        applied = apply_pending_migrations(db_path)
+
+        # 001 と 002 が両方適用される
+        assert "001" in applied, f"001 が applied に含まれない: {applied}"
+        assert "002" in applied, f"002 が applied に含まれない: {applied}"
+        # 昇順
+        assert applied.index("001") < applied.index("002"), "001 が 002 より前に来るはず"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            indexes = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+            migration_versions = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        # 002 で追加される 2 テーブルが存在する
+        assert "agent_cost_runs" in tables, "agent_cost_runs テーブルが見つかりません"
+        assert "usage_ingest_state" in tables, "usage_ingest_state テーブルが見つかりません"
+
+        # 002 で追加される INDEX が存在する
+        assert "idx_agent_cost_runs_agent_type" in indexes, (
+            "idx_agent_cost_runs_agent_type INDEX が見つかりません"
+        )
+
+        # schema_migrations に '002' が記録されている
+        assert "002" in migration_versions, (
+            f"schema_migrations に '002' が記録されていません: {migration_versions}"
+        )

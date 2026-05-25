@@ -1,0 +1,3 @@
+{"type":"user","uuid":"00000000-0000-0000-0000-000000000010","isSidechain":true,"message":{"role":"user","content":"Task for subagent"}}
+{"type":"assistant","uuid":"00000000-0000-0000-0000-000000000011","isSidechain":true,"requestId":"req-sub-0001","message":{"role":"assistant","model":"claude-sonnet-4-6-20260101","content":"Subagent response","usage":{"input_tokens":80,"output_tokens":40,"cache_read_input_tokens":100,"cache_creation_input_tokens":50}}}
+{"type":"assistant","uuid":"00000000-0000-0000-0000-000000000012","isSidechain":true,"requestId":"req-sub-0002","message":{"role":"assistant","model":"claude-sonnet-4-6-20260101","content":"More subagent content","usage":{"input_tokens":60,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}

@@ -384,7 +384,7 @@ class TestInitC3Db:
         assert mode.lower() == 'wal'
 
     def test_schema_migrations_records_version(self, tmp_path: Path):
-        """v2.20.0+: schema_migrations テーブルに '001' が記録される."""
+        """v2.20.0+: schema_migrations テーブルに全 migration が記録される."""
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
@@ -392,7 +392,7 @@ class TestInitC3Db:
 
         # 戻り値に '001' が含まれる
         assert '001' in applied
-        # schema_migrations テーブルにも記録される
+        # schema_migrations テーブルにも記録される（002 以降も含む）
         conn = sqlite3.connect(str(db_path))
         try:
             rows = conn.execute(
@@ -400,7 +400,8 @@ class TestInitC3Db:
             ).fetchall()
         finally:
             conn.close()
-        assert rows == [('001',)]
+        # '001' が含まれることを確認（将来の migration 追加で件数は増える）
+        assert ('001',) in rows
 
     def test_reapply_does_not_crash(self, tmp_path: Path):
         module = _load_hook_module()
@@ -441,11 +442,15 @@ class TestInitC3Db:
         assert count == 1
 
     def test_schema_migrations_not_duplicated(self, tmp_path: Path):
-        """v2.20.0+: 複数回適用しても schema_migrations の '001' 行は 1 件のみ."""
+        """v2.20.0+: 複数回適用しても schema_migrations の行数が増えない（冪等性）."""
         module = _load_hook_module()
         db_path = tmp_path / "c3.db"
 
         module.apply_schema(db_path=str(db_path))
+        count_after_first = sqlite3.connect(str(db_path)).execute(
+            "SELECT COUNT(*) FROM schema_migrations"
+        ).fetchone()[0]
+
         module.apply_schema(db_path=str(db_path))
         module.apply_schema(db_path=str(db_path))
 
@@ -454,7 +459,8 @@ class TestInitC3Db:
             count = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
         finally:
             conn.close()
-        assert count == 1
+        # 複数回適用しても行数は変わらない（INSERT OR IGNORE による冪等性）
+        assert count == count_after_first
 
     def test_main_returns_zero_when_migrations_dir_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

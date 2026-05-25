@@ -256,3 +256,93 @@ class TestTierStatsCli:
         data = json.loads(out)
         assert data["learning_progress"]["trials"] == 30
         assert data["learning_progress"]["mode"] == "thompson"
+
+    # -------------------------------------------------------------------------
+    # v2.21.0: Agent 別コスト集計（agent_cost_runs）のテスト
+    # -------------------------------------------------------------------------
+
+    def test_stats_json_contains_agent_cost_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture
+    ) -> None:
+        """agent_cost_runs に seed → --json 出力に agent_cost セクションが含まれ集計値が正しい。"""
+        from c3.db import insert_agent_cost_run
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+
+        # developer subagent の cost を seed
+        insert_agent_cost_run(
+            session_id="aaaaaaaa-0000-0000-0000-000000000001",
+            agent_id="agent-deadbeef",
+            agent_type="developer",
+            description="test developer",
+            model="claude-sonnet-4-6-20251101",
+            attribution_skill=None,
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=200,
+            cache_create_tokens=100,
+            total_cost_usd=0.0075,
+            db_path=db,
+        )
+
+        rc = _run(_make_args(as_json=True), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+
+        assert "agent_cost" in data
+        assert len(data["agent_cost"]) == 1
+        row = data["agent_cost"][0]
+        assert row["agent_type"] == "developer"
+        assert row["runs"] == 1
+        assert row["input_tokens"] == 1000
+        assert row["output_tokens"] == 500
+        assert row["cache_read_tokens"] == 200
+        assert row["cache_create_tokens"] == 100
+        assert abs(row["total_cost_usd"] - 0.0075) < 1e-9
+
+    def test_stats_human_shows_no_cost_data_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture
+    ) -> None:
+        """agent_cost_runs が 0 件のとき human 表示に「コストデータ未収集」文言が出る。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "コストデータ未収集" in out
+
+    def test_stats_human_mainline_shows_note(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture
+    ) -> None:
+        """mainline 行に「tier 学習対象外」注記が出る。"""
+        from c3.db import insert_agent_cost_run
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+
+        insert_agent_cost_run(
+            session_id="aaaaaaaa-0000-0000-0000-000000000002",
+            agent_id="mainline",
+            agent_type="mainline",
+            description=None,
+            model="claude-opus-4-7-20251101",
+            attribution_skill=None,
+            input_tokens=2000,
+            output_tokens=1000,
+            cache_read_tokens=0,
+            cache_create_tokens=0,
+            total_cost_usd=0.015,
+            db_path=db,
+        )
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "tier 学習対象外" in out

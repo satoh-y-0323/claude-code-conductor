@@ -89,7 +89,7 @@ def handle_stats(args: argparse.Namespace) -> int:
 
 
 def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
-    """DB から tier_bandit / tier_recent_outcomes を読み snapshot dict を返す。"""
+    """DB から tier_bandit / tier_recent_outcomes / agent_cost を読み snapshot dict を返す。"""
     bandit_rows: list[dict[str, Any]] = []
     total_trials = 0
 
@@ -114,6 +114,8 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
         db_path=db_path,
     )
 
+    agent_cost: list[dict[str, Any]] = c3_db.read_agent_cost_summary(db_path=db_path)
+
     if total_trials < _LEARNING_THRESHOLD:
         mode = "uniform"
     else:
@@ -127,6 +129,7 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
         },
         "tier_bandit": bandit_rows,
         "recent_outcomes": recent_outcomes,
+        "agent_cost": agent_cost,
     }
 
 
@@ -166,3 +169,25 @@ def _render_human(snapshot: dict[str, Any]) -> None:
     print("== 学習データ記録チャネル ==")
     print("記録元: dev-workflow フェーズ E の最終承認時のみ（record_tier_outcome.py）")
     print("直接指示作業ではデータが溜まりません（設計通り）")
+    print()
+
+    print("== Agent 別コスト集計（agent_cost_runs） ==")
+    agent_cost = snapshot.get("agent_cost", [])
+    if not agent_cost:
+        print("（コストデータ未収集）")
+    else:
+        print(
+            f"{'agent_type':<16} {'runs':>5}  {'total_usd':>10}  "
+            f"{'in_tok':>9}  {'out_tok':>9}  {'cache_r':>9}  {'cache_w':>9}"
+        )
+        for row in agent_cost:
+            note = "  （マクロ集計・tier 学習対象外）" if row["agent_type"] == "mainline" else ""
+            print(
+                f"{row['agent_type']:<16} {row['runs']:>5}  "
+                f"${row['total_cost_usd']:>9.4f}  "
+                f"{row['input_tokens']:>9}  {row['output_tokens']:>9}  "
+                f"{row['cache_read_tokens']:>9}  {row['cache_create_tokens']:>9}"
+                f"{note}"
+            )
+    print()
+    print("（注: 本リリースはデータ収集基盤のみ。cost-aware routing は v2.22.0 予定）")
