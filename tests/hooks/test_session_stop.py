@@ -256,6 +256,61 @@ class TestStdinMaxBytes:
         consolidate_mock.run_sync.assert_called_once()
 
 
+class TestWorktreeSkipSyncNotCalled:
+    """worktree 判定が True の場合に sync_tier_bandit_cost が呼ばれないことを検証。
+
+    A1 AC-(7): session_stop が worktree skip 時に sync を呼ばない。
+    """
+
+    def test_sync_not_called_when_worktree(self, monkeypatch: pytest.MonkeyPatch):
+        """is_worktree=True の場合、sync_tier_bandit_cost は呼ばれない。"""
+        module = _load_module()
+
+        stop_mock = MagicMock(run=MagicMock(return_value=0))
+        consolidate_mock = MagicMock(run_sync=MagicMock(return_value=0))
+
+        # is_worktree が True を返す session_utils mock
+        session_utils_mock = MagicMock()
+        session_utils_mock.is_worktree = MagicMock(return_value=True)
+
+        def _fake_load(name: str):
+            if name == "stop":
+                return stop_mock
+            if name == "consolidate_memory":
+                return consolidate_mock
+            if name == "session_utils":
+                return session_utils_mock
+            raise ValueError(f"unexpected module: {name}")
+
+        monkeypatch.setattr(module, "_load_module", _fake_load)
+        monkeypatch.setattr(
+            "sys.stdin",
+            type("S", (), {"read": staticmethod(
+                lambda: '{"session_id": "test-sess", "transcript_path": "/tmp/t.jsonl"}'
+            )})(),
+        )
+
+        sync_called = []
+
+        # c3.db.sync_tier_bandit_cost が呼び出されないことを確認する。
+        # session_stop.py は関数内 "from c3.db import sync_tier_bandit_cost" で
+        # 取得するため、sys.modules["c3.db"] の属性を差し替えることで確実に捕捉できる。
+        import c3.db  # noqa: PLC0415 — テスト時点で c3.db をロードしておく (sys.modules["c3.db"] 確定)
+
+        def tracking_sync(**kw):
+            sync_called.append(True)
+            return 0
+
+        monkeypatch.setattr(sys.modules["c3.db"], "sync_tier_bandit_cost", tracking_sync)
+
+        result = module.main()
+
+        assert result == 0
+        assert not sync_called, (
+            "worktree=True の場合、sync_tier_bandit_cost が呼ばれてはいけない"
+        )
+
+
 class TestSubprocessE2E:
     """subprocess で session_stop.py を起動して全体の挙動を確認する.
 

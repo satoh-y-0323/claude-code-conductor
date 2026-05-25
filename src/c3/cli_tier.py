@@ -94,6 +94,11 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
     bandit_rows: list[dict[str, Any]] = []
     total_trials = 0
 
+    # cost 列は別 SELECT（read_tier_params は alpha/beta/trials 専用を維持）
+    bandit_cost: dict[tuple[str, str], tuple[float, int]] = c3_db.read_tier_bandit_cost(
+        db_path=db_path,
+    )
+
     for complexity in _COMPLEXITIES:
         params = c3_db.read_tier_params(complexity, db_path=db_path)
         for tier in _TIERS:
@@ -101,6 +106,7 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
             total_trials += trials
             denom = alpha + beta
             expected = alpha / denom if denom > 0 else 0.5
+            cost_usd, cost_samples = bandit_cost.get((complexity, tier), (0.0, 0))
             bandit_rows.append({
                 "complexity": complexity,
                 "tier": tier,
@@ -108,6 +114,8 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
                 "beta": beta,
                 "trials": trials,
                 "expected_success_rate": expected,
+                "total_cost_usd": cost_usd,
+                "cost_samples": cost_samples,
             })
 
     recent_outcomes: list[dict[str, Any]] = c3_db.read_recent_outcomes(
@@ -154,12 +162,18 @@ def _render_human(snapshot: dict[str, Any]) -> None:
     print()
 
     print("== Tier 別累積（tier_bandit） ==")
-    print(f"{'complexity':<12} {'tier':<8} {'trials':>6}  {'alpha':>5}  {'beta':>5}  {'期待成功率':>10}")
+    print(
+        f"{'complexity':<12} {'tier':<8} {'trials':>6}  {'alpha':>5}  {'beta':>5}  "
+        f"{'期待成功率':>10}  {'cost_usd':>10}  {'cost_samples':>12}"
+    )
     for row in snapshot["tier_bandit"]:
+        complexity_safe = sanitize_terminal_text(str(row["complexity"]))
+        tier_safe = sanitize_terminal_text(str(row["tier"]))
         print(
-            f"{row['complexity']:<12} {row['tier']:<8} "
+            f"{complexity_safe:<12} {tier_safe:<8} "
             f"{row['trials']:>6}  {row['alpha']:>5.2f}  {row['beta']:>5.2f}  "
-            f"{row['expected_success_rate'] * 100:>9.2f}%"
+            f"{row['expected_success_rate'] * 100:>9.2f}%  "
+            f"${row['total_cost_usd']:>9.4f}  {row['cost_samples']:>12}"
         )
     print()
 

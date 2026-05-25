@@ -35,6 +35,11 @@ _BUSY_TIMEOUT_MS = BUSY_TIMEOUT_MS  # 内部互換エイリアス（既存コー
 # tier-routing: 学習データ収集期の閾値（合計試行数がこの値未満なら uniform 選択）。
 # SSOT: cli_tier.py / select_tier.py はここから参照する（CR-M-002）。
 LEARNING_THRESHOLD = 30
+# cost-aware tie-break の拮抗判定閾値。Beta サンプルは 0〜1 スケールで、
+# 成功率 5pt（=0.05）以内を拮抗とみなす。本定数が SSOT。
+# 過大にすると成功率を犠牲にするリスク、過小にすると無発動になる。
+# C3_TIER_EPSILON 環境変数で上書き可（v2.25.0）。
+EPSILON_TIEBREAK = 0.05
 
 
 def _apply_busy_timeout(conn: sqlite3.Connection) -> None:
@@ -139,7 +144,7 @@ def fetch_review_decisions(
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to fetch review_decisions: %s", exc)
+        logger.warning("failed to fetch review_decisions: %s", type(exc).__name__)
         return []
 
 
@@ -204,7 +209,7 @@ def insert_review_decision(
             conn.close()
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to insert review_decision: %s", exc)
+        logger.warning("failed to insert review_decision: %s", type(exc).__name__)
         return False
 
 
@@ -270,7 +275,7 @@ def read_tier_params(
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to read tier_params: %s", exc)
+        logger.warning("failed to read tier_params: %s", type(exc).__name__)
         return defaults
 
     result = dict(defaults)
@@ -342,7 +347,7 @@ def update_tier_params(
             conn.close()
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to update tier_params: %s", exc)
+        logger.warning("failed to update tier_params: %s", type(exc).__name__)
         return False
 
 
@@ -439,10 +444,10 @@ def read_recent_outcomes(
         finally:
             conn.close()
     except sqlite3.OperationalError as exc:
-        logger.debug("read_recent_outcomes: table not found or inaccessible: %s", exc)
+        logger.debug("read_recent_outcomes: table not found or inaccessible: %s", type(exc).__name__)
         return []
     except Exception as exc:  # noqa: BLE001
-        logger.warning("read_recent_outcomes: unexpected error: %s", exc)
+        logger.warning("read_recent_outcomes: unexpected error: %s", type(exc).__name__)
         return []
 
     return [
@@ -493,7 +498,7 @@ def read_tier_failure_rate(
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to read tier_failure_rate: %s", exc)
+        logger.warning("failed to read tier_failure_rate: %s", type(exc).__name__)
         return None, 0
 
     sample_count = len(rows)
@@ -1110,3 +1115,118 @@ def set_ingest_offset(
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to set_ingest_offset: %s", type(exc).__name__)
         return False
+
+
+def read_tier_bandit_cost(
+    *,
+    db_path: Path | None = None,
+) -> dict[tuple[str, str], tuple[float, int]]:
+    """tier_bandit テーブルから cost 列を読む。
+
+    cli_tier.py の _collect_snapshot が alpha/beta/trials（read_tier_params 由来）と
+    別 SELECT で cost を取得するために使う。
+
+    Args:
+        db_path: c3.db のパス。省略時は locate_c3_db() で探索。
+
+    Returns:
+        ``{(task_complexity, tier): (total_cost_usd, cost_samples)}`` の dict。
+        テーブル不在 / DB 不在 / エラー時は空 dict を返す。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return {}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            _apply_busy_timeout(conn)
+            rows = conn.execute(
+                "SELECT task_complexity, tier, total_cost_usd, cost_samples "
+                "FROM tier_bandit"
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read tier_bandit_cost: %s", type(exc).__name__)
+        return {}
+
+    return {
+        (row[0], row[1]): (float(row[2]), int(row[3]))
+        for row in rows
+    }
+
+
+def sync_tier_bandit_cost(
+    *,
+    db_path: Path | None = None,
+) -> int:
+    """tier_bandit テーブルの cost 列を rate_summary 集計値で同期する（冪等 SET 同期）。
+
+    冪等性: 全行の cost 列を 0.0/0 にクリアしてから SET するため、
+    何度呼び出しても結果が同じになる（全クリア→SET の SET 同期）。
+
+    動作:
+      1. ``read_tier_cost_rate_summary`` で (complexity, tier) 別集計を取得。
+      2. 1 トランザクション内で:
+         a. 全行 cost 列クリア: ``UPDATE tier_bandit SET total_cost_usd=0.0, cost_samples=0``
+            （alpha/beta/trials/last_updated は一切変更しない）。
+         b. 各集計行を ``UPDATE tier_bandit SET total_cost_usd=?, cost_samples=?
+            WHERE task_complexity=? AND tier=?`` で SET。
+            ``cost_samples`` は DISTINCT session 数（``read_tier_cost_rate_summary``
+            の ``sessions`` フィールド）を格納する。
+         c. ``commit()``。クリア後 SET 前に別プロセスが読む瞬間を作らないため
+            途中で commit しない（R1 冪等性保証）。
+      3. UPDATE-only: tier_bandit に行が存在しない (complexity, tier) は INSERT しない。
+         alpha/beta のない半端な bandit 行の生成を防ぐ（R4 回避）。
+
+    制限:
+        USD/MTok レートの再現には billable_tokens が必要であり、本テーブル単独では
+        再現不可。レートが必要な箇所は ``read_tier_cost_rate_summary`` /
+        ``read_tier_cost_rate_for_complexity`` を使うこと。
+
+    Args:
+        db_path: c3.db のパス。省略時は locate_c3_db() で探索。
+            None（locate_c3_db が None を返す）の場合は 0 を返す。
+
+    Returns:
+        cost を SET できた行数（rowcount > 0 の UPDATE 件数合計）。
+        DB 不在 / エラー時は 0 を返す（例外を投げない）。
+        例外発生時は ``finally: conn.close()`` 経由で rollback され、
+        cost 列がクリアされた状態で残る可能性がある。
+        戻り値 0 を受け取った呼び出し元は次回 session_stop での再試行に委ねる。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return 0
+
+    rows = read_tier_cost_rate_summary(db_path=db_path)
+
+    set_count = 0
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            _apply_busy_timeout(conn)
+            # Step 1: 全行 cost 列クリア（alpha/beta/trials/last_updated は触らない）
+            conn.execute("UPDATE tier_bandit SET total_cost_usd = 0.0, cost_samples = 0")
+            # Step 2: 各集計行を SET（UPDATE-only: tier_bandit に行が無い場合は rowcount=0）
+            for row in rows:
+                cur = conn.execute(
+                    "UPDATE tier_bandit "
+                    "SET total_cost_usd = ?, cost_samples = ? "
+                    "WHERE task_complexity = ? AND tier = ?",
+                    (row["total_cost_usd"], row["sessions"], row["complexity"], row["tier"]),
+                )
+                set_count += cur.rowcount
+            # Step 3: 全 SET が完了してから一括 commit（途中 commit しない）
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to sync_tier_bandit_cost: %s", type(exc).__name__)
+        return 0
+
+    return set_count

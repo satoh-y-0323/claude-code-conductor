@@ -1080,3 +1080,232 @@ class TestMainCostMapIntegration:
         sel = json.loads(target.read_text(encoding="utf-8"))
         # 拮抗群が存在するので cost_tiebreak が発動する可能性があるが crash しないことが重要
         assert sel.get("tier") in ("haiku", "sonnet", "opus")
+
+
+# ---------------------------------------------------------------------------
+# T2 (v2.25.0): EPSILON 調整可能化 — _resolve_epsilon / epsilon kwarg / env 未設定一致
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEpsilon:
+    """_resolve_epsilon() の env パース・バリデーションテスト（AC B-(2)）。"""
+
+    def test_valid_value_returns_float(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """正常値 0.1 → 0.1 を返す（AC B-(1)）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "0.1")
+        assert mod._resolve_epsilon() == pytest.approx(0.1)
+
+    def test_valid_boundary_1_returns_1(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """境界値 1.0 は有効（0 < x <= 1 の上限）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "1.0")
+        assert mod._resolve_epsilon() == pytest.approx(1.0)
+
+    def test_valid_small_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """0.001 など小さい正値は有効。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "0.001")
+        assert mod._resolve_epsilon() == pytest.approx(0.001)
+
+    def test_unset_returns_default_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """未設定 → デフォルト 0.05・警告なし（AC B-(2)）。"""
+        mod = _load_hook_module()
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+        result = mod._resolve_epsilon()
+        assert result == pytest.approx(0.05)
+        # stderr に何も出ない
+        assert capsys.readouterr().err == ""
+
+    def test_empty_string_returns_default_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """空文字 → デフォルト 0.05・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "")
+        result = mod._resolve_epsilon()
+        assert result == pytest.approx(0.05)
+        assert capsys.readouterr().err == ""
+
+    def test_non_numeric_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """非数値 "abc" → デフォルト 0.05 + stderr 警告（AC B-(2)）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "abc")
+        result = mod._resolve_epsilon()
+        assert result == pytest.approx(0.05)
+        err = capsys.readouterr().err
+        assert "C3_TIER_EPSILON" in err
+        assert "abc" in err
+
+    def test_zero_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """0 → デフォルト 0.05 + stderr 警告（AC B-(2)・x <= 0）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "0")
+        result = mod._resolve_epsilon()
+        assert result == pytest.approx(0.05)
+        err = capsys.readouterr().err
+        assert "C3_TIER_EPSILON" in err
+
+    def test_negative_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """-0.1 → デフォルト 0.05 + stderr 警告（AC B-(2)・x <= 0）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "-0.1")
+        result = mod._resolve_epsilon()
+        assert result == pytest.approx(0.05)
+        err = capsys.readouterr().err
+        assert "C3_TIER_EPSILON" in err
+
+    def test_above_1_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """1.5 → デフォルト 0.05 + stderr 警告（AC B-(2)・x > 1）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "1.5")
+        result = mod._resolve_epsilon()
+        assert result == pytest.approx(0.05)
+        err = capsys.readouterr().err
+        assert "C3_TIER_EPSILON" in err
+
+    def test_nan_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """NaN → デフォルト 0.05 + stderr 警告（AC B-(2)・NaN 排除 R3）。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_EPSILON", "nan")
+        result = mod._resolve_epsilon()
+        assert result == pytest.approx(0.05)
+        err = capsys.readouterr().err
+        assert "C3_TIER_EPSILON" in err
+        assert "NaN" in err
+
+
+class TestEpsilonKwarg:
+    """epsilon kwarg を変えると contenders 判定が変わることを示すテスト（AC B-(1)）。"""
+
+    def test_larger_epsilon_widens_contenders(self) -> None:
+        """epsilon を大きくすると拮抗群が広がる。"""
+        mod = _load_hook_module()
+        # haiku=0.85, sonnet=0.80（差 0.05）、opus=0.60
+        samples = {"haiku": 0.85, "sonnet": 0.80, "opus": 0.60}
+        cost_map = {"haiku": 30.0, "sonnet": 6.0, "opus": 1.0}
+
+        # epsilon=0.04 → 差 0.05 > 0.04 なので haiku のみ contender（tiebreak 不発動）
+        chosen_small, did_small, contenders_small = mod._cost_tiebreak(
+            samples, cost_map, epsilon=0.04
+        )
+        assert "haiku" in contenders_small
+        assert "sonnet" not in contenders_small
+        assert did_small is False
+
+        # epsilon=0.06 → 差 0.05 <= 0.06 なので haiku と sonnet が拮抗
+        chosen_large, did_large, contenders_large = mod._cost_tiebreak(
+            samples, cost_map, epsilon=0.06
+        )
+        assert "haiku" in contenders_large
+        assert "sonnet" in contenders_large
+        assert did_large is True
+        # コストは sonnet の方が安いので sonnet が選ばれる
+        assert chosen_large == "sonnet"
+
+    def test_epsilon_kwarg_in_select_tier_detailed_changes_contenders(self) -> None:
+        """select_tier_detailed に epsilon を明示すると contenders が変わる（AC B-(1)）。
+
+        決定論的方式: _cost_tiebreak に固定サンプル値を直接渡し、
+        epsilon の大小で contenders 幅が変わることを検証する。
+        test_larger_epsilon_widens_contenders と同じアプローチ。
+        """
+        mod = _load_hook_module()
+        # haiku=0.85, sonnet=0.80（差 0.05）、opus=0.60
+        # epsilon=0.04 のとき: 差 0.05 > 0.04 → haiku のみ contender（tiebreak 不発動）
+        # epsilon=0.06 のとき: 差 0.05 <= 0.06 → haiku と sonnet が拮抗（tiebreak 発動）
+        samples = {"haiku": 0.85, "sonnet": 0.80, "opus": 0.60}
+        cost_map = {"haiku": 30.0, "sonnet": 6.0, "opus": 1.0}
+
+        # epsilon=0.04: haiku のみが最高サンプル（tiebreak 不発動）
+        chosen_small, did_small, contenders_small = mod._cost_tiebreak(
+            samples, cost_map, epsilon=0.04
+        )
+        assert "haiku" in contenders_small
+        assert "sonnet" not in contenders_small
+        assert did_small is False
+
+        # epsilon=0.06: haiku と sonnet が拮抗（tiebreak 発動）→ 安い sonnet が選ばれる
+        chosen_large, did_large, contenders_large = mod._cost_tiebreak(
+            samples, cost_map, epsilon=0.06
+        )
+        assert "haiku" in contenders_large
+        assert "sonnet" in contenders_large
+        assert did_large is True
+        assert chosen_large == "sonnet"
+
+    def test_select_tier_epsilon_kwarg_propagates(self) -> None:
+        """select_tier の epsilon kwarg が select_tier_detailed に伝播する。"""
+        mod = _load_hook_module()
+        params = {
+            "haiku": (10.0, 10.0, 30),
+            "sonnet": (10.0, 10.0, 30),
+            "opus": (1.0, 10.0, 30),
+        }
+        cost_map = {"haiku": 18.0, "sonnet": 6.0, "opus": 1.0}
+
+        # 同一 seed で epsilon=0.0001（極小・拮抗ほぼ不発）と epsilon=1.0（全件拮抗）で結果が異なる可能性
+        # epsilon=1.0 なら全員が contenders になり最安 opus が選ばれる
+        rng = random.Random(42)
+        tier, mode = mod.select_tier(params, rng=rng, cost_map=cost_map, epsilon=1.0)
+        # epsilon=1.0 で全員拮抗 → opus（最安）が選ばれる
+        assert tier == "opus"
+        assert mode == "thompson"
+
+
+class TestEpsilonEnvUnsetMatchesLegacy:
+    """env 未設定で select_tier 出力が v2.24.0 と完全一致（AC B-(3)）。"""
+
+    def test_no_env_select_tier_detailed_matches_default_epsilon(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C3_TIER_EPSILON 未設定で select_tier_detailed の結果が EPSILON=0.05 と同一。
+
+        env 未設定の _resolve_epsilon() は EPSILON（0.05）を返すため、
+        select_tier_detailed に epsilon=None（デフォルト）を渡した場合と
+        epsilon=0.05 を明示した場合が完全一致する。
+        """
+        mod = _load_hook_module()
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+
+        params = {
+            "haiku": (10.0, 10.0, 30),
+            "sonnet": (10.0, 10.0, 30),
+            "opus": (5.0, 5.0, 30),
+        }
+        cost_map = {"haiku": 18.0, "sonnet": 6.0, "opus": 30.0}
+
+        for seed in range(50):
+            rng1 = random.Random(seed)
+            rng2 = random.Random(seed)
+            # epsilon=None（デフォルト・EPSILON=0.05 と等価）
+            r_default = mod.select_tier_detailed(params, rng=rng1, cost_map=cost_map)
+            # epsilon=0.05 を明示
+            r_explicit = mod.select_tier_detailed(
+                params, rng=rng2, cost_map=cost_map, epsilon=0.05
+            )
+            assert r_default.tier == r_explicit.tier, f"seed={seed}: 挙動不一致"
+            assert r_default.cost_tiebreak == r_explicit.cost_tiebreak, f"seed={seed}: cost_tiebreak 不一致"
+
+    def test_db_epsilon_tiebreak_is_ssot(self) -> None:
+        """db.EPSILON_TIEBREAK が 0.05 であり SSOT であることを確認（AC B-(4)）。"""
+        from c3 import db as c3_db
+        assert c3_db.EPSILON_TIEBREAK == 0.05
+
+    def test_module_epsilon_matches_db_ssot(self) -> None:
+        """select_tier モジュールの EPSILON が db.EPSILON_TIEBREAK と一致する（AC B-(4)）。"""
+        mod = _load_hook_module()
+        from c3 import db as c3_db
+        assert mod.EPSILON == pytest.approx(c3_db.EPSILON_TIEBREAK)

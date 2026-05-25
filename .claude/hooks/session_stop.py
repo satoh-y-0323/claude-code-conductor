@@ -103,6 +103,8 @@ def main() -> int:
                 from c3.usage_ingester import ingest_session  # noqa: PLC0415
                 project_dir = _Path(transcript_path).parent
                 ingest_session(session_id=session_id, project_dir=project_dir)
+                from c3.db import sync_tier_bandit_cost  # noqa: PLC0415
+                sync_tier_bandit_cost()
     except Exception as e:
         print(f"[session_stop:usage_ingester] failed: {type(e).__name__}", file=sys.stderr)
 

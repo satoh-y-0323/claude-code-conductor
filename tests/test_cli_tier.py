@@ -889,3 +889,149 @@ class TestSanitizeTerminalText:
         assert "\x07" not in agent_section, "ベル文字が agent_type セクション出力に残っている"
         # サニタイズ後の文字列（「developer」部分）が含まれること
         assert "developer" in agent_section
+
+
+# ---------------------------------------------------------------------------
+# v2.25.0: tier_bandit cost 列（total_cost_usd / cost_samples）表示テスト
+# ---------------------------------------------------------------------------
+
+
+class TestTierBanditCostDisplay:
+    """tier_bandit セクションに cost 列が追加されることを確認する（A1 CLI 可視化）。"""
+
+    def _seed_cost_session(
+        self,
+        db: Path,
+        *,
+        complexity: str,
+        tier: str,
+        model: str,
+        session_id: str,
+        total_cost_usd: float,
+    ) -> None:
+        """outcome + cost_run を 1 セッション分 seed し、sync を呼ぶ。"""
+        from c3.db import (  # noqa: PLC0415
+            insert_agent_cost_run,
+            record_tier_recent_outcome,
+            sync_tier_bandit_cost,
+        )
+        record_tier_recent_outcome(
+            complexity=complexity,
+            tier=tier,
+            success=True,
+            session_id=session_id,
+            db_path=db,
+        )
+        insert_agent_cost_run(
+            session_id=session_id,
+            agent_id=f"agent-{session_id}",
+            agent_type="developer",
+            description=None,
+            model=model,
+            attribution_skill=None,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_create_tokens=0,
+            total_cost_usd=total_cost_usd,
+            db_path=db,
+        )
+        sync_tier_bandit_cost(db_path=db)
+
+    def test_human_output_shows_cost_columns(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """human 出力に cost_usd / cost_samples 列が含まれる。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        _seed_bandit(db, complexity="simple", tier="haiku",
+                     alpha=2.0, beta=1.0, trials=3)
+
+        self._seed_cost_session(
+            db,
+            complexity="simple",
+            tier="haiku",
+            model="claude-haiku-4-5-20260101",
+            session_id="disp-haiku-1",
+            total_cost_usd=0.0042,
+        )
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # ヘッダに cost 列が含まれる
+        assert "cost_usd" in out
+        assert "cost_samples" in out
+        # cost 値が表示される（0.0042 USD → "$  0.0042" スタイル）
+        assert "0.0042" in out
+
+    def test_json_output_contains_cost_columns(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """--json 出力の tier_bandit 各行に total_cost_usd / cost_samples が含まれる。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        _seed_bandit(db, complexity="medium", tier="sonnet",
+                     alpha=3.0, beta=1.0, trials=2)
+
+        self._seed_cost_session(
+            db,
+            complexity="medium",
+            tier="sonnet",
+            model="claude-sonnet-4-6-20260101",
+            session_id="disp-sonnet-1",
+            total_cost_usd=0.015,
+        )
+
+        rc = _run(_make_args(as_json=True), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+
+        assert "tier_bandit" in data
+        target = next(
+            (r for r in data["tier_bandit"]
+             if r["complexity"] == "medium" and r["tier"] == "sonnet"),
+            None,
+        )
+        assert target is not None, "medium/sonnet の tier_bandit 行が JSON に含まれない"
+        assert "total_cost_usd" in target, "total_cost_usd が JSON に含まれない"
+        assert "cost_samples" in target, "cost_samples が JSON に含まれない"
+        # sync されているので 1 session 分が反映される
+        assert target["cost_samples"] == 1
+        assert abs(target["total_cost_usd"] - 0.015) < 1e-9
+
+    def test_cost_zero_by_default_when_no_cost_data(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """cost データが無い場合、tier_bandit の cost 列は 0.0/0 で表示される。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        _seed_bandit(db, complexity="complex", tier="opus",
+                     alpha=1.0, beta=1.0, trials=1)
+
+        rc = _run(_make_args(as_json=True), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+
+        target = next(
+            (r for r in data["tier_bandit"]
+             if r["complexity"] == "complex" and r["tier"] == "opus"),
+            None,
+        )
+        assert target is not None
+        assert target["total_cost_usd"] == 0.0
+        assert target["cost_samples"] == 0

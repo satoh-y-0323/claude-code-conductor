@@ -154,6 +154,7 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | `c3 recall search "<query>"` または `c3 recall "<query>"` | `.claude/memory/sessions/` 等から類似チャンクを意味検索 |
 | `c3 recall rebuild [--force]` | HNSW インデックスを再構築（初回は fastembed が ~220MB のモデルを取得） |
 | `c3 recall stats` | チャンク数・モデル名・最終 rebuild 日時を表示 |
+| `c3 tier stats` | tier-routing（複雑度に応じた Tier 自動ルーティング）の学習データ・Tier 別コストを表形式で表示（`--json` で機械可読出力・`--recent N` で直近 outcome 件数指定） |
 
 ### 基本的な使い方
 

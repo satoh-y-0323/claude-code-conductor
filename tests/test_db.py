@@ -22,12 +22,15 @@ from c3.db import (
     insert_agent_cost_run,
     locate_c3_db,
     read_agent_cost_summary,
+    read_tier_bandit_cost,
     read_tier_cost_rate_for_complexity,
     read_tier_cost_rate_summary,
     read_tier_cost_summary,
     read_tier_cost_for_complexity,
     record_tier_recent_outcome,
     set_ingest_offset,
+    sync_tier_bandit_cost,
+    update_tier_params,
 )
 
 
@@ -1320,3 +1323,401 @@ class TestReadTierCostRateForComplexity:
         # read_tier_cost_rate_for_complexity も同じ結果を反映する
         for_complexity = read_tier_cost_rate_for_complexity("medium", db_path=db)
         assert abs(for_complexity["sonnet"] - 50.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# SR-R-001 統一: 例外ログが type(exc).__name__ を出力することを検証
+# ---------------------------------------------------------------------------
+
+
+class TestExceptionLogTypeName:
+    """C-(1): 例外発生時にログ本文へ型名が出て生 exc message が出ないことを検証。
+
+    read_tier_params を代表例として使用。corrupt なバイナリを DB として渡すことで
+    sqlite3.DatabaseError（not an SQLite3 database）を発生させ、
+    caplog でログ本文に型名が含まれ生 message が含まれないことを確認する。
+    """
+
+    def test_read_tier_params_logs_exception_type_not_message(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """SR-R-001: read_tier_params は例外発生時に type(exc).__name__ をログに出す。
+
+        corrupt DB を渡すと sqlite3.DatabaseError が上がる。
+        - ログ本文に "DatabaseError" が含まれる
+        - ログ本文に生 exc message（"not an SQLite3 database" 等）が含まれない
+        - 戻り値は defaults（型名のみのログで例外を握る）
+        """
+        from c3.db import read_tier_params  # noqa: PLC0415
+
+        # corrupt なバイナリファイルを作成して DB として渡す
+        corrupt_db = tmp_path / "corrupt.db"
+        corrupt_db.write_bytes(b"this is not a valid sqlite3 database file")
+
+        with caplog.at_level(logging.WARNING, logger="c3.db"):
+            result = read_tier_params("medium", db_path=corrupt_db)
+
+        # 戻り値は defaults（エラー時も全 tier を初期値で返す）
+        assert isinstance(result, dict), "Should return dict on error"
+        assert "haiku" in result, "Defaults should include all tiers"
+
+        # ログ本文に型名が含まれる
+        assert "DatabaseError" in caplog.text, (
+            f"Log must contain exception type name 'DatabaseError'. caplog.text={caplog.text!r}"
+        )
+        # 生 exc message が含まれない（SR-R-001: 情報漏洩防止）
+        assert "not an SQLite3 database" not in caplog.text, (
+            "Log must NOT contain raw exception message. caplog.text={caplog.text!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# L 群: sync_tier_bandit_cost / read_tier_bandit_cost (v2.25.0 T3)
+# ---------------------------------------------------------------------------
+
+
+def _seed_bandit_row(
+    db: Path,
+    *,
+    complexity: str,
+    tier: str,
+    alpha: float = 2.0,
+    beta: float = 1.0,
+    trials: int = 3,
+) -> None:
+    """tier_bandit に 1 行 seed するヘルパー（L 群共通）。"""
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+    from datetime import datetime, timezone  # noqa: PLC0415
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn = _sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO tier_bandit "
+            "(task_complexity, tier, alpha, beta, trials, last_updated) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (complexity, tier, alpha, beta, trials, ts),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_cost_session(
+    db: Path,
+    *,
+    complexity: str,
+    tier_outcome: str,
+    model: str,
+    session_id: str,
+    total_cost_usd: float,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> None:
+    """outcome + cost_run を 1 セッション分 seed（L 群共通）。"""
+    record_tier_recent_outcome(
+        complexity=complexity,
+        tier=tier_outcome,
+        success=True,
+        session_id=session_id,
+        db_path=db,
+    )
+    insert_agent_cost_run(
+        session_id=session_id,
+        agent_id=f"agent-{session_id}",
+        agent_type="developer",
+        description=None,
+        model=model,
+        attribution_skill=None,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=0,
+        cache_create_tokens=0,
+        total_cost_usd=total_cost_usd,
+        db_path=db,
+    )
+
+
+class TestSyncTierBanditCost:
+    """L 群: sync_tier_bandit_cost (A1: 冪等 SET 同期) のテスト。"""
+
+    def test_idempotent_double_sync(self, tmp_path: Path):
+        """L1: 冪等性（最重要）— 同一 DB 状態で連続 2 回 sync しても cost 列が完全同一。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        # tier_bandit に sonnet/medium 行を seed
+        _seed_bandit_row(db, complexity="medium", tier="sonnet")
+
+        # cost を生むセッションを seed
+        _seed_cost_session(
+            db,
+            complexity="medium",
+            tier_outcome="sonnet",
+            model="claude-sonnet-4-6-20260101",
+            session_id="l1-sess",
+            total_cost_usd=0.02,
+        )
+
+        # 1 回目 sync
+        count1 = sync_tier_bandit_cost(db_path=db)
+        conn = _sqlite3.connect(str(db))
+        rows1 = conn.execute(
+            "SELECT task_complexity, tier, total_cost_usd, cost_samples "
+            "FROM tier_bandit"
+        ).fetchall()
+        conn.close()
+
+        # 2 回目 sync
+        count2 = sync_tier_bandit_cost(db_path=db)
+        conn = _sqlite3.connect(str(db))
+        rows2 = conn.execute(
+            "SELECT task_complexity, tier, total_cost_usd, cost_samples "
+            "FROM tier_bandit"
+        ).fetchall()
+        conn.close()
+
+        assert count1 == count2, "SET 行数が 1 回目と 2 回目で同一であるべき"
+        assert rows1 == rows2, "cost 列が 2 回の sync で完全同一であるべき（冪等）"
+
+    def test_values_match_rate_summary(self, tmp_path: Path):
+        """L2: 値一致 — sync 後の tier_bandit.total_cost_usd/cost_samples が
+        rate_summary の total_cost_usd/sessions と (complexity,tier) ごとに一致する。"""
+        db = _make_c3_db_v003(tmp_path)
+
+        # haiku/simple と sonnet/medium の 2 行を tier_bandit に seed
+        _seed_bandit_row(db, complexity="simple", tier="haiku")
+        _seed_bandit_row(db, complexity="medium", tier="sonnet")
+
+        # haiku/simple: 2 セッション
+        _seed_cost_session(
+            db,
+            complexity="simple",
+            tier_outcome="haiku",
+            model="claude-haiku-4-5-20260101",
+            session_id="l2-haiku-1",
+            total_cost_usd=0.005,
+        )
+        _seed_cost_session(
+            db,
+            complexity="simple",
+            tier_outcome="haiku",
+            model="claude-haiku-4-5-20260101",
+            session_id="l2-haiku-2",
+            total_cost_usd=0.003,
+        )
+        # sonnet/medium: 1 セッション
+        _seed_cost_session(
+            db,
+            complexity="medium",
+            tier_outcome="sonnet",
+            model="claude-sonnet-4-6-20260101",
+            session_id="l2-sonnet-1",
+            total_cost_usd=0.015,
+        )
+
+        sync_tier_bandit_cost(db_path=db)
+
+        summary = read_tier_cost_rate_summary(db_path=db)
+        bandit_cost = read_tier_bandit_cost(db_path=db)
+
+        for row in summary:
+            key = (row["complexity"], row["tier"])
+            assert key in bandit_cost, f"{key} が bandit_cost に存在しない"
+            cost_usd, cost_samples = bandit_cost[key]
+            assert abs(cost_usd - row["total_cost_usd"]) < 1e-9, (
+                f"{key}: total_cost_usd 不一致 {cost_usd} vs {row['total_cost_usd']}"
+            )
+            assert cost_samples == row["sessions"], (
+                f"{key}: cost_samples {cost_samples} vs sessions {row['sessions']}"
+            )
+
+    def test_alpha_beta_trials_unchanged(self, tmp_path: Path):
+        """L3: alpha/beta/trials/last_updated が sync 前後で変わらない。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        _seed_bandit_row(db, complexity="medium", tier="sonnet",
+                         alpha=3.5, beta=1.2, trials=7)
+        _seed_cost_session(
+            db,
+            complexity="medium",
+            tier_outcome="sonnet",
+            model="claude-sonnet-4-6-20260101",
+            session_id="l3-sess",
+            total_cost_usd=0.01,
+        )
+
+        # sync 前の alpha/beta/trials を記録
+        conn = _sqlite3.connect(str(db))
+        before = conn.execute(
+            "SELECT alpha, beta, trials, last_updated FROM tier_bandit "
+            "WHERE task_complexity = 'medium' AND tier = 'sonnet'"
+        ).fetchone()
+        conn.close()
+
+        sync_tier_bandit_cost(db_path=db)
+
+        conn = _sqlite3.connect(str(db))
+        after = conn.execute(
+            "SELECT alpha, beta, trials, last_updated FROM tier_bandit "
+            "WHERE task_complexity = 'medium' AND tier = 'sonnet'"
+        ).fetchone()
+        conn.close()
+
+        assert before == after, (
+            f"alpha/beta/trials/last_updated が sync で変わってはいけない: "
+            f"before={before}, after={after}"
+        )
+
+    def test_reset_rows_not_in_summary(self, tmp_path: Path):
+        """L4: 集計に現れない (complexity,tier) 行は cost 列が 0.0/0 にリセットされる。
+
+        tier_bandit に opus/complex を seed し cost を手動で書いておく。
+        集計には出ない（outcome が無い）ため sync 後に 0.0/0 になることを確認。
+        """
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        # opus/complex を tier_bandit に seed（cost を手動で書く）
+        conn = _sqlite3.connect(str(db))
+        try:
+            from datetime import datetime as _dt, timezone as _tz  # noqa: PLC0415
+            ts = _dt.now(_tz.utc).isoformat(timespec="seconds")
+            conn.execute(
+                "INSERT INTO tier_bandit "
+                "(task_complexity, tier, alpha, beta, trials, "
+                " total_cost_usd, cost_samples, last_updated) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("complex", "opus", 2.0, 1.0, 3, 9.99, 5, ts),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 集計（rate_summary）は空 → sync で 0 リセットされるべき
+        # （outcome・cost_run を seed しないので集計に出ない）
+        sync_tier_bandit_cost(db_path=db)
+
+        conn = _sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT total_cost_usd, cost_samples FROM tier_bandit "
+            "WHERE task_complexity = 'complex' AND tier = 'opus'"
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert abs(row[0] - 0.0) < 1e-12, f"total_cost_usd は 0.0 にリセットされるべき: {row[0]}"
+        assert row[1] == 0, f"cost_samples は 0 にリセットされるべき: {row[1]}"
+
+    def test_update_only_no_insert(self, tmp_path: Path):
+        """L5: UPDATE-only — 集計に出るが tier_bandit に行がない場合は INSERT されない。
+
+        tier_bandit に sonnet/medium 行は作らず、outcome + cost_run だけ seed する。
+        sync しても tier_bandit の行数が増えないことを確認。
+        """
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        # tier_bandit 行を作らずに集計データだけ seed
+        _seed_cost_session(
+            db,
+            complexity="medium",
+            tier_outcome="sonnet",
+            model="claude-sonnet-4-6-20260101",
+            session_id="l5-sess",
+            total_cost_usd=0.01,
+        )
+
+        # sync 前の行数（tier_bandit は空のはず）
+        conn = _sqlite3.connect(str(db))
+        count_before = conn.execute("SELECT COUNT(*) FROM tier_bandit").fetchone()[0]
+        conn.close()
+
+        result = sync_tier_bandit_cost(db_path=db)
+
+        conn = _sqlite3.connect(str(db))
+        count_after = conn.execute("SELECT COUNT(*) FROM tier_bandit").fetchone()[0]
+        conn.close()
+
+        assert count_before == count_after == 0, (
+            f"tier_bandit に行が無ければ INSERT されてはいけない: "
+            f"before={count_before}, after={count_after}"
+        )
+        # rowcount=0 なので SET 行数は 0
+        assert result == 0, f"INSERT されていないので戻り値は 0 であるべき: {result}"
+
+    def test_db_absent_returns_zero_no_exception(self, tmp_path: Path):
+        """L6: DB 不在パスを渡しても 0 を返し例外を投げない。"""
+        absent_db = tmp_path / "no_such_l6.db"
+        result = sync_tier_bandit_cost(db_path=absent_db)
+        assert result == 0, f"DB 不在で 0 を返すべき: {result}"
+
+    def test_return_value_is_set_count(self, tmp_path: Path):
+        """L7: 戻り値が SET できた行数（rowcount > 0 の UPDATE 件数）である。"""
+        db = _make_c3_db_v003(tmp_path)
+
+        # 2 行を tier_bandit に seed
+        _seed_bandit_row(db, complexity="simple", tier="haiku")
+        _seed_bandit_row(db, complexity="medium", tier="sonnet")
+
+        # 2 セッション seed（それぞれ別 complexity/tier）
+        _seed_cost_session(
+            db, complexity="simple", tier_outcome="haiku",
+            model="claude-haiku-4-5-20260101",
+            session_id="l7-haiku", total_cost_usd=0.005,
+        )
+        _seed_cost_session(
+            db, complexity="medium", tier_outcome="sonnet",
+            model="claude-sonnet-4-6-20260101",
+            session_id="l7-sonnet", total_cost_usd=0.01,
+        )
+
+        result = sync_tier_bandit_cost(db_path=db)
+        # 2 行が SET されたので 2 を返す
+        assert result == 2, f"SET 行数は 2 であるべき: {result}"
+
+
+class TestReadTierBanditCost:
+    """L 群追加: read_tier_bandit_cost の単体テスト。"""
+
+    def test_returns_cost_per_key(self, tmp_path: Path):
+        """LR1: tier_bandit の cost 列を (complexity, tier) キーで返す。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        # cost 列も込みで直接 INSERT
+        conn = _sqlite3.connect(str(db))
+        try:
+            from datetime import datetime as _dt, timezone as _tz  # noqa: PLC0415
+            ts = _dt.now(_tz.utc).isoformat(timespec="seconds")
+            conn.execute(
+                "INSERT INTO tier_bandit "
+                "(task_complexity, tier, alpha, beta, trials, "
+                " total_cost_usd, cost_samples, last_updated) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("medium", "sonnet", 2.0, 1.0, 3, 0.05, 2, ts),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = read_tier_bandit_cost(db_path=db)
+
+        assert ("medium", "sonnet") in result
+        cost_usd, cost_samples = result[("medium", "sonnet")]
+        assert abs(cost_usd - 0.05) < 1e-9
+        assert cost_samples == 2
+
+    def test_db_absent_returns_empty_dict(self, tmp_path: Path):
+        """LR2: DB 不在で {} を返す（例外なし）。"""
+        absent_db = tmp_path / "no_such_lr2.db"
+        result = read_tier_bandit_cost(db_path=absent_db)
+        assert result == {}
+
+    def test_empty_table_returns_empty_dict(self, tmp_path: Path):
+        """LR3: tier_bandit が空なら {} を返す。"""
+        db = _make_c3_db_v003(tmp_path)
+        result = read_tier_bandit_cost(db_path=db)
+        assert result == {}

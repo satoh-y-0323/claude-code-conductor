@@ -27,6 +27,7 @@ import collections
 import difflib
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -47,8 +48,10 @@ except AttributeError:
 try:
     from c3 import db as _c3_db_const  # type: ignore[import-not-found]
     LEARNING_THRESHOLD: int = _c3_db_const.LEARNING_THRESHOLD
+    EPSILON: float = _c3_db_const.EPSILON_TIEBREAK
 except ImportError:
     LEARNING_THRESHOLD = 30
+    EPSILON = 0.05
 
 # 複雑度推定のキーワード
 SIMPLE_KEYWORDS = frozenset({
@@ -111,10 +114,9 @@ _PROMPT_HISTORY_SCAN_LINES = 1000
 
 TIERS: tuple[str, ...] = ("haiku", "sonnet", "opus")
 
-# cost-aware tie-break の拮抗判定閾値（v2.23.0）。
+# cost-aware tie-break の拮抗判定閾値（v2.23.0・SSOT は db.EPSILON_TIEBREAK）。
 # Beta サンプルは 0〜1 スケール。成功率 5pt 以内＝実質同等とみなす拮抗判定閾値。
-# 過大は成功率犠牲リスク、過小は無発動。調整可能化は v2.24.0。
-EPSILON: float = 0.05
+# 過大は成功率犠牲リスク、過小は無発動。C3_TIER_EPSILON env で上書き可（v2.25.0）。
 
 
 class SelectionResult(NamedTuple):
@@ -295,6 +297,7 @@ def select_tier_detailed(
     *,
     rng: random.Random | None = None,
     cost_map: dict[str, float] | None = None,
+    epsilon: float | None = None,
 ) -> SelectionResult:
     """Beta サンプリングまたは uniform 選択で推奨 Tier を SelectionResult で返す。
 
@@ -307,6 +310,7 @@ def select_tier_detailed(
             含む完全な dict」のいずれか。partial dict は渡されない前提
             （呼び出し側が全 TIERS 分を構築して保証する）。
             uniform 分岐では cost_map の有無に関わらず完全無視する（探索保護）。
+        epsilon: 拮抗判定閾値。None なら module 定数 EPSILON を使う（C3_TIER_EPSILON で上書き可）。
 
     Returns:
         SelectionResult（tier, mode, cost_tiebreak, contenders）。
@@ -323,7 +327,8 @@ def select_tier_detailed(
         tier: rng.betavariate(p[0], p[1])
         for tier, p in params.items()
     }
-    chosen, did_tiebreak, contenders = _cost_tiebreak(samples, cost_map)
+    eff_epsilon = epsilon if epsilon is not None else EPSILON
+    chosen, did_tiebreak, contenders = _cost_tiebreak(samples, cost_map, epsilon=eff_epsilon)
     return SelectionResult(chosen, "thompson", did_tiebreak, contenders)
 
 
@@ -332,6 +337,7 @@ def select_tier(
     *,
     rng: random.Random | None = None,
     cost_map: dict[str, float] | None = None,
+    epsilon: float | None = None,
 ) -> tuple[str, str]:
     """Beta サンプリングまたは uniform 選択で推奨 Tier を返す。
 
@@ -343,13 +349,14 @@ def select_tier(
             None なら cost を見ず従来の Thompson Sampling と完全一致。
             uniform 分岐では cost_map の有無に関わらず完全無視する。
             詳細は :func:`select_tier_detailed` を参照。
+        epsilon: 拮抗判定閾値。None なら module 定数 EPSILON を使う。
 
     Returns:
         ``(tier, mode)`` のタプル。``mode`` は ``"thompson"`` / ``"uniform"`` で、
         プロンプトに「学習データ収集中」と表示するかの分岐に使う。
         戻り値型は v2.22.0 以前と完全に不変。
     """
-    result = select_tier_detailed(params, rng=rng, cost_map=cost_map)
+    result = select_tier_detailed(params, rng=rng, cost_map=cost_map, epsilon=epsilon)
     return result.tier, result.mode
 
 
@@ -522,6 +529,41 @@ def _load_c3_db_module():
         return None
 
 
+def _resolve_epsilon() -> float:
+    """``C3_TIER_EPSILON`` を安全に解決する。
+
+    不正値（非数値 / 0 以下 / 1 超 / NaN）は受け付けず、stderr 警告 + デフォルト（EPSILON）に戻す。
+    未設定 / 空文字は無警告でデフォルトを返す（[SR-V-001]）。
+    """
+    raw = os.environ.get("C3_TIER_EPSILON")
+    if raw is None or raw == "":
+        return EPSILON
+    try:
+        x = float(raw)
+    except ValueError:
+        print(
+            f"[select_tier:epsilon] invalid C3_TIER_EPSILON={raw!r}, "
+            f"using default {EPSILON}",
+            file=sys.stderr,
+        )
+        return EPSILON
+    if math.isnan(x):
+        print(
+            f"[select_tier:epsilon] C3_TIER_EPSILON={raw!r} is NaN, "
+            f"using default {EPSILON}",
+            file=sys.stderr,
+        )
+        return EPSILON
+    if x <= 0 or x > 1:
+        print(
+            f"[select_tier:epsilon] C3_TIER_EPSILON={x} out of range (0, 1], "
+            f"using default {EPSILON}",
+            file=sys.stderr,
+        )
+        return EPSILON
+    return x
+
+
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read())
@@ -576,7 +618,8 @@ def main() -> int:
         except ImportError:
             cost_map = None
 
-    result = select_tier_detailed(params, cost_map=cost_map)
+    eps = _resolve_epsilon()
+    result = select_tier_detailed(params, cost_map=cost_map, epsilon=eps)
     tier, mode = result.tier, result.mode
     cost_tiebreak = result.cost_tiebreak
 
