@@ -154,7 +154,7 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | `c3 recall search "<query>"` または `c3 recall "<query>"` | `.claude/memory/sessions/` 等から類似チャンクを意味検索 |
 | `c3 recall rebuild [--force]` | HNSW インデックスを再構築（初回は fastembed が ~220MB のモデルを取得） |
 | `c3 recall stats` | チャンク数・モデル名・最終 rebuild 日時を表示 |
-| `c3 tier stats` | tier-routing（複雑度に応じた Tier 自動ルーティング）の学習データ・Tier 別コストを表形式で表示（`--json` で機械可読出力・`--recent N` で直近 outcome 件数指定）。ルーティング挙動は環境変数 `C3_TIER_COST_LAMBDA`（cost-weighted の重み・v2.26.0〜）/ `C3_TIER_EPSILON` / `C3_ESCALATION_THRESHOLD` で調整可（[CLI リファレンス](https://satoh-y-0323.github.io/claude-code-conductor/cli-reference/)参照） |
+| `c3 tier stats` | tier-routing（複雑度に応じた Tier 自動ルーティング）の学習データ・Tier 別コスト・現在の routing パラメータ（λ/ε/escalation・v2.27.0〜）を表形式で表示（`--json` で機械可読出力・`--recent N` で直近 outcome 件数指定）。ルーティング挙動は環境変数 `C3_TIER_COST_LAMBDA`（cost-weighted の重み・`0 ≤ λ ≤ 5`・v2.26.0〜、上限拡張 v2.27.0）/ `C3_TIER_EPSILON` / `C3_ESCALATION_THRESHOLD` で調整可（[CLI リファレンス](https://satoh-y-0323.github.io/claude-code-conductor/cli-reference/)参照） |
 
 ### 基本的な使い方
 
