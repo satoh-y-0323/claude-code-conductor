@@ -525,15 +525,19 @@ class TestCostTiebreak:
         assert did_tiebreak is False
 
     def test_hi_lo_equal_all_zero_norm_picks_max_sample(self) -> None:
-        """全 contender が同コスト（hi==lo → norm=0.0）なら samples 最大を選ぶ。"""
+        """全 contender が同コスト（hi==lo）なら samples 最大を選び did_tiebreak=False。
+
+        CR-Q-001（v2.27.0）: 全 tier コスト同値時は cost が選択に無関与なため
+        did_tiebreak=False を返すよう精緻化した。chosen は argmax(sample) で不変。
+        """
         mod = _load_hook_module()
         # haiku と sonnet が拮抗・同コスト
         samples = {"haiku": 0.82, "sonnet": 0.80, "opus": 0.30}
         cost_map = {"haiku": 10.0, "sonnet": 10.0, "opus": 10.0}
         chosen, did_tiebreak, contenders = mod._cost_tiebreak(samples, cost_map)
-        # norm は全員 0.0 → tie-break キー (0.0, -sample) の最小 = sample 最大
+        # 全コスト同値（hi == lo）→ did_tiebreak=False（CR-Q-001・v2.27.0 精緻化済み）
         assert chosen == "haiku"
-        assert did_tiebreak is True
+        assert did_tiebreak is False
 
     def test_tiebreak_picks_cheapest_among_contenders(self) -> None:
         """拮抗群の中で最安 tier が選ばれる。"""
@@ -1392,12 +1396,12 @@ class TestResolveCostLambda:
         err = capsys.readouterr().err
         assert "C3_TIER_COST_LAMBDA" in err
 
-    def test_above_1_returns_none_with_warning(
+    def test_above_max_returns_none_with_warning(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        """"1.5" → None + stderr 警告（x > 1 は拒否）。"""
+        """"5.1" → None + stderr 警告（x > COST_LAMBDA_MAX は拒否）。v2.27.0 λ 上限 5.0 化に伴い "1.5" → "5.1" に更新。"""
         mod = _load_hook_module()
-        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "1.5")
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "5.1")
         result = mod._resolve_cost_lambda()
         assert result is None
         err = capsys.readouterr().err
@@ -1414,6 +1418,155 @@ class TestResolveCostLambda:
         err = capsys.readouterr().err
         assert "C3_TIER_COST_LAMBDA" in err
         assert "NaN" in err
+
+    def test_new_upper_boundary_5_0_valid(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"5.0" → 5.0（v2.27.0 新上限境界・許容）・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "5.0")
+        result = mod._resolve_cost_lambda()
+        assert result == pytest.approx(5.0)
+        assert capsys.readouterr().err == ""
+
+    def test_value_2_5_valid_in_extended_range(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"2.5" → 2.5（旧上限 1.0 超だが新範囲 [0, 5.0] 内）・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "2.5")
+        result = mod._resolve_cost_lambda()
+        assert result == pytest.approx(2.5)
+        assert capsys.readouterr().err == ""
+
+    def test_value_1_5_valid_in_extended_range(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """"1.5" → 1.5（旧上限超だが新範囲 [0, 5.0] 内）・警告なし。"""
+        mod = _load_hook_module()
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "1.5")
+        result = mod._resolve_cost_lambda()
+        assert result == pytest.approx(1.5)
+        assert capsys.readouterr().err == ""
+
+
+# ---------------------------------------------------------------------------
+# T6 (v2.27.0): CR-Q-001 精緻化 — _cost_tiebreak 全 tier コスト同値時の挙動
+# ---------------------------------------------------------------------------
+
+
+class TestCostTiebreakAllSameCost:
+    """CR-Q-001: _cost_tiebreak で全 tier コスト同値時は did_tiebreak=False。
+
+    cost_map の全 tier が同値のとき、hi == lo になるため cost は選択に無関与。
+    chosen は argmax(sample) で不変、did_tiebreak は False。
+    """
+
+    def test_all_same_cost_did_tiebreak_false(self) -> None:
+        """CR-Q-001: 全 tier コスト同値で did_tiebreak=False・chosen==argmax(sample)。"""
+        mod = _load_hook_module()
+        epsilon = mod.EPSILON  # 0.05
+        base = 0.85
+        # haiku と sonnet が拮抗（contenders が複数）、全 tier コスト同値
+        samples = {"haiku": base, "sonnet": base - epsilon + 0.01, "opus": base - 0.2}
+        # 全 tier に同値コストを設定（hi == lo になる）
+        cost_map = {"haiku": 10.0, "sonnet": 10.0, "opus": 10.0}
+        chosen, did_tiebreak, contenders = mod._cost_tiebreak(samples, cost_map)
+        # 全コスト同値 → did_tiebreak=False
+        assert did_tiebreak is False
+        # chosen は argmax(sample) = haiku
+        assert chosen == "haiku"
+
+    def test_all_same_cost_argmax_wins(self) -> None:
+        """CR-Q-001: 全 tier コスト同値・拮抗群複数で argmax(samples) が選ばれる。"""
+        mod = _load_hook_module()
+        # sonnet が最大サンプル
+        samples = {"haiku": 0.70, "sonnet": 0.80, "opus": 0.75}
+        cost_map = {"haiku": 5.0, "sonnet": 5.0, "opus": 5.0}
+        chosen, did_tiebreak, _ = mod._cost_tiebreak(samples, cost_map)
+        assert did_tiebreak is False
+        assert chosen == "sonnet"  # argmax
+
+    def test_distinct_cost_did_tiebreak_true_unchanged(self) -> None:
+        """既存テスト不変確認: distinct コストで did_tiebreak=True のままであること。
+
+        test_tiebreak_picks_cheapest_among_contenders のシナリオを再現して
+        CR-Q-001 修正後も既存挙動が変わらないことを確認する。
+        """
+        mod = _load_hook_module()
+        epsilon = mod.EPSILON  # 0.05
+        base = 0.85
+        samples = {"haiku": base, "sonnet": base - epsilon + 0.01, "opus": base - 0.2}
+        cost_map = {"haiku": 30.0, "sonnet": 6.0, "opus": 1.0}  # distinct コスト
+        chosen, did_tiebreak, contenders = mod._cost_tiebreak(samples, cost_map)
+        assert did_tiebreak is True  # distinct コストなので tiebreak 発動
+        assert chosen == "sonnet"  # sonnet が最安 contender
+
+
+# ---------------------------------------------------------------------------
+# T7 (v2.27.0): parity テスト — hook _resolve_cost_lambda と db.resolve_cost_lambda の一致
+# ---------------------------------------------------------------------------
+
+
+class TestResolveCostLambdaParity:
+    """parity: hook の _resolve_cost_lambda() と db.resolve_cost_lambda() の戻り値が一致する。
+
+    値ドリフト防止。入力マトリクスで両関数の戻り値を比較する。
+    """
+
+    _CASES = [
+        # (env_value_or_None, label)
+        (None, "未設定"),
+        ("0", '"0"'),
+        ("2.5", '"2.5"'),
+        ("5.0", '"5.0"'),
+        ("5.1", '"5.1"'),
+        ("abc", '"abc"'),
+        ("nan", '"nan"'),
+        ("-1", '"-1"'),
+    ]
+
+    def _call_hook(self, env_val, monkeypatch: pytest.MonkeyPatch):
+        mod = _load_hook_module()
+        if env_val is None:
+            monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+        else:
+            monkeypatch.setenv("C3_TIER_COST_LAMBDA", env_val)
+        return mod._resolve_cost_lambda()
+
+    def _call_db(self, env_val, monkeypatch: pytest.MonkeyPatch):
+        from c3 import db as c3_db  # noqa: PLC0415
+        if env_val is None:
+            monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+        else:
+            monkeypatch.setenv("C3_TIER_COST_LAMBDA", env_val)
+        return c3_db.resolve_cost_lambda()
+
+    @pytest.mark.parametrize("env_val,label", _CASES)
+    def test_parity(
+        self,
+        env_val,
+        label,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """hook と db の _resolve_cost_lambda() 戻り値が一致する（入力: {label}）。"""
+        hook_result = self._call_hook(env_val, monkeypatch)
+        capsys.readouterr()  # hook の stderr をクリア
+        db_result = self._call_db(env_val, monkeypatch)
+        capsys.readouterr()  # db の stderr をクリア
+
+        if hook_result is None:
+            assert db_result is None, (
+                f"label={label}: hook=None, db={db_result!r} — 不一致"
+            )
+        else:
+            assert db_result is not None, (
+                f"label={label}: hook={hook_result!r}, db=None — 不一致"
+            )
+            assert hook_result == pytest.approx(db_result), (
+                f"label={label}: hook={hook_result!r}, db={db_result!r} — 値不一致"
+            )
 
 
 # ---------------------------------------------------------------------------

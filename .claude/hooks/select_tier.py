@@ -51,11 +51,15 @@ try:
     EPSILON: float = _c3_db_const.EPSILON_TIEBREAK
     ESCALATION_THRESHOLD: float = _c3_db_const.ESCALATION_THRESHOLD_DEFAULT
     COST_LAMBDA_DEFAULT: float | None = _c3_db_const.COST_LAMBDA_DEFAULT
+    COST_LAMBDA_MIN: float = _c3_db_const.COST_LAMBDA_MIN
+    COST_LAMBDA_MAX: float = _c3_db_const.COST_LAMBDA_MAX
 except ImportError:
     LEARNING_THRESHOLD = 30
     EPSILON = 0.05
     ESCALATION_THRESHOLD = 0.5
     COST_LAMBDA_DEFAULT = None
+    COST_LAMBDA_MIN = 0.0
+    COST_LAMBDA_MAX = 5.0
 
 # 複雑度推定のキーワード
 SIMPLE_KEYWORDS = frozenset({
@@ -174,14 +178,14 @@ def _cost_tiebreak(
         epsilon: 拮抗判定の閾値（デフォルト EPSILON=0.05）。経路 0/1 で使用。
             経路 2 では contenders 算出にのみ使用（選択自体は全 tier score 比較）。
         lam: cost weighting 係数（λ）。None=センチネル（経路 1・後方互換）、
-            0.0=cost 無視明示（経路 0）、0 < lam <= 1=全 tier weighting（経路 2）。
+            0.0=cost 無視明示（経路 0）、0 < lam <= COST_LAMBDA_MAX=全 tier weighting（経路 2）。
             デフォルト None で既存 2 引数呼び出しの挙動・シグネチャを完全不変にする。
 
     Returns:
         (chosen, did_tiebreak, contenders) のタプル。
         - chosen: 選択された tier 名。
         - did_tiebreak: cost が選択に影響した場合 True。
-            経路 1: contenders 内 min-max で安い方を選んだ場合 True。
+            経路 1: contenders 内 min-max で安い方を選んだ場合 True（全 tier コスト同値時は False）。
             経路 2: 全 tier weighting で argmax(sample) と異なる選択になった場合 True。
         - contenders: ε 拮抗判定に入った tier のタプル（observability 用）。
     """
@@ -202,11 +206,12 @@ def _cost_tiebreak(
         # 拮抗群内で min-max 正規化コストを計算し最安 tier を選ぶ
         costs = {t: cost_map[t] for t in contenders}
         lo, hi = min(costs.values()), max(costs.values())
-        norm = {t: ((costs[t] - lo) / (hi - lo) if hi > lo else 0.0) for t in contenders}
-        # 同値安定 tie-break: norm 同値時はサンプル大（=従来選好）を優先 → 決定論
-        # 注: 全 tier コスト同値（hi == lo → norm 全 0.0）でも did_tiebreak=True を返す。
-        # これは v2.25.0 のバイト互換維持のため意図的（フラグ意味の精緻化＝同値時 False は
-        # 後方互換を崩すため v2.27.0+ で扱う）。[CR-Q-001]
+        if hi == lo:
+            # [CR-Q-001] 全 tier コスト同値: cost は選択に無関与。
+            # argmax(sample) を返し did_tiebreak=False（observability 精緻化・v2.27.0 で精緻化済み）。
+            chosen = max(samples, key=lambda t: samples[t])
+            return chosen, False, tuple(contenders)
+        norm = {t: (costs[t] - lo) / (hi - lo) for t in contenders}
         chosen = min(contenders, key=lambda t: (norm[t], -samples[t]))
         return chosen, True, tuple(contenders)
 
@@ -359,7 +364,7 @@ def select_tier_detailed(
             uniform 分岐では cost_map の有無に関わらず完全無視する（探索保護）。
         epsilon: 拮抗判定閾値。None なら module 定数 EPSILON を使う（C3_TIER_EPSILON で上書き可）。
         lam: cost weighting 係数（λ）。None=センチネル（v2.25.0 ε-gated 後方互換）、
-            0.0=cost 無視明示、0<lam<=1=全 tier weighting 発動（C3_TIER_COST_LAMBDA で上書き可）。
+            0.0=cost 無視明示、0<lam<=COST_LAMBDA_MAX=全 tier weighting 発動（C3_TIER_COST_LAMBDA で上書き可）。
             None（デフォルト）では env 未設定時と完全一致する（後方互換の核心）。
             uniform 分岐では lam の値に関わらず完全無視する（探索保護・不可侵）。
 
@@ -685,9 +690,9 @@ def _resolve_escalation_threshold() -> float:
 def _resolve_cost_lambda() -> float | None:
     """``C3_TIER_COST_LAMBDA`` を安全に解決する。
 
-    不正値（非数値 / 0 未満 / 1 超 / NaN）は受け付けず、stderr 警告 + デフォルト（COST_LAMBDA_DEFAULT）に戻す。
+    不正値（非数値 / 0 未満 / COST_LAMBDA_MAX 超 / NaN）は受け付けず、stderr 警告 + デフォルト（COST_LAMBDA_DEFAULT）に戻す。
     未設定 / 空文字は無警告でデフォルト（None）を返す。
-    妥当域: 0 <= x <= 1（x == 0 は許容＝cost 無視の明示オプト・_resolve_epsilon と異なり下限を含む）。区間表記: [0, 1]（x=0 許容のため閉区間）。
+    妥当域: 0 <= x <= COST_LAMBDA_MAX（x == 0 は許容＝cost 無視の明示オプト・_resolve_epsilon と異なり下限を含む）。区間表記: [0, COST_LAMBDA_MAX]（x=0 許容のため閉区間）。
     戻り値が None の場合は v2.25.0 互換の ε tie-break 経路を維持する（センチネル）。
     """
     raw = os.environ.get("C3_TIER_COST_LAMBDA")
@@ -709,9 +714,9 @@ def _resolve_cost_lambda() -> float | None:
             file=sys.stderr,
         )
         return COST_LAMBDA_DEFAULT
-    if x < 0 or x > 1:
+    if x < COST_LAMBDA_MIN or x > COST_LAMBDA_MAX:
         print(
-            f"[select_tier:cost_lambda] C3_TIER_COST_LAMBDA={x!r} out of range [0, 1], "
+            f"[select_tier:cost_lambda] C3_TIER_COST_LAMBDA={x!r} out of range [0, {COST_LAMBDA_MAX}], "
             f"using default {COST_LAMBDA_DEFAULT}",
             file=sys.stderr,
         )

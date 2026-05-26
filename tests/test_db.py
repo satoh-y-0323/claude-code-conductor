@@ -1740,3 +1740,213 @@ class TestV226Constants:
         """M2: ESCALATION_THRESHOLD_DEFAULT は 0.5（既定 escalation 閾値）。"""
         import c3.db as db  # noqa: PLC0415
         assert db.ESCALATION_THRESHOLD_DEFAULT == 0.5
+
+
+# ---------------------------------------------------------------------------
+# N 群: v2.27.0 定数 SSOT（COST_LAMBDA_MIN / COST_LAMBDA_MAX）+ resolve_* 関数
+# ---------------------------------------------------------------------------
+
+
+class TestV227Constants:
+    """N1 群: v2.27.0 で追加した 2 つの定数の存在と値を確認する（SSOT）。"""
+
+    def test_cost_lambda_max_is_5(self):
+        """N1-1: COST_LAMBDA_MAX == 5.0（v2.27.0 λ 上限拡張）。"""
+        import c3.db as db  # noqa: PLC0415
+        assert db.COST_LAMBDA_MAX == 5.0
+
+    def test_cost_lambda_min_is_0(self):
+        """N1-2: COST_LAMBDA_MIN == 0.0。"""
+        import c3.db as db  # noqa: PLC0415
+        assert db.COST_LAMBDA_MIN == 0.0
+
+
+class TestResolveCostLambdaDb:
+    """N2 群: db.resolve_cost_lambda() の env パース・バリデーションテスト。
+
+    select_tier.py の _resolve_cost_lambda() と同一挙動（parity テストは N5 群）。
+    """
+
+    def test_unset_returns_none_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N2-1: 未設定 → None・警告なし。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+        result = db.resolve_cost_lambda()
+        assert result is None
+        assert capsys.readouterr().err == ""
+
+    def test_zero_returns_0_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N2-2: "0" → 0.0・警告なし（cost 無視の明示オプト）。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "0")
+        result = db.resolve_cost_lambda()
+        assert result == pytest.approx(0.0)
+        assert capsys.readouterr().err == ""
+
+    def test_middle_value_returns_float(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N2-3: "2.5" → 2.5・警告なし。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "2.5")
+        result = db.resolve_cost_lambda()
+        assert result == pytest.approx(2.5)
+        assert capsys.readouterr().err == ""
+
+    def test_new_upper_boundary_returns_float(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N2-4: "5.0" → 5.0（新上限境界・許容）・警告なし。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "5.0")
+        result = db.resolve_cost_lambda()
+        assert result == pytest.approx(5.0)
+        assert capsys.readouterr().err == ""
+
+    def test_above_max_returns_none_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N2-5: "5.1" → None + stderr 警告（x > COST_LAMBDA_MAX は拒否）。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "5.1")
+        result = db.resolve_cost_lambda()
+        assert result is None
+        err = capsys.readouterr().err
+        assert "C3_TIER_COST_LAMBDA" in err
+
+    def test_negative_returns_none_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N2-6: "-0.1" → None + stderr 警告（x < 0 は拒否）。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "-0.1")
+        result = db.resolve_cost_lambda()
+        assert result is None
+        err = capsys.readouterr().err
+        assert "C3_TIER_COST_LAMBDA" in err
+
+    def test_non_numeric_returns_none_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N2-7: "abc" → None + stderr 警告。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "abc")
+        result = db.resolve_cost_lambda()
+        assert result is None
+        err = capsys.readouterr().err
+        assert "C3_TIER_COST_LAMBDA" in err
+
+    def test_nan_returns_none_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N2-8: "nan" → None + stderr 警告。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "nan")
+        result = db.resolve_cost_lambda()
+        assert result is None
+        err = capsys.readouterr().err
+        assert "C3_TIER_COST_LAMBDA" in err
+
+
+class TestResolveEpsilonDb:
+    """N3 群: db.resolve_epsilon() の env パース・バリデーションテスト。"""
+
+    def test_unset_returns_epsilon_tiebreak(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N3-1: 未設定 → EPSILON_TIEBREAK（0.05）を返す。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+        result = db.resolve_epsilon()
+        assert result == pytest.approx(db.EPSILON_TIEBREAK)
+
+    def test_zero_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N3-2: "0" → デフォルト返却 + stderr 警告（下限拒否）。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_EPSILON", "0")
+        result = db.resolve_epsilon()
+        assert result == pytest.approx(db.EPSILON_TIEBREAK)
+        err = capsys.readouterr().err
+        assert "C3_TIER_EPSILON" in err
+
+    def test_valid_value_0_1(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N3-3: "0.1" → 0.1・警告なし。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_EPSILON", "0.1")
+        result = db.resolve_epsilon()
+        assert result == pytest.approx(0.1)
+        assert capsys.readouterr().err == ""
+
+    def test_upper_boundary_1(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N3-4: "1" → 1.0（上限境界・許容）・警告なし。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_EPSILON", "1")
+        result = db.resolve_epsilon()
+        assert result == pytest.approx(1.0)
+        assert capsys.readouterr().err == ""
+
+    def test_above_1_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N3-5: "1.1" → デフォルト返却 + stderr 警告（上限超過）。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_TIER_EPSILON", "1.1")
+        result = db.resolve_epsilon()
+        assert result == pytest.approx(db.EPSILON_TIEBREAK)
+        err = capsys.readouterr().err
+        assert "C3_TIER_EPSILON" in err
+
+
+class TestResolveEscalationThresholdDb:
+    """N4 群: db.resolve_escalation_threshold() の env パース・バリデーションテスト。"""
+
+    def test_unset_returns_escalation_threshold_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N4-1: 未設定 → ESCALATION_THRESHOLD_DEFAULT（0.5）を返す。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.delenv("C3_ESCALATION_THRESHOLD", raising=False)
+        result = db.resolve_escalation_threshold()
+        assert result == pytest.approx(db.ESCALATION_THRESHOLD_DEFAULT)
+
+    def test_valid_value_0_7(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N4-2: "0.7" → 0.7・警告なし。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_ESCALATION_THRESHOLD", "0.7")
+        result = db.resolve_escalation_threshold()
+        assert result == pytest.approx(0.7)
+        assert capsys.readouterr().err == ""
+
+    def test_out_of_range_above_1_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N4-3: "1.1" → デフォルト返却 + stderr 警告。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_ESCALATION_THRESHOLD", "1.1")
+        result = db.resolve_escalation_threshold()
+        assert result == pytest.approx(db.ESCALATION_THRESHOLD_DEFAULT)
+        err = capsys.readouterr().err
+        assert "C3_ESCALATION_THRESHOLD" in err
+
+    def test_out_of_range_zero_returns_default_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """N4-4: "0" → デフォルト返却 + stderr 警告（下限拒否）。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_ESCALATION_THRESHOLD", "0")
+        result = db.resolve_escalation_threshold()
+        assert result == pytest.approx(db.ESCALATION_THRESHOLD_DEFAULT)
+        err = capsys.readouterr().err
+        assert "C3_ESCALATION_THRESHOLD" in err

@@ -18,8 +18,10 @@ upsert_po_status / fetch_po_status）も同時に削除した。
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -50,6 +52,125 @@ COST_LAMBDA_DEFAULT = None
 # C3_ESCALATION_THRESHOLD 環境変数で上書き可（v2.26.0）。
 # 本定数が SSOT（select_tier.py はここから参照）。
 ESCALATION_THRESHOLD_DEFAULT = 0.5
+
+# cost-weighted Thompson の λ 有効範囲（v2.27.0: 上限を 1.0→5.0 に拡張）。
+# cost を成功率より強く効かせる余地を確保するため上限を 5.0 に設定。
+# select_tier.py の _resolve_cost_lambda はここを SSOT として参照する。
+COST_LAMBDA_MIN = 0.0
+COST_LAMBDA_MAX = 5.0
+
+
+def resolve_cost_lambda() -> float | None:
+    """``C3_TIER_COST_LAMBDA`` を安全に解決する（cli_tier 用 SSOT）。
+
+    不正値（非数値 / 0 未満 / COST_LAMBDA_MAX 超 / NaN）は受け付けず、
+    stderr 警告 + デフォルト（COST_LAMBDA_DEFAULT = None）に戻す。
+    未設定 / 空文字は無警告でデフォルト（None）を返す。
+    妥当域: [COST_LAMBDA_MIN, COST_LAMBDA_MAX]（x=0 許容の閉区間）。
+    戻り値が None の場合は v2.25.0 互換の ε tie-break 経路を維持する（センチネル）。
+    """
+    raw = os.environ.get("C3_TIER_COST_LAMBDA")
+    if raw is None or raw == "":
+        return COST_LAMBDA_DEFAULT
+    try:
+        x = float(raw)
+    except ValueError:
+        print(
+            f"[c3:cost_lambda] invalid C3_TIER_COST_LAMBDA={raw!r}, "
+            f"using default {COST_LAMBDA_DEFAULT}",
+            file=sys.stderr,
+        )
+        return COST_LAMBDA_DEFAULT
+    if math.isnan(x):
+        print(
+            f"[c3:cost_lambda] C3_TIER_COST_LAMBDA={raw!r} is NaN, "
+            f"using default {COST_LAMBDA_DEFAULT}",
+            file=sys.stderr,
+        )
+        return COST_LAMBDA_DEFAULT
+    if x < COST_LAMBDA_MIN or x > COST_LAMBDA_MAX:
+        print(
+            f"[c3:cost_lambda] C3_TIER_COST_LAMBDA={x!r} out of range "
+            f"[{COST_LAMBDA_MIN}, {COST_LAMBDA_MAX}], "
+            f"using default {COST_LAMBDA_DEFAULT}",
+            file=sys.stderr,
+        )
+        return COST_LAMBDA_DEFAULT
+    return x
+
+
+def resolve_epsilon() -> float:
+    """``C3_TIER_EPSILON`` を安全に解決する（cli_tier 用 SSOT）。
+
+    不正値（非数値 / 0 以下 / 1 超 / NaN）は受け付けず、
+    stderr 警告 + デフォルト（EPSILON_TIEBREAK）に戻す。
+    未設定 / 空文字は無警告でデフォルトを返す。
+    妥当域: (0, 1]（x=0 拒否の半開区間）。
+    """
+    raw = os.environ.get("C3_TIER_EPSILON")
+    if raw is None or raw == "":
+        return EPSILON_TIEBREAK
+    try:
+        x = float(raw)
+    except ValueError:
+        print(
+            f"[c3:epsilon] invalid C3_TIER_EPSILON={raw!r}, "
+            f"using default {EPSILON_TIEBREAK}",
+            file=sys.stderr,
+        )
+        return EPSILON_TIEBREAK
+    if math.isnan(x):
+        print(
+            f"[c3:epsilon] C3_TIER_EPSILON={raw!r} is NaN, "
+            f"using default {EPSILON_TIEBREAK}",
+            file=sys.stderr,
+        )
+        return EPSILON_TIEBREAK
+    if x <= 0 or x > 1:
+        print(
+            f"[c3:epsilon] C3_TIER_EPSILON={x!r} out of range (0, 1], "
+            f"using default {EPSILON_TIEBREAK}",
+            file=sys.stderr,
+        )
+        return EPSILON_TIEBREAK
+    return x
+
+
+def resolve_escalation_threshold() -> float:
+    """``C3_ESCALATION_THRESHOLD`` を安全に解決する（cli_tier 用 SSOT）。
+
+    不正値（非数値 / 0 以下 / 1 超 / NaN）は受け付けず、
+    stderr 警告 + デフォルト（ESCALATION_THRESHOLD_DEFAULT）に戻す。
+    未設定 / 空文字は無警告でデフォルトを返す。
+    妥当域: (0, 1]（x=0 拒否の半開区間）。
+    """
+    raw = os.environ.get("C3_ESCALATION_THRESHOLD")
+    if raw is None or raw == "":
+        return ESCALATION_THRESHOLD_DEFAULT
+    try:
+        x = float(raw)
+    except ValueError:
+        print(
+            f"[c3:escalation] invalid C3_ESCALATION_THRESHOLD={raw!r}, "
+            f"using default {ESCALATION_THRESHOLD_DEFAULT}",
+            file=sys.stderr,
+        )
+        return ESCALATION_THRESHOLD_DEFAULT
+    if math.isnan(x):
+        print(
+            f"[c3:escalation] C3_ESCALATION_THRESHOLD={raw!r} is NaN, "
+            f"using default {ESCALATION_THRESHOLD_DEFAULT}",
+            file=sys.stderr,
+        )
+        return ESCALATION_THRESHOLD_DEFAULT
+    if x <= 0 or x > 1:
+        print(
+            f"[c3:escalation] C3_ESCALATION_THRESHOLD={x!r} out of range (0, 1], "
+            f"using default {ESCALATION_THRESHOLD_DEFAULT}",
+            file=sys.stderr,
+        )
+        return ESCALATION_THRESHOLD_DEFAULT
+    return x
 
 
 def _apply_busy_timeout(conn: sqlite3.Connection) -> None:

@@ -145,6 +145,11 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
         "agent_cost": agent_cost,
         "tier_cost": tier_cost,
         "tier_cost_rate": tier_cost_rate,
+        "routing_params": {
+            "cost_lambda": c3_db.resolve_cost_lambda(),
+            "epsilon": c3_db.resolve_epsilon(),
+            "escalation_threshold": c3_db.resolve_escalation_threshold(),
+        },
     }
 
 
@@ -246,4 +251,19 @@ def _render_human(snapshot: dict[str, Any]) -> None:
                 f"{row['sessions']:>8}  "
                 f"{row['rate_usd_per_mtok']:>18.4f}"
             )
+    print()
+
+    print("== routing パラメータ（環境変数で調整可） ==")
+    rp = snapshot.get("routing_params", {})
+    cost_lambda = rp.get("cost_lambda")
+    epsilon = rp.get("epsilon", c3_db.EPSILON_TIEBREAK)
+    escalation_threshold = rp.get("escalation_threshold", c3_db.ESCALATION_THRESHOLD_DEFAULT)
+    if cost_lambda is None:
+        print("λ (C3_TIER_COST_LAMBDA): 未設定 → v2.25.0 互換（ε tie-break のみ）")
+    elif cost_lambda == 0.0:
+        print("λ: 0.0（cost 無視・純 Thompson）")
+    else:
+        print(f"λ: {cost_lambda}（全 tier weighting 有効）")
+    print(f"ε (C3_TIER_EPSILON): {epsilon}")
+    print(f"escalation threshold (C3_ESCALATION_THRESHOLD): {escalation_threshold}")
     print()

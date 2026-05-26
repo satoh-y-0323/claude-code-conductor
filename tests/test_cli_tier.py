@@ -1035,3 +1035,109 @@ class TestTierBanditCostDisplay:
         assert target is not None
         assert target["total_cost_usd"] == 0.0
         assert target["cost_samples"] == 0
+
+
+# ---------------------------------------------------------------------------
+# v2.27.0: routing パラメータ表示（routing_params）のテスト
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingParamsSection:
+    """T6: _collect_snapshot の routing_params キーと _render_human の routing パラメータセクション。
+
+    db.resolve_cost_lambda / resolve_epsilon / resolve_escalation_threshold は
+    v2.27.0 で実装済み。このテスト群は全件 Green。
+    """
+
+    def test_collect_snapshot_contains_routing_params_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_collect_snapshot の snapshot に routing_params キーが含まれる。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db)
+
+        snapshot = cli_tier._collect_snapshot(db, recent_limit=10)
+
+        assert "routing_params" in snapshot
+
+    def test_collect_snapshot_routing_params_structure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """routing_params に cost_lambda / epsilon / escalation_threshold キーが含まれる。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db)
+        monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+        monkeypatch.delenv("C3_TIER_EPSILON", raising=False)
+        monkeypatch.delenv("C3_ESCALATION_THRESHOLD", raising=False)
+
+        snapshot = cli_tier._collect_snapshot(db, recent_limit=10)
+
+        assert "routing_params" in snapshot
+        rp = snapshot["routing_params"]
+        assert "cost_lambda" in rp
+        assert "epsilon" in rp
+        assert "escalation_threshold" in rp
+
+    def test_render_human_shows_routing_params_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """human 出力に routing パラメータセクション見出しが含まれる。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "routing パラメータ" in out
+
+    def test_render_human_lambda_unset_shows_unset_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """λ 未設定時に「未設定」または v2.25.0 互換を示す文言が出る。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # 未設定 → 「未設定」または互換の文言
+        assert "未設定" in out or "C3_TIER_COST_LAMBDA" in out
+
+    def test_render_human_lambda_2_5_shows_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """C3_TIER_COST_LAMBDA=2.5 設定時に 2.5 が出力に表示される。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        monkeypatch.setenv("C3_TIER_COST_LAMBDA", "2.5")
+
+        rc = _run(_make_args(), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "2.5" in out
+
+    def test_json_output_contains_routing_params_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """--json 出力の snapshot に routing_params キーが含まれる。"""
+        db = tmp_path / "c3.db"
+        _create_c3_db(db)
+        monkeypatch.delenv("C3_TIER_COST_LAMBDA", raising=False)
+
+        rc = _run(_make_args(as_json=True), db, monkeypatch)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert "routing_params" in data
