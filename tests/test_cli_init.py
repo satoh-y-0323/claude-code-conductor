@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
+
+import pytest
 
 from c3 import cli_init, cli_update
 
@@ -181,6 +184,13 @@ def test_init_codex_refuses_unmanaged_existing_c3_mcp_table(tmp_path: Path, caps
     assert "already defines [mcp_servers.c3]" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(
+    os.sep != "\\",
+    reason=(
+        "config の PYTHONPATH バックスラッシュエスケープは Windows パスでのみ発生する"
+        "（escape ロジック自体は tests/test_adapters.py で OS 非依存に検証済み）"
+    ),
+)
 def test_update_codex_preserves_escaped_backslashes_in_managed_config(tmp_path: Path):
     _run_init(tmp_path, platform="codex")
     config = tmp_path / ".codex" / "config.toml"

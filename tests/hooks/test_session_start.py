@@ -161,7 +161,14 @@ class TestClearFileHistory:
         assert not sub.exists()
 
     def test_symlink_uses_unlink_not_rmtree(self, tmp_path: Path):
-        """シンボリックリンクは os.unlink で削除（TOCTOU 対策）."""
+        """シンボリックリンクは os.unlink で除去し shutil.rmtree には渡さない（TOCTOU 対策）。
+
+        OS 非依存にするため削除ルーティングを spy で検証する。リンク先 dir も
+        file-history 直下にあるため別エントリとして rmtree される（=消えるのが正しい）。
+        旧実装の ``target_dir.exists()`` assertion は「リンク先も直下エントリ」である点を
+        見落としており、symlink を作れない Windows では skip され露呈しなかった
+        （Linux CI で顕在化）。
+        """
         module = _load_hook_module()
         fake_history = tmp_path / "file-history"
         fake_history.mkdir()
@@ -173,12 +180,17 @@ class TestClearFileHistory:
         except OSError:
             pytest.skip("シンボリックリンクを作れない環境（権限不足等）")
 
-        with patch.object(module, "FILE_HISTORY_DIR", str(fake_history)):
+        with patch.object(module, "FILE_HISTORY_DIR", str(fake_history)), \
+             patch.object(module.os, "unlink", wraps=module.os.unlink) as unlink_spy, \
+             patch.object(module.shutil, "rmtree", wraps=module.shutil.rmtree) as rmtree_spy:
             module._run_clear_file_history()
 
-        # symlink 自体は消えるが、リンク先は消えない
+        # symlink 自体は unlink で除去され、rmtree には渡らない
         assert not symlink.exists()
-        assert target_dir.exists()
+        unlinked = [call.args[0] for call in unlink_spy.call_args_list]
+        rmtree_targets = [call.args[0] for call in rmtree_spy.call_args_list]
+        assert str(symlink) in unlinked
+        assert str(symlink) not in rmtree_targets
 
     def test_external_symlink_is_skipped(self, tmp_path: Path):
         """リンク先が FILE_HISTORY_DIR 外のシンボリックリンクはスキップする."""
