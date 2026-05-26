@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.27.0] - 2026-05-26
+
+**tier-routing λ 機能拡張（CR-Q-001 精緻化・λ 上限 5.0・cli_tier routing パラメータ表示）**: v2.26.0 で繰り越した 3 項目を解消。λ の上限を 1.0 から 5.0 に拡張、cost-aware tie-break の observability フラグを精緻化、`c3 tier stats` に現在の routing パラメータ（λ/ε/escalation）を表示。環境変数未設定時の routing 出力は v2.26.0 と一致。**破壊的変更なし**。
+
+### 機能追加
+
+- **`src/c3/db.py`: `COST_LAMBDA_MIN`（0.0）/ `COST_LAMBDA_MAX`（5.0）定数を追加（SSOT）**: cost-weighted Thompson の λ 妥当域の上限を 1.0 から 5.0 に拡張。これにより最高コスト tier の sample をより強く減点でき、cost を成功率より優先させる調整が可能になる。既存の `[0, 1]` の λ 値は引き続き有効（後方互換）。
+- **`src/c3/db.py`: 公開 `resolve_cost_lambda` / `resolve_epsilon` / `resolve_escalation_threshold` を追加**: 環境変数（`C3_TIER_COST_LAMBDA` / `C3_TIER_EPSILON` / `C3_ESCALATION_THRESHOLD`）の解決ロジックを db.py に SSOT として新設。`cli_tier.py` が現在有効な routing パラメータを表示するために参照する。挙動は hook（`select_tier.py`）の既存 `_resolve_*` と一致し、parity テストで戻り値の一致を担保。
+- **`src/c3/cli_tier.py`: `c3 tier stats` に「routing パラメータ」セクションを追加**: 現在有効な λ（`C3_TIER_COST_LAMBDA`）・ε（`C3_TIER_EPSILON`）・escalation threshold（`C3_ESCALATION_THRESHOLD`）を表示。λ は未設定（v2.25.0 互換）/ 0.0（cost 無視）/ 0 < x ≤ 5（全 tier weighting）で文言を分岐。`--json` 出力にも `routing_params` キーを追加。
+
+### 変更
+
+- **`.claude/hooks/select_tier.py`: `_resolve_cost_lambda` の上限を `COST_LAMBDA_MAX`（5.0）参照に変更**: 従来ハードコードの上限 `1` を db.py の SSOT 定数参照に変更（import 失敗時フォールバック 5.0）。下限も `COST_LAMBDA_MIN`（0.0）参照に統一。
+- **`.claude/hooks/select_tier.py`: CR-Q-001 — `_cost_tiebreak` 経路1 の observability フラグ精緻化**: v2.25.0 互換の ε tie-break 経路で、拮抗群の全 tier コストが同値（`hi == lo`）の場合に `did_tiebreak=False` を返すよう変更。**選ばれる tier は不変**（`argmax(sample)`）で、変わるのは observability のみ。
+
+### 後方互換
+
+- 環境変数未設定時の routing 挙動・選ばれる tier は v2.26.0 と完全一致。
+- λ の既存値（`[0, 1]`）は引き続き有効。上限拡張は許容域の拡大のみ。
+- **observability 出力の差分（CR-Q-001）**: cost-aware tie-break で**全 tier コストが同値**の特定ケースに限り、`tier_selection.json` の `cost_tiebreak: true` キーが**省略**されるようになる（従来は `true` を出力）。routing 決定（選ばれる tier）には影響しない。
+- migration 不要。**破壊的変更なし**。
+
 ## [2.26.0] - 2026-05-26
 
 **cost-weighted Thompson 本格統合（全 tier）・ESCALATION_THRESHOLD 調整可能化**: Thompson Sampling のサンプル値を全 tier でコスト重み付けして routing する機能を導入。failure-rate escalation 閾値を環境変数で調整可能にする。環境変数 3 種すべて未設定で v2.25.0 と完全一致。**破壊的変更なし**。
