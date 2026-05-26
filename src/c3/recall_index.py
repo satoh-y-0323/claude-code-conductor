@@ -159,9 +159,7 @@ class RecallIndex:
             # If the caller already computed a hash (e.g. from full content),
             # keep it; otherwise derive from the stored snippet as a fallback.
             if not record.source_hash:
-                record.source_hash = hashlib.sha256(
-                    record.snippet.encode("utf-8", errors="replace")
-                ).hexdigest()
+                record.source_hash = content_hash(record.snippet)
             self._meta.chunks[str(new_id)] = record
         self._index.add_items(vecs, ids)
         self._meta.rebuilt_at = _utcnow_iso()
@@ -292,6 +290,22 @@ class RecallIndex:
 
     def chunk_count(self) -> int:
         return len(self._meta.chunks)
+
+    def get_vector(self, chunk_id: int) -> list[float]:
+        """Return the stored vector for ``chunk_id`` as ``list[float]``.
+
+        Raises ``RuntimeError`` if the index has not been built or loaded yet.
+        Propagates hnswlib's exception (typically ``RuntimeError`` or
+        ``IndexError``) when ``chunk_id`` is not present in the index.
+        """
+        if self._index is None:
+            raise RuntimeError(
+                "index has not been built or loaded; call build() or load() first"
+            )
+        # hnswlib.get_items returns a 2-D array of shape (n, dim).
+        # We pass a single-element list and take the first row.
+        result = self._index.get_items([chunk_id])
+        return [float(x) for x in result[0]]
 
     # ----- internals -----
 
@@ -473,6 +487,17 @@ def is_stale(repo_root: Path, index_path: Path) -> bool:
 
 
 # ----- helpers -----
+
+
+def content_hash(text: str) -> str:
+    """Return the SHA-256 hex digest of *text* encoded as UTF-8.
+
+    ``errors="replace"`` ensures arbitrary Unicode input never raises.
+    This is the canonical hash used for incremental-rebuild change detection
+    (``cli_recall._handle_rebuild``) and as the ``source_hash`` fallback in
+    :meth:`RecallIndex.build`.
+    """
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 def snippet_of(text: str, *, max_chars: int = SNIPPET_CHARS) -> str:

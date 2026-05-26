@@ -14,7 +14,6 @@ fast even when the embedding model has not yet been downloaded.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -30,6 +29,7 @@ from c3.recall_index import (
     RecallIndex,
     SourceChunk,
     collect_sources,
+    content_hash,
     default_index_paths,
     snippet_of,
     warn_if_stale,
@@ -200,6 +200,58 @@ def _handle_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _partition_chunks_for_reuse(
+    chunks: list[SourceChunk],
+    old_index: RecallIndex,
+) -> tuple[list[int], dict[int, list[float]], int]:
+    """Partition *chunks* into embed targets and reusable vectors from *old_index*.
+
+    Returns a triple ``(to_embed_indices, reuse_map, reused_count)`` where:
+
+    - ``to_embed_indices``: positions in *chunks* that need fresh embedding
+      (new or content-changed chunks).
+    - ``reuse_map``: ``{chunk_position: vector}`` for unchanged chunks whose
+      vector was successfully retrieved from *old_index*.
+    - ``reused_count``: number of chunks successfully reused.
+
+    The caller is responsible for embedding ``to_embed_indices`` and then
+    assembling the final ``items`` list in original *chunks* order to keep
+    ``build()`` ID assignment consistent with a full rebuild.
+    """
+    # Build a lookup: (source_type, path, chunk_id) -> (source_hash, int_id)
+    old_key_map: dict[tuple[str, str, str], tuple[str, int]] = {}
+    for id_str, rec in old_index.meta.chunks.items():
+        key = (rec.source_type, rec.path, rec.chunk_id)
+        old_key_map[key] = (rec.source_hash, int(id_str))
+
+    # Partition chunks into those that need embedding and those that can be reused.
+    # We fill reuse_map for unchanged slots so the final items list preserves the
+    # original order — this ensures build() assigns sequential IDs identically to
+    # a full rebuild (same order → same IDs → same search results).
+    to_embed_indices: list[int] = []  # indices into chunks that need embedding
+    reuse_map: dict[int, list[float]] = {}  # chunk index → reused vector
+    reused_count = 0
+
+    for i, src in enumerate(chunks):
+        key = (src.source_type, src.path, src.chunk_id)
+        new_hash = content_hash(src.content)
+        if key in old_key_map:
+            old_hash, old_id = old_key_map[key]
+            if old_hash == new_hash:
+                # Unchanged: reuse the stored vector.
+                try:
+                    vec = old_index.get_vector(old_id)
+                    reuse_map[i] = vec
+                    reused_count += 1
+                    continue
+                except Exception:
+                    pass  # Vector retrieval failed; fall through to embed
+        # New or changed chunk: needs embedding.
+        to_embed_indices.append(i)
+
+    return to_embed_indices, reuse_map, reused_count
+
+
 def _handle_rebuild(args: argparse.Namespace) -> int:
     repo_root = _resolve_repo_root(getattr(args, "target", None))
     if repo_root is None:
@@ -225,27 +277,98 @@ def _handle_rebuild(args: argparse.Namespace) -> int:
         )
         return 1
 
-    print(f"[recall] embedding {len(chunks)} chunks...")
-    vectors = embedder.embed_passages([c.content for c in chunks]) if chunks else []
-    items: list[tuple[ChunkRecord, list[float]]] = []
-    for src, vec in zip(chunks, vectors):
-        # CR-M-04 / SR-L-5: compute source_hash from the full content so that
-        # identical chunks in different files produce the same hash and changed
-        # content is reliably detected across rebuilds.
-        content_hash = hashlib.sha256(
-            src.content.encode("utf-8", errors="replace")
-        ).hexdigest()
-        record = ChunkRecord(
-            source_type=src.source_type,
-            path=src.path,
-            chunk_id=src.chunk_id,
-            snippet=snippet_of(src.content),
-            mtime=src.mtime,
-            source_hash=content_hash,
-        )
-        items.append((record, vec))
-
     index_path, meta_path = default_index_paths(repo_root)
+
+    # ----- incremental path -----
+    # Attempt to load the existing index and reuse vectors for unchanged chunks.
+    # Falls back to full embed when:
+    #   - --force is requested
+    #   - no existing index files
+    #   - load() raises RuntimeError (model/dim mismatch or corrupt meta)
+    #   - any other unexpected error during load
+
+    old_index: RecallIndex | None = None
+    if not args.force and index_path.exists() and meta_path.exists():
+        candidate = RecallIndex(
+            index_path=index_path,
+            meta_path=meta_path,
+            model_name=embedder.model_name,
+            dim=embedder.dim,
+        )
+        try:
+            candidate.load()
+            old_index = candidate
+        except Exception as exc:
+            # CR-E-002/SR-R-004: log the failure reason so operators can diagnose
+            # corrupt or mismatched index files. Exception message is intentionally
+            # omitted (type name only) to avoid leaking internal state — consistent
+            # with the SR-R-001 policy used in _hnsw_save/_hnsw_load.
+            print(
+                f"[recall] 既存 index を読めず増分不可・全再構築にフォールバック: {type(exc).__name__}",
+                file=sys.stderr,
+            )
+            old_index = None
+
+    items: list[tuple[ChunkRecord, list[float]]] = []
+
+    if old_index is not None:
+        to_embed_indices, reuse_map, reused_count = _partition_chunks_for_reuse(
+            chunks, old_index
+        )
+
+        # Embed only the changed/new chunks.
+        embed_count = len(to_embed_indices)
+        to_embed_contents = [chunks[i].content for i in to_embed_indices]
+        if to_embed_contents:
+            new_vectors = embedder.embed_passages(to_embed_contents)
+        else:
+            new_vectors = []
+
+        # i is always present in embed_vec_map because it was added to
+        # to_embed_indices during _partition_chunks_for_reuse — every chunk
+        # not in reuse_map is guaranteed to have an entry here.
+        embed_vec_map: dict[int, list[float]] = {
+            idx: vec for idx, vec in zip(to_embed_indices, new_vectors)
+        }
+
+        # Build items in original chunks order to preserve ID assignment consistency.
+        for i, src in enumerate(chunks):
+            if i in reuse_map:
+                vec = reuse_map[i]
+            else:
+                # Invariant: i is in to_embed_indices, so it is always present in
+                # embed_vec_map. Every chunk not placed in reuse_map during
+                # _partition_chunks_for_reuse was added to to_embed_indices and
+                # therefore has a corresponding entry in embed_vec_map.
+                vec = embed_vec_map[i]
+            record = ChunkRecord(
+                source_type=src.source_type,
+                path=src.path,
+                chunk_id=src.chunk_id,
+                snippet=snippet_of(src.content),
+                mtime=src.mtime,
+                source_hash=content_hash(src.content),
+            )
+            items.append((record, vec))
+
+        print(f"[recall] embedded {embed_count} / reused {reused_count} chunks")
+    else:
+        # Full embed path (--force, no prior index, or load failure).
+        print(f"[recall] embedding {len(chunks)} chunks...")
+        vectors = embedder.embed_passages([c.content for c in chunks]) if chunks else []
+        for src, vec in zip(chunks, vectors):
+            # CR-M-04 / SR-L-5: compute source_hash from the full content so that
+            # identical chunks in different files produce the same hash and changed
+            # content is reliably detected across rebuilds.
+            record = ChunkRecord(
+                source_type=src.source_type,
+                path=src.path,
+                chunk_id=src.chunk_id,
+                snippet=snippet_of(src.content),
+                mtime=src.mtime,
+                source_hash=content_hash(src.content),
+            )
+            items.append((record, vec))
 
     if args.force:
         for p in (index_path, meta_path):

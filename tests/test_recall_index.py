@@ -22,6 +22,7 @@ from c3.recall_index import (
     RecallIndex,
     SourceChunk,
     collect_sources,
+    content_hash,
     default_index_paths,
     is_stale,
     snippet_of,
@@ -55,6 +56,45 @@ def index(tmp_path: Path) -> RecallIndex:
         model_name="test-model",
         dim=3,
     )
+
+
+# ----- content_hash (CR-M-001) -----
+
+
+def test_content_hash_returns_64_hex_chars() -> None:
+    """content_hash must return a 64-character lowercase hex string (SHA-256)."""
+    import re
+
+    result = content_hash("hello world")
+    assert re.fullmatch(r"[0-9a-f]{64}", result), (
+        f"Expected 64-char hex, got {result!r}"
+    )
+
+
+def test_content_hash_same_input_same_output() -> None:
+    """content_hash must be deterministic: same text always produces same digest."""
+    text = "認証のリトライ実装"
+    assert content_hash(text) == content_hash(text)
+
+
+def test_content_hash_different_inputs_differ() -> None:
+    """Different texts must produce different digests."""
+    assert content_hash("foo") != content_hash("bar")
+
+
+def test_content_hash_known_digest() -> None:
+    """Verify a known SHA-256 digest to pin the algorithm and encoding."""
+    # python -c "import hashlib; print(hashlib.sha256('abc'.encode('utf-8')).hexdigest())"
+    # -> ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+    assert content_hash("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+
+def test_content_hash_errors_replace_on_surrogate() -> None:
+    """errors='replace' must not raise on strings containing surrogates."""
+    # A lone surrogate is invalid UTF-8 but must not crash content_hash.
+    surrogate_text = "ok\udcff"
+    result = content_hash(surrogate_text)
+    assert isinstance(result, str) and len(result) == 64
 
 
 # ----- snippet helper -----
@@ -238,6 +278,85 @@ def test_stats_counts_by_source(index: RecallIndex) -> None:
 def test_save_before_build_raises(index: RecallIndex) -> None:
     with pytest.raises(RuntimeError):
         index.save()
+
+
+# ----- get_vector accessor (T1 / v2.28.0 incremental rebuild) -----
+
+
+def test_get_vector_returns_stored_vector_after_build(index: RecallIndex) -> None:
+    """get_vector(chunk_id) must return the exact vector stored at build time.
+
+    After build(), each integer chunk id (0, 1, ...) must yield back the
+    original unit vector passed in.  We compare with pytest.approx because
+    hnswlib may apply minimal float normalisation internally.
+    """
+    a = _unit([1.0, 0.0, 0.0])
+    b = _unit([0.0, 1.0, 0.0])
+    index.build(
+        [
+            (_record(chunk_id="c0"), a),
+            (_record(chunk_id="c1"), b),
+        ]
+    )
+    assert index.get_vector(0) == pytest.approx(a, abs=1e-5)
+    assert index.get_vector(1) == pytest.approx(b, abs=1e-5)
+
+
+def test_get_vector_returns_list_of_float(index: RecallIndex) -> None:
+    """get_vector must return list[float], not numpy array or other type."""
+    index.build([(_record(chunk_id="c0"), _unit([1.0, 0.0, 0.0]))])
+    result = index.get_vector(0)
+    assert isinstance(result, list), f"expected list, got {type(result)}"
+    assert all(isinstance(x, float) for x in result), "all elements must be float"
+    assert len(result) == 3
+
+
+def test_get_vector_unknown_id_raises(index: RecallIndex) -> None:
+    """get_vector with an unknown id must raise after a successful build().
+
+    Precondition: index has been built (build() called with at least one item).
+    This test verifies the "built index, unknown id" case specifically — it is
+    NOT testing the "index not yet built" path (that path raises RuntimeError
+    with "has not been built" message; see test_get_vector_not_built_raises).
+
+    hnswlib raises RuntimeError for out-of-range ids; the exact message is
+    implementation-defined. We assert that *some* exception is raised so
+    an invalid id does NOT silently return a zero vector or None.
+    """
+    index.build([(_record(chunk_id="c0"), _unit([1.0, 0.0, 0.0]))])
+    # After build(), chunk id 0 is valid but 999 is not present in the index.
+    # hnswlib's exception type for an out-of-range id is implementation-defined,
+    # so we assert that *some* exception is raised (the docstring intent) rather
+    # than a self-contradictory tuple that ends in the Exception base class.
+    with pytest.raises(Exception):
+        index.get_vector(999)
+
+
+def test_get_vector_not_built_raises_runtime_error(index: RecallIndex) -> None:
+    """get_vector before build()/load() must raise RuntimeError with a clear message.
+
+    This test specifically covers the "index not built" path (``_index is None``),
+    which is distinct from the "built but unknown id" case tested above.
+    """
+    # No build() or load() called — _index is None.
+    with pytest.raises(RuntimeError, match="has not been built"):
+        index.get_vector(0)
+
+
+def test_get_vector_after_save_and_load(index: RecallIndex, tmp_path: Path) -> None:
+    """get_vector must work after a save/load cycle."""
+    vec = _unit([0.5, 0.5, 0.0])
+    index.build([(_record(chunk_id="X"), vec)])
+    index.save()
+
+    fresh = RecallIndex(
+        index_path=index.index_path,
+        meta_path=index.meta_path,
+        model_name="test-model",
+        dim=3,
+    )
+    fresh.load()
+    assert fresh.get_vector(0) == pytest.approx(vec, abs=1e-5)
 
 
 # ----- source collection -----
