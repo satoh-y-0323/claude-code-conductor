@@ -35,6 +35,10 @@ jobs:
       - name: Build site (--strict catches broken links)
         run: mkdocs build --strict
 
+      # NOTE: upload-pages-artifact / deploy-pages は 2026-05 時点で Node24 版が
+      # 未リリース（actions/deploy-pages#410 オープン）。Node20 deprecation 警告が
+      # 残るが GitHub 一次 actions のため期限（2026-06-02 強制移行）前に GitHub が
+      # 更新する見込み。Node24 版が出たら最新メジャーへ更新する。
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
