@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.28.0] - 2026-05-27
+
+**recall 増分 rebuild**: `c3 recall rebuild` を全再構築から増分に最適化。未変更チャンクは既存インデックスのベクトルを再利用し、変更/新規チャンクのみ再埋め込みする。律速の埋め込み（fastembed 推論）を削減して rebuild を高速化する。検索結果・インデックス形式は全再構築と一致。**破壊的変更なし**。
+
+### 機能追加
+
+- **`src/c3/cli_recall.py`: `c3 recall rebuild` の増分化**: `(source_type, path, chunk_id)` と `source_hash`（v2 で既に保存済み）が一致する未変更チャンクは旧ベクトルを再利用し、変更/新規チャンクのみ `embed_passages` に渡す。出力は `embedded M / reused K chunks` 形式。`--force` 指定時は従来どおり全再構築。
+- **`src/c3/recall_index.py`: `RecallIndex.get_vector(chunk_id)` / 公開 `content_hash(text)` を追加**: `get_vector` は hnswlib 格納ベクトルを取得（増分時の再利用に使用）。`content_hash` は source_hash 計算を一元化した公開ヘルパー（`build` と `cli_recall` が共用）。
+
+### 変更
+
+- **増分不可時の安全フォールバック**: 既存インデックス不在・`--force`・`load()` 失敗（model/dim 不一致・破損）の場合は全再構築にフォールバックし、stderr に理由（例外型名のみ）を 1 行出力する。
+
+### 後方互換
+
+- 検索結果・インデックス形式は全再構築と完全一致（増分はベクトル再利用のみで意味論を変えない）。
+- `--force` で従来の全再構築を維持。
+- migration 不要。**破壊的変更なし**。
+
 ## [2.27.0] - 2026-05-26
 
 **tier-routing λ 機能拡張（CR-Q-001 精緻化・λ 上限 5.0・cli_tier routing パラメータ表示）**: v2.26.0 で繰り越した 3 項目を解消。λ の上限を 1.0 から 5.0 に拡張、cost-aware tie-break の observability フラグを精緻化、`c3 tier stats` に現在の routing パラメータ（λ/ε/escalation）を表示。環境変数未設定時の routing 出力は v2.26.0 と一致。**破壊的変更なし**。
