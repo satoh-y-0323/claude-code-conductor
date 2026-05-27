@@ -1,0 +1,143 @@
+"""C3 tier-routing パラメータ解決（env override + SSOT 定数）。
+
+``db.py``（SQLite read/write helpers）から分離した tier-routing の tunable 群。
+``LEARNING_THRESHOLD`` / ``EPSILON_TIEBREAK`` / ``COST_LAMBDA_*`` /
+``ESCALATION_THRESHOLD_DEFAULT`` の SSOT 定数と、それらを環境変数で上書き解決する
+``resolve_*`` を提供する。DB I/O には依存しない（純粋な env パース）。
+
+後方互換のため、これらは ``c3.db`` からも re-export される。cli_tier.py /
+select_tier.py は従来どおり ``c3.db`` 経由でも、本モジュール直接でも参照できる。
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import sys
+from typing import cast
+
+# tier-routing: 学習データ収集期の閾値（合計試行数がこの値未満なら uniform 選択）。
+# SSOT: cli_tier.py / select_tier.py はここから参照する（CR-M-002）。
+LEARNING_THRESHOLD = 30
+# cost-aware tie-break の拮抗判定閾値。Beta サンプルは 0〜1 スケールで、
+# 成功率 5pt（=0.05）以内を拮抗とみなす。本定数が SSOT。
+# 過大にすると成功率を犠牲にするリスク、過小にすると無発動になる。
+# C3_TIER_EPSILON 環境変数で上書き可（v2.25.0）。
+EPSILON_TIEBREAK = 0.05
+# cost-weighted Thompson の重み係数 λ の既定値。
+# None = v2.25.0 互換モード（ε tie-break を維持し全 tier weighting を発動しない）。
+# C3_TIER_COST_LAMBDA 環境変数で上書き可（v2.26.0）。
+# λ>0 で全 tier の score=sample-λ*cost_norm weighting が発動、λ=0 明示で cost 無視（純 Thompson）。
+# 本定数が SSOT。
+COST_LAMBDA_DEFAULT = None
+# failure rate がこの値以上で 1 段上位 tier へ escalation する閾値。
+# C3_ESCALATION_THRESHOLD 環境変数で上書き可（v2.26.0）。
+# 本定数が SSOT（select_tier.py はここから参照）。
+ESCALATION_THRESHOLD_DEFAULT = 0.5
+
+# cost-weighted Thompson の λ 有効範囲（v2.27.0: 上限を 1.0→5.0 に拡張）。
+# cost を成功率より強く効かせる余地を確保するため上限を 5.0 に設定。
+# select_tier.py の _resolve_cost_lambda はここを SSOT として参照する。
+COST_LAMBDA_MIN = 0.0
+COST_LAMBDA_MAX = 5.0
+
+
+def _resolve_float_env(
+    env_key: str,
+    default: float | None,
+    *,
+    min_val: float,
+    max_val: float,
+    min_inclusive: bool,
+    log_prefix: str,
+) -> float | None:
+    """env 変数を float として安全に解決する共通ヘルパー（resolve_* の SSOT 実体）。
+
+    挙動（resolve_cost_lambda / resolve_epsilon / resolve_escalation_threshold で共通）:
+    - 未設定 / 空文字 → 無警告で ``default`` を返す。
+    - 非数値 / NaN / 範囲外 → stderr に env 名入りの警告を出し ``default`` に戻す。
+    - 妥当域: 上限は常に閉区間 ``<= max_val``。下限は ``min_inclusive`` で開閉を切替
+      （True なら ``>= min_val`` の閉区間、False なら ``> min_val`` の半開区間）。
+    """
+    raw = os.environ.get(env_key)
+    if raw is None or raw == "":
+        return default
+    bracket = (
+        f"[{min_val}, {max_val}]" if min_inclusive else f"({min_val}, {max_val}]"
+    )
+    try:
+        x = float(raw)
+    except ValueError:
+        print(
+            f"{log_prefix} invalid {env_key}={raw!r}, using default {default}",
+            file=sys.stderr,
+        )
+        return default
+    if math.isnan(x):
+        print(
+            f"{log_prefix} {env_key}={raw!r} is NaN, using default {default}",
+            file=sys.stderr,
+        )
+        return default
+    low_ok = x >= min_val if min_inclusive else x > min_val
+    if not low_ok or x > max_val:
+        print(
+            f"{log_prefix} {env_key}={x!r} out of range {bracket}, "
+            f"using default {default}",
+            file=sys.stderr,
+        )
+        return default
+    return x
+
+
+def resolve_cost_lambda() -> float | None:
+    """``C3_TIER_COST_LAMBDA`` を安全に解決する（cli_tier 用 SSOT）。
+
+    妥当域: [COST_LAMBDA_MIN, COST_LAMBDA_MAX]（x=0 許容の閉区間）。
+    戻り値が None の場合は v2.25.0 互換の ε tie-break 経路を維持する（センチネル）。
+    詳細な共通挙動は :func:`_resolve_float_env` を参照。
+    """
+    return _resolve_float_env(
+        "C3_TIER_COST_LAMBDA",
+        COST_LAMBDA_DEFAULT,
+        min_val=COST_LAMBDA_MIN,
+        max_val=COST_LAMBDA_MAX,
+        min_inclusive=True,
+        log_prefix="[c3:cost_lambda]",
+    )
+
+
+def resolve_epsilon() -> float:
+    """``C3_TIER_EPSILON`` を安全に解決する（cli_tier 用 SSOT）。
+
+    妥当域: (0, 1]（x=0 拒否の半開区間）。default が float のため戻り値は常に float。
+    詳細な共通挙動は :func:`_resolve_float_env` を参照。
+    """
+    value = _resolve_float_env(
+        "C3_TIER_EPSILON",
+        EPSILON_TIEBREAK,
+        min_val=0.0,
+        max_val=1.0,
+        min_inclusive=False,
+        log_prefix="[c3:epsilon]",
+    )
+    # default=EPSILON_TIEBREAK のため None になり得ない（戻り値型を float に絞る）
+    return cast(float, value)
+
+
+def resolve_escalation_threshold() -> float:
+    """``C3_ESCALATION_THRESHOLD`` を安全に解決する（cli_tier 用 SSOT）。
+
+    妥当域: (0, 1]（x=0 拒否の半開区間）。default が float のため戻り値は常に float。
+    詳細な共通挙動は :func:`_resolve_float_env` を参照。
+    """
+    value = _resolve_float_env(
+        "C3_ESCALATION_THRESHOLD",
+        ESCALATION_THRESHOLD_DEFAULT,
+        min_val=0.0,
+        max_val=1.0,
+        min_inclusive=False,
+        log_prefix="[c3:escalation]",
+    )
+    # default=ESCALATION_THRESHOLD_DEFAULT のため None になり得ない（戻り値型を float に絞る）
+    return cast(float, value)

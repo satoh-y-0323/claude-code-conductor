@@ -1950,3 +1950,55 @@ class TestResolveEscalationThresholdDb:
         assert result == pytest.approx(db.ESCALATION_THRESHOLD_DEFAULT)
         err = capsys.readouterr().err
         assert "C3_ESCALATION_THRESHOLD" in err
+
+
+class TestDbParamsReexport:
+    """N6 群: tier-routing パラメータが `_db_params` へ分離され、`c3.db` から
+    後方互換 re-export されている契約を固定する（refactor: _db_params 抽出）。
+
+    将来 `_db_params` に定数/関数を追加して `db.py` への re-export を忘れた場合、
+    本群が drift を検出する。
+    """
+
+    _CONSTS = (
+        "LEARNING_THRESHOLD",
+        "EPSILON_TIEBREAK",
+        "COST_LAMBDA_DEFAULT",
+        "ESCALATION_THRESHOLD_DEFAULT",
+        "COST_LAMBDA_MIN",
+        "COST_LAMBDA_MAX",
+    )
+    _FUNCS = (
+        "resolve_cost_lambda",
+        "resolve_epsilon",
+        "resolve_escalation_threshold",
+    )
+
+    def test_db_params_directly_importable(self) -> None:
+        """N6-1: 新モジュール `c3._db_params` から直接 import できる。"""
+        from c3 import _db_params  # noqa: PLC0415
+
+        for name in self._CONSTS + self._FUNCS:
+            assert hasattr(_db_params, name), f"_db_params に {name} が無い"
+
+    def test_db_reexports_same_objects(self) -> None:
+        """N6-2: `c3.db` の re-export は `_db_params` と同一オブジェクト/値。"""
+        import c3.db as db  # noqa: PLC0415
+        from c3 import _db_params  # noqa: PLC0415
+
+        for name in self._CONSTS:
+            assert getattr(db, name) == getattr(_db_params, name)
+        for name in self._FUNCS:
+            # 関数はファサード越しでも同一オブジェクト（is）であること
+            assert getattr(db, name) is getattr(_db_params, name)
+
+    def test_resolve_via_both_paths_agree(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N6-3: env 上書き時、`db.*` と `_db_params.*` の解決結果が一致。"""
+        import c3.db as db  # noqa: PLC0415
+        from c3 import _db_params  # noqa: PLC0415
+
+        monkeypatch.setenv("C3_TIER_EPSILON", "0.2")
+        assert db.resolve_epsilon() == pytest.approx(0.2)
+        assert _db_params.resolve_epsilon() == pytest.approx(0.2)
