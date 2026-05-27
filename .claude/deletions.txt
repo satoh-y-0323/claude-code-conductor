@@ -40,3 +40,10 @@ skills/phase-e-review/SKILL.md
 
 # ---- v2.20.0: schema.sql を c3/migrations/ へ移行 ----
 hooks/schema.sql
+
+# ---- v2.15.0: rules/ → skills/dev-workflow/references/ へ 3 チェックリスト移動 ----
+# （deletions.txt 導入は v2.18.0 で移動が先行したため v2.29.1 で遡及追記。
+#   v2.14.2 以前から使う配布先に残る常時ロードの旧 rules/ ファイルを除去する）
+rules/code-review-checklist.md
+rules/plan-design-guidelines.md
+rules/security-review-checklist.md
