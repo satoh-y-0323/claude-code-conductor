@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.29.2] - 2026-05-28
+
+**内部品質リファクタ（振る舞い不変・公開 API 不変・破壊的変更なし）**: v2.29.1 以降に進めたコード負債返済をまとめてリリース。新機能・バグ修正・破壊的変更はなく、`c3.db` などの公開 import は従来どおり動作する。観測可能な変化は「想定内のテーブル未作成（`sqlite3.OperationalError`）のログレベルが warning → debug に下がる」のみ。各リファクタは全テスト緑（1339 passed）・0 regression・全 Python（3.10/3.11/3.12）CI green を確認済み。
+
+### 変更
+
+- **`db.py`: 環境変数解決 3 関数を `_resolve_float_env` に集約（DRY）**: `resolve_cost_lambda` / `resolve_epsilon` / `resolve_escalation_threshold` のほぼ同一だった実装（env 名・デフォルト・有効域だけが違う）を共通ヘルパーに統合。型ナローイングは `typing.cast` で表現。
+- **`db.py`: tier-routing パラメータを `_db_params.py` へ分離**: SSOT 定数（`LEARNING_THRESHOLD` / `EPSILON_TIEBREAK` / `COST_LAMBDA_*` / `ESCALATION_THRESHOLD_DEFAULT`）と `resolve_*` を新規モジュールへ。`db.py` は後方互換のため re-export を維持し、`from c3.db import ...` / `from c3 import db; db.X` の両形式が従来どおり動作する（`dir(c3.db)` の公開シンボル集合は分割前と一致）。
+- **`usage_ingester.py`: パス traversal 検証の重複を `_safe_resolved_file` に集約（DRY）**: `_ingest_jsonl` / `_read_agent_meta` で重複していた symlink + resolve + project_dir 配下検証を 1 ヘルパーに統合。`cli_update` / `mcp_server` のパス検証は意味（段階別エラー返却・strict 存在必須）が異なるため共通化対象外とした。
+- **`db.py`: 例外分類を 10 関数で統一**: 想定内の `sqlite3.OperationalError`（テーブル未作成）は debug、想定外の `Exception` は warning に分類（既存 4 関数のパターンに合わせる）。graceful degradation の catch-all は意図的に維持（狭めない）。情報漏洩防止のため型名のみログ（生メッセージは出さない・既存方針を踏襲）。
+
+### ドキュメント
+
+- **`/ARCHITECTURE.md` を新設（リポジトリルート・配布対象外）**: `c3` パッケージと `.claude/` フレームワークの二層構造・ランタイムのオーケストレーション・hook ライフサイクル（settings.json と照合済み）・知能基盤（c3.db / recall）・ビルド/配布パイプラインを 1 枚に集約。既存の taxonomy.md / config-policy.md への索引役に徹する。
+
+### 後方互換
+
+- 公開 API（`c3.db` の import）・CLI・DB スキーマに変更なし。migration 不要。**破壊的変更なし**。
+- 唯一の観測可能な差分: 想定内 missing-table のログレベルが warning → debug（ログノイズ削減）。
+
 ## [2.29.1] - 2026-05-27
 
 **`deletions.txt` 遡及追記（rules→references 移動 3 ファイル）**: v2.15.0 で `.claude/rules/` から `.claude/skills/dev-workflow/references/` へ移動した 3 つのチェックリストが `deletions.txt` に未記載だった漏れを修正。配布先が次回 `c3 update` で旧 `.claude/rules/` の常時ロード残骸を除去できるようになる。**コード変更なし・破壊的変更なし・migration なし**。
