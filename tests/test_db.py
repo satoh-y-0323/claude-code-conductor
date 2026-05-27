@@ -30,7 +30,6 @@ from c3.db import (
     record_tier_recent_outcome,
     set_ingest_offset,
     sync_tier_bandit_cost,
-    update_tier_params,
 )
 
 

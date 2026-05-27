@@ -17,12 +17,7 @@ import pytest
 
 from c3.migrate import apply_pending_migrations
 from c3.usage_ingester import ingest_session
-from c3.db import (
-    get_ingest_offset,
-    insert_agent_cost_run,
-    read_agent_cost_summary,
-    set_ingest_offset,
-)
+from c3.db import get_ingest_offset
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +213,7 @@ class TestIncrementalIngest:
         rows_after_first = _read_all_cost_runs(db)
 
         # 2 回目（同じファイルを再度 ingest）
-        result2 = ingest_session(
+        ingest_session(
             session_id=FAKE_SESSION_ID,
             project_dir=project_dir,
             db_path=db,
