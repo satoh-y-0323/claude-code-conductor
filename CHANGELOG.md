@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.29.1] - 2026-05-27
+
+**`deletions.txt` 遡及追記（rules→references 移動 3 ファイル）**: v2.15.0 で `.claude/rules/` から `.claude/skills/dev-workflow/references/` へ移動した 3 つのチェックリストが `deletions.txt` に未記載だった漏れを修正。配布先が次回 `c3 update` で旧 `.claude/rules/` の常時ロード残骸を除去できるようになる。**コード変更なし・破壊的変更なし・migration なし**。
+
+### 修正
+
+- **`.claude/deletions.txt`: `rules/code-review-checklist.md` / `rules/plan-design-guidelines.md` / `rules/security-review-checklist.md` を追記**: これらは v2.14.2 まで `.claude/rules/` で常時ロードされていたが、v2.15.0 で `references/`（必要時のみロード）へ移動。`deletions.txt` 機構の導入（v2.18.0）が移動より後だったため遡及記載が漏れていた。v2.14.2 以前から使う配布先では `c3 update` 後も旧ファイルが残り context を浪費していた。本追記で次回 `c3 update` 時に（存在すれば）除去される。不在の配布先では no-op。
+
+### 後方互換
+
+- `deletions.txt` への追記のみ。コード・CLI・DB スキーマに変更なし。migration 不要。**破壊的変更なし**。
+
 ## [2.29.0] - 2026-05-27
 
 **`/brainstorm`（発散の軽い壁打ちコマンド）を追加**: 仕事や設計の相談を、資料（PDF・画像）を読み込んだ上で気軽に発散・壁打ちする軽量モード。視点・選択肢・論点を増やす方向に動き、結論を急がない（grill＝詰める・収束とは逆方向）。Excel 要件定義書は PDF に書き出して渡す運用（変換コード・追加依存なし）。**破壊的変更なし**。
