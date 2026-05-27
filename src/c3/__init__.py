@@ -1,3 +1,3 @@
 """Claude Code Conductor (C3) - multi-agent orchestration framework for Claude Code."""
 
-__version__ = "2.28.0"
+__version__ = "2.29.0"
