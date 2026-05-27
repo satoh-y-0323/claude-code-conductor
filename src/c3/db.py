@@ -151,6 +151,9 @@ def fetch_review_decisions(
             return [dict(r) for r in rows]
         finally:
             conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("fetch_review_decisions: table not found or inaccessible: %s", type(exc).__name__)
+        return []
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to fetch review_decisions: %s", type(exc).__name__)
         return []
@@ -216,6 +219,9 @@ def insert_review_decision(
         finally:
             conn.close()
         return True
+    except sqlite3.OperationalError as exc:
+        logger.debug("insert_review_decision: table not found or inaccessible: %s", type(exc).__name__)
+        return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to insert review_decision: %s", type(exc).__name__)
         return False
@@ -282,6 +288,9 @@ def read_tier_params(
             ).fetchall()
         finally:
             conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_tier_params: table not found or inaccessible: %s", type(exc).__name__)
+        return defaults
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to read tier_params: %s", type(exc).__name__)
         return defaults
@@ -354,6 +363,9 @@ def update_tier_params(
         finally:
             conn.close()
         return True
+    except sqlite3.OperationalError as exc:
+        logger.debug("update_tier_params: table not found or inaccessible: %s", type(exc).__name__)
+        return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to update tier_params: %s", type(exc).__name__)
         return False
@@ -411,6 +423,9 @@ def record_tier_recent_outcome(
         finally:
             conn.close()
         return True
+    except sqlite3.OperationalError as exc:
+        logger.debug("record_tier_recent_outcome: table not found or inaccessible: %s", type(exc).__name__)
+        return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to record tier_recent_outcome: %s", type(exc).__name__)
         return False
@@ -505,6 +520,9 @@ def read_tier_failure_rate(
             ).fetchall()
         finally:
             conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_tier_failure_rate: table not found or inaccessible: %s", type(exc).__name__)
+        return None, 0
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to read tier_failure_rate: %s", type(exc).__name__)
         return None, 0
@@ -600,6 +618,9 @@ def insert_agent_cost_run(
         finally:
             conn.close()
         return True
+    except sqlite3.OperationalError as exc:
+        logger.debug("insert_agent_cost_run: table not found or inaccessible: %s", type(exc).__name__)
+        return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to insert_agent_cost_run: %s", type(exc).__name__)
         return False
@@ -1120,6 +1141,9 @@ def set_ingest_offset(
         finally:
             conn.close()
         return True
+    except sqlite3.OperationalError as exc:
+        logger.debug("set_ingest_offset: table not found or inaccessible: %s", type(exc).__name__)
+        return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to set_ingest_offset: %s", type(exc).__name__)
         return False
@@ -1156,6 +1180,9 @@ def read_tier_bandit_cost(
             ).fetchall()
         finally:
             conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_tier_bandit_cost: table not found or inaccessible: %s", type(exc).__name__)
+        return {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to read tier_bandit_cost: %s", type(exc).__name__)
         return {}
@@ -1233,6 +1260,9 @@ def sync_tier_bandit_cost(
             conn.commit()
         finally:
             conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("sync_tier_bandit_cost: table not found or inaccessible: %s", type(exc).__name__)
+        return 0
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to sync_tier_bandit_cost: %s", type(exc).__name__)
         return 0

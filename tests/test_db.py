@@ -2001,3 +2001,64 @@ class TestDbParamsReexport:
         monkeypatch.setenv("C3_TIER_EPSILON", "0.2")
         assert db.resolve_epsilon() == pytest.approx(0.2)
         assert _db_params.resolve_epsilon() == pytest.approx(0.2)
+
+
+class TestMissingTableLogsDebugNotWarning:
+    """N7 群: 想定内の missing-table（sqlite3.OperationalError）は debug でログし
+    WARNING を出さない（bare except 整理＝OperationalError/Exception 分類の一貫化）。
+
+    対となる TestExceptionLogTypeName は corrupt-DB（DatabaseError）が WARNING で
+    出ることを固定している。本群は「テーブル未作成は静かに（debug）」を固定する。
+    """
+
+    def test_read_tier_params_missing_table_is_debug_not_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import read_tier_params  # noqa: PLC0415
+
+        # マイグレーション未適用＝tier_bandit テーブルが無い有効な空 DB
+        empty_db = tmp_path / "empty.db"
+        sqlite3.connect(str(empty_db)).close()
+
+        with caplog.at_level(logging.DEBUG, logger="c3.db"):
+            result = read_tier_params("medium", db_path=empty_db)
+
+        # 戻り値は defaults（graceful degradation 維持）
+        assert "haiku" in result
+        # 想定内の missing-table は WARNING を出さない
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not warnings, (
+            f"missing-table は WARNING を出すべきでない: {[r.getMessage() for r in warnings]}"
+        )
+        # debug に table 関連メッセージが出る
+        assert "table not found or inaccessible" in caplog.text
+
+    def test_insert_review_decision_missing_table_is_debug_not_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """書き込み系（bool 返却）でも missing-table は debug・False 返却・WARNING なし。"""
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        empty_db = tmp_path / "empty.db"
+        sqlite3.connect(str(empty_db)).close()
+
+        with caplog.at_level(logging.DEBUG, logger="c3.db"):
+            ok = insert_review_decision(
+                checklist_id="CR-X-001",
+                finding_text="t",
+                decision="fixed",
+                reviewer="code-reviewer",
+                db_path=empty_db,
+            )
+
+        # 書き込み失敗（テーブル無し）→ False（graceful degradation）
+        assert ok is False
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not warnings, (
+            f"missing-table は WARNING を出すべきでない: {[r.getMessage() for r in warnings]}"
+        )
+        assert "table not found or inaccessible" in caplog.text
