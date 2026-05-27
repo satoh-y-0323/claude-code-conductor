@@ -21,6 +21,7 @@ C3 のスラッシュコマンドはすべてスキル（`.claude/skills/{name}/
 | `/mcp-config` | MCP サーバーの追加・一覧・削除（プロジェクトスコープ） |
 | `/extract-lib` | 複数プロジェクトのコードを横断解析し、共通処理をライブラリとして設計・生成 |
 | `/recall` | 過去のセッション・レポート・パターンから類似情報を意味検索で取得（v2.10.0+ / HNSW + 多言語 embedding） |
+| `/brainstorm` | 仕事・設計の相談を、資料（PDF/画像）を読み込んだ上で気軽に発散・壁打ち。視点・選択肢・論点を増やす方向で結論を急がない（grill＝詰めるとは逆）。Excel は PDF に書き出して渡す（v2.29.0+） |
 
 ## 内部参照スキル（`/start` などから自動呼び出し）
 
@@ -81,6 +82,7 @@ v2.0.0 以降、外部の parallel-orchestra プロセスは不要で、Claude C
 - [skills/review-phase/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/review-phase/SKILL.md)
 - [skills/develop/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/develop/SKILL.md)
 - [skills/promote-pattern/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/promote-pattern/SKILL.md)
+- [skills/brainstorm/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/brainstorm/SKILL.md)
 
 ## 次に読むページ
 
