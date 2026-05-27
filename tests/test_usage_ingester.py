@@ -527,3 +527,54 @@ class TestNonAssistantIgnored:
         assert len(rows) == 1, f"user/system レコードが記録されてしまった: {rows}"
         assert rows[0]["input_tokens"] == 20
         assert result.runs_upserted == 1
+
+
+class TestSafeResolvedFile:
+    """T15: _safe_resolved_file（SR-V-002 パス traversal 検証の中核）の直接単体テスト。
+
+    _ingest_jsonl / _read_agent_meta の重複検証を集約したヘルパー。各分岐
+    （実在ファイル / 非存在 / ディレクトリ / 範囲外 / symlink）を個別に固定する。
+    """
+
+    def test_valid_file_returns_resolved_path(self, tmp_path: Path):
+        from c3.usage_ingester import _safe_resolved_file  # noqa: PLC0415
+
+        root = tmp_path.resolve()
+        f = root / "ok.jsonl"
+        f.write_text("{}", encoding="utf-8")
+        assert _safe_resolved_file(f, root, log_label="t") == f.resolve()
+
+    def test_nonexistent_returns_none(self, tmp_path: Path):
+        from c3.usage_ingester import _safe_resolved_file  # noqa: PLC0415
+
+        root = tmp_path.resolve()
+        assert _safe_resolved_file(root / "missing.jsonl", root, log_label="t") is None
+
+    def test_directory_returns_none(self, tmp_path: Path):
+        from c3.usage_ingester import _safe_resolved_file  # noqa: PLC0415
+
+        root = tmp_path.resolve()
+        # root 自身（ディレクトリ）は is_file=False のため None
+        assert _safe_resolved_file(root, root, log_label="t") is None
+
+    def test_outside_project_returns_none(self, tmp_path: Path):
+        from c3.usage_ingester import _safe_resolved_file  # noqa: PLC0415
+
+        root = (tmp_path / "proj").resolve()
+        root.mkdir()
+        outside = tmp_path / "outside.jsonl"
+        outside.write_text("{}", encoding="utf-8")
+        assert _safe_resolved_file(outside, root, log_label="t") is None
+
+    def test_symlink_returns_none(self, tmp_path: Path):
+        from c3.usage_ingester import _safe_resolved_file  # noqa: PLC0415
+
+        root = tmp_path.resolve()
+        real = tmp_path / "real.jsonl"
+        real.write_text("{}", encoding="utf-8")
+        link = root / "link.jsonl"
+        try:
+            link.symlink_to(real)
+        except OSError:
+            pytest.skip("symlink 作成不可（OS または権限の制限）")
+        assert _safe_resolved_file(link, root, log_label="t") is None

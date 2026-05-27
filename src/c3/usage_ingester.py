@@ -21,7 +21,6 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Generator
 
 from c3.db import (
     get_ingest_offset,
@@ -133,6 +132,29 @@ def ingest_session(
     return result
 
 
+def _safe_resolved_file(
+    path: Path, project_dir: Path, *, log_label: str
+) -> Path | None:
+    """symlink でない実在ファイルを resolve し、project_dir 配下なら resolved Path を返す。
+
+    検証に失敗したら None を返す（symlink / 非ファイル / project_dir 外）。symlink・
+    範囲外は debug ログを出す。``is_symlink()`` / ``is_file()`` / ``resolve()`` の
+    例外（マウント切れ等の稀な OSError）は送出し、呼び出し側の try で扱う
+    （_ingest_jsonl は result.errors に記録、_read_agent_meta は debug ログ）。
+    SR-V-002 のパス traversal 対策を 1 箇所に集約する。
+    """
+    if path.is_symlink():
+        logger.debug("%s: symlink skipped", log_label)
+        return None
+    if not path.is_file():
+        return None
+    resolved = path.resolve()
+    if not resolved.is_relative_to(project_dir):
+        logger.debug("%s: path outside project_dir, skipped", log_label)
+        return None
+    return resolved
+
+
 def _ingest_jsonl(
     *,
     jsonl_path: Path,
@@ -148,23 +170,16 @@ def _ingest_jsonl(
     - 存在しない / symlink / project_dir 外のパスはスキップ
     - parse error なく読み切れた時のみ offset を更新（冪等性保証）
     """
-    # symlink チェック
-    if jsonl_path.is_symlink():
-        logger.debug("_ingest_jsonl: symlink skipped")
-        return
-
-    # ファイル存在チェック
-    if not jsonl_path.is_file():
-        return
-
-    # パス traversal チェック: resolve 後 project_dir 配下であることを確認
+    # symlink でない project_dir 配下の実在ファイルか検証し、resolved パスを得る。
+    # resolve() の例外のみ errors に記録する（symlink/非ファイル/範囲外は静かにスキップ）。
     try:
-        resolved_jsonl = jsonl_path.resolve()
-        if not resolved_jsonl.is_relative_to(project_dir):
-            logger.debug("_ingest_jsonl: path outside project_dir, skipped")
-            return
+        resolved_jsonl = _safe_resolved_file(
+            jsonl_path, project_dir, log_label="_ingest_jsonl"
+        )
     except Exception as exc:  # noqa: BLE001
         result.errors.append(type(exc).__name__)
+        return
+    if resolved_jsonl is None:
         return
 
     file_key = f"{session_id}:{agent_id}"
@@ -345,23 +360,16 @@ def _read_agent_meta(
         - parse エラー: (None, None)
         - agentType なし: (None, description_or_None)
     """
-    # symlink チェック
-    if meta_path.is_symlink():
-        logger.debug("_read_agent_meta: symlink skipped")
-        return None, None
-
-    # ファイル存在チェック
-    if not meta_path.is_file():
-        return None, None
-
-    # パス traversal チェック
+    # symlink でない project_dir 配下の実在ファイルか検証し、resolved パスを得る。
+    # resolve() の例外は debug ログのみ（symlink/非ファイル/範囲外は静かにスキップ）。
     try:
-        resolved_meta = meta_path.resolve()
-        if not resolved_meta.is_relative_to(project_dir):
-            logger.debug("_read_agent_meta: path outside project_dir, skipped")
-            return None, None
+        resolved_meta = _safe_resolved_file(
+            meta_path, project_dir, log_label="_read_agent_meta"
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("_read_agent_meta: resolve error: %s", type(exc).__name__)
+        return None, None
+    if resolved_meta is None:
         return None, None
 
     try:
