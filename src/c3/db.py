@@ -24,6 +24,7 @@ import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -60,117 +61,105 @@ COST_LAMBDA_MIN = 0.0
 COST_LAMBDA_MAX = 5.0
 
 
-def resolve_cost_lambda() -> float | None:
-    """``C3_TIER_COST_LAMBDA`` を安全に解決する（cli_tier 用 SSOT）。
+def _resolve_float_env(
+    env_key: str,
+    default: float | None,
+    *,
+    min_val: float,
+    max_val: float,
+    min_inclusive: bool,
+    log_prefix: str,
+) -> float | None:
+    """env 変数を float として安全に解決する共通ヘルパー（resolve_* の SSOT 実体）。
 
-    不正値（非数値 / 0 未満 / COST_LAMBDA_MAX 超 / NaN）は受け付けず、
-    stderr 警告 + デフォルト（COST_LAMBDA_DEFAULT = None）に戻す。
-    未設定 / 空文字は無警告でデフォルト（None）を返す。
-    妥当域: [COST_LAMBDA_MIN, COST_LAMBDA_MAX]（x=0 許容の閉区間）。
-    戻り値が None の場合は v2.25.0 互換の ε tie-break 経路を維持する（センチネル）。
+    挙動（resolve_cost_lambda / resolve_epsilon / resolve_escalation_threshold で共通）:
+    - 未設定 / 空文字 → 無警告で ``default`` を返す。
+    - 非数値 / NaN / 範囲外 → stderr に env 名入りの警告を出し ``default`` に戻す。
+    - 妥当域: 上限は常に閉区間 ``<= max_val``。下限は ``min_inclusive`` で開閉を切替
+      （True なら ``>= min_val`` の閉区間、False なら ``> min_val`` の半開区間）。
     """
-    raw = os.environ.get("C3_TIER_COST_LAMBDA")
+    raw = os.environ.get(env_key)
     if raw is None or raw == "":
-        return COST_LAMBDA_DEFAULT
+        return default
+    bracket = (
+        f"[{min_val}, {max_val}]" if min_inclusive else f"({min_val}, {max_val}]"
+    )
     try:
         x = float(raw)
     except ValueError:
         print(
-            f"[c3:cost_lambda] invalid C3_TIER_COST_LAMBDA={raw!r}, "
-            f"using default {COST_LAMBDA_DEFAULT}",
+            f"{log_prefix} invalid {env_key}={raw!r}, using default {default}",
             file=sys.stderr,
         )
-        return COST_LAMBDA_DEFAULT
+        return default
     if math.isnan(x):
         print(
-            f"[c3:cost_lambda] C3_TIER_COST_LAMBDA={raw!r} is NaN, "
-            f"using default {COST_LAMBDA_DEFAULT}",
+            f"{log_prefix} {env_key}={raw!r} is NaN, using default {default}",
             file=sys.stderr,
         )
-        return COST_LAMBDA_DEFAULT
-    if x < COST_LAMBDA_MIN or x > COST_LAMBDA_MAX:
+        return default
+    low_ok = x >= min_val if min_inclusive else x > min_val
+    if not low_ok or x > max_val:
         print(
-            f"[c3:cost_lambda] C3_TIER_COST_LAMBDA={x!r} out of range "
-            f"[{COST_LAMBDA_MIN}, {COST_LAMBDA_MAX}], "
-            f"using default {COST_LAMBDA_DEFAULT}",
+            f"{log_prefix} {env_key}={x!r} out of range {bracket}, "
+            f"using default {default}",
             file=sys.stderr,
         )
-        return COST_LAMBDA_DEFAULT
+        return default
     return x
+
+
+def resolve_cost_lambda() -> float | None:
+    """``C3_TIER_COST_LAMBDA`` を安全に解決する（cli_tier 用 SSOT）。
+
+    妥当域: [COST_LAMBDA_MIN, COST_LAMBDA_MAX]（x=0 許容の閉区間）。
+    戻り値が None の場合は v2.25.0 互換の ε tie-break 経路を維持する（センチネル）。
+    詳細な共通挙動は :func:`_resolve_float_env` を参照。
+    """
+    return _resolve_float_env(
+        "C3_TIER_COST_LAMBDA",
+        COST_LAMBDA_DEFAULT,
+        min_val=COST_LAMBDA_MIN,
+        max_val=COST_LAMBDA_MAX,
+        min_inclusive=True,
+        log_prefix="[c3:cost_lambda]",
+    )
 
 
 def resolve_epsilon() -> float:
     """``C3_TIER_EPSILON`` を安全に解決する（cli_tier 用 SSOT）。
 
-    不正値（非数値 / 0 以下 / 1 超 / NaN）は受け付けず、
-    stderr 警告 + デフォルト（EPSILON_TIEBREAK）に戻す。
-    未設定 / 空文字は無警告でデフォルトを返す。
-    妥当域: (0, 1]（x=0 拒否の半開区間）。
+    妥当域: (0, 1]（x=0 拒否の半開区間）。default が float のため戻り値は常に float。
+    詳細な共通挙動は :func:`_resolve_float_env` を参照。
     """
-    raw = os.environ.get("C3_TIER_EPSILON")
-    if raw is None or raw == "":
-        return EPSILON_TIEBREAK
-    try:
-        x = float(raw)
-    except ValueError:
-        print(
-            f"[c3:epsilon] invalid C3_TIER_EPSILON={raw!r}, "
-            f"using default {EPSILON_TIEBREAK}",
-            file=sys.stderr,
-        )
-        return EPSILON_TIEBREAK
-    if math.isnan(x):
-        print(
-            f"[c3:epsilon] C3_TIER_EPSILON={raw!r} is NaN, "
-            f"using default {EPSILON_TIEBREAK}",
-            file=sys.stderr,
-        )
-        return EPSILON_TIEBREAK
-    if x <= 0 or x > 1:
-        print(
-            f"[c3:epsilon] C3_TIER_EPSILON={x!r} out of range (0, 1], "
-            f"using default {EPSILON_TIEBREAK}",
-            file=sys.stderr,
-        )
-        return EPSILON_TIEBREAK
-    return x
+    value = _resolve_float_env(
+        "C3_TIER_EPSILON",
+        EPSILON_TIEBREAK,
+        min_val=0.0,
+        max_val=1.0,
+        min_inclusive=False,
+        log_prefix="[c3:epsilon]",
+    )
+    # default=EPSILON_TIEBREAK のため None になり得ない（戻り値型を float に絞る）
+    return cast(float, value)
 
 
 def resolve_escalation_threshold() -> float:
     """``C3_ESCALATION_THRESHOLD`` を安全に解決する（cli_tier 用 SSOT）。
 
-    不正値（非数値 / 0 以下 / 1 超 / NaN）は受け付けず、
-    stderr 警告 + デフォルト（ESCALATION_THRESHOLD_DEFAULT）に戻す。
-    未設定 / 空文字は無警告でデフォルトを返す。
-    妥当域: (0, 1]（x=0 拒否の半開区間）。
+    妥当域: (0, 1]（x=0 拒否の半開区間）。default が float のため戻り値は常に float。
+    詳細な共通挙動は :func:`_resolve_float_env` を参照。
     """
-    raw = os.environ.get("C3_ESCALATION_THRESHOLD")
-    if raw is None or raw == "":
-        return ESCALATION_THRESHOLD_DEFAULT
-    try:
-        x = float(raw)
-    except ValueError:
-        print(
-            f"[c3:escalation] invalid C3_ESCALATION_THRESHOLD={raw!r}, "
-            f"using default {ESCALATION_THRESHOLD_DEFAULT}",
-            file=sys.stderr,
-        )
-        return ESCALATION_THRESHOLD_DEFAULT
-    if math.isnan(x):
-        print(
-            f"[c3:escalation] C3_ESCALATION_THRESHOLD={raw!r} is NaN, "
-            f"using default {ESCALATION_THRESHOLD_DEFAULT}",
-            file=sys.stderr,
-        )
-        return ESCALATION_THRESHOLD_DEFAULT
-    if x <= 0 or x > 1:
-        print(
-            f"[c3:escalation] C3_ESCALATION_THRESHOLD={x!r} out of range (0, 1], "
-            f"using default {ESCALATION_THRESHOLD_DEFAULT}",
-            file=sys.stderr,
-        )
-        return ESCALATION_THRESHOLD_DEFAULT
-    return x
+    value = _resolve_float_env(
+        "C3_ESCALATION_THRESHOLD",
+        ESCALATION_THRESHOLD_DEFAULT,
+        min_val=0.0,
+        max_val=1.0,
+        min_inclusive=False,
+        log_prefix="[c3:escalation]",
+    )
+    # default=ESCALATION_THRESHOLD_DEFAULT のため None になり得ない（戻り値型を float に絞る）
+    return cast(float, value)
 
 
 def _apply_busy_timeout(conn: sqlite3.Connection) -> None:
