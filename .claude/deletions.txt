@@ -47,3 +47,40 @@ hooks/schema.sql
 rules/code-review-checklist.md
 rules/plan-design-guidelines.md
 rules/security-review-checklist.md
+
+# ---- (遡及記載 v2.18.0 前): v0.2.0〜v0.3.4 commands/ → skills/ 移行 (082c8a6) ----
+# （v0.2.0〜v0.3.4 公開済み wheel に含まれていた。利用先で `c3 update` 時に除去される）
+commands/develop.md
+commands/review.md
+commands/doc.md
+commands/extract-lib.md
+commands/init-session.md
+commands/mcp.md
+commands/promote-pattern.md
+commands/setup.md
+commands/start.md
+
+# ---- (遡及記載 v2.18.0 前): v0.2.0〜v0.3.4 旧 skills/*.md フラットレイアウト廃止 (082c8a6) ----
+# （v0.2.0〜v0.3.4 公開済み。skills/<name>/SKILL.md 形式へ移行）
+skills/dev-workflow.md
+skills/wave-execution.md
+skills/worktree-tdd-workflow.md
+skills/promoted/index.md
+
+# ---- (遡及記載 v2.18.0 前): v0.2.0〜v0.2.4 parallel-execution skill 廃止 (6edf2ef) ----
+skills/parallel-execution.md
+
+# ---- (遡及記載 v2.18.0 前): v0.2.0〜v1.9.0 初期 hooks 統廃合 → session_start.py 集約 (04124c2) ----
+# （v1.10.0 で session_start.py に統合された旧 hook 4 ファイル）
+hooks/clear_file_history.py
+hooks/enable_sandbox.py
+hooks/init_c3_db.py
+hooks/validate_skill_change.py
+
+# ---- (遡及記載 v2.18.0 前): v1.0.0〜v1.14.0 PO (Parallel Orchestra) 廃止 (60b4f3d / eda2e94 / 47efe1c) ----
+# （v2.0.0 BREAKING で PO 廃止。利用先に残る関連ファイルを除去）
+skills/po-status/SKILL.md
+skills/wave-execution/SKILL.md
+docs/parallel-orchestra-manifest.md
+docs/po-worktree-writes.md
+hooks/po_heartbeat.py
