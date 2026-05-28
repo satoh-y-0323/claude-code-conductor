@@ -1,11 +1,18 @@
 # Changelog
 
-## [Unreleased]
+## [2.29.3] - 2026-05-28
+
+**ドキュメント + 配布調整 PATCH（コード変更・破壊的変更・migration なし）**: sdist への `ARCHITECTURE.md` 同梱と、`deletions.txt` 機構導入（v2.18.0）以前の削除 23 件の遡及追記をまとめてリリース。利用先で次回 `c3 update` 時に古い `.claude/` 残骸が除去される範囲が広がる。コード・公開 API・DB スキーマに変更なし。
 
 ### ドキュメント
 
 - **`ARCHITECTURE.md` を sdist に同梱**: `pyproject.toml` の `[tool.hatch.build.targets.sdist].include` に追記。`pip download` や `pip install --no-binary :all:` で sdist を受け取った利用者もリポジトリルート直下の C3 アーキテクチャ地図を読めるようになる。wheel への同梱は引き続きなし（wheel 利用者は GitHub で参照）。
 - **`.claude/deletions.txt`: v2.18.0 前の削除 23 件を遡及追記**: `deletions.txt` 機構導入（v2.18.0）以前に削除された配布対象ファイルを git 全履歴 × PyPI 公開タグ（v0.2.0〜v2.17.0 の 68 タグ）で全数監査し、漏れ 23 件を追記。v0.2.0〜v1.14.0 を使い続けた利用先で次回 `c3 update` 時に旧 `commands/*.md` 9 件 / 旧 `skills/*.md` 4 件 / `skills/parallel-execution.md` / 初期 hooks 4 件（`session_start.py` 統合前）/ PO (Parallel Orchestra) 関連 5 件が除去される。v2.29.1 で追記した rules→references 3 件と同方針。不在の配布先では no-op（13 段セーフガード）。配布対象外（`reports/*` 等）と未公開ファイル 11 件（どの公開 wheel にも含まれず利用先に届いていない git 履歴上の中間状態）は対象外。
+
+### 後方互換
+
+- コード・CLI・DB スキーマに変更なし。migration 不要。**破壊的変更なし**。
+- `deletions.txt` の追記は不在の配布先で no-op。配布対象外と判定された旧ファイルは元から削除されない（13 段セーフガード）。
 
 ## [2.29.2] - 2026-05-28
 
