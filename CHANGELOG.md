@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### ドキュメント
+
+- **`ARCHITECTURE.md` を sdist に同梱**: `pyproject.toml` の `[tool.hatch.build.targets.sdist].include` に追記。`pip download` や `pip install --no-binary :all:` で sdist を受け取った利用者もリポジトリルート直下の C3 アーキテクチャ地図を読めるようになる。wheel への同梱は引き続きなし（wheel 利用者は GitHub で参照）。
+
 ## [2.29.2] - 2026-05-28
 
 **内部品質リファクタ（振る舞い不変・公開 API 不変・破壊的変更なし）**: v2.29.1 以降に進めたコード負債返済をまとめてリリース。新機能・バグ修正・破壊的変更はなく、`c3.db` などの公開 import は従来どおり動作する。観測可能な変化は「想定内のテーブル未作成（`sqlite3.OperationalError`）のログレベルが warning → debug に下がる」のみ。各リファクタは全テスト緑（1339 passed）・0 regression・全 Python（3.10/3.11/3.12）CI green を確認済み。
