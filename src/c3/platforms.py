@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SUPPORTED_PLATFORMS = ("claude", "codex", "cursor")
+SUPPORTED_PLATFORMS = ("claude", "codex", "cursor", "opencode")
 PLATFORM_CHOICES = (*SUPPORTED_PLATFORMS, "all")
 
 
