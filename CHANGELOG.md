@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.29.4] - 2026-05-31
+
+**ドキュメント PATCH（コード変更・破壊的変更・migration なし）**: Anthropic 公式「Prompting best practices」（Claude Opus 4.8 / Sonnet 4.6 等の最新モデル向け）の推奨を C3 の agent 定義に反映。`code-reviewer` / `security-reviewer` / `developer` / `wt_developer` の 4 定義にプロンプト文言を 1 行ずつ追加した。コード・公開 API・DB スキーマに変更なし。
+
+### ドキュメント
+
+- **`code-reviewer` / `security-reviewer`: 発見段階の役割が「網羅（coverage）」であることを明記**: 公式 BP の「code review harness の recall 低下対策」を反映。最新モデルは "conservative" / "high-severity のみ" 等の抑制指示を忠実に守り、調査はしても指摘を report しない傾向がある。これを防ぐため「発見段階の役割は網羅であり取捨選択ではない。Low / 低確信度の指摘も握り潰さず report する（`MEMORY.md` の許容例外・脅威モデル外として合意済みの観点は除く）。重大度・確信度による最終的な絞り込みは下流（planner → ユーザー承認）に委ねる」を `During` セクションに追記。
+- **`developer` / `wt_developer`: test-overfit / hard-coding 回避を明記**: 公式 BP の「テストを通すことへの過集中回避」を反映。Green フェーズの「最小限のコードのみ書く」の直後に「最小限であっても汎用解を書く。テスト入力に hard-code して通すこと・特定テストケースだけに効く workaround は禁止。全ての valid input に対し正しい一般ロジックを実装する（『最小限』と『汎用解』は両立する）」を追記。既存の「将来の拡張禁止」とは矛盾しない（スコープを足さず・しかし test 入力に過適合しない）。
+
+### 後方互換
+
+- agent 定義本文（散文・プロンプト文言）の追記のみ。frontmatter・公開 API・CLI・DB スキーマに変更なし。migration 不要。**破壊的変更なし**。
+- agent 定義の内容を assert するテストは存在しない。`.claude/agents` に触れる構造系テスト（adapter 生成 / 削除検出 / invocation hook / `cli list`）は全て green を確認済み。
+
 ## [2.29.3] - 2026-05-28
 
 **ドキュメント + 配布調整 PATCH（コード変更・破壊的変更・migration なし）**: sdist への `ARCHITECTURE.md` 同梱と、`deletions.txt` 機構導入（v2.18.0）以前の削除 23 件の遡及追記をまとめてリリース。利用先で次回 `c3 update` 時に古い `.claude/` 残骸が除去される範囲が広がる。コード・公開 API・DB スキーマに変更なし。
