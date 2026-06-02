@@ -16,6 +16,8 @@ from c3._excludes import should_skip
 
 MANAGED_CODEX_BEGIN = "<!-- BEGIN C3 CODEX ADAPTER -->"
 MANAGED_CODEX_END = "<!-- END C3 CODEX ADAPTER -->"
+MANAGED_OPENCODE_BEGIN = "<!-- BEGIN C3 OPENCODE ADAPTER -->"
+MANAGED_OPENCODE_END = "<!-- END C3 OPENCODE ADAPTER -->"
 MANAGED_CODEX_TOML_BEGIN = "# BEGIN C3 CODEX ADAPTER"
 MANAGED_CODEX_TOML_END = "# END C3 CODEX ADAPTER"
 
@@ -43,6 +45,8 @@ def scaffold_adapters(
         actions.extend(_write_codex_adapter(target_root, dry_run=dry_run))
     if "cursor" in platforms:
         actions.extend(_write_cursor_adapter(target_root, dry_run=dry_run))
+    if "opencode" in platforms:
+        actions.extend(_write_opencode_adapter(target_root, dry_run=dry_run))
     return actions
 
 
@@ -54,6 +58,14 @@ def print_adapter_actions(actions: list[AdapterAction], *, dry_run: bool = False
     print(f"{len(actions)} adapter file(s) {suffix}:")
     for action in actions:
         print(f"  {action.action}: {action.path}")
+
+
+def _write_opencode_adapter(target_root: Path, *, dry_run: bool) -> list[AdapterAction]:
+    actions: list[AdapterAction] = []
+    actions.extend(_write_opencode_agents_md(target_root, dry_run=dry_run))
+    actions.extend(_write_opencode_agents(target_root, dry_run=dry_run))
+    actions.extend(_write_opencode_skills(target_root, dry_run=dry_run))
+    return actions
 
 
 def _write_codex_adapter(target_root: Path, *, dry_run: bool) -> list[AdapterAction]:
@@ -297,6 +309,160 @@ preserving the same report filenames and approval points. When C3 instructions
 mention the Claude Code `Skill` tool, read the matching file under
 `.claude/skills/<name>/SKILL.md`.
 """
+
+
+def _write_opencode_agents_md(target_root: Path, *, dry_run: bool) -> list[AdapterAction]:
+    """Write C3 adapter instructions into AGENTS.md for OpenCode."""
+    claude_root = target_root / ".claude"
+    rules_content = _collect_rules_for_opencode(claude_root)
+    claude_md = claude_root / "CLAUDE.md"
+    claude_md_content = claude_md.read_text(encoding="utf-8") if claude_md.exists() else ""
+    section = _opencode_agents_section(rules_content, claude_md_content)
+    return _write_managed_block(
+        target_root / "AGENTS.md",
+        section,
+        MANAGED_OPENCODE_BEGIN,
+        MANAGED_OPENCODE_END,
+        dry_run=dry_run,
+    )
+
+
+def _collect_rules_for_opencode(claude_root: Path) -> str:
+    """Read all .claude/rules/*.md files."""
+    rules_dir = claude_root / "rules"
+    if not rules_dir.is_dir():
+        return ""
+    parts: list[str] = []
+    for f in sorted(rules_dir.glob("*.md")):
+        content = f.read_text(encoding="utf-8").strip()
+        if content:
+            parts.append(f"### {f.stem}\n\n{content}")
+    return "\n\n".join(parts)
+
+
+def _opencode_agents_section(rules: str, claude_md: str) -> str:
+    section = """# C3 Adapter for OpenCode
+
+This repository uses Claude Code Conductor (C3). The canonical C3 workflow is
+kept under `.claude/`; OpenCode adapter files are generated from that source.
+
+## How to Use C3 with OpenCode
+
+- `@c3-interviewer` - Start a requirements interview
+- `@c3-architect` - Generate architecture design
+- `@c3-planner` - Create a task plan
+- `@c3-developer` - Implement code (TDD)
+- `@c3-tester` - Write and run tests
+- `@c3-code-reviewer` - Review code quality
+- `@c3-security-reviewer` - Security review
+- `@c3-doc-writer` - Generate documentation
+- `@c3-systematic-debugger` - Debug complex issues
+
+## Key Concepts
+
+1. C3 state (reports, memory, sessions) lives in `.claude/`
+2. Agents are invoked via `@mention` in OpenCode
+3. C3 reports are the handoff mechanism between agents
+4. User approval is required between phases
+
+When C3 instructions contain an `AskUserQuestion` JSON block, ask the user
+directly and preserve `multiSelect: true` as a multi-select question.
+
+When C3 instructions mention the Claude Code `Agent` tool, use OpenCode
+subagents via `@mention`. When they mention the `Skill` tool, read the
+matching `.claude/skills/<name>/SKILL.md` file.
+"""
+    if claude_md.strip():
+        section += f"\n\n## C3 Behavior Rules\n\n{claude_md.strip()}"
+    if rules.strip():
+        section += f"\n\n## C3 Injected Rules\n\n{rules}"
+    return section
+
+
+def _write_opencode_agents(target_root: Path, *, dry_run: bool) -> list[AdapterAction]:
+    """Convert .claude/agents/*.md to .opencode/agents/c3-*.md"""
+    source_root = target_root / ".claude" / "agents"
+    if not source_root.is_dir():
+        return []
+    actions: list[AdapterAction] = []
+    for source in sorted(source_root.glob("*.md")):
+        name = source.stem
+        text = source.read_text(encoding="utf-8")
+        metadata, body = _split_frontmatter(text)
+        description = str(metadata.get("description") or _first_heading(body) or name)
+        agent_md = _opencode_agent_md(name, description, body)
+        dest = target_root / ".opencode" / "agents" / f"c3-{name}.md"
+        actions.extend(_write_file_if_changed(dest, agent_md, dry_run=dry_run))
+    return actions
+
+
+def _opencode_agent_md(name: str, description: str, body: str) -> str:
+    """Generate an OpenCode agent markdown file with YAML frontmatter."""
+    interactive = {"interviewer", "architect", "planner"}
+    mode = "all-purpose" if name in interactive else "subagent"
+    return (
+        f"---\n"
+        f"name: c3-{name}\n"
+        f"mode: {mode}\n"
+        f"description: C3 {name} agent. {description}\n"
+        f"tools:\n"
+        f"  - bash\n  - read\n  - edit\n  - write\n  - websearch\n"
+        f"---\n\n"
+        f"# C3 Agent: {name}\n\n"
+        f"Generated from `.claude/agents/{name}.md`.\n\n"
+        f"## Adapter Notes\n\n"
+        f"- C3 state root: `.claude/`\n"
+        f"- Reports go to `.claude/reports/`\n"
+        f"- Session memory: `.claude/memory/`\n"
+        f"- When done, write your output report to the appropriate path\n\n"
+        f"## Original Agent Definition\n\n"
+        f"{body.strip()}\n"
+    )
+
+
+def _write_opencode_skills(target_root: Path, *, dry_run: bool) -> list[AdapterAction]:
+    """Convert .claude/skills/*/SKILL.md to .opencode/agents/c3-skill-*.md"""
+    source_root = target_root / ".claude" / "skills"
+    if not source_root.is_dir():
+        return []
+    actions: list[AdapterAction] = []
+    for skill_dir in sorted(source_root.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        skill_file = skill_dir / "SKILL.md"
+        if not skill_file.exists():
+            continue
+        skill_name = skill_dir.name
+        text = skill_file.read_text(encoding="utf-8")
+        metadata, body = _split_frontmatter(text)
+        description = str(metadata.get("description") or _first_heading(body) or skill_name)
+        agent_md = _skill_to_opencode_agent_md(skill_name, description, body)
+        dest = target_root / ".opencode" / "agents" / f"c3-skill-{skill_name}.md"
+        actions.extend(_write_file_if_changed(dest, agent_md, dry_run=dry_run))
+    return actions
+
+
+def _skill_to_opencode_agent_md(skill_name: str, description: str, body: str) -> str:
+    """Convert a C3 SKILL.md to an OpenCode agent definition."""
+    return (
+        f"---\n"
+        f"name: c3-skill-{skill_name}\n"
+        f"mode: all-purpose\n"
+        f'description: "C3 skill: {description}"\n'
+        f"tools:\n"
+        f"  - bash\n  - read\n  - edit\n  - write\n  - websearch\n"
+        f"---\n\n"
+        f"# C3 Skill: {skill_name}\n\n"
+        f"Generated from `.claude/skills/{skill_name}/SKILL.md`.\n\n"
+        f"## Adapter Notes\n\n"
+        f"- This skill is the OpenCode equivalent of the C3 `/{skill_name}` command\n"
+        f"- C3 state root: `.claude/`\n"
+        f"- When the original references `AskUserQuestion`, ask the user directly\n"
+        f"- When the original references the `Agent` tool, use `@mention`\n"
+        f"- When the original references the `Skill` tool, read `.claude/skills/<name>/SKILL.md`\n\n"
+        f"## Original Skill Definition\n\n"
+        f"{body.strip()}\n"
+    )
 
 
 def _convert_skill(text: str, skill_name: str) -> str:
