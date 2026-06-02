@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: ドキュメント / Documentation
+    url: https://github.com/satoh-y-0323/claude-code-conductor#readme
+    about: 使い方は README とドキュメントをご確認ください。
+  - name: セキュリティ報告 / Security
+    url: https://github.com/satoh-y-0323/claude-code-conductor/security/policy
+    about: 脆弱性は公開 Issue ではなく非公開で報告してください。
