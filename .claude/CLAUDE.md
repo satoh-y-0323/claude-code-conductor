@@ -53,15 +53,15 @@
 
 ## Platform Compatibility
 
-このファイルは Claude Code / Codex / Cursor から canonical source として読まれる。
+このファイルは Claude Code / Codex / Cursor / OpenCode から canonical source として読まれる。
 他プラットフォームでの動作差分は以下の通り:
 
-- **`AskUserQuestion`** への参照は、Codex/Cursor では MCP tool `c3_ask_user_question` に読み替える（MCP elicitation 非対応時の fallback は `c3 ask --file <json>`）
-- **`Agent` ツール** の参照は、Codex では `.codex/agents/<name>.toml` 経由のサブエージェント、Cursor では現行 runtime のサブエージェント機構（無い場合は同一 agent 内でフェーズ実行しレポート契約のみ維持）に読み替える
-- **`Skill` ツール / `/<skill>`** の参照は、Codex では `.agents/skills/<name>/SKILL.md`、Cursor では `.claude/skills/<name>/SKILL.md` を直接読み込む（スラッシュコマンド自動展開は Claude Code 専用機能）
-- **`isolation: worktree`** / **`permissionMode`** / **`tools` 制限** など agent フロントマターの一部キーは Claude Code 仕様。adapter 側では読み替え不能なものは無視される
+- **`AskUserQuestion`** への参照は、Codex/Cursor では MCP tool `c3_ask_user_question` に読み替える（MCP elicitation 非対応時の fallback は `c3 ask --file <json>`）。OpenCode では MCP を生成しないため、`AGENTS.md` の指示に従ってユーザーへ直接確認する（`multiSelect: true` は複数選択の質問として維持）
+- **`Agent` ツール** の参照は、Codex では `.codex/agents/<name>.toml` 経由のサブエージェント、Cursor では現行 runtime のサブエージェント機構（無い場合は同一 agent 内でフェーズ実行しレポート契約のみ維持）、OpenCode では `.opencode/agents/c3-<name>.md` を `@mention` で起動するサブエージェントに読み替える
+- **`Skill` ツール / `/<skill>`** の参照は、Codex では `.agents/skills/<name>/SKILL.md`、Cursor では `.claude/skills/<name>/SKILL.md` を直接読み込む。OpenCode では `.opencode/agents/c3-skill-<name>.md`（`.claude/skills/<name>/SKILL.md` を本文に埋め込み済み）を `@mention` で起動する（スラッシュコマンド自動展開は Claude Code 専用機能）
+- **`isolation: worktree`** / **`permissionMode`** / **`tools` 制限** など agent フロントマターの一部キーは Claude Code 仕様。adapter 側では読み替え不能なものは無視される（OpenCode adapter は全 agent に `bash/read/edit/write/websearch` を一律付与する）
 
-レポート（`.claude/reports/`）・state（`.claude/state/`）・memory（`.claude/agent-memory/`）のファイル名と書き込み先は全プラットフォーム共通。adapter 生成物の詳細は `c3 init --platform codex|cursor` で出力される `AGENTS.md` / `.cursor/rules/c3-core.mdc` を参照。
+レポート（`.claude/reports/`）・state（`.claude/state/`）・memory（`.claude/agent-memory/`）のファイル名と書き込み先は全プラットフォーム共通。adapter 生成物の詳細は `c3 init --platform codex|cursor|opencode` で出力される `AGENTS.md` / `.cursor/rules/c3-core.mdc` / `.opencode/agents/` を参照。
 
 ---
 

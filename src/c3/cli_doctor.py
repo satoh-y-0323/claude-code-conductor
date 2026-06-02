@@ -48,6 +48,8 @@ def handle(args: argparse.Namespace) -> int:
         findings.extend(_check_codex_adapter())
     if "cursor" in platforms:
         findings.extend(_check_cursor_adapter())
+    if "opencode" in platforms:
+        findings.extend(_check_opencode_adapter())
 
     exit_code = 0
     for status, label, detail in findings:
@@ -114,6 +116,25 @@ def _check_codex_adapter() -> list[tuple[str, str, str]]:
         findings.append((_WARN, "codex binary", "not on PATH; install Codex CLI to use the adapter"))
     else:
         findings.append((_OK, "codex binary", codex))
+    return findings
+
+
+def _check_opencode_adapter() -> list[tuple[str, str, str]]:
+    root = claude_root_for(Path.cwd())
+    if root is None:
+        return [(_WARN, "opencode adapter", "skipped (.claude/ not found)")]
+    findings = []
+    agents_md = root / "AGENTS.md"
+    opencode_agents = root / ".opencode" / "agents"
+    findings.append(_file_or_warn("AGENTS.md", agents_md, "run `c3 init --platform opencode`"))
+    findings.append(
+        _dir_or_warn(".opencode/agents", opencode_agents, "run `c3 init --platform opencode`")
+    )
+    opencode = shutil.which("opencode")
+    if opencode is None:
+        findings.append((_WARN, "opencode binary", "not on PATH; install OpenCode CLI to use the adapter"))
+    else:
+        findings.append((_OK, "opencode binary", opencode))
     return findings
 
 

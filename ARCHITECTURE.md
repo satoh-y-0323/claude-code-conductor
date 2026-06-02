@@ -217,13 +217,14 @@ recall_chunker.py  →  embedding.py            →  recall_index.py
 
 ## 6. クロスプラットフォーム adapter
 
-`.claude/` を canonical source としたまま、Codex / Cursor 向けの派生生成物を作る。
+`.claude/` を canonical source としたまま、Codex / Cursor / OpenCode 向けの派生生成物を作る。
 
 | プラットフォーム | 生成物 | 生成コマンド |
 |---|---|---|
 | Claude Code | `.claude/`（primary） | — |
 | Codex | `/AGENTS.md` / `.codex/` / `.agents/skills/` | `c3 init --platform codex` |
 | Cursor | `.cursor/rules/c3-core.mdc` / `.cursor/mcp.json` | `c3 init --platform cursor` |
+| OpenCode | `/AGENTS.md` / `.opencode/agents/` | `c3 init --platform opencode` |
 
 - 生成ロジック: `adapters.py` + `platforms.py`。adapter 生成物は **派生物**（直接編集すると再生成で上書き・配布元 `.gitignore` で除外）。
 - `AskUserQuestion` 互換: MCP tool `c3_ask_user_question`（`mcp_server.py`）、非対応時の fallback は `c3 ask`（`cli_ask.py`）。

@@ -1,4 +1,4 @@
-"""Generate Codex and Cursor adapter files from the canonical ``.claude/`` tree."""
+"""Generate Codex, Cursor, and OpenCode adapter files from the canonical ``.claude/`` tree."""
 
 from __future__ import annotations
 
@@ -14,12 +14,72 @@ import yaml
 
 from c3._excludes import should_skip
 
+# ---------------------------------------------------------------------------
+# Managed-block marker constants (CR L-04: defined before helpers that use them)
+# ---------------------------------------------------------------------------
+
 MANAGED_CODEX_BEGIN = "<!-- BEGIN C3 CODEX ADAPTER -->"
 MANAGED_CODEX_END = "<!-- END C3 CODEX ADAPTER -->"
 MANAGED_OPENCODE_BEGIN = "<!-- BEGIN C3 OPENCODE ADAPTER -->"
 MANAGED_OPENCODE_END = "<!-- END C3 OPENCODE ADAPTER -->"
 MANAGED_CODEX_TOML_BEGIN = "# BEGIN C3 CODEX ADAPTER"
 MANAGED_CODEX_TOML_END = "# END C3 CODEX ADAPTER"
+
+# All Markdown managed-block delimiter strings across every adapter platform
+# (SR-AI-001). Used by _sanitize_for_managed_block to strip any marker regardless
+# of platform. The TOML markers (MANAGED_CODEX_TOML_BEGIN/END) are intentionally
+# excluded: they delimit blocks in .codex/config.toml, never in the Markdown
+# content (CLAUDE.md / rules) that _sanitize_for_managed_block operates on.
+_ALL_MANAGED_MARKERS = (
+    MANAGED_CODEX_BEGIN,
+    MANAGED_CODEX_END,
+    MANAGED_OPENCODE_BEGIN,
+    MANAGED_OPENCODE_END,
+)
+
+# ---------------------------------------------------------------------------
+# YAML / sanitization helpers
+# ---------------------------------------------------------------------------
+
+
+def _yaml_inline_scalar(value: str) -> str:
+    """Return *value* as a YAML-safe inline scalar (single-line, no trailing newline).
+
+    Uses ``yaml.safe_dump`` so that special characters (colons, double-quotes,
+    newlines) are automatically quoted in a way that round-trips cleanly.
+    The trailing newline and optional YAML document-end marker (``...``) that
+    ``safe_dump`` appends are stripped so the result can be embedded directly
+    after ``key: `` in a YAML frontmatter line.
+    """
+    dumped = yaml.safe_dump(value, default_flow_style=True, allow_unicode=True)
+    result = dumped.strip()
+    # safe_dump may append '\n...' as a document-end marker; remove it.
+    if result.endswith("\n..."):
+        result = result[:-4].rstrip()
+    return result
+
+
+def _sanitize_for_managed_block(content: str) -> str:
+    """Strip lines that could corrupt a managed block boundary.
+
+    Removes:
+    - Lines that are exactly any CODEX or OPENCODE managed-block marker string
+      (``MANAGED_CODEX_BEGIN``, ``MANAGED_CODEX_END``, ``MANAGED_OPENCODE_BEGIN``,
+      ``MANAGED_OPENCODE_END``).  Stripping all adapter markers prevents stray
+      delimiter lines from escaping a managed block when platform=all is used
+      (SR-AI-001 / CR M-03 / CR-NEW-01).
+    - Lines whose first character is ``@`` (Claude Code ``@``-include directives
+      such as ``@rules/promoted/index.md`` that are not meaningful to OpenCode
+      and could confuse parsers).
+    """
+    clean_lines: list[str] = []
+    for line in content.splitlines():
+        if line in _ALL_MANAGED_MARKERS:
+            continue
+        if line.startswith("@"):
+            continue
+        clean_lines.append(line)
+    return "\n".join(clean_lines)
 
 
 @dataclass(frozen=True)
@@ -61,6 +121,15 @@ def print_adapter_actions(actions: list[AdapterAction], *, dry_run: bool = False
 
 
 def _write_opencode_adapter(target_root: Path, *, dry_run: bool) -> list[AdapterAction]:
+    """Generate the three OpenCode adapter artefacts:
+
+    1. ``AGENTS.md`` managed block (``MANAGED_OPENCODE_BEGIN`` … ``MANAGED_OPENCODE_END``)
+       containing C3 usage instructions, CLAUDE.md content, and promoted rules.
+    2. ``.opencode/agents/c3-<name>.md`` — one file per agent defined in
+       ``.claude/agents/*.md``.
+    3. ``.opencode/agents/c3-skill-<name>.md`` — one file per skill defined in
+       ``.claude/skills/<name>/SKILL.md``.
+    """
     actions: list[AdapterAction] = []
     actions.extend(_write_opencode_agents_md(target_root, dry_run=dry_run))
     actions.extend(_write_opencode_agents(target_root, dry_run=dry_run))
@@ -317,6 +386,10 @@ def _write_opencode_agents_md(target_root: Path, *, dry_run: bool) -> list[Adapt
     rules_content = _collect_rules_for_opencode(claude_root)
     claude_md = claude_root / "CLAUDE.md"
     claude_md_content = claude_md.read_text(encoding="utf-8") if claude_md.exists() else ""
+    # CR L-03: sanitization is delegated entirely to _opencode_agents_section,
+    # which calls _sanitize_for_managed_block on both arguments.  Calling it
+    # here a second time would be redundant (the function is idempotent), but
+    # centralising the responsibility in _opencode_agents_section is cleaner.
     section = _opencode_agents_section(rules_content, claude_md_content)
     return _write_managed_block(
         target_root / "AGENTS.md",
@@ -328,12 +401,29 @@ def _write_opencode_agents_md(target_root: Path, *, dry_run: bool) -> list[Adapt
 
 
 def _collect_rules_for_opencode(claude_root: Path) -> str:
-    """Read all .claude/rules/*.md files."""
+    """Read ``.claude/rules/*.md`` files (top-level only; subdirectories are not walked).
+
+    Intentionally non-recursive: ``rules/promoted/`` contains a managed index
+    frame (``index.md``) that is nearly empty, and rglob-ing it would inject
+    noise into the OpenCode managed block.
+
+    SR-V-002: applies the same symlink guard used by ``_write_opencode_agents``
+    and ``_write_opencode_skills``; files that resolve outside ``rules_dir`` are
+    skipped silently.
+    """
     rules_dir = claude_root / "rules"
     if not rules_dir.is_dir():
         return ""
+    rules_dir_resolved = rules_dir.resolve()
     parts: list[str] = []
     for f in sorted(rules_dir.glob("*.md")):
+        # SR-V-002: symlink guard — skip entries that resolve outside rules_dir.
+        try:
+            resolved = f.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_relative_to(rules_dir_resolved):
+            continue
         content = f.read_text(encoding="utf-8").strip()
         if content:
             parts.append(f"### {f.stem}\n\n{content}")
@@ -341,6 +431,11 @@ def _collect_rules_for_opencode(claude_root: Path) -> str:
 
 
 def _opencode_agents_section(rules: str, claude_md: str) -> str:
+    # NOTE: The @mention list below is intentionally static and lists only the
+    # user-facing entry-point agents.  Internal agents such as ``wt_*`` variants
+    # and ``project-setup`` are excluded because they are spawned programmatically
+    # by the parallel-agents skill and are not meant to be invoked directly by
+    # the user.  (CR M-01 / L-03: design-intent comment; no dynamic generation.)
     section = """# C3 Adapter for OpenCode
 
 This repository uses Claude Code Conductor (C3). The canonical C3 workflow is
@@ -372,10 +467,15 @@ When C3 instructions mention the Claude Code `Agent` tool, use OpenCode
 subagents via `@mention`. When they mention the `Skill` tool, read the
 matching `.claude/skills/<name>/SKILL.md` file.
 """
-    if claude_md.strip():
-        section += f"\n\n## C3 Behavior Rules\n\n{claude_md.strip()}"
-    if rules.strip():
-        section += f"\n\n## C3 Injected Rules\n\n{rules}"
+    # Sanitize embedded content to strip @-include directives and managed-block
+    # marker strings that could corrupt the OpenCode managed block boundary
+    # (SR-AI-001 / CR M-03 / CR-NEW-01).
+    safe_claude_md = _sanitize_for_managed_block(claude_md)
+    safe_rules = _sanitize_for_managed_block(rules)
+    if safe_claude_md.strip():
+        section += f"\n\n## C3 Behavior Rules\n\n{safe_claude_md.strip()}"
+    if safe_rules.strip():
+        section += f"\n\n## C3 Injected Rules\n\n{safe_rules}"
     return section
 
 
@@ -385,7 +485,21 @@ def _write_opencode_agents(target_root: Path, *, dry_run: bool) -> list[AdapterA
     if not source_root.is_dir():
         return []
     actions: list[AdapterAction] = []
+    source_root_resolved = source_root.resolve()
     for source in sorted(source_root.glob("*.md")):
+        # CR M-04 / SR-NEW: mirror the should_skip guard from _write_codex_agents.
+        # rel is relative to .claude/ (e.g. "agents/tdd-develop.md") to match
+        # the EXCLUDE_PATTERNS convention used by _write_codex_agents.
+        rel = source.relative_to(target_root / ".claude")
+        if should_skip(rel.as_posix()):
+            continue
+        # SR-V-002: symlink guard — skip sources that resolve outside source_root.
+        try:
+            resolved = source.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_relative_to(source_root_resolved):
+            continue
         name = source.stem
         text = source.read_text(encoding="utf-8")
         metadata, body = _split_frontmatter(text)
@@ -400,11 +514,16 @@ def _opencode_agent_md(name: str, description: str, body: str) -> str:
     """Generate an OpenCode agent markdown file with YAML frontmatter."""
     interactive = {"interviewer", "architect", "planner"}
     mode = "all-purpose" if name in interactive else "subagent"
+    # Strip trailing whitespace from the combined description so that an empty
+    # ``description`` argument does not produce a trailing space on the line
+    # (CR L-01).  Pass the stripped value through _yaml_inline_scalar so that
+    # colons, double-quotes, and newlines are safely quoted (CR H-01 / SR-V-001).
+    full_desc = _yaml_inline_scalar(f"C3 {name} agent. {description}".strip())
     return (
         f"---\n"
         f"name: c3-{name}\n"
         f"mode: {mode}\n"
-        f"description: C3 {name} agent. {description}\n"
+        f"description: {full_desc}\n"
         f"tools:\n"
         f"  - bash\n  - read\n  - edit\n  - write\n  - websearch\n"
         f"---\n\n"
@@ -426,6 +545,7 @@ def _write_opencode_skills(target_root: Path, *, dry_run: bool) -> list[AdapterA
     if not source_root.is_dir():
         return []
     actions: list[AdapterAction] = []
+    source_root_resolved = source_root.resolve()
     for skill_dir in sorted(source_root.iterdir()):
         if not skill_dir.is_dir():
             continue
@@ -433,6 +553,18 @@ def _write_opencode_skills(target_root: Path, *, dry_run: bool) -> list[AdapterA
         if not skill_file.exists():
             continue
         skill_name = skill_dir.name
+        # CR M-04 / SR-NEW: mirror should_skip guard from _write_codex_skills.
+        # rel is relative to .claude/ (e.g. "skills/worktree-tdd-workflow/SKILL.md").
+        rel = skill_file.relative_to(target_root / ".claude")
+        if should_skip(rel.as_posix()):
+            continue
+        # SR-V-002: symlink guard — skip files that resolve outside source_root.
+        try:
+            resolved = skill_file.resolve(strict=True)
+        except OSError:
+            continue
+        if not resolved.is_relative_to(source_root_resolved):
+            continue
         text = skill_file.read_text(encoding="utf-8")
         metadata, body = _split_frontmatter(text)
         description = str(metadata.get("description") or _first_heading(body) or skill_name)
@@ -444,11 +576,15 @@ def _write_opencode_skills(target_root: Path, *, dry_run: bool) -> list[AdapterA
 
 def _skill_to_opencode_agent_md(skill_name: str, description: str, body: str) -> str:
     """Convert a C3 SKILL.md to an OpenCode agent definition."""
+    # CR H-02 / L-06 / SR-V-001: use the shared YAML-safe scalar helper so that
+    # double-quotes or special characters in description do not break the
+    # frontmatter (previously used a raw double-quoted string literal).
+    full_desc = _yaml_inline_scalar(f"C3 skill: {description}")
     return (
         f"---\n"
         f"name: c3-skill-{skill_name}\n"
         f"mode: all-purpose\n"
-        f'description: "C3 skill: {description}"\n'
+        f"description: {full_desc}\n"
         f"tools:\n"
         f"  - bash\n  - read\n  - edit\n  - write\n  - websearch\n"
         f"---\n\n"
