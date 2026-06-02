@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.30.0] - 2026-06-02
+
+**新プラットフォーム adapter（機能追加・破壊的変更なし）**: `c3 init --platform opencode` で [OpenCode](https://opencode.ai) 向けの adapter を生成できるようになった。`.claude/` を canonical source としたまま、`AGENTS.md`（C3 専用 managed block）と `.opencode/agents/c3-*.md` / `.opencode/agents/c3-skill-*.md` を派生生成する。外部コントリビューター（PR #3 / @ma2tak）の実装に、C3 側でテスト・ドキュメント整備を追加してリリースする。
+
+### 追加
+
+- **OpenCode adapter（`c3 init --platform opencode`）**: `SUPPORTED_PLATFORMS` に `opencode` を追加。生成物は (1) `AGENTS.md` に C3 workflow の存在と `@c3-*` agent の使い方を記す managed block（Codex とは別マーカー `<!-- BEGIN/END C3 OPENCODE ADAPTER -->`）、(2) `.claude/agents/<name>.md` から変換した `.opencode/agents/c3-<name>.md`（`interviewer`/`architect`/`planner` は `mode: all-purpose`、他は `mode: subagent`）、(3) `.claude/skills/<name>/SKILL.md` から変換した `.opencode/agents/c3-skill-<name>.md`（`mode: all-purpose`）。`c3 init --platform all` にも含まれる。
+- **OpenCode adapter のテスト（`tests/test_adapters.py`）**: 外部 contract から書く既存方針に倣い、`_opencode_agent_md` の必須キーと mode マッピング（interactive 3 種 / その他）、`_skill_to_opencode_agent_md`、`_opencode_agents_section` の rules / CLAUDE.md 注入と空時の省略、`scaffold_adapters((opencode,))` の生成ファイル・managed block・冪等性・`.claude/` 不在時 `FileNotFoundError` を固定する回帰テストを追加。
+
+### 動作仕様（既知の差分）
+
+- **MCP を生成しない**: OpenCode adapter は `.codex/config.toml` / `.cursor/mcp.json` のような MCP 設定を作らない。`AskUserQuestion` は `AGENTS.md` の指示に従ってユーザーへ直接確認する方式（`multiSelect: true` は複数選択の質問として維持）。
+- **`tools` 一律付与**: 生成される agent / skill には一律で `bash/read/edit/write/websearch` を付与する。Claude 側 frontmatter の細かな `tools` 制限は反映されない（C3 の `code-reviewer` / `security-reviewer` は Claude 側でもレポート出力のため `write` を持つ）。
+
+### ドキュメント
+
+- `.claude/docs/platform-adapters.md`（§1 選択肢・§2 生成物・§6 動作差分・§7 既知の制限）、`.claude/CLAUDE.md`（Platform Compatibility）、`README.md`、`docs/cli-reference.md`、`docs/getting-started.md`、`ARCHITECTURE.md` に `opencode` を追記。
+
+### 後方互換
+
+- 既存プラットフォーム（claude / codex / cursor）の生成物・挙動に変更なし。`opencode` は明示指定（または `all`）時のみ生成される追加機能。**破壊的変更なし**・migration 不要。
+
 ## [2.29.4] - 2026-05-31
 
 **ドキュメント PATCH（コード変更・破壊的変更・migration なし）**: Anthropic 公式「Prompting best practices」（Claude Opus 4.8 / Sonnet 4.6 等の最新モデル向け）の推奨を C3 の agent 定義に反映。`code-reviewer` / `security-reviewer` / `developer` / `wt_developer` の 4 定義にプロンプト文言を 1 行ずつ追加した。コード・公開 API・DB スキーマに変更なし。
