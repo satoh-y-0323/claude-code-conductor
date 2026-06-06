@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.31.0] - 2026-06-06
+
+**標準ワークフローのヒアリング/設計フェーズを動的化（機能改善・破壊的変更なし）**: `dev-workflow` のフェーズ A（interviewer）と フェーズ B（architect）の固定 `AskUserQuestion` テンプレ（毎回同じ4択・3択）を、ルーブリック型ハイブリッドの動的生成に置き換えた。「聞く観点カテゴリ＝固定（予測可能）／質問文・選択肢・深掘り＝動的（タスク固有）」を両立させ、固定テンプレでは拾えなかった観点（特に成功条件／受け入れ基準）を掘れるようにする。
+
+### 追加
+
+- **`.claude/skills/dev-workflow/references/interview-rubric.md`（新規）**: フェーズ A の動的ヒアリング指針。床5観点（背景・目的／スコープ境界／制約・前提／非機能要件／成功条件）を固定の「カバレッジ床」として持ち、質問文・選択肢はタスク固有に動的生成する。会話・既存 requirements-report で判明済みの観点は再質問しない。ガードレール（上限6問・床充足で即停止・深掘りは設計を左右する不明点のみ1問）と report 生成前の self-check（空欄は推測で埋めず「未確定事項」として明示）を規定。対話余白型（自由記述寄り・`Other` 常設）。
+- **`.claude/skills/dev-workflow/references/design-rubric.md`（新規）**: フェーズ B の動的設計確認指針。床4観点（技術スタック制約／要件から導く設計判断ポイント／非機能の実現方針／トレードオフ分岐）。技術スタック制約を起点に設計判断ポイントを動的に列挙する構造化型。上限4問・床充足で即停止・self-check 付き。
+
+### 変更
+
+- **`dev-workflow/SKILL.md` フェーズ A**: 固定テンプレ A-1/A-2/A-3（背景・制約・非機能の3つの固定 `AskUserQuestion`）を `interview-rubric.md` 参照の動的ヒアリング手順に置換。
+- **`dev-workflow/SKILL.md` フェーズ B**: 固定3択の B-1（技術スタック確認）を `design-rubric.md` 参照の動的確認に置換し、既に動的だった B-2 と統合。
+- A-4 / B-3（requirements-report・architecture-report の生成と承認）、承認フロー、セッションファイルの `[x]` 化タイミング、知識蓄積セクションは**無改変**。
+
+### 後方互換
+
+- 変更は `.claude/skills/dev-workflow/` 配下（SKILL.md と新規 references 2件）のみ。公開 API・CLI・DB スキーマ・他フェーズ（C/D/E）・hook に変更なし。`AskUserQuestion` を使う対話フロー自体は維持され、利用者から見た承認フローは不変。**破壊的変更なし**・migration 不要。
+
 ## [2.30.0] - 2026-06-02
 
 **新プラットフォーム adapter（機能追加・破壊的変更なし）**: `c3 init --platform opencode` で [OpenCode](https://opencode.ai) 向けの adapter を生成できるようになった。`.claude/` を canonical source としたまま、`AGENTS.md`（C3 専用 managed block）と `.opencode/agents/c3-*.md` / `.opencode/agents/c3-skill-*.md` を派生生成する。外部コントリビューター（PR #3 / @ma2tak）の実装に、C3 側でテスト・ドキュメント整備を追加してリリースする。
