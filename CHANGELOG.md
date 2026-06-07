@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.32.0] - 2026-06-07
+
+**recall 索引の自動リビルドを配布物に追加（機能追加・破壊的変更なし）**: 配布元で試作・運用していた Stop hook `recall_autorebuild.py` を配布物（`.claude/hooks/`）へ昇格し、全利用先で**既定有効**にした。セッション終了（Stop）ごとに recall 索引（`.claude/state/recall.hnsw`）が stale かを stat のみで軽量判定し、stale なら `c3 recall rebuild` を detached background プロセスで起動して索引を自動で新鮮化する。LLM 非関与の決定論的 CLI を呼ぶだけなので、過去に `llm_summary.md`（summarize-memory）廃止の真因となった LLM 出力汚染・Stop 自己再トリガーループは原理的に発生しない。
+
+### 追加
+
+- **`.claude/hooks/recall_autorebuild.py`（新規・配布 hook）**: Stop hook。Mode1=判定して detached spawn、Mode2（`--rebuild-worker`）=`python -m c3.cli recall rebuild --target <root>` を実行しロックを finally で解放。多重ガード: 索引未構築なら no-op（`index_exists`）／stale でなければ skip／git worktree では skip（parallel-agents 中の多重リビルド回避）／ロック（`O_CREAT|O_EXCL` + TTL 600s・stale 回収）で多重起動防止／常に exit 0（Claude のターンをブロックしない・`decision:block` を出さない）／spawn 子 env から `ANTHROPIC_`/`CLAUDE_`/`OPENAI_` を除外／Windows は `CREATE_NO_WINDOW`／3 OS 対応。`C3_RECALL_AUTOREBUILD_DISABLE=1` で無効化、`C3_RECALL_AUTOREBUILD_DEBUG=1` で worker stderr 継承。
+- **`.claude/settings.json` の Stop に登録**（`session_stop.py` と並列）し、`Bash(python .claude/hooks/recall_autorebuild.py*)` を allow に追加。
+
+### 後方互換
+
+- 追加 hook のみで公開 API・CLI・DB スキーマ・他 hook に変更なし。recall 索引を構築していない利用先では `index_exists` で no-op となり無影響。既定有効だが `C3_RECALL_AUTOREBUILD_DISABLE=1` でオプトアウト可能。**破壊的変更なし**・migration 不要。
+
 ## [2.31.1] - 2026-06-06
 
 **ドキュメント PATCH（コード変更・破壊的変更・migration なし）**: v2.31.0 で導入した動的ヒアリング/設計ルーブリックの Step 1（既知情報の取り込み）に、**資料ドリブンの壁打ち**を明文化した。ユーザーが提示した資料（PDF / 画像 / 既存の要件定義書・ドキュメント等）を Read で読み込み、床観点の判明マークに反映する。ユーザーに指示書の事前執筆を求めず、既に持っている資料を土台に未知だけを動的に掘る方針。
