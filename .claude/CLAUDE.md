@@ -62,10 +62,3 @@
 - **`isolation: worktree`** / **`permissionMode`** / **`tools` 制限** など agent フロントマターの一部キーは Claude Code 仕様。adapter 側では読み替え不能なものは無視される（OpenCode adapter は全 agent に `bash/read/edit/write/websearch` を一律付与する）
 
 レポート（`.claude/reports/`）・state（`.claude/state/`）・memory（`.claude/agent-memory/`）のファイル名と書き込み先は全プラットフォーム共通。adapter 生成物の詳細は `c3 init --platform codex|cursor|opencode` で出力される `AGENTS.md` / `.cursor/rules/c3-core.mdc` / `.opencode/agents/` を参照。
-
----
-
-## C3 Managed
-<!-- このセクションは C3 のコマンドが自動で更新する。手動で編集しないこと。 -->
-
-@rules/promoted/index.md

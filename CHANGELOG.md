@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.33.0] - 2026-06-08
+
+**配布 `CLAUDE.md` の「C3 Managed」セクション撤去とドキュメント同期（挙動不変・破壊的変更・migration なし）**: `.claude/CLAUDE.md` 末尾の `## C3 Managed` セクション（`@rules/promoted/index.md` の `@import` ＋「手動編集しないこと」コメント）を撤去した。Claude Code 公式仕様で `.claude/rules/` はサブディレクトリ含め**再帰的に自動ロード**される（`paths:` 無しは `CLAUDE.md` と同等優先度で全文ロード）ため、`rules/promoted/` は `@import` が無くても context に載る。include は冗長で、かつ「ファイル全体が `c3 update` で上書きされる配布物」なのに 1 セクションだけ「手動編集禁止」と書くのは誤解を招くため撤去した。v2.1.168 実機 `/context` で「`@import` 無しでも昇格ルール（個別ファイル＋`index.md`）が自動ロードされる」ことを検証済み。
+
+### 変更
+
+- `.claude/CLAUDE.md`: 末尾「## C3 Managed」セクション（区切り `---` ＋ `@rules/promoted/index.md` include ＋手動編集禁止コメント）を撤去。promoted rules は `rules/` 再帰自動ロードで従来どおり常時注入される。
+- `.claude/docs/config-policy.md` / `.claude/docs/taxonomy.md`: promoted rules の記述を「`@import` で include」→「`rules/` 再帰自動ロード（`@import` 不要）」へ是正。config-policy.md の promote-pattern 追記機構の記述を実装（昇格ルールは `YYYYMMDD-{id}.md` 個別ファイル＋`index.md` 目録行）に合わせて正確化。バージョン表記を v2.33.0 に更新。
+
+### 後方互換
+
+- ドキュメント/設定の記述変更のみ。公開 API・CLI・DB スキーマ・hook・コード挙動に変更なし。promoted rules のロード経路は `@import` → `rules/` 再帰自動ロードに変わるが、両者とも同じ内容を context に注入するため実体は不変（実機検証済み）。**破壊的変更なし**・migration 不要。
+
 ## [2.32.0] - 2026-06-07
 
 **recall 索引の自動リビルドを配布物に追加（機能追加・破壊的変更なし）**: 配布元で試作・運用していた Stop hook `recall_autorebuild.py` を配布物（`.claude/hooks/`）へ昇格し、全利用先で**既定有効**にした。セッション終了（Stop）ごとに recall 索引（`.claude/state/recall.hnsw`）が stale かを stat のみで軽量判定し、stale なら `c3 recall rebuild` を detached background プロセスで起動して索引を自動で新鮮化する。LLM 非関与の決定論的 CLI を呼ぶだけなので、過去に `llm_summary.md`（summarize-memory）廃止の真因となった LLM 出力汚染・Stop 自己再トリガーループは原理的に発生しない。

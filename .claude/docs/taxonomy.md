@@ -144,7 +144,7 @@ paths:
 
 **サブフォルダ:**
 
-- `promoted/` — `/promote-pattern` スキルが昇格させたルールを配置する。`index.md` が `CLAUDE.md` から `@` インクルードされ、常時注入される。
+- `promoted/` — `/promote-pattern` スキルが昇格させたルールを配置する。`rules/` 配下として **再帰的に自動ロード**され常時注入される（Claude Code 公式仕様。`CLAUDE.md` からの `@` インクルードは不要）。
 
 > **注意（v2.15.0+）**: 長文のチェックリスト・ガイドライン（目安: 1k tokens 超）は `rules/` ではなく
 > `skills/<name>/references/` に置く。`.claude/rules/*.md` は Claude Code 公式仕様で `CLAUDE.md` と
