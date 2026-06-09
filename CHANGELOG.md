@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.34.0] - 2026-06-09
+
+**設計・計画監査ゲート `design-critic` を追加（機能追加・opt-in・破壊的変更なし）**: 標準ワークフローのフェーズ C（計画）とフェーズ D（実装）の間に、実装前の設計・計画を第三者として敵対的に監査する opt-in ゲート **C-3** を新設した。ブログ記事「Automated Doubt Development Process」に着想を得た「自動化された疑念」を C3 に取り込み、**実装中に発覚していた手戻り（前提崩れ・曖昧さ・抜け漏れ）を実装前に検出**することを狙う。新規 read-only サブエージェント `design-critic` が requirements/architecture/plan を 3 レンズ（前提発掘 `[DC-AS]` / 曖昧さ `[DC-AM]` / 抜け漏れ `[DC-GP]`）で監査し、各 finding に**起因層（A要件 < B設計 < C計画）**を付与する。findings は起因層に応じて正しい上流フェーズへ戻す**層別ルーティング**で対応する（設計起因を計画フェーズに戻しても直らない問題を回避）。
+
+### 追加
+
+- **`.claude/agents/design-critic.md`（新規・配布 agent）**: 設計・計画監査担当の read-only 第三者サブエージェント（code-reviewer と同型・ソース編集不可・`design-review-report` のみ Write）。`memory: project` / `permissionMode: bypassPermissions` 付き。
+- **`.claude/skills/dev-workflow/references/design-critic-rubric.md`（新規・配布 rubric）**: 3 レンズの着眼点・finding 必須項目（重要度／起因層／該当箇所／問題点／実装前に確認すべきこと）・`design-review-report` 出力形式を定義。
+- **`.claude/skills/dev-workflow/SKILL.md` フェーズ C-3（計画監査ゲート）**: opt-in（監査する/スキップ）→ design-critic 起動 → findings 承認フロー（フェーズ E と同型）→ 層別ルーティング（`[対応予定]` finding の最上流起因へピンポイント戻し）→ 修正後の再監査（選択式・無限ループ防止）。スキップ時はノーオペでフェーズ D へ。
+- **`.claude/skills/start/SKILL.md` Step 0**: アーカイブ対象（レビュー分類）に `design-review-report-*.md` を追加。
+
+### 後方互換
+
+- フェーズ C-3 は独立 opt-in ゲートとして追記。スキップ時は従来の C→D 遷移と同一でノーオペのため、**既存ワークフローに影響なし**。公開 API・CLI・DB スキーマ・hook・コード挙動に変更なし。**破壊的変更なし**・migration 不要。
+
+### 注意（有効化にセッション再起動が必要）
+
+- `design-critic` は新規サブエージェント定義のため、`c3 update` でファイルが追加された**直後のセッションでは agent レジストリに登録されず起動できない**（Claude Code はセッション開始時に agent 定義をロードする）。**次回セッションから利用可能**になる。フェーズ C-3 を通る際、当該セッションで agent が見つからない場合はセッションを再起動すること。
+- プラットフォームアダプター（Codex/Cursor/OpenCode）への design-critic 反映は本リリースのスコープ外（Claude Code のみ）。`c3 init --platform opencode` 等では `.claude/agents/design-critic.md` が自動で subagent として生成されるが、ワークフロー組み込み（C-3）は Claude Code 専用。
+
 ## [2.33.0] - 2026-06-08
 
 **配布 `CLAUDE.md` の「C3 Managed」セクション撤去とドキュメント同期（挙動不変・破壊的変更・migration なし）**: `.claude/CLAUDE.md` 末尾の `## C3 Managed` セクション（`@rules/promoted/index.md` の `@import` ＋「手動編集しないこと」コメント）を撤去した。Claude Code 公式仕様で `.claude/rules/` はサブディレクトリ含め**再帰的に自動ロード**される（`paths:` 無しは `CLAUDE.md` と同等優先度で全文ロード）ため、`rules/promoted/` は `@import` が無くても context に載る。include は冗長で、かつ「ファイル全体が `c3 update` で上書きされる配布物」なのに 1 セクションだけ「手動編集禁止」と書くのは誤解を招くため撤去した。v2.1.168 実機 `/context` で「`@import` 無しでも昇格ルール（個別ファイル＋`index.md`）が自動ロードされる」ことを検証済み。

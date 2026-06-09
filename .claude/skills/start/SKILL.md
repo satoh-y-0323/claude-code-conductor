@@ -52,7 +52,7 @@ AskUserQuestion で対象フェーズを確認する:
       { "label": "要件定義", "description": "requirements-report-*.md" },
       { "label": "設計", "description": "architecture-report-*.md" },
       { "label": "計画", "description": "plan-report-*.md" },
-      { "label": "レビュー", "description": "code-review-report-*.md / security-review-report-*.md" }
+      { "label": "レビュー", "description": "code-review-report-*.md / security-review-report-*.md / design-review-report-*.md" }
     ],
     "multiSelect": true
   }]
@@ -63,7 +63,7 @@ AskUserQuestion で対象フェーズを確認する:
 - 要件定義: `mkdir -p .claude/reports/archive && mv .claude/reports/requirements-report-*.md .claude/reports/archive/ 2>/dev/null || true`
 - 設計: `mkdir -p .claude/reports/archive && mv .claude/reports/architecture-report-*.md .claude/reports/archive/ 2>/dev/null || true`
 - 計画: `mkdir -p .claude/reports/archive && mv .claude/reports/plan-report-*.md .claude/reports/archive/ 2>/dev/null || true`
-- レビュー: `mkdir -p .claude/reports/archive && mv .claude/reports/code-review-report-*.md .claude/reports/archive/ 2>/dev/null || true && mv .claude/reports/security-review-report-*.md .claude/reports/archive/ 2>/dev/null || true`
+- レビュー: `mkdir -p .claude/reports/archive && mv .claude/reports/code-review-report-*.md .claude/reports/archive/ 2>/dev/null || true && mv .claude/reports/security-review-report-*.md .claude/reports/archive/ 2>/dev/null || true && mv .claude/reports/design-review-report-*.md .claude/reports/archive/ 2>/dev/null || true`
 
 ---
 
