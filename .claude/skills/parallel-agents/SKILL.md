@@ -216,6 +216,19 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 
 全タスク成功した wave に対して以下を順に実行する。
 
+#### 2-F-0: 親 cwd をプロジェクトルートへ復帰（無条件・必須）
+
+worktree Agent 完了後、Claude Code の既知バグ（[Issue #28017](https://github.com/anthropics/claude-code/issues/28017) "Task tool with isolation=worktree leaks CWD to parent session"・closed as duplicate）により、**親 Claude の Bash cwd が `.claude/worktrees/agent-*` 内へ移動したまま戻らない**ことがある（発生はバージョン・環境・タイミング依存）。この状態だと 2-F-1〜2-F-3 の取り込み・コミット・削除が worktree 内で走って正しく行われない（Issue でも "Subsequent Bash commands run in the wrong directory" と報告）。とくに cwd が worktree 内のままだと worktree ディレクトリの削除に失敗しやすい（OS によっては cwd 配下を削除できない）。
+
+これを防ぐため、**2-F の最初に無条件でプロジェクトルートへ戻す**:
+
+```bash
+cd <ROOT>
+```
+
+- `<ROOT>` = プロジェクトルートの絶対パス。最初の worktree Agent を起動する前（cwd がまだルート）の `pwd` の値で、セッション開始時の作業ディレクトリと同じ。worktree 内から `git rev-parse --show-toplevel` を打つと worktree のルートが返るため、ルート判定には使わず **事前に控えた絶対パス** を使う。
+- cwd が漏れていなくても `cd <ROOT>` は無害。判定せず毎 wave 無条件で実行する（Issue が挙げる公式ワークアラウンド "manually cd back" に準拠）。`cd` は C3 の pre_tool hook の検査対象外のためブロックされない。
+
 #### 2-F-1: 成果物の取り込み
 
 各 worktree の `writes` ファイルを main に取り込む。**親 Claude が一括で行う**:

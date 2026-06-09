@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.35.0] - 2026-06-10
+
+**並列実行 worktree の cwd リーク（Claude Code [Issue #28017](https://github.com/anthropics/claude-code/issues/28017)）への暫定ワークアラウンドを追加（手順追加・破壊的変更なし）**: `isolation: "worktree"` の Agent 完了後に親セッションの作業ディレクトリ（cwd）が worktree（`.claude/worktrees/agent-*`）内へ移動したまま戻らない Claude Code の既知バグ（「Task tool with isolation=worktree leaks CWD to parent session」・closed as duplicate・複数 OS で報告）により、wave 完了処理（成果物の取り込み・コミット・worktree 削除）が誤ったディレクトリで走り、特に worktree ディレクトリの削除に失敗する事象がある。公式修正までの暫定対応として、`parallel-agents` skill の wave 完了処理の先頭で **無条件に cwd をプロジェクトルートへ戻す手順 `2-F-0`** を追加した。
+
+### 追加
+
+- **`.claude/skills/parallel-agents/SKILL.md` 2-F-0（親 cwd をプロジェクトルートへ復帰・無条件・必須）**: 各 wave の完了処理（2-F）の最初で `cd <ROOT>`（`<ROOT>` = 最初の worktree Agent 起動前の cwd の絶対パス）を無条件で実行する。cwd が漏れていなくても無害。Issue が挙げる公式ワークアラウンド "manually cd back" に準拠。これにより後続の 2-F-1（取り込み）・2-F-2（コミット）・2-F-3（削除）が常にプロジェクトルートで実行され、worktree 削除失敗を回避する。
+
+### 後方互換
+
+- 手順を 1 ステップ追加しただけで、wave の成果物・コミット内容・削除結果は変わらない。公開 API・CLI・DB スキーマ・hook・コード挙動に変更なし。**破壊的変更なし**・migration 不要。
+- 既存の 2-F-3（worktree クリーンアップ）はフォールバック型の手順を温存。本対応は公式修正までの暫定ワークアラウンドであり、ワークアラウンドが効かない場合も従来どおり残留チェック＋手動削除で吸収できる。
+
+### 注意
+
+- 本変更は `parallel-agents` skill（`/develop` のフェーズ D で間接起動）の手順追記。`c3 update` 適用後、次回の並列実装 wave から新手順が読まれる（新規 agent 定義の追加ではないためセッション再起動は不要）。
+
 ## [2.34.0] - 2026-06-09
 
 **設計・計画監査ゲート `design-critic` を追加（機能追加・opt-in・破壊的変更なし）**: 標準ワークフローのフェーズ C（計画）とフェーズ D（実装）の間に、実装前の設計・計画を第三者として敵対的に監査する opt-in ゲート **C-3** を新設した。ブログ記事「Automated Doubt Development Process」に着想を得た「自動化された疑念」を C3 に取り込み、**実装中に発覚していた手戻り（前提崩れ・曖昧さ・抜け漏れ）を実装前に検出**することを狙う。新規 read-only サブエージェント `design-critic` が requirements/architecture/plan を 3 レンズ（前提発掘 `[DC-AS]` / 曖昧さ `[DC-AM]` / 抜け漏れ `[DC-GP]`）で監査し、各 finding に**起因層（A要件 < B設計 < C計画）**を付与する。findings は起因層に応じて正しい上流フェーズへ戻す**層別ルーティング**で対応する（設計起因を計画フェーズに戻しても直らない問題を回避）。
