@@ -42,6 +42,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "docs/C3_tier_routing_cost_integration_設計.md",
     "docs/grill-me機能を実装する際の考慮点とC3との相性や超えるべき壁.md",
     "docs/C3のconfig_policyとversion_upgradeの考慮点と超えるべき壁.md",
+    "docs/model_settings.md",
     "docs/codex対応/*",
     "hooks/subagent_log.py",
     "settings.local.json",
