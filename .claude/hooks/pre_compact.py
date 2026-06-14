@@ -13,11 +13,11 @@ from session_utils import SESSION_JSON_MARKER, append_checkpoint, is_worktree, S
 
 
 SAVE_INSTRUCTION = (
-    "コンテキスト圧縮が間もなく発生します。圧縮で詳細な文脈が失われる前に、"
-    "CLAUDE.md の Compact Instructions（KEEP/DISCARD ルール）に従って "
-    "今日のセッションファイル（.claude/memory/sessions/YYYYMMDD.tmp）に "
-    "現在の残タスク・直近の重要な判断・解決済みのハマりどころを書き出してください。"
-    "雑談・解決済みエラーログ・冗長なコード断片は書かず、KEEP に該当する情報のみ。"
+    "コンテキスト圧縮が間もなく発生します。詳細な文脈が失われる前に、"
+    "今日のセッションファイル（.claude/memory/sessions/YYYYMMDD.tmp）を以下のとおり「更新」してください（無制限の追記はしないこと）。\n"
+    "1. 「現在地:」行を現在のフェーズ名に更新する（例: 「現在地: フェーズD 実装中」「現在地: Wave 2 実装中」）。\n"
+    "2. 「## 残タスク」をチェックリストとして更新する（完了タスクは - [x] 化し、不要になった行は整理する）。\n"
+    "CLAUDE.md の Compact Instructions（KEEP/DISCARD）に従い、雑談・解決済みエラーログ・冗長なコード断片は書かないこと。\n"
 )
 
 

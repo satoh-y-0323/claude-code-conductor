@@ -282,6 +282,10 @@ git branch -D worktree-agent-{id}
 #### 2-F-4: セッション記録
 
 - `- [ ] Wave {N}` を `- [x] Wave {N}` に Edit
+- `現在地:` を以下のルールで Edit（`dev-workflow/SKILL.md` の「セッションファイル運用総則」参照）:
+  - Wave N 成功時: `現在地: Wave {N} 完了 / 次: Wave {N+1}`
+  - 最終 Wave 完了時: `現在地: 完了`（レビューへ遷移する場合は `現在地: フェーズE レビュー中`）
+  - Wave をスキップした時: `現在地: Wave {N} skipped / 次: Wave {N+1}`
 - `session_utils.append_checkpoint()` を呼び出して checkpoint ブロックを追記:
 
   ```bash

@@ -18,6 +18,18 @@
    - 追記ブロックに ## [Checkpoint: {label} が含まれる
    - TOCTOU テスト: open('x') + FileExistsError パターンを使っているか AST で検証する
    - summary の --> サニタイズテスト: summary に --> が含まれる場合 -- > に置換されること（Low 指摘対応）
+   - label に C1/DEL を含む場合に除去されること（F2 後の期待値 / CR M-02）
+   - body（summary）の複数行が保持されること（F2 §3.2 非互換回避の回帰防止）
+
+4. sanitize_value(text)（F2 / SR M-1 / CR M-02 / SR L-1）
+   - DEL（\\x7f）が除去される
+   - C1 制御文字（\\x80-\\x9f / CSI=\\x9b 等）が除去される
+   - U+2028（Line Separator）が除去される
+   - U+2029（Paragraph Separator）が除去される
+   - \\t（タブ）は保持される（SR L-1）
+   - --> が -- > に置換される
+   - 改行（\\n/\\r）が除去される
+   - 通常の ASCII 文字・日本語は不変
 """
 
 from __future__ import annotations
@@ -128,6 +140,56 @@ class TestCreateSessionTemplate:
         assert lines[0].startswith("SESSION: ")
         assert lines[1].startswith("AGENT:")
         assert lines[2].startswith("DURATION:")
+
+    def test_contains_genba_field(self):
+        """テンプレートに「現在地: 」行が含まれる（AC-1）。
+
+        「現在地:」は DURATION: の直後・空行の前に配置される行フィールド。
+        architecture §2.1 に従い、SESSION: / AGENT: / DURATION: / 現在地: の
+        メタ行クラスタに連続して存在し、## うまくいったアプローチ より前に位置する。
+        """
+        module = _load_module()
+        result = module.create_session_template("20260505")
+        assert "現在地:" in result, (
+            "テンプレートに「現在地:」行が含まれていない。"
+            "DURATION: の直後に「現在地: \\n」を追加すること（AC-1）。"
+        )
+
+    def test_genba_field_position_after_duration_before_sections(self):
+        """「現在地:」行が DURATION: の直後かつ ## うまくいったアプローチ の前に位置する。
+
+        architecture §2.1 のヘッダ順序: SESSION: -> AGENT: -> DURATION: -> 現在地: ->
+        空行 -> ## うまくいったアプローチ
+        """
+        module = _load_module()
+        result = module.create_session_template("20260505")
+        lines = result.split("\n")
+
+        duration_idx = next(
+            (i for i, line in enumerate(lines) if line.startswith("DURATION:")), None
+        )
+        genba_idx = next(
+            (i for i, line in enumerate(lines) if line.startswith("現在地:")), None
+        )
+        success_idx = next(
+            (i for i, line in enumerate(lines) if line.startswith("## うまくいったアプローチ")),
+            None,
+        )
+
+        assert duration_idx is not None, "DURATION: 行がテンプレートに存在しない"
+        assert genba_idx is not None, (
+            "「現在地:」行がテンプレートに存在しない。DURATION: の直後に追加すること（AC-1）。"
+        )
+        assert success_idx is not None, "## うまくいったアプローチ 行がテンプレートに存在しない"
+
+        assert genba_idx == duration_idx + 1, (
+            f"「現在地:」行（行 {genba_idx}）は DURATION:（行 {duration_idx}）の"
+            f"直後に配置されるべき。現在の位置: {genba_idx}"
+        )
+        assert genba_idx < success_idx, (
+            f"「現在地:」行（行 {genba_idx}）は ## うまくいったアプローチ（行 {success_idx}）"
+            f"より前に配置されるべき。"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -256,3 +318,162 @@ class TestAppendCheckpoint:
         assert "-- >" in content, (
             "`-->` が `-- >` に置換されていない。サニタイズ処理が正しく動作していない。"
         )
+
+    def test_label_with_c1_del_characters_is_sanitized(self, tmp_path: Path):
+        """label に C1 制御文字（\\x9b）・DEL（\\x7f）が含まれる場合、除去されること（F2 / CR M-02）。
+
+        F2 で sanitize_value が共通化され、label の DEL/C1 制御文字を除去する確定仕様。
+        """
+        module = _load_module()
+        session_file = str(tmp_path / "20260505.tmp")
+        label = "Wave\x9b 1\x7f success"  # C1 CSI + DEL を含む label
+
+        module.append_checkpoint(session_file, label, "summary body")
+
+        content = Path(session_file).read_text(encoding="utf-8")
+        # C1 制御文字・DEL がファイルに書き込まれていないこと
+        assert "\x9b" not in content, (
+            "label の C1 制御文字 CSI (\\x9b) が除去されずにファイルへ書き込まれている（F2 / CR M-02）。"
+            "sanitize_value 共通化後は DEL/C1 も除去されるべき。"
+        )
+        assert "\x7f" not in content, (
+            "label の DEL (\\x7f) が除去されずにファイルへ書き込まれている（F2 / CR M-02）。"
+        )
+
+    def test_body_multiline_is_preserved(self, tmp_path: Path):
+        """summary（body）の複数行が保持されること（F2 §3.2 非互換回避の回帰防止）。
+
+        sanitize_value は改行を除去するが、body（summary）には適用しない設計（F2 §3.2）。
+        body に sanitize_value が誤って適用されると複数行が1行化してしまう。
+        本テストはその非互換を回避するための回帰防止テストとして機能する。
+        """
+        module = _load_module()
+        session_file = str(tmp_path / "20260505.tmp")
+        summary = "行1: 成功\n行2: 詳細情報\n行3: 追加メモ"
+
+        module.append_checkpoint(session_file, "TestLabel", summary)
+
+        content = Path(session_file).read_text(encoding="utf-8")
+        # summary の各行が独立した行として保持されていること
+        assert "行1: 成功" in content, "summary の1行目が保持されていない。"
+        assert "行2: 詳細情報" in content, "summary の2行目が保持されていない。"
+        assert "行3: 追加メモ" in content, "summary の3行目が保持されていない。"
+        # 複数行として保持されていること（改行が1行化されていないこと）
+        assert "行1: 成功\n行2: 詳細情報" in content, (
+            "summary の複数行が保持されていない（改行が除去されて1行化している可能性）。"
+            "body には sanitize_value を適用しない設計（F2 §3.2）に違反している。"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4. sanitize_value(text)（F2 / SR M-1 / CR M-02 / SR L-1）
+# ---------------------------------------------------------------------------
+
+# テストファイル内で U+2028/U+2029 実体を文字列リテラルとして使わないよう定義する
+_LS = chr(0x2028)  # Line Separator（U+2028）
+_PS = chr(0x2029)  # Paragraph Separator（U+2029）
+
+
+class TestSanitizeValue:
+    """session_utils.sanitize_value(text) の単体テスト（F2 / SR M-1 / CR M-02 / SR L-1）。
+
+    session_utils.py の共通サニタイズ関数 sanitize_value の仕様を固定する。
+
+    設計（plan-report §3.1）:
+    - 改行（\\n / \\r）を除去
+    - C0/C1 制御文字・DEL・U+2028/U+2029 を除去（\\t は保持）
+    - --> を -- > に置換
+    """
+
+    def _load(self) -> object:
+        return _load_module()
+
+    def test_removes_del_character(self) -> None:
+        """DEL（\\x7f）が除去されること（SR M-1）。"""
+        module = self._load()
+        result = module.sanitize_value("abc\x7fdef")
+        assert "\x7f" not in result, f"DEL (\\x7f) が除去されていない。実際: {result!r}"
+        assert "abcdef" in result or result == "abcdef", (
+            f"DEL 除去後に 'abcdef' が残るべき。実際: {result!r}"
+        )
+
+    def test_removes_c1_csi_character(self) -> None:
+        """C1 制御文字 CSI（\\x9b）が除去されること（SR M-1）。"""
+        module = self._load()
+        result = module.sanitize_value("abc\x9bdef")
+        assert "\x9b" not in result, f"C1 CSI (\\x9b) が除去されていない。実際: {result!r}"
+
+    def test_removes_c1_range_characters(self) -> None:
+        """C1 制御文字範囲（\\x80-\\x9f）が除去されること（SR M-1）。"""
+        module = self._load()
+        for codepoint in range(0x80, 0xA0):
+            char = chr(codepoint)
+            result = module.sanitize_value(f"abc{char}def")
+            assert char not in result, (
+                f"C1 文字 U+{codepoint:04X} が除去されていない。実際: {result!r}"
+            )
+
+    def test_removes_unicode_line_separator(self) -> None:
+        """U+2028（Line Separator）が除去されること（SR M-1）。"""
+        module = self._load()
+        result = module.sanitize_value("abc" + _LS + "def")
+        assert _LS not in result, (
+            f"U+2028 (Line Separator) が除去されていない。実際: {result!r}"
+        )
+
+    def test_removes_unicode_paragraph_separator(self) -> None:
+        """U+2029（Paragraph Separator）が除去されること（SR M-1）。"""
+        module = self._load()
+        result = module.sanitize_value("abc" + _PS + "def")
+        assert _PS not in result, (
+            f"U+2029 (Paragraph Separator) が除去されていない。実際: {result!r}"
+        )
+
+    def test_preserves_tab_character(self) -> None:
+        """\\t（タブ文字）は保持されること（SR L-1：タブ保持の設計意図）。
+
+        タブは現在地値の正当なユースケースとして許容される設計。
+        既存の append_checkpoint と挙動を一致させるための意図的な設計（SR L-1）。
+        """
+        module = self._load()
+        result = module.sanitize_value("abc\tdef")
+        assert "\t" in result, f"タブ (\\t) が除去されている。SR L-1 の設計に反する。実際: {result!r}"
+
+    def test_replaces_comment_closer(self) -> None:
+        """'-->' を '-- >' に置換すること。"""
+        module = self._load()
+        result = module.sanitize_value("abc --> def")
+        assert "-->" not in result, f"'-->' が置換されていない。実際: {result!r}"
+        assert "-- >" in result, f"'-- >' への置換がされていない。実際: {result!r}"
+
+    def test_removes_newline(self) -> None:
+        """改行文字（\\n）が除去されること。"""
+        module = self._load()
+        result = module.sanitize_value("abc\ndef")
+        assert "\n" not in result, f"改行 (\\n) が除去されていない。実際: {result!r}"
+
+    def test_removes_carriage_return(self) -> None:
+        """キャリッジリターン（\\r）が除去されること。"""
+        module = self._load()
+        result = module.sanitize_value("abc\rdef")
+        assert "\r" not in result, f"CR (\\r) が除去されていない。実際: {result!r}"
+
+    def test_normal_ascii_and_japanese_preserved(self) -> None:
+        """通常の ASCII 文字と日本語テキストは変更されないこと（過剰除去しない）。"""
+        module = self._load()
+        text = "フェーズD 実装中 / abc123 !@# ok"
+        result = module.sanitize_value(text)
+        assert result == text, (
+            f"通常文字が意図せず変更されている。元: {text!r}、実際: {result!r}"
+        )
+
+    def test_removes_c0_control_characters(self) -> None:
+        """C0 制御文字（\\x00-\\x08/\\x0b-\\x1f）が除去されること（\\t=\\x09 は除外）。"""
+        module = self._load()
+        # BEL, BS, ESC などの C0 制御文字
+        for codepoint in [0x00, 0x01, 0x07, 0x08, 0x0b, 0x0c, 0x1b, 0x1f]:
+            char = chr(codepoint)
+            result = module.sanitize_value(f"abc{char}def")
+            assert char not in result, (
+                f"C0 制御文字 U+{codepoint:04X} が除去されていない。実際: {result!r}"
+            )

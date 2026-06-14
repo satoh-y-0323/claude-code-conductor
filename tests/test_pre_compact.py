@@ -1,31 +1,22 @@
 """
-Tests for .claude/hooks/pre_compact.py (Round 5 - regression guard)
+Tests for .claude/hooks/pre_compact.py
 
   TestContextItemsBeforeNoneShowsNA (Low-2)
     - context_items_before キーが存在しない場合、summary に N/A が含まれること
 
-Current behavior:
-    context_items_before = payload.get('context_items_before', 0)
-    summary = (
-        f"- context_items_before: {context_items_before}\\n"
-        ...
-    )
-    When key is absent: outputs "- context_items_before: 0"
-    When key is present with value 0: also outputs "- context_items_before: 0"
-    These two cases are indistinguishable.
+  TestSaveInstruction (AC-7)
+    - SAVE_INSTRUCTION が新仕様（「現在地」更新指示と「- [x]」チェックリスト更新を含む）を含む
 
-Expected after fix:
-    When key is absent: outputs "- context_items_before: N/A"
-    When key is present with value 0: outputs "- context_items_before: 0"
-
-実装は 'N/A' 出力に修正済み。本テスト群は将来 '0' 出力に退行しないかを守る Green 回帰防止テスト。
+実装は 'N/A' 出力・新 SAVE_INSTRUCTION 文面に修正済み。本テスト群は将来の退行を防ぐ回帰防止テスト。
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -36,6 +27,27 @@ import pytest
 
 WORKTREE_ROOT = Path(__file__).parent.parent
 PRE_COMPACT_PY = WORKTREE_ROOT / ".claude" / "hooks" / "pre_compact.py"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_pre_compact_module() -> types.ModuleType:
+    """pre_compact.py をモジュールとしてロードする（__main__ 実行なし）。
+
+    pre_compact.py はモジュールレベルで session_utils を import するため、
+    sys.path に hooks ディレクトリを追加してからロードする。
+    """
+    hooks_dir = str(PRE_COMPACT_PY.parent)
+    if hooks_dir not in sys.path:
+        sys.path.insert(0, hooks_dir)
+    spec = importlib.util.spec_from_file_location("pre_compact", PRE_COMPACT_PY)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+    return module
 
 
 # ---------------------------------------------------------------------------
@@ -188,4 +200,66 @@ class TestContextItemsBeforeNoneShowsNA:
             "N/A ではなく実際の値 '0' が出力されること。\n"
             f"実際のセッションファイル内容（最後の200文字）:\n"
             f"{content[-200:]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestSaveInstructionNewSpec (AC-7)
+# ---------------------------------------------------------------------------
+
+
+class TestSaveInstruction:
+    """[AC-7] SAVE_INSTRUCTION が新仕様（「更新」志向）の文面を含むこと。
+
+    architecture §5.2 に従い、SAVE_INSTRUCTION は以下の2点を必ず含む:
+    1. 「現在地:」を現フェーズ名に更新する指示（「現在地」というキーワード）
+    2. 「## 残タスク」をチェックリストとして更新する指示（「- [x]」によるチェック化指示）
+
+    旧文面（「書き出してください」という無上限追記指示）とは異なり、
+    「更新」を促す文面であること。「無上限追記」を促す文面でないこと。
+    """
+
+    def test_save_instruction_contains_genba_update_keyword(self) -> None:
+        """SAVE_INSTRUCTION に「現在地」の更新指示が含まれる（AC-7）。
+
+        architecture §5.2 で確定した新文面: 「現在地:」行を現フェーズ名に更新することを
+        明示的に促す文言が含まれること。
+        """
+        module = _load_pre_compact_module()
+        instruction = module.SAVE_INSTRUCTION
+        assert "現在地" in instruction, (
+            "[AC-7] SAVE_INSTRUCTION に「現在地」更新指示が含まれていない。\n"
+            "architecture §5.2 の新文面: 「現在地:」行を現フェーズ名に更新することを\n"
+            "明示的に含む文面に変更すること。\n"
+            f"現在の SAVE_INSTRUCTION:\n{instruction!r}"
+        )
+
+    def test_save_instruction_contains_checklist_update_keyword(self) -> None:
+        """SAVE_INSTRUCTION に「- [x]」チェックリスト更新指示が含まれる（AC-7）。
+
+        architecture §5.2 で確定した新文面: 完了タスクを「- [x]」でチェック化することを
+        明示的に促す文言（「- [x]」という文字列）が含まれること。
+        """
+        module = _load_pre_compact_module()
+        instruction = module.SAVE_INSTRUCTION
+        assert "- [x]" in instruction, (
+            "[AC-7] SAVE_INSTRUCTION に「- [x]」チェックリスト更新指示が含まれていない。\n"
+            "architecture §5.2 の新文面: 完了タスクを「- [x]」化することを\n"
+            "明示的に含む文面に変更すること。\n"
+            f"現在の SAVE_INSTRUCTION:\n{instruction!r}"
+        )
+
+    def test_save_instruction_does_not_promote_unlimited_append(self) -> None:
+        """SAVE_INSTRUCTION が「無上限追記」を促す旧文面でないこと（AC-7）。
+
+        旧文面は「書き出してください」という追記指示だった。
+        新文面は「更新」であり、追記を促さないこと（「書き出してください」が含まれないこと）。
+        """
+        module = _load_pre_compact_module()
+        instruction = module.SAVE_INSTRUCTION
+        assert "書き出してください" not in instruction, (
+            "[AC-7] SAVE_INSTRUCTION に旧文面「書き出してください」が残っている。\n"
+            "無上限追記を促す文面から「更新」を促す文面への転換が未完了。\n"
+            "architecture §5.2 の新文面に置き換えること。\n"
+            f"現在の SAVE_INSTRUCTION:\n{instruction!r}"
         )

@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.36.0] - 2026-06-14
+
+**セッションファイルに「現在地」フィールドを新設し、コンテキスト圧縮（コンパクト）後の肥大ループとワークフロー無視を同時に解消（hook・skill 手順の変更／破壊的変更なし）**: 200K コンテキスト運用で、セッション復元（コンパクト後・`/init-session`）の経路が「構造のない丸投げ」になっていたことが 2 つの症状を生んでいた。(1) **コンパクト肥大ループ**: `pre_compact.py` がコンパクト直前に状態を無上限追記させ、`restore_session.py` がコンパクト後に `## 残タスク` / `## うまくいったアプローチ` / `## 試みたが失敗したアプローチ` の 3 セクションを完了済み `- [x]` 行も含め丸ごと再注入し続けるため、コンテキスト使用率が上がり→さらにコンパクトが早まる正のフィードバックになっていた。(2) **ワークフロー無視**: 復元時にフェーズ状態が単なる ToDo として注入されるだけで「dev-workflow 進行中・skill 経由で再開せよ・Approval Flow を守れ」の指示が無く、`/init-session` の「続きから作業する」も「そのまま作業に入る」となっていたため、復元後に dev-workflow を飛ばして直接着手しがちだった。両症状の根は同じ「復元時に構造化された現在地が無い」ことであり、`現在地:` の 1 行フィールドを新設して構造化することで、再注入を小さく保ちつつワークフロー復帰を確実化する。
+
+### 追加
+
+- **`.claude/hooks/session_utils.py`**: `create_session_template()` のテンプレートに `現在地:` 行（`DURATION:` 直後）を追加。デフォルト空＝「ワークフロー外（自由作業）」。あわせて単一行値のサニタイズ共通関数 `sanitize_value()` を新設（C0 制御文字・DEL・C1・U+2028/U+2029 除去 + `-->`→`-- >`、タブは保持）。`append_checkpoint` の label サニタイズも本関数に統一（body は複数行 Markdown 保持のため非適用）。
+
+### 変更
+
+- **`.claude/hooks/restore_session.py`**: コンパクト後の再注入を構造化。(a) `現在地:` を最優先で読み、非空かつ `完了` でなければ「⚠️ dev-workflow 進行中（現在地: …）。残作業に直接着手せず、対応 skill（develop / review-phase / start）経由で再開し、各エージェント出力後の Approval Flow を守ること。」を出力冒頭に注入。(b) `## 残タスク` は `- [ ]` 未完了行のみ注入（`- [x]` 完了行を除外）。(c) `## うまくいったアプローチ` / `## 試みたが失敗したアプローチ` は末尾 15 行（`APPROACH_TAIL_LINES`）に上限化。(d) 3 セクションを行単位でサニタイズ。(e) セッションファイル名 `date_str` を `^\d{8}$` で検証。
+- **`.claude/hooks/pre_compact.py`**: `SAVE_INSTRUCTION` を「無上限に書き出す」から「`現在地:` を現在のフェーズに更新し、`## 残タスク` をチェックリストとして更新（完了は `- [x]` 化・不要行は整理）」へ変更し、肥大を発生源で抑制。
+- **`.claude/skills/dev-workflow/SKILL.md`**: 各フェーズ承認時に `- [x]` 化と同時に `現在地:` を次フェーズへ更新する手順を総則＋各箇所に併記（フェーズ E 完了時は `現在地: 完了`）。
+- **`.claude/skills/parallel-agents/SKILL.md`**: Wave 完了処理に `現在地:` 更新を併記。
+- **`.claude/skills/init-session/SKILL.md`**: Step 5「続きから作業する」を、`現在地:` が進行中なら対応 skill 経由で該当フェーズから再開し Approval Flow を守る案内に変更（空または `完了` なら従来どおり直接着手）。
+
+### 後方互換
+
+- `現在地:` 行が無い既存フォーマットの `.tmp` ファイルでも `restore_session.py` / `stop.py` はクラッシュせず従来どおり動作する（regex 不一致時は空扱い）。公開 API・CLI・DB スキーマに変更なし。**破壊的変更なし**・migration 不要。
+
+### 注意
+
+- 本変更は hook（`session_utils` / `restore_session` / `pre_compact`）と skill 手順の変更。`c3 update` 適用後、次回のコンパクト・セッション復元から新挙動が反映される（新規 agent 定義の追加ではないためセッション再起動は不要）。
+
 ## [2.35.0] - 2026-06-10
 
 **並列実行 worktree の cwd リーク（Claude Code [Issue #28017](https://github.com/anthropics/claude-code/issues/28017)）への暫定ワークアラウンドを追加（手順追加・破壊的変更なし）**: `isolation: "worktree"` の Agent 完了後に親セッションの作業ディレクトリ（cwd）が worktree（`.claude/worktrees/agent-*`）内へ移動したまま戻らない Claude Code の既知バグ（「Task tool with isolation=worktree leaks CWD to parent session」・closed as duplicate・複数 OS で報告）により、wave 完了処理（成果物の取り込み・コミット・worktree 削除）が誤ったディレクトリで走り、特に worktree ディレクトリの削除に失敗する事象がある。公式修正までの暫定対応として、`parallel-agents` skill の wave 完了処理の先頭で **無条件に cwd をプロジェクトルートへ戻す手順 `2-F-0`** を追加した。

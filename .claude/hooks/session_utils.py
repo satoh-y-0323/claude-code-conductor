@@ -5,6 +5,45 @@ import os
 import re
 from datetime import datetime, timezone
 
+# ---------------------------------------------------------------------------
+# 共通サニタイズ（SR M-1 / CR M-02 / SR L-1）
+# stop.py::_INHERIT_SANITIZE_RE と同一範囲。
+# C0 制御文字（\t=\x09 除く）・DEL・C1 制御文字・U+2028/U+2029 を除去する。
+# ---------------------------------------------------------------------------
+
+_VALUE_SANITIZE_RE = re.compile(
+    r'[\x00-\x08\x0b-\x1f\x7f-\x9f' + chr(0x2028) + chr(0x2029) + r']'
+)
+
+
+def sanitize_value(text: str) -> str:
+    """セッションファイル由来の文字列を出力埋め込み前にサニタイズする（信頼境界）。
+
+    - 改行（\\n / \\r）を除去する
+    - C0 制御文字（\\x00-\\x08, \\x0b-\\x1f）・DEL（\\x7f）・
+      C1 制御文字（\\x80-\\x9f）・U+2028・U+2029 を除去する
+    - ``-->`` を ``-- >`` に置換して HTML コメントブロック破壊を防ぐ
+
+    タブ \\t (\\x09) を保持する意図:
+        既存の append_checkpoint と挙動を一致させるため。
+        現在地値・残タスク行にタブが含まれる正当ユースケースは設計上ないが、
+        除去しても保持しても害はなく、既存挙動（stop.py / append_checkpoint）との
+        一貫性を優先して保持する（SR L-1）。
+
+    単一行 / 行単位で扱う値（現在地・残タスク行・成功/失敗行・label）に適用する。
+    複数行ブロックを保持する body（append_checkpoint の summary）には適用しない。
+
+    Args:
+        text: サニタイズ対象の文字列。
+
+    Returns:
+        サニタイズ済みの文字列。
+    """
+    sanitized = text.replace('\n', '').replace('\r', '')
+    sanitized = _VALUE_SANITIZE_RE.sub('', sanitized)
+    return sanitized.replace('-->', '-- >')
+
+
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 SESSIONS_DIR = os.path.join(_CLAUDE_DIR, 'memory', 'sessions')
@@ -22,6 +61,7 @@ def create_session_template(date_str: str) -> str:
         f"SESSION: {date_str}\n"
         f"AGENT: \n"
         f"DURATION: \n"
+        f"現在地: \n"
         f"\n"
         f"## うまくいったアプローチ\n"
         f"\n"
@@ -104,13 +144,13 @@ def append_checkpoint(session_file: str, label: str, summary: str) -> None:
         ensure_session_initialized(session_file, date_str)
 
     ts = datetime.now(timezone.utc).isoformat()
-    # --> を '-- >' に置換して <!-- C3:SESSION:JSON ... --> ブロックの破壊を防ぐ
+    # body（summary）は複数行 Markdown を保持するため sanitize_value を適用しない（plan-report §3.2）。
+    # --> 置換 + 制御文字なし（summary は信頼済み内部生成 or ユーザー入力の短文のみ）。
     body = summary.strip().replace('-->', '-- >')
     # label のサニタイズ（ターミナルインジェクション対策 + HTML コメントブロック保護）:
-    # - \x00-\x08, \x0b-\x0c, \x0e-\x1f: 制御文字を除去（\n=\x0a と \t=\x09 は保持）
-    # - --> を '-- >' に置換して <!-- C3:SESSION:JSON ... --> ブロックの破壊を防ぐ
-    sanitized_label = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f]', '', label)
-    sanitized_label = sanitized_label.replace('-->', '-- >')
+    # sanitize_value() を共通関数として使用（SR M-1 / CR M-02）。
+    # DEL(\x7f) / C1(\x80-\x9f) / U+2028/U+2029 も除去する（旧 regex より範囲拡張）。
+    sanitized_label = sanitize_value(label)
     block = (
         f"\n"
         f"## [Checkpoint: {sanitized_label} - {ts}]\n"
