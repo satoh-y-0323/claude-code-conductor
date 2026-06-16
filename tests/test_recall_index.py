@@ -1,9 +1,8 @@
 """Tests for src/c3/recall_index.py.
 
-The HNSW-backed tests require the ``hnswlib`` package (shipped via the
-``chroma-hnswlib`` dependency). They run with synthetic float vectors so
-no model weights are downloaded and they are fast enough to stay in the
-default suite.
+The RecallIndex backend uses numpy brute-force cosine search (no compiled
+extension required). Tests use synthetic float vectors so no model weights
+are downloaded and they are fast enough to stay in the default suite.
 """
 
 from __future__ import annotations
@@ -27,8 +26,6 @@ from c3.recall_index import (
     is_stale,
     snippet_of,
     warn_if_stale,
-    _hnsw_save,
-    _hnsw_load,
 )
 
 
@@ -287,8 +284,9 @@ def test_get_vector_returns_stored_vector_after_build(index: RecallIndex) -> Non
     """get_vector(chunk_id) must return the exact vector stored at build time.
 
     After build(), each integer chunk id (0, 1, ...) must yield back the
-    original unit vector passed in.  We compare with pytest.approx because
-    hnswlib may apply minimal float normalisation internally.
+    original unit vector passed in. The numpy backend stores vectors as
+    float32 and returns list[float] via tolist(), so we allow a small
+    absolute tolerance.
     """
     a = _unit([1.0, 0.0, 0.0])
     b = _unit([0.0, 1.0, 0.0])
@@ -319,15 +317,12 @@ def test_get_vector_unknown_id_raises(index: RecallIndex) -> None:
     NOT testing the "index not yet built" path (that path raises RuntimeError
     with "has not been built" message; see test_get_vector_not_built_raises).
 
-    hnswlib raises RuntimeError for out-of-range ids; the exact message is
-    implementation-defined. We assert that *some* exception is raised so
-    an invalid id does NOT silently return a zero vector or None.
+    The numpy backend raises IndexError for out-of-range ids. We assert that
+    *some* exception is raised so an invalid id does NOT silently return a
+    zero vector or None.
     """
     index.build([(_record(chunk_id="c0"), _unit([1.0, 0.0, 0.0]))])
     # After build(), chunk id 0 is valid but 999 is not present in the index.
-    # hnswlib's exception type for an out-of-range id is implementation-defined,
-    # so we assert that *some* exception is raised (the docstring intent) rather
-    # than a self-contradictory tuple that ends in the Exception base class.
     with pytest.raises(Exception):
         index.get_vector(999)
 
@@ -335,10 +330,11 @@ def test_get_vector_unknown_id_raises(index: RecallIndex) -> None:
 def test_get_vector_not_built_raises_runtime_error(index: RecallIndex) -> None:
     """get_vector before build()/load() must raise RuntimeError with a clear message.
 
-    This test specifically covers the "index not built" path (``_index is None``),
-    which is distinct from the "built but unknown id" case tested above.
+    This test specifically covers the "index not built" path (``_index is None``
+    or equivalent uninitialized state), which is distinct from the "built but
+    unknown id" case tested above.
     """
-    # No build() or load() called — _index is None.
+    # No build() or load() called — internal state is uninitialized.
     with pytest.raises(RuntimeError, match="has not been built"):
         index.get_vector(0)
 
@@ -713,394 +709,391 @@ def test_collect_sources_skips_symlinks(tmp_path: Path) -> None:
     )
 
 
-# ----- _hnsw_save / _hnsw_load Windows non-ASCII path workaround (T1-B1) -----
-#
-# These tests verify the platform-aware detour logic introduced to work around
-# hnswlib's C-level fopen() silently failing on Windows non-ASCII paths.
-#
-# Cases 1-3 verify call routing (direct vs. tempfile detour).
-# Cases 4-5 verify error-handling behaviour (regression guard for G2-B1).
+# ----- numpy backend: cosine ranking correctness -----
 
 
-class TestHnswSaveNonWindowsUsesDirectCall:
-    """Case 1: Non-Windows always calls save_index directly, even for non-ASCII paths."""
+def test_cosine_ranking_returns_most_similar_first(index: RecallIndex) -> None:
+    """search() must return results ordered by cosine similarity (most similar first).
 
-    def test_hnsw_save_on_non_windows_uses_direct_call(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """On Linux/macOS, _hnsw_save must call index.save_index(str(path)) directly.
-
-        The tempfile detour is Windows-only; on other platforms hnswlib handles
-        non-ASCII paths natively via the OS.
-        """
-        hnswlib = pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        from unittest.mock import MagicMock
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "linux")
-
-        non_ascii_path = tmp_path / "テスト索引.hnsw"
-        mock_index = MagicMock()
-
-        _hnsw_save(mock_index, non_ascii_path)
-
-        mock_index.save_index.assert_called_once_with(str(non_ascii_path))
-
-
-class TestHnswSaveWindowsAsciiPathUsesDirectCall:
-    """Case 2: Windows + ASCII path calls save_index directly (no tempfile detour)."""
-
-    def test_hnsw_save_on_windows_with_ascii_path_uses_direct_call(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """On Windows with a pure-ASCII path, _hnsw_save must NOT use tempfile.
-
-        The tempfile detour adds overhead and is only justified for non-ASCII
-        paths where hnswlib's C fopen() would silently fail.
-        """
-        hnswlib = pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        from unittest.mock import MagicMock
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
-
-        ascii_path = tmp_path / "recall.hnsw"
-        mock_index = MagicMock()
-
-        _hnsw_save(mock_index, ascii_path)
-
-        mock_index.save_index.assert_called_once_with(str(ascii_path))
-
-
-class TestHnswSaveWindowsNonAsciiPathUsesTempfile:
-    """Case 3: Windows + non-ASCII path must route through an ASCII tempfile."""
-
-    def test_hnsw_save_on_windows_with_non_ascii_path_uses_tempfile(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """On Windows with a non-ASCII path, _hnsw_save must call save_index with an
-        ASCII-only tempfile path, then copy the result to the real destination.
-
-        The argument passed to save_index must be ASCII-only (hnswlib C fopen safe).
-        """
-        hnswlib = pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        import shutil
-        from unittest.mock import MagicMock, patch
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
-
-        non_ascii_path = tmp_path / "日本語パス" / "recall.hnsw"
-        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
-
-        mock_index = MagicMock()
-
-        # Intercept shutil.copy2 so the test does not require the tempfile to
-        # actually contain valid HNSW data.
-        with patch.object(recall_mod.shutil, "copy2"):
-            _hnsw_save(mock_index, non_ascii_path)
-
-        # save_index must have been called with a path that is ASCII-only.
-        assert mock_index.save_index.call_count == 1
-        actual_path_arg = mock_index.save_index.call_args[0][0]
-        assert actual_path_arg.isascii(), (
-            f"save_index was called with non-ASCII path {actual_path_arg!r}; "
-            "expected an ASCII-only tempfile path"
-        )
-        # The ASCII tmp path must differ from the real (non-ASCII) destination.
-        assert actual_path_arg != str(non_ascii_path)
-
-
-class TestHnswSaveTempfileCleanupFailureLogsWarning:
-    """regression guard for G2-B1: unlink failure during tempfile cleanup emits a stderr warning.
-
-    Verifies that the finally block logs a warning to stderr instead of
-    silently swallowing the OSError when tmp.unlink() fails.
+    Given a set of known orthogonal unit vectors, the query that matches one
+    exactly must appear first with distance ≈ 0.0. The remaining results must
+    appear in ascending distance order (distance = 1 - cosine_sim).
     """
+    # Three orthogonal unit vectors in 3-D space.
+    a = [1.0, 0.0, 0.0]
+    b = [0.0, 1.0, 0.0]
+    c = [0.0, 0.0, 1.0]
+    index.build(
+        [
+            (_record(chunk_id="A"), a),
+            (_record(chunk_id="B"), b),
+            (_record(chunk_id="C"), c),
+        ]
+    )
 
-    def test_hnsw_save_tempfile_cleanup_failure_logs_warning(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """When tmp.unlink() raises OSError, _hnsw_save must log a warning to stderr.
+    # Query identical to vector A — must come first with distance ≈ 0.
+    results = index.search(a, top_k=3)
+    assert len(results) == 3
+    chunk_ids = [r[2].chunk_id for r in results]
+    assert chunk_ids[0] == "A", f"expected A first, got {chunk_ids}"
+    assert results[0][1] == pytest.approx(0.0, abs=1e-5), (
+        f"distance for identical vector must be ≈ 0.0, got {results[0][1]}"
+    )
 
-        The warning must mention that the temporary file could not be removed
-        (e.g. contain the word 'warn' or 'cleanup' or 'temp' case-insensitively).
-        """
-        hnswlib = pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        import shutil
-        from unittest.mock import MagicMock, patch
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
-
-        non_ascii_path = tmp_path / "テスト" / "recall.hnsw"
-        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
-
-        mock_index = MagicMock()
-
-        # Simulate unlink() failure by patching Path.unlink on the tmp path.
-        # We patch shutil.copy2 to avoid needing valid HNSW data, and patch
-        # Path.unlink to raise OSError unconditionally.
-        original_unlink = recall_mod.Path.unlink
-
-        def failing_unlink(self, missing_ok=False):
-            raise OSError("simulated cleanup failure")
-
-        with (
-            patch.object(recall_mod.shutil, "copy2"),
-            patch.object(recall_mod.Path, "unlink", failing_unlink),
-        ):
-            _hnsw_save(mock_index, non_ascii_path)
-
-        captured = capsys.readouterr()
-        assert captured.err, (
-            "_hnsw_save must emit a warning to stderr when tmp cleanup fails, "
-            "but stderr was empty"
-        )
-        lower_err = captured.err.lower()
-        assert any(kw in lower_err for kw in ("warn", "cleanup", "temp", "unlink", "tmp")), (
-            f"stderr warning {captured.err!r} does not mention cleanup failure"
+    # All distances must be non-negative and in ascending order.
+    distances = [r[1] for r in results]
+    for i in range(len(distances) - 1):
+        assert distances[i] <= distances[i + 1] + 1e-6, (
+            f"results not sorted by distance: {distances}"
         )
 
+    # Query that is equidistant from B and C but closest to A — only A is exact.
+    diagonal = _unit([1.0, 0.5, 0.5])
+    results2 = index.search(diagonal, top_k=1)
+    assert results2[0][2].chunk_id == "A", (
+        f"diagonal query closest to A, got {results2[0][2].chunk_id}"
+    )
 
-class TestHnswSaveHidesTempPathOnHnswlibError:
-    """regression guard for G2-B1: hnswlib exceptions must not expose the internal tempfile path.
 
-    Verifies that when save_index raises, the re-raised exception message contains
-    the real destination path (or a generic message) but never the internal ASCII
-    tempfile path used as a workaround.
+def test_search_distance_equals_one_minus_cosine_sim(index: RecallIndex) -> None:
+    """distance returned by search() must equal 1 - cosine_similarity.
+
+    This verifies the contract consumed by cli_recall.py: score = 1.0 - distance.
     """
-
-    def test_hnsw_save_hides_temp_path_on_hnswlib_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When save_index raises, the re-raised exception must NOT contain the
-        internal ASCII tempfile path in its message.
-
-        The caller should see the real destination path (or a generic message)
-        but never the implementation-detail tmp path that was used internally.
-        """
-        hnswlib = pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        import shutil
-        from unittest.mock import MagicMock, patch
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
-
-        non_ascii_path = tmp_path / "日本語" / "recall.hnsw"
-        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
-
-        captured_tmp_path: list[str] = []
-
-        def spy_save_index(path_str: str) -> None:
-            captured_tmp_path.append(path_str)
-            raise RuntimeError(f"hnswlib internal error writing to {path_str}")
-
-        mock_index = MagicMock()
-        mock_index.save_index.side_effect = spy_save_index
-
-        with pytest.raises(Exception) as exc_info:
-            _hnsw_save(mock_index, non_ascii_path)
-
-        assert captured_tmp_path, "save_index was not called; test setup is wrong"
-        tmp_path_str = captured_tmp_path[0]
-
-        error_message = str(exc_info.value)
-        assert tmp_path_str not in error_message, (
-            f"Exception message {error_message!r} leaks the internal tempfile path "
-            f"{tmp_path_str!r}. _hnsw_save must wrap the exception and hide the tmp path."
-        )
-
-
-# ----- _hnsw_load Windows non-ASCII path workaround (T1-B1 load-side) -----
-#
-# These tests are regression guards for the platform-aware load detour mirroring
-# the _hnsw_save logic.  The implementation in _hnsw_load already satisfies all
-# five cases, so these tests should PASS (verify guard).
-
-
-class TestHnswLoadNonWindowsUsesDirectCall:
-    """regression guard for _hnsw_load: non-Windows calls load_index directly."""
-
-    def test_hnsw_load_non_windows_uses_direct_call(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """regression guard for _hnsw_load non-ASCII path on Linux/macOS.
-
-        On non-Windows, _hnsw_load must call index.load_index(str(path)) directly
-        without tempfile indirection, even for non-ASCII paths.
-        """
-        pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        from unittest.mock import MagicMock
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "linux")
-
-        non_ascii_path = tmp_path / "テスト索引.hnsw"
-        # The file does not need to exist because load_index is mocked.
-        mock_index = MagicMock()
-
-        _hnsw_load(mock_index, non_ascii_path)
-
-        mock_index.load_index.assert_called_once_with(str(non_ascii_path))
-
-
-class TestHnswLoadWindowsAsciiPathUsesDirectCall:
-    """regression guard for _hnsw_load: Windows + ASCII path calls load_index directly."""
-
-    def test_hnsw_load_windows_with_ascii_path_uses_direct_call(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """regression guard for _hnsw_load ASCII path on Windows.
-
-        On Windows with a pure-ASCII path, _hnsw_load must NOT use the tempfile
-        detour; load_index must be called with the original path string.
-        """
-        pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        from unittest.mock import MagicMock
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
-
-        ascii_path = tmp_path / "recall.hnsw"
-        mock_index = MagicMock()
-
-        _hnsw_load(mock_index, ascii_path)
-
-        mock_index.load_index.assert_called_once_with(str(ascii_path))
-
-
-class TestHnswLoadWindowsNonAsciiPathUsesTempfile:
-    """regression guard for _hnsw_load: Windows + non-ASCII path routes through ASCII tempfile."""
-
-    def test_hnsw_load_windows_with_non_ascii_path_uses_tempfile(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """regression guard for _hnsw_load non-ASCII path tempfile detour on Windows.
-
-        On Windows with a non-ASCII source path, _hnsw_load must call load_index
-        with an ASCII-only tempfile path, not the original non-ASCII path.
-        """
-        pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        from unittest.mock import MagicMock, patch
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
-
-        non_ascii_path = tmp_path / "日本語パス" / "recall.hnsw"
-        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
-        # Create a dummy file so shutil.copy2 (if not patched) doesn't fail.
-        non_ascii_path.write_bytes(b"\x00")
-
-        mock_index = MagicMock()
-
-        with patch.object(recall_mod.shutil, "copy2"):
-            _hnsw_load(mock_index, non_ascii_path)
-
-        assert mock_index.load_index.call_count == 1
-        actual_path_arg = mock_index.load_index.call_args[0][0]
-        assert actual_path_arg.isascii(), (
-            f"load_index was called with non-ASCII path {actual_path_arg!r}; "
-            "expected an ASCII-only tempfile path"
-        )
-        assert actual_path_arg != str(non_ascii_path)
-
-
-class TestHnswLoadTempfileCleanupFailureLogsWarning:
-    """regression guard for _hnsw_load: unlink failure during cleanup emits stderr warning."""
-
-    def test_hnsw_load_tempfile_cleanup_failure_logs_warning(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """regression guard for _hnsw_load cleanup-failure warning.
-
-        When tmp.unlink() raises OSError, _hnsw_load must emit a warning to stderr
-        instead of silently swallowing the error, so operators can detect temp-
-        directory leaks.
-        """
-        pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        from unittest.mock import MagicMock, patch
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
-
-        non_ascii_path = tmp_path / "テスト" / "recall.hnsw"
-        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
-        non_ascii_path.write_bytes(b"\x00")
-
-        mock_index = MagicMock()
-
-        def failing_unlink(self, missing_ok=False):
-            raise OSError("simulated cleanup failure")
-
-        with (
-            patch.object(recall_mod.shutil, "copy2"),
-            patch.object(recall_mod.Path, "unlink", failing_unlink),
-        ):
-            _hnsw_load(mock_index, non_ascii_path)
-
-        captured = capsys.readouterr()
-        assert captured.err, (
-            "_hnsw_load must emit a warning to stderr when tmp cleanup fails, "
-            "but stderr was empty"
-        )
-        lower_err = captured.err.lower()
-        assert any(kw in lower_err for kw in ("warn", "cleanup", "temp", "unlink", "tmp")), (
-            f"stderr warning {captured.err!r} does not mention cleanup failure"
-        )
-
-
-class TestHnswLoadHidesTempPathOnHnswlibError:
-    """regression guard for _hnsw_load: hnswlib exceptions must not expose the internal temp path."""
-
-    def test_hnsw_load_hides_temp_path_on_hnswlib_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """regression guard for _hnsw_load exception message does not leak tmp path.
-
-        When load_index raises, the re-raised exception must NOT contain the
-        internal ASCII tempfile path in its message.  The caller should see the
-        real destination filename (or a generic message) but never the
-        implementation-detail tmp path used internally.
-        """
-        pytest.importorskip("hnswlib")
-
-        import c3.recall_index as recall_mod
-        from unittest.mock import MagicMock, patch
-
-        monkeypatch.setattr(recall_mod.sys, "platform", "win32")
-
-        non_ascii_path = tmp_path / "日本語" / "recall.hnsw"
-        non_ascii_path.parent.mkdir(parents=True, exist_ok=True)
-        non_ascii_path.write_bytes(b"\x00")
-
-        captured_tmp_path: list[str] = []
-
-        def spy_load_index(path_str: str, **kwargs: object) -> None:
-            captured_tmp_path.append(path_str)
-            raise RuntimeError(f"hnswlib internal error reading from {path_str}")
-
-        mock_index = MagicMock()
-        mock_index.load_index.side_effect = spy_load_index
-
-        with patch.object(recall_mod.shutil, "copy2"):
-            with pytest.raises(Exception) as exc_info:
-                _hnsw_load(mock_index, non_ascii_path)
-
-        assert captured_tmp_path, "load_index was not called; test setup is wrong"
-        tmp_path_str = captured_tmp_path[0]
-
-        error_message = str(exc_info.value)
-        assert tmp_path_str not in error_message, (
-            f"Exception message {error_message!r} leaks the internal tempfile path "
-            f"{tmp_path_str!r}. _hnsw_load must wrap the exception and hide the tmp path."
-        )
+    a = [1.0, 0.0, 0.0]
+    b = [0.5, 0.5, 0.0]  # not unit — raw storage, normalized at search time
+    index.build(
+        [
+            (_record(chunk_id="A"), a),
+            (_record(chunk_id="B"), b),
+        ]
+    )
+
+    query = _unit([1.0, 0.0, 0.0])
+    results = index.search(query, top_k=2)
+
+    for chunk_id_int, dist, record in results:
+        if record.chunk_id == "A":
+            # Exact match: cosine_sim = 1.0, distance = 0.0
+            assert dist == pytest.approx(0.0, abs=1e-5)
+        elif record.chunk_id == "B":
+            # cosine_sim(query=[1,0,0], b=[0.5,0.5,0]) = 0.5 / sqrt(0.5)
+            import math as _math
+            norm_b = _math.sqrt(0.5 * 0.5 + 0.5 * 0.5)
+            expected_sim = 0.5 / norm_b  # ≈ 0.7071
+            expected_dist = 1.0 - expected_sim
+            assert dist == pytest.approx(expected_dist, abs=1e-4), (
+                f"distance {dist} does not match 1-cosine_sim {expected_dist}"
+            )
+
+
+# ----- numpy backend: load() returns False for legacy hnswlib binary -----
+
+
+def test_load_returns_false_for_legacy_hnswlib_binary(tmp_path: Path) -> None:
+    """load() must return False (not raise) when the index file is not a valid numpy array.
+
+    After upgrading from hnswlib to numpy backend, existing index files contain
+    hnswlib binary data that np.load() cannot parse. The load() method must catch
+    the parse error and return False so that cli_recall can fall back to a full
+    rebuild rather than crashing.
+    """
+    index_path = tmp_path / "recall.hnsw"
+    meta_path = tmp_path / "recall_meta.json"
+
+    # Write a syntactically valid meta so load() reaches the np.load() step.
+    valid_meta = {
+        "model": "test-model",
+        "dim": 3,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "rebuilt_at": "2026-01-01T00:00:00+00:00",
+        "next_id": 0,
+        "chunks": {},
+    }
+    meta_path.write_text(json.dumps(valid_meta), encoding="utf-8")
+
+    # Write a non-numpy binary payload (mimics a legacy hnswlib binary index).
+    index_path.write_bytes(b"\x00\x01garbage not a numpy array")
+
+    ri = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=3,
+    )
+
+    result = ri.load()
+    assert result is False, (
+        f"load() must return False for non-numpy index file, got {result!r}"
+    )
+
+
+# ----- numpy backend: empty index and top_k > N -----
+
+
+def test_search_on_empty_build_returns_empty_list(index: RecallIndex) -> None:
+    """search() on an index built with zero items must return an empty list."""
+    index.build([])
+    result = index.search([1.0, 0.0, 0.0])
+    assert result == [], f"expected [], got {result!r}"
+
+
+def test_search_top_k_larger_than_corpus_returns_all(index: RecallIndex) -> None:
+    """When top_k exceeds the number of indexed items, return all items (not top_k).
+
+    The result length must equal the actual corpus size, not top_k, and must not
+    raise an exception.
+    """
+    items = [
+        (_record(chunk_id="A"), _unit([1.0, 0.0, 0.0])),
+        (_record(chunk_id="B"), _unit([0.0, 1.0, 0.0])),
+    ]
+    index.build(items)
+
+    results = index.search([1.0, 0.0, 0.0], top_k=100)
+    assert len(results) == 2, (
+        f"expected 2 results (corpus size), got {len(results)}"
+    )
+
+
+# ----- load() rejects malformed npy shapes (H-01 / SR M-1) -----
+
+
+def _valid_meta(dim: int, model: str = "test-model") -> dict:
+    """Return a minimal valid recall_meta.json payload for the given dim."""
+    return {
+        "model": model,
+        "dim": dim,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "rebuilt_at": "2026-01-01T00:00:00+00:00",
+        "next_id": 0,
+        "chunks": {},
+    }
+
+
+def _write_npy(path: Path, arr: "np.ndarray") -> None:
+    """Save a numpy array to *path* using file-object form (same as RecallIndex.save)."""
+    import numpy as _np
+
+    with open(path, "wb") as f:
+        _np.save(f, arr)
+
+
+def test_load_returns_false_for_1d_npy(tmp_path: Path) -> None:
+    """load() must return False when the npy file contains a 1-D array.
+
+    A valid numpy array with ndim=1 is syntactically loadable but not a valid
+    index matrix (which must be 2-D with shape (N, dim)). load() must detect
+    the shape mismatch and return False instead of leaving a broken internal
+    state or raising.
+    """
+    import numpy as _np
+
+    dim = 3
+    index_path = tmp_path / "recall.hnsw"
+    meta_path = tmp_path / "recall_meta.json"
+    meta_path.write_text(json.dumps(_valid_meta(dim)), encoding="utf-8")
+    _write_npy(index_path, _np.ones(dim, dtype=_np.float32))  # 1-D shape (dim,)
+
+    ri = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=dim,
+    )
+    result = ri.load()
+    assert result is False, (
+        f"load() must return False for 1-D npy array, got {result!r}"
+    )
+
+
+def test_load_returns_false_for_0d_npy(tmp_path: Path) -> None:
+    """load() must return False when the npy file contains a 0-D (scalar) array.
+
+    np.array(1.0) produces a valid npy file but shape=(), which is not a valid
+    index matrix. load() must detect this and return False.
+    """
+    import numpy as _np
+
+    dim = 3
+    index_path = tmp_path / "recall.hnsw"
+    meta_path = tmp_path / "recall_meta.json"
+    meta_path.write_text(json.dumps(_valid_meta(dim)), encoding="utf-8")
+    _write_npy(index_path, _np.array(1.0, dtype=_np.float32))  # 0-D scalar
+
+    ri = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=dim,
+    )
+    result = ri.load()
+    assert result is False, (
+        f"load() must return False for 0-D npy array, got {result!r}"
+    )
+
+
+def test_load_returns_false_for_3d_npy(tmp_path: Path) -> None:
+    """load() must return False when the npy file contains a 3-D array.
+
+    A 3-D array (e.g. shape (2, dim, 4)) is a valid numpy file but is not an
+    index matrix. load() must detect ndim != 2 and return False.
+    """
+    import numpy as _np
+
+    dim = 3
+    index_path = tmp_path / "recall.hnsw"
+    meta_path = tmp_path / "recall_meta.json"
+    meta_path.write_text(json.dumps(_valid_meta(dim)), encoding="utf-8")
+    _write_npy(index_path, _np.ones((2, dim, 4), dtype=_np.float32))  # 3-D
+
+    ri = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=dim,
+    )
+    result = ri.load()
+    assert result is False, (
+        f"load() must return False for 3-D npy array, got {result!r}"
+    )
+
+
+def test_load_returns_false_for_wrong_column_count(tmp_path: Path) -> None:
+    """load() must return False when the npy shape[1] does not match dim.
+
+    A 2-D array with shape (N, dim+1) is structurally a matrix but the column
+    count is inconsistent with the RecallIndex.dim setting. load() must detect
+    this mismatch and return False rather than leaving a silently broken index
+    that would corrupt search results.
+    """
+    import numpy as _np
+
+    dim = 3
+    index_path = tmp_path / "recall.hnsw"
+    meta_path = tmp_path / "recall_meta.json"
+    meta_path.write_text(json.dumps(_valid_meta(dim)), encoding="utf-8")
+    _write_npy(
+        index_path,
+        _np.ones((2, dim + 1), dtype=_np.float32),  # 2-D but wrong column count
+    )
+
+    ri = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=dim,
+    )
+    result = ri.load()
+    assert result is False, (
+        f"load() must return False for 2-D npy with wrong column count (dim mismatch), "
+        f"got {result!r}"
+    )
+
+
+def test_load_emits_stderr_on_parse_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """load() must write a failure reason to stderr when returning False due to a parse error.
+
+    When load() returns False because np.load() fails (e.g. legacy hnswlib
+    binary), it must emit a message to stderr containing '[recall] index load
+    failed' so that the operator can diagnose the rebuild trigger without
+    reading internal paths.
+    """
+    index_path = tmp_path / "recall.hnsw"
+    meta_path = tmp_path / "recall_meta.json"
+    meta_path.write_text(json.dumps(_valid_meta(3)), encoding="utf-8")
+    # Non-numpy binary triggers a parse error in np.load().
+    index_path.write_bytes(b"\x00\x01garbage not a numpy array")
+
+    ri = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=3,
+    )
+    result = ri.load()
+    assert result is False
+
+    captured = capsys.readouterr()
+    assert "[recall] index load failed" in captured.err, (
+        f"Expected '[recall] index load failed' in stderr, got: {captured.err!r}"
+    )
+
+
+def test_load_emits_stderr_on_shape_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """load() must write a failure reason to stderr when returning False due to a shape error.
+
+    When load() returns False because the loaded array has a wrong shape (1-D,
+    0-D, 3-D, or wrong column count), it must emit a message to stderr
+    containing '[recall] index load failed' with a brief description of the
+    shape problem. This enables operators to distinguish shape errors from
+    binary parse errors in logs.
+    """
+    import numpy as _np
+
+    dim = 3
+    index_path = tmp_path / "recall.hnsw"
+    meta_path = tmp_path / "recall_meta.json"
+    meta_path.write_text(json.dumps(_valid_meta(dim)), encoding="utf-8")
+    _write_npy(index_path, _np.ones(dim, dtype=_np.float32))  # 1-D, triggers shape check
+
+    ri = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=dim,
+    )
+    result = ri.load()
+    assert result is False
+
+    captured = capsys.readouterr()
+    assert "[recall] index load failed" in captured.err, (
+        f"Expected '[recall] index load failed' in stderr, got: {captured.err!r}"
+    )
+
+
+# ----- numpy backend: non-ASCII path save/load roundtrip -----
+
+
+def test_save_load_roundtrip_non_ascii_path(tmp_path: Path) -> None:
+    """save() and load() must succeed on a path containing non-ASCII characters.
+
+    The numpy backend uses file-object-based np.save/np.load (not passing path
+    strings to C extensions), so non-ASCII paths must work transparently on all
+    platforms including Windows.
+    """
+    non_ascii_dir = tmp_path / "日本語"
+    non_ascii_dir.mkdir()
+    index_path = non_ascii_dir / "recall.hnsw"
+    meta_path = non_ascii_dir / "recall_meta.json"
+
+    idx = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=3,
+    )
+    items = [
+        (_record(chunk_id="X"), _unit([1.0, 0.0, 0.0])),
+        (_record(chunk_id="Y"), _unit([0.0, 1.0, 0.0])),
+    ]
+    idx.build(items)
+    idx.save()
+
+    fresh = RecallIndex(
+        index_path=index_path,
+        meta_path=meta_path,
+        model_name="test-model",
+        dim=3,
+    )
+    assert fresh.load() is True, "load() must succeed for non-ASCII path"
+    assert fresh.chunk_count() == 2
+
+    results = fresh.search(_unit([1.0, 0.0, 0.0]), top_k=1)
+    assert results[0][2].chunk_id == "X", (
+        f"expected chunk X to be nearest, got {results[0][2].chunk_id}"
+    )

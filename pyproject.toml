@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
     "PyYAML>=6.0",
     "duckdb>=0.10",
-    "chroma-hnswlib>=0.7.6",
+    "numpy>=1.22",
     "fastembed>=0.8.0",
 ]
 

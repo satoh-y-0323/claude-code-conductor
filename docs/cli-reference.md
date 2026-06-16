@@ -93,19 +93,19 @@ c3 plan waves    <plan-report>        # wave 分解結果を JSON 出力
 
 ## `c3 recall` — 意味検索 (v2.10.0+)
 
-過去のセッション・エージェント学習データ・レポートアーカイブ・パターンを HNSW + 多言語 embedding で意味検索する。fastembed + `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`（384 次元、約 220MB、Apache-2.0）を使用。
+過去のセッション・エージェント学習データ・レポートアーカイブ・パターンを numpy ベクトル検索 + 多言語 embedding で意味検索する。fastembed + `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`（384 次元、約 220MB、Apache-2.0）を使用。
 
 ```bash
 c3 recall search "<query>" [--top N] [--source SOURCE] [--min-score F] [--json]
 c3 recall "<query>"                 # search の省略形
-c3 recall rebuild [--force]         # HNSW インデックスを再構築
+c3 recall rebuild [--force]         # numpy ベクトル検索インデックスを再構築
 c3 recall stats [--json]            # チャンク数・モデル名・最終 rebuild 日時を表示
 ```
 
 | サブコマンド | 主なオプション | 内容 |
 |---|---|---|
 | `search` | `--top` (既定 5) / `--source` (sessions/agent-memory/reports/patterns/all) / `--min-score` (既定 0.3) / `--json` | 類似チャンク上位 N 件を返却 |
-| `rebuild` | `--force` / `--source` | 全ソースを再 embedding し HNSW インデックスを atomic write |
+| `rebuild` | `--force` / `--source` | 全ソースを再 embedding し numpy ベクトル検索インデックスを atomic write |
 | `stats` | `--json` | チャンク数・ソース別内訳・モデル名・index ファイルサイズ |
 
 初回 `c3 recall rebuild` 時に fastembed がモデル（~220MB）を `~/.cache/fastembed/` にダウンロードする。オフライン環境では `FASTEMBED_CACHE_PATH` を社内ミラーに向ける。

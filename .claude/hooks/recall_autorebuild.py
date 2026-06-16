@@ -97,11 +97,14 @@ def find_repo_root() -> Path | None:
 
 
 def index_exists(repo_root: Path) -> bool:
-    """Return True if the recall HNSW index file exists.
+    """Return True if the recall index file (``recall.hnsw``) exists.
+
+    歴史的経緯でファイル名は ``.hnsw`` を維持しているが、中身は numpy ndarray
+    (``.npy`` ペイロード, shape (N, dim) float32) であり HNSW ではない。
 
     Only ``recall.hnsw`` is checked — not ``recall_meta.json`` — because
     this hook's purpose is to trigger a rebuild when the index is stale.
-    If the binary index is present (even without a metadata sidecar),
+    If the index file is present (even without a metadata sidecar),
     the stale check in ``index_is_stale_fast`` is meaningful and we should
     proceed.  ``recall_inject`` checks both files because it needs a valid
     meta to run a search; we do not run a search here.

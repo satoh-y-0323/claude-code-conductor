@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: inject semantically-similar past context (α design).
 
-The hook runs ``c3 recall search`` against the local HNSW index and
+The hook runs ``c3 recall search`` against the recall index (numpy cosine search) and
 returns the top hits as ``additionalContext`` for the parent Claude to
 consider. The preface explicitly asks Claude to evaluate the relevance
 of each hit and ignore unrelated ones — i.e. *AI judges, hook does not

@@ -6,7 +6,7 @@ allowed-tools: Bash, Read
 
 # recall
 
-`c3 recall` の HNSW + 多言語 embedding（`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`）に基づき、
+`c3 recall` の numpy ベクトル検索 + 多言語 embedding（`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`）に基づき、
 `.claude/memory/sessions/`・`.claude/agent-memory/`・`.claude/reports/archive/`・
 `.claude/memory/patterns.json` から類似情報を意味検索する。
 

@@ -137,7 +137,7 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | `/doc` | ドキュメントをヒアリングして生成（mermaid 図・README・API 仕様書など） |
 | `/mcp-config` | MCP サーバーの追加・一覧・削除（プロジェクトスコープ） |
 | `/extract-lib` | 複数プロジェクトのコードを横断解析し、共通処理をライブラリとして設計・生成 |
-| `/recall` | 過去のセッション・レポート・パターンから類似情報を意味検索（HNSW + 多言語 embedding） |
+| `/recall` | 過去のセッション・レポート・パターンから類似情報を意味検索（numpy ベクトル検索 + 多言語 embedding） |
 | `/brainstorm` | 仕事・設計の相談を、資料（PDF/画像）を読み込んだ上で気軽に発散・壁打ち。視点・選択肢・論点を増やす方向（grill＝詰めるとは逆）（v2.29.0〜） |
 
 ### ターミナルで使う `c3` CLI（PyPI インストール時）
@@ -153,7 +153,7 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | `c3 plan validate <plan-report>` | plan-report の YAML フロントマターと agent 存在を検証 |
 | `c3 plan waves <plan-report>` | plan-report の wave 分解結果を JSON で出力 |
 | `c3 recall search "<query>"` または `c3 recall "<query>"` | `.claude/memory/sessions/` 等から類似チャンクを意味検索 |
-| `c3 recall rebuild [--force]` | HNSW インデックスを再構築（初回は fastembed が ~220MB のモデルを取得） |
+| `c3 recall rebuild [--force]` | numpy ベクトル検索インデックスを再構築（初回は fastembed が ~220MB のモデルを取得） |
 | `c3 recall stats` | チャンク数・モデル名・最終 rebuild 日時を表示 |
 | `c3 tier stats` | tier-routing（複雑度に応じた Tier 自動ルーティング）の学習データ・Tier 別コスト・現在の routing パラメータ（λ/ε/escalation・v2.27.0〜）を表形式で表示（`--json` で機械可読出力・`--recent N` で直近 outcome 件数指定）。ルーティング挙動は環境変数 `C3_TIER_COST_LAMBDA`（cost-weighted の重み・`0 ≤ λ ≤ 5`・v2.26.0〜、上限拡張 v2.27.0）/ `C3_TIER_EPSILON` / `C3_ESCALATION_THRESHOLD` で調整可（[CLI リファレンス](https://satoh-y-0323.github.io/claude-code-conductor/cli-reference/)参照） |
 
@@ -373,7 +373,7 @@ C3 はセッションをまたいで作業状態を記憶します。
 
 | 依存 | ライセンス | 用途 |
 |---|---|---|
-| [chroma-hnswlib](https://github.com/chroma-core/hnswlib) | Apache-2.0 | HNSW 近傍検索インデックス |
+| [numpy](https://github.com/numpy/numpy) | BSD-3-Clause | recall のベクトル類似度検索（cosine ブルートフォース） |
 | [fastembed](https://github.com/qdrant/fastembed) | Apache-2.0 | embedding 生成ランタイム（ONNX ベース） |
 | [onnxruntime](https://github.com/microsoft/onnxruntime) | MIT | fastembed の推論バックエンド |
 | [sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) | Apache-2.0 | 多言語 embedding モデル（384 次元・約 220MB・約 50 言語対応） |

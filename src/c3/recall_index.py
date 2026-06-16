@@ -1,18 +1,21 @@
-"""HNSW index management for the ``c3 recall`` feature.
+"""numpy ベクトル索引（cosine ブルートフォース）による ``c3 recall`` 機能の索引管理。
 
-The module owns three concerns:
+歴史的経緯で索引ファイルは ``.hnsw`` 拡張子を持つが、
+中身は numpy の ``.npy`` ペイロード（ndarray shape (N, dim) float32）である。
+hnswlib から numpy ブルートフォース検索へ移行した際にファイル名を変えると
+配布先の hooks（recall_inject / recall_autorebuild）が無改修で動かなくなるため、
+拡張子のみ維持してペイロードだけ numpy に切り替えている。
 
-1. :class:`RecallIndex` — a thin wrapper around ``hnswlib.Index`` that
-   tracks per-chunk metadata in ``recall_meta.json``. All on-disk writes
-   are atomic (tempfile + ``os.replace``) so an interrupted save leaves
-   the previous good index intact.
-2. :func:`collect_sources` — walks the C3 ``.claude/`` directory and
-   yields :class:`SourceChunk` objects ready to be embedded.
-3. :func:`is_stale` — compares the newest source mtime against the
-   index mtime so the CLI can warn the user to rebuild.
+モジュールが担う 3 つの責務:
 
-The HNSW knobs (``M``, ``ef_construction``, ``ef``) match the values
-recommended in the feature design doc (``§3.1`` and ``§5.1``).
+1. :class:`RecallIndex` — numpy ndarray による cosine ブルートフォース検索と、
+   ``recall_meta.json`` へのメタデータ永続化。
+   全オンディスク書き込みはアトミック（tempfile + ``os.replace``）なので、
+   中断があっても直前の正常なインデックスが残る。
+2. :func:`collect_sources` — C3 の ``.claude/`` ディレクトリを走査し
+   :class:`SourceChunk` オブジェクトを返す。
+3. :func:`is_stale` — 最新ソースの mtime とインデックスの mtime を比較し、
+   CLI が再構築を促すかどうかを判断する。
 """
 
 from __future__ import annotations
@@ -20,21 +23,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import sys
-import tempfile
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-from c3.recall_chunker import chunk_markdown
+import numpy as np
 
-# HNSW build / query tuning. See design doc §3.1 and §5.1.
-HNSW_M = 16
-HNSW_EF_CONSTRUCTION = 200
-HNSW_EF_QUERY = 50
-HNSW_SPACE = "cosine"
+from c3.recall_chunker import chunk_markdown
 
 # Snippet length surfaced in search results / stored in recall_meta.
 SNIPPET_CHARS = 300
@@ -42,6 +40,9 @@ SNIPPET_CHARS = 300
 # Source kinds. ``"all"`` is the CLI convenience alias and never appears
 # in stored metadata.
 SOURCE_TYPES = ("session", "agent-memory", "report", "pattern")
+
+# Small epsilon used to avoid division-by-zero when normalising zero vectors.
+_NORM_EPS = 1e-10
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,13 @@ class IndexMeta:
 
 
 class RecallIndex:
-    """HNSW vector index + JSON metadata, both persisted to ``.claude/state/``."""
+    """numpy ブルートフォース cosine 索引 + JSON メタデータ。
+
+    索引ファイルは ``.claude/state/recall.hnsw``（拡張子は歴史的経緯で維持）に
+    numpy ndarray (N, dim) float32 として保存される。検索時は query と各行を
+    L2 正規化して cosine 類似度 = dot を計算し、``distance = 1 - similarity``
+    を返す。
+    """
 
     def __init__(
         self,
@@ -127,7 +134,8 @@ class RecallIndex:
         self.meta_path = Path(meta_path)
         self.model_name = model_name
         self.dim = dim
-        self._index = None  # populated lazily
+        self._vectors: np.ndarray | None = None  # shape (N, dim) float32; None before build/load
+        self._row_norms: np.ndarray | None = None  # shape (N,) float32; cached L2 norms
         self._meta = IndexMeta.empty(model=model_name, dim=dim)
 
     # ----- lifecycle -----
@@ -136,32 +144,34 @@ class RecallIndex:
         """Discard any existing index and rebuild from ``items`` in one shot.
 
         ``items`` is a sequence of ``(record, vector)`` pairs. IDs are
-        assigned sequentially starting from 0.
+        assigned sequentially starting from 0 (row index = chunk id).
+        Vectors are stored as-is (not normalised) to preserve fidelity
+        for :meth:`get_vector`.
         """
+        self._reset_meta()
+
         if not items:
-            self._reset_meta()
-            self._index = self._new_index(max_elements=max(1, len(items)))
+            # 空索引: _vectors を空の (0, dim) 配列にして「ビルド済み」状態を表す。
+            # search() は _meta.chunks が空であることで [] を返す。
+            self._vectors = np.empty((0, self.dim), dtype=np.float32)
+            self._row_norms = np.empty((0,), dtype=np.float32)
             return
 
         if any(len(v) != self.dim for _, v in items):
             raise ValueError(f"all vectors must have dim={self.dim}")
 
-        self._reset_meta()
-        self._index = self._new_index(max_elements=len(items))
-        ids: list[int] = []
         vecs: list[list[float]] = []
         for record, vec in items:
             new_id = self._meta.next_id
             self._meta.next_id += 1
-            ids.append(new_id)
             vecs.append(vec)
             # CR-M-04 / SR-L-5: ensure source_hash is populated.
-            # If the caller already computed a hash (e.g. from full content),
-            # keep it; otherwise derive from the stored snippet as a fallback.
             if not record.source_hash:
                 record.source_hash = content_hash(record.snippet)
             self._meta.chunks[str(new_id)] = record
-        self._index.add_items(vecs, ids)
+
+        self._vectors = np.asarray(vecs, dtype=np.float32)
+        self._row_norms = self._compute_norms(self._vectors)
         self._meta.rebuilt_at = _utcnow_iso()
 
     def search(
@@ -170,26 +180,60 @@ class RecallIndex:
         *,
         top_k: int = 5,
     ) -> list[tuple[int, float, ChunkRecord]]:
-        """Run k-NN search. Returns ``[(chunk_id, distance, record), ...]``.
+        """cosine ブルートフォース検索。``[(chunk_id, distance, record), ...]`` を返す。
 
-        ``distance`` is the cosine distance reported by hnswlib (smaller =
-        more similar). Callers convert to a ``score`` via ``1 - distance``.
+        ``distance = 1 - cosine_similarity``（小さいほど類似）。
+        呼び出し元は ``score = 1 - distance`` で類似度スコアに変換する
+        (``cli_recall.py:516`` の ``score = 1.0 - distance`` と整合)。
         """
-        if self._index is None or not self._meta.chunks:
+        if self._vectors is None or not self._meta.chunks:
             return []
         if len(query_vector) != self.dim:
             raise ValueError(f"query_vector must have dim={self.dim}")
+        if self._vectors.shape[0] == 0:
+            return []
 
-        k = min(top_k, self._index.get_current_count())
+        q = np.asarray(query_vector, dtype=np.float32)
+        qnorm = float(np.linalg.norm(q))
+        if qnorm < _NORM_EPS:
+            # ゼロベクトルのクエリ: 全距離を 1.0 とみなして先頭 top_k を返す
+            n = min(top_k, self._vectors.shape[0])
+            results: list[tuple[int, float, ChunkRecord]] = []
+            for row in range(n):
+                record = self._meta.chunks.get(str(row))
+                if record is not None:
+                    results.append((row, 1.0, record))
+            return results
+
+        q = q / qnorm
+
+        # cosine_sim = (M @ q) / row_norms  (ゼロノルム行は eps ガード)
+        assert self._row_norms is not None
+        safe_norms = np.where(self._row_norms < _NORM_EPS, _NORM_EPS, self._row_norms)
+        sims = (self._vectors @ q) / safe_norms  # shape (N,)
+
+        k = min(top_k, self._vectors.shape[0])
         if k <= 0:
             return []
-        labels, distances = self._index.knn_query([query_vector], k=k)
-        results: list[tuple[int, float, ChunkRecord]] = []
-        for label, dist in zip(labels[0], distances[0]):
-            record = self._meta.chunks.get(str(int(label)))
+
+        # np.argpartition で top_k 候補を取り出してから sim 降順ソート
+        if k < sims.shape[0]:
+            # argpartition は「上位 k 個」ではなく「最大 k 番目より大きい要素」を前半に集める
+            part_idx = np.argpartition(sims, -k)[-k:]
+        else:
+            part_idx = np.arange(sims.shape[0])
+
+        # sim 降順でソート
+        sorted_idx = part_idx[np.argsort(sims[part_idx])[::-1]]
+
+        results = []
+        for row in sorted_idx:
+            row_int = int(row)
+            record = self._meta.chunks.get(str(row_int))
             if record is None:
                 continue
-            results.append((int(label), float(dist), record))
+            dist = float(1.0 - sims[row_int])
+            results.append((row_int, dist, record))
         return results
 
     def stats(self) -> dict:
@@ -214,23 +258,29 @@ class RecallIndex:
     # ----- persistence -----
 
     def save(self) -> None:
-        """Atomically write ``recall.hnsw`` and ``recall_meta.json``.
+        """``recall.hnsw`` と ``recall_meta.json`` をアトミックに書き込む。
 
-        The HNSW file is written via ``hnswlib.save_index`` to a sibling
-        ``.tmp`` path and then ``os.replace``'d over the canonical name,
-        keeping the previous file as ``.bak``. The metadata JSON follows
-        the same pattern.
+        索引はファイルオブジェクト経由の ``np.save`` で書く（パス文字列を渡すと
+        ``.npy`` が付与されるため・Windows 非 ASCII パス対策も兼ねる）。
+        ``.tmp`` へ書いたあと ``_atomic_replace`` で確定し、直前のファイルを
+        ``.bak`` として残す。
         """
-        if self._index is None:
+        if self._vectors is None:
             raise RuntimeError("nothing to save; call build() first")
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
 
-        index_tmp = self.index_path.with_suffix(self.index_path.suffix + ".tmp")
-        # CR-E-002: clean up index_tmp if _hnsw_save raises, so a failed save
-        # never leaves a partial .tmp file on disk.
+        # [SR L-1] tmp パスを {name}.{pid}.{uuid4.hex}.tmp に一意化してプロセス間競合を防ぐ。
+        # cli_update._save_version_checkpoint と同じパターン。
+        _pid = os.getpid()
+        _uid = uuid.uuid4().hex
+        index_tmp = self.index_path.with_name(
+            f"{self.index_path.name}.{_pid}.{_uid}.tmp"
+        )
+        # CR-E-002: clean up index_tmp if np.save raises.
         try:
-            _hnsw_save(self._index, index_tmp)
+            with open(index_tmp, "wb") as f:
+                np.save(f, self._vectors)
         except Exception:
             try:
                 index_tmp.unlink(missing_ok=True)
@@ -239,7 +289,9 @@ class RecallIndex:
             raise
         _atomic_replace(index_tmp, self.index_path)
 
-        meta_tmp = self.meta_path.with_suffix(self.meta_path.suffix + ".tmp")
+        meta_tmp = self.meta_path.with_name(
+            f"{self.meta_path.name}.{_pid}.{_uid}.tmp"
+        )
         meta_tmp.write_text(
             json.dumps(self._meta.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -247,12 +299,20 @@ class RecallIndex:
         _atomic_replace(meta_tmp, self.meta_path)
 
     def load(self) -> bool:
-        """Load index + metadata from disk. Return ``False`` if not present."""
+        """索引 + メタデータをディスクから読み込む。不在の場合 ``False`` を返す。
+
+        ``np.load`` が失敗した場合（旧 hnswlib バイナリ等・形式不一致）や、
+        読み込んだ ndarray の形状が不正な場合（ndim != 2 または shape[1] != dim）は
+        例外を投げず ``False`` を返し、内部状態 (``_vectors`` / ``_row_norms`` / ``_meta``)
+        をリセットする。``cli_recall`` の全再構築フォールバックが自己修復として機能する。
+        dim / model 不一致は従来どおり ``RuntimeError`` を送出する（corrupt meta も同様）。
+        失敗時は ``sys.stderr`` に簡潔な失敗理由（例外型名またはシェイプ情報）を出力する。
+        内部パスは出力しない（SR-R-001 準拠）。
+        """
         if not self.meta_path.exists() or not self.index_path.exists():
             return False
         payload = json.loads(self.meta_path.read_text(encoding="utf-8"))
-        # SR-M-2: wrap deserialization errors so callers see a clear message
-        # instead of an unguarded TypeError / KeyError stack trace.
+        # SR-M-2: wrap deserialization errors so callers see a clear message.
         try:
             self._meta = IndexMeta.from_dict(payload)
         except (TypeError, KeyError, ValueError) as exc:
@@ -270,16 +330,44 @@ class RecallIndex:
                 f"on-disk index model={self._meta.model!r} does not match expected"
                 f" model={self.model_name!r}; run `c3 recall rebuild --force`"
             )
-        max_elements = max(1, len(self._meta.chunks))
-        # Construct a bare Index *without* init_index so that load_index
-        # does not log "Calling load_index for an already inited index"
-        # to stderr. hnswlib infers M / ef_construction from the saved
-        # file, so the only knob we need afterwards is the query ef.
-        import hnswlib  # noqa: PLC0415 — lazy so unit tests can mock
+        # [M-02/SR M-2] np.load に allow_pickle=False を明示（セキュリティ上の理由）。
+        # numpy 1.16.3 以降デフォルト False だが、将来の変更に対して明示で固定する。
+        # [M-02] except は (ValueError, OSError, EOFError) に絞り想定外例外は伝播させる。
+        # numpy の AxisError は ValueError のサブクラス（MRO: ValueError, IndexError）
+        # なので ValueError で捕捉される。MemoryError 等想定外は伝播してよい。
+        try:
+            with open(self.index_path, "rb") as f:
+                self._vectors = np.load(f, allow_pickle=False)
+        except (ValueError, OSError, EOFError) as exc:
+            # [SR L-2] 失敗理由を stderr に出す。内部パスは出さない（SR-R-001）。
+            print(
+                f"[recall] index load failed ({type(exc).__name__}), will rebuild",
+                file=sys.stderr,
+            )
+            # [L-04/L-05] _vectors / _row_norms / _meta を対称的にリセットする。
+            self._vectors = None
+            self._row_norms = None
+            self._meta = IndexMeta.empty(model=self.model_name, dim=self.dim)
+            return False
 
-        self._index = hnswlib.Index(space=HNSW_SPACE, dim=self.dim)
-        _hnsw_load(self._index, self.index_path, max_elements=max_elements)
-        self._index.set_ef(HNSW_EF_QUERY)
+        # [H-01/SR M-1] 形状バリデーション: ndim==2 かつ shape[1]==dim であること。
+        # np.load が成功しても 1D/0D/3D や列数不一致の ndarray は不正なインデックス。
+        # _compute_norms を try 外で呼ぶと AxisError (ValueError のサブクラス) が
+        # 呼び出し元に伝播してクラッシュするため、ここでガードする。
+        if self._vectors.ndim != 2 or self._vectors.shape[1] != self.dim:
+            shape_info = f"ndim={self._vectors.ndim}, shape={self._vectors.shape}"
+            print(
+                f"[recall] index load failed (shape mismatch: {shape_info},"
+                f" expected (N, {self.dim})), will rebuild",
+                file=sys.stderr,
+            )
+            # [L-04/L-05] 失敗時も内部状態を対称的にリセットする。
+            self._vectors = None
+            self._row_norms = None
+            self._meta = IndexMeta.empty(model=self.model_name, dim=self.dim)
+            return False
+
+        self._row_norms = self._compute_norms(self._vectors)
         return True
 
     # ----- accessors used by tests / CLI -----
@@ -292,34 +380,24 @@ class RecallIndex:
         return len(self._meta.chunks)
 
     def get_vector(self, chunk_id: int) -> list[float]:
-        """Return the stored vector for ``chunk_id`` as ``list[float]``.
+        """``chunk_id`` に対応する生ベクトルを ``list[float]`` で返す。
 
-        Raises ``RuntimeError`` if the index has not been built or loaded yet.
-        Propagates hnswlib's exception (typically ``RuntimeError`` or
-        ``IndexError``) when ``chunk_id`` is not present in the index.
+        未ビルド/未ロード時は ``RuntimeError``、
+        範囲外 id は ``IndexError`` を送出する。
         """
-        if self._index is None:
+        if self._vectors is None:
             raise RuntimeError(
                 "index has not been built or loaded; call build() or load() first"
             )
-        # hnswlib.get_items returns a 2-D array of shape (n, dim).
-        # We pass a single-element list and take the first row.
-        result = self._index.get_items([chunk_id])
-        return [float(x) for x in result[0]]
+        # numpy の IndexError をそのまま伝播させる
+        return self._vectors[chunk_id].tolist()
 
     # ----- internals -----
 
-    def _new_index(self, *, max_elements: int):
-        import hnswlib  # noqa: PLC0415 — lazy so unit tests can mock
-
-        index = hnswlib.Index(space=HNSW_SPACE, dim=self.dim)
-        index.init_index(
-            max_elements=max_elements,
-            ef_construction=HNSW_EF_CONSTRUCTION,
-            M=HNSW_M,
-        )
-        index.set_ef(HNSW_EF_QUERY)
-        return index
+    @staticmethod
+    def _compute_norms(vectors: np.ndarray) -> np.ndarray:
+        """各行の L2 ノルムを計算して shape (N,) の配列を返す。"""
+        return np.linalg.norm(vectors, axis=1).astype(np.float32)
 
     def _reset_meta(self) -> None:
         now = _utcnow_iso()
@@ -525,150 +603,15 @@ def _atomic_replace(src: Path, dst: Path) -> None:
     os.replace(src, dst)
 
 
-def _hnsw_save(index: Any, path: Path) -> None:
-    """Save via ASCII temp on Windows; hnswlib C fopen silently fails on non-ASCII paths.
-
-    On non-Windows or when ``path`` is already ASCII, ``save_index`` is called
-    directly without the tempfile indirection (performance path).
-
-    On Windows with a non-ASCII destination path:
-
-    1. ``tempfile.mkstemp`` creates a temp file under ``%TEMP%``.  The Windows
-       default ``%TEMP%`` is ``C:\\Users\\<user>\\AppData\\Local\\Temp``, which
-       is ASCII in the vast majority of installations.  We verify this assumption
-       explicitly and raise ``RuntimeError`` if it does not hold.
-    2. ``hnswlib`` writes to the ASCII temp path, then ``shutil.copy2`` moves the
-       bytes to the real (potentially non-ASCII) destination.
-    3. The temp file is removed in a ``finally`` block.  If removal fails, a
-       warning is emitted to ``sys.stderr`` instead of silently swallowing the
-       error, so operators can detect temp-directory leaks.
-    4. Any exception raised by ``hnswlib.save_index`` is caught and re-raised as
-       a ``RuntimeError`` whose message contains only the *destination* filename,
-       never the internal temp path (information hiding / SR-NEW).
-    """
-    if sys.platform != "win32" or str(path).isascii():
-        index.save_index(str(path))
-        return
-    fd, tmp_str = tempfile.mkstemp(suffix=".hnsw")
-    os.close(fd)
-    # M-2 / SR-V-002: verify that mkstemp returned an ASCII path.
-    # If TEMP/TMP is set to a non-ASCII directory this assumption breaks.
-    if not tmp_str.isascii():
-        try:
-            os.unlink(tmp_str)
-        except OSError:
-            pass
-        raise RuntimeError(
-            f"hnswlib workaround failed: TEMP path '{tmp_str}' contains non-ASCII "
-            "characters. Set TEMP/TMP to an ASCII-only path."
-        )
-    tmp = Path(tmp_str)
-    # L-5 / SR-K-002: restrict permissions to owner-only on POSIX.
-    # On Windows os.chmod is a no-op for most permission bits, so this is safe
-    # to call unconditionally.
-    # [N-4 SR-NEW] TOCTOU 攻撃面最小化:
-    # mkstemp 直後（save_index でファイルに書き込む前）にパーミッションを 0o600 に絞る。
-    # fd を close した後・ファイルパスが他プロセスから見える状態になった直後のタイミングで
-    # chmod することで「mkstemp → chmod → save_index → copy → unlink」のシーケンス全体を通じて
-    # 他ユーザーが読める時間窓を最小化する。
-    # Windows は POSIX 権限非対応のため os.chmod は例外を出さず silently 実行されるが
-    # パーミッションビットは変化しない（0o666 のまま）。POSIX では機能する。best-effort。
-    try:
-        os.chmod(tmp_str, 0o600)
-    except OSError:
-        pass  # Windows or non-POSIX FS — best-effort only
-    try:
-        # L-1 / SR-NEW: wrap hnswlib call and hide the internal tmp path from
-        # the raised exception to avoid leaking implementation details.
-        try:
-            index.save_index(tmp_str)
-        except Exception as e:
-            raise RuntimeError(
-                f"hnswlib save_index failed on '{path.name}': {type(e).__name__}"
-            ) from None
-        shutil.copy2(tmp, path)
-    finally:
-        # M-1 / SR-V-002: warn on cleanup failure instead of silently ignoring.
-        try:
-            tmp.unlink()
-        except OSError as e:
-            print(
-                f"[_hnsw_save] tmp cleanup failed: {tmp}: {e}",
-                file=sys.stderr,
-            )
-
-
-def _hnsw_load(index: Any, path: Path, **kwargs: Any) -> None:
-    """Load via ASCII temp on Windows; hnswlib C fopen silently fails on non-ASCII paths.
-
-    On non-Windows or when ``path`` is already ASCII, ``load_index`` is called
-    directly without the tempfile indirection (performance path).
-
-    On Windows with a non-ASCII source path:
-
-    1. ``shutil.copy2`` copies the file to an ASCII temp path under ``%TEMP%``.
-       The same ASCII-verification logic as :func:`_hnsw_save` applies — a
-       ``RuntimeError`` is raised if ``%TEMP%`` itself is non-ASCII.
-    2. ``hnswlib`` loads from the ASCII temp path.
-    3. The temp file is removed in a ``finally`` block with the same
-       stderr-warning-on-failure behaviour as :func:`_hnsw_save`.
-    4. Any exception raised by ``hnswlib.load_index`` is wrapped to hide the
-       internal temp path from callers.
-    """
-    if sys.platform != "win32" or str(path).isascii():
-        index.load_index(str(path), **kwargs)
-        return
-    fd, tmp_str = tempfile.mkstemp(suffix=".hnsw")
-    os.close(fd)
-    # M-2 / SR-V-002: verify ASCII assumption for the temp path.
-    if not tmp_str.isascii():
-        try:
-            os.unlink(tmp_str)
-        except OSError:
-            pass
-        raise RuntimeError(
-            f"hnswlib workaround failed: TEMP path '{tmp_str}' contains non-ASCII "
-            "characters. Set TEMP/TMP to an ASCII-only path."
-        )
-    tmp = Path(tmp_str)
-    # L-5 / SR-K-002: restrict permissions to owner-only on POSIX.
-    # [N-4 SR-NEW] TOCTOU 攻撃面最小化:
-    # mkstemp 直後（copy2 でファイルに書き込む前）にパーミッションを 0o600 に絞る。
-    # fd を close した後・ファイルパスが他プロセスから見える状態になった直後のタイミングで
-    # chmod することで「mkstemp → chmod → copy2 → load_index → unlink」のシーケンス全体を通じて
-    # 他ユーザーが読める時間窓を最小化する。
-    # Windows は POSIX 権限非対応のため os.chmod は例外を出さず silently 実行されるが
-    # パーミッションビットは変化しない（0o666 のまま）。POSIX では機能する。best-effort。
-    try:
-        os.chmod(tmp_str, 0o600)
-    except OSError:
-        pass  # Windows or non-POSIX FS — best-effort only
-    try:
-        shutil.copy2(path, tmp)
-        # L-1 / SR-NEW: wrap hnswlib call and hide the internal tmp path.
-        try:
-            index.load_index(tmp_str, **kwargs)
-        except Exception as e:
-            raise RuntimeError(
-                f"hnswlib load_index failed on '{path.name}': {type(e).__name__}"
-            ) from None
-    finally:
-        # M-1 / SR-V-002: warn on cleanup failure instead of silently ignoring.
-        try:
-            tmp.unlink()
-        except OSError as e:
-            print(
-                f"[_hnsw_load] tmp cleanup failed: {tmp}: {e}",
-                file=sys.stderr,
-            )
-
-
 def _utcnow_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
 
 
 def default_index_paths(repo_root: Path) -> tuple[Path, Path]:
-    """Return ``(index_path, meta_path)`` rooted at ``repo_root``."""
+    """Return ``(index_path, meta_path)`` rooted at ``repo_root``.
+
+    索引ファイル名は歴史的経緯で ``.hnsw`` を維持する（中身は numpy ペイロード）。
+    """
     state = repo_root / ".claude" / "state"
     return state / "recall.hnsw", state / "recall_meta.json"
 

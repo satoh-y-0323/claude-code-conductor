@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.37.0] - 2026-06-16
+
+### 変更
+
+- **recall の索引バックエンドを chroma-hnswlib（C++ 拡張）から numpy ブルートフォース cosine 検索へ置換**: C++ コンパイラ（Microsoft Visual C++ Build Tools）が無い環境で `pip install claude-code-conductor` が失敗する問題を解消。numpy は全環境に wheel が提供されておりコンパイル不要。recall のコーパスは 1 ユーザーの `.claude/` 規模（数千チャンク）で近似最近傍の高速化が不要なため、numpy の総当たり cosine 検索で十分。索引は次回 `c3 recall rebuild` 実行時に自動で numpy 形式へ再生成される。アップグレード直後・初回 rebuild 完了までの間は recall が一時的に結果を返さない（`c3 recall rebuild --force` で即時再生成可能）。`recall.hnsw` ファイル名は後方互換のため維持（中身が numpy ペイロードに変わる）。関連フック（`recall_inject.py` / `recall_autorebuild.py`）は無改修で動作する。`load()` は不正形状・旧 hnswlib バイナリ・破損ファイルを検出すると `False` を返して全再構築フォールバックに繋ぐ（`np.load(allow_pickle=False)` で pickle 経路は遮断）。
+
+### 依存
+
+- `chroma-hnswlib>=0.7.6` を削除し `numpy>=1.22` を追加。`LICENSES/chroma-hnswlib-*` を削除し `LICENSES/numpy-LICENSE`（BSD-3-Clause）を追加。
+
+### 後方互換
+
+- 公開 API・CLI・索引ファイル名（`recall.hnsw`）・meta スキーマに変更なし。索引は自動再生成のため migration 操作は不要。**破壊的変更なし**。
+
 ## [2.36.0] - 2026-06-14
 
 **セッションファイルに「現在地」フィールドを新設し、コンテキスト圧縮（コンパクト）後の肥大ループとワークフロー無視を同時に解消（hook・skill 手順の変更／破壊的変更なし）**: 200K コンテキスト運用で、セッション復元（コンパクト後・`/init-session`）の経路が「構造のない丸投げ」になっていたことが 2 つの症状を生んでいた。(1) **コンパクト肥大ループ**: `pre_compact.py` がコンパクト直前に状態を無上限追記させ、`restore_session.py` がコンパクト後に `## 残タスク` / `## うまくいったアプローチ` / `## 試みたが失敗したアプローチ` の 3 セクションを完了済み `- [x]` 行も含め丸ごと再注入し続けるため、コンテキスト使用率が上がり→さらにコンパクトが早まる正のフィードバックになっていた。(2) **ワークフロー無視**: 復元時にフェーズ状態が単なる ToDo として注入されるだけで「dev-workflow 進行中・skill 経由で再開せよ・Approval Flow を守れ」の指示が無く、`/init-session` の「続きから作業する」も「そのまま作業に入る」となっていたため、復元後に dev-workflow を飛ばして直接着手しがちだった。両症状の根は同じ「復元時に構造化された現在地が無い」ことであり、`現在地:` の 1 行フィールドを新設して構造化することで、再注入を小さく保ちつつワークフロー復帰を確実化する。

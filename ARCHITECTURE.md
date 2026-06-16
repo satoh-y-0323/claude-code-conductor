@@ -38,7 +38,7 @@ C3 は性質の異なる **2 つの層** からなる。この区別が全体理
 | 言語 | Python | Markdown（+ hook は Python） |
 | 配布 | `pip install claude-code-conductor` | `c3 init` が層 A から展開 |
 | エントリ | `c3 = "c3.cli:main"`（pyproject.toml） | スラッシュコマンド・Agent ツール |
-| 依存 | PyYAML / duckdb / chroma-hnswlib / fastembed | Claude Code ランタイム |
+| 依存 | PyYAML / duckdb / numpy / fastembed | Claude Code ランタイム |
 
 **配布元リポジトリ内の物理対応**:
 
@@ -165,7 +165,7 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 
 ```
 recall_chunker.py  →  embedding.py            →  recall_index.py
-（sessions/reports/    （fastembed: paraphrase-     （HNSW: chroma-hnswlib・
+（sessions/reports/    （fastembed: paraphrase-     （numpy cosine ブルートフォース・
   patterns をチャンク化）  multilingual-MiniLM-L12-v2    .claude/state/ に保存）
                           384次元・約220MB・多言語）
 ```

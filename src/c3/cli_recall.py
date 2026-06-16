@@ -2,13 +2,15 @@
 
 Subcommands:
 
-* ``c3 recall search <query>`` — query the HNSW index for relevant chunks.
+* ``c3 recall search <query>`` — query the numpy cosine index for relevant chunks.
 * ``c3 recall rebuild`` — re-embed every source file and rewrite the index.
 * ``c3 recall stats`` — report what's in the index.
 
-The heavy dependencies (``fastembed``, ``hnswlib``) are imported lazily
-inside the handlers so that ``c3 --help`` and unrelated subcommands stay
-fast even when the embedding model has not yet been downloaded.
+The heavy dependency (``fastembed``) is imported lazily inside the handlers
+so that ``c3 --help`` and unrelated subcommands stay fast even when the
+embedding model has not yet been downloaded. ``numpy`` is imported eagerly
+at module level (``import numpy as np`` in ``recall_index.py``) and is
+always available when this module is loaded.
 """
 
 from __future__ import annotations
@@ -296,13 +298,22 @@ def _handle_rebuild(args: argparse.Namespace) -> int:
             dim=embedder.dim,
         )
         try:
-            candidate.load()
-            old_index = candidate
+            # [M-01] load() の戻り値を確認し、False なら増分不可として全再構築する。
+            loaded = candidate.load()
+            if loaded:
+                old_index = candidate
+            else:
+                print(
+                    "[recall] 既存 index を読めず増分不可・全再構築にフォールバック:"
+                    " load() returned False",
+                    file=sys.stderr,
+                )
+                old_index = None
         except Exception as exc:
             # CR-E-002/SR-R-004: log the failure reason so operators can diagnose
             # corrupt or mismatched index files. Exception message is intentionally
             # omitted (type name only) to avoid leaking internal state — consistent
-            # with the SR-R-001 policy used in _hnsw_save/_hnsw_load.
+            # with the SR-R-001 policy used in RecallIndex.load().
             print(
                 f"[recall] 既存 index を読めず増分不可・全再構築にフォールバック: {type(exc).__name__}",
                 file=sys.stderr,
