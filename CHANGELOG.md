@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.38.0] - 2026-06-16
+
+### 追加
+
+- **オンボーディング動線の自走化（`/start` → `/init-session` → `/setup` の自動チェーン）**: C3 初導入プロジェクトで「最初に `/start` を打ち、規約未設定（`/setup` 未実行）のまま開発が始まる」事故を防ぐ。`/start` 実行時に当該セッションで `/init-session` が未実行なら自動で先行実行し、`/init-session` 実行時にプロジェクト規約が未設定なら `/setup` を自動で連鎖実行する。最初に打つコマンドが `/start` でも `/init-session` でも正しい順序に揃う。「自動」はコマンドを覚えていなくても連鎖起動される意味で、`/setup` 自体のヒアリング応答は引き続き必要（規約設定を無人スキップするわけではない）。
+
+### 仕組み
+
+- **setup 実行済み判定** = `.claude/rules/coding-standards.md` の存在（setup の生成物・利用先で git 追跡され永続）**または** `.claude/state/setup_done.flag` の存在。`/setup` は Phase 4 でこのフラグを書く。
+- **init-session 実行済み判定（セッション単位）** = `.claude/state/init_session.flag` の中身が現在の `CLAUDE_CODE_SESSION_ID` と一致するか。`/init-session` は本体開始直後にこのフラグを書く。
+- **ループ回避**: `/init-session`（Step 5「ワークフローで始める」）が `/start` を呼び戻しても、`/start` のガードは init_session.flag の一致を見て `/init-session` を再実行しない。`/start` から呼ばれた `/init-session` は `from-start` 引数で Step 4（開始方法選択）・Step 5・Step 1.5 由来の陳腐化タスク確認プロンプトをスキップし、復元サマリのみ提示して `/start` に戻る。
+- マーカーは `.claude/state/`（gitignore＋配布除外済み）に置くため 3 ファイル同期は不要。配布元リポジトリには誤発火防止用の `setup_done.flag` を 1 つ配置（コミット・配布されない）。
+
+### 後方互換
+
+- 既存の手動順序（`/init-session` → `/setup` → `/start`）は引き続き有効。公開 API・CLI・DB スキーマに変更なし。**破壊的変更なし**。
+
 ## [2.37.0] - 2026-06-16
 
 ### 変更

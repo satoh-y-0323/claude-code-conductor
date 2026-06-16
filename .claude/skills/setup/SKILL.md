@@ -211,6 +211,16 @@ agent は本 skill 配下の `templates/` と `reference.md` を Read して、`
 
 ## Phase 4: 完了報告
 
+project-setup エージェントが 2 ファイルを生成したら、Bash で setup 実行済みマーカーを記録する
+（`/init-session` の setup ガードが再発火しないようにするため。`state/*` は gitignore＋配布除外済み）。
+このフラグは**存在自体がマーカー**であり中身は不要（空ファイルで可）:
+
+```bash
+mkdir -p .claude/state && : > .claude/state/setup_done.flag
+```
+
+その後、以下を報告する:
+
 ```
 セットアップ完了:
   .claude/rules/coding-standards.md    — 標準コーディング規約
