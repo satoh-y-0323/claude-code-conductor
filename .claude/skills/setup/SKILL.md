@@ -216,8 +216,10 @@ project-setup エージェントが 2 ファイルを生成したら、Bash で 
 このフラグは**存在自体がマーカー**であり中身は不要（空ファイルで可）:
 
 ```bash
-mkdir -p .claude/state && : > .claude/state/setup_done.flag
+python .claude/skills/init-session/scripts/session_guard.py setup-mark
 ```
+
+書き込みが失敗した場合は session_guard.py が例外で停止する（握り潰さない・ADR-4 整合）。フラグ未書き込みなら次回 `/init-session` 実行時に G-2 が SETUP_NEEDED を返し `/setup` が再起動されるためリカバリ可能。
 
 その後、以下を報告する:
 

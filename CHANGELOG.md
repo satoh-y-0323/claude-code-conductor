@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.39.0] - 2026-06-24
+
+### 改善
+
+- **セッション開始・setup 完了の全 Bash ブロックを `session_guard.py` に集約し、Bash 許可ダイアログを恒久解消**: `/init-session`・`/start`・`/setup` の各スキルで実行していた `mkdir`＋`printf` でのフラグ書き込み・`setup` 実行済み判定・`init-session` 実行済み判定を**複合 Bash（`if`／`$()`／リダイレクトを含む 3 ブロック）**として実行しており、セッション開始時・`/setup` 完了時に Bash 許可ダイアログが出ていた。複合 Bash は `settings.json` の allow プレフィックス一致が効かない（`if`／`$()`／リダイレクトは静的解析不可）ため、許可を事前登録できなかった。全ブロックを単一の Python エントリ `.claude/skills/init-session/scripts/session_guard.py {mark|check|setup-mark}` に集約し、`settings.json` に `Bash(python .claude/skills/init-session/scripts/session_guard.py*)` の 1 行 allow を追加することでダイアログを恒久的に解消した。
+
+### 仕組み
+
+- **`session_guard.py mark`**（`/init-session` が起動直後に実行）: `.claude/state/` を作成し `init_session.flag` に `CLAUDE_CODE_SESSION_ID` を書き込み、`coding-standards.md` または `setup_done.flag` の有無で `SETUP_DONE` / `SETUP_NEEDED` を stdout に出力する。
+- **`session_guard.py check`**（`/start` のガードが実行）: `init_session.flag` を読み（CR/LF 除去＋strip）、`CLAUDE_CODE_SESSION_ID` と一致すれば `INIT_DONE`、不一致・未書き込みなら `INIT_NEEDED` を出力する。
+- **`session_guard.py setup-mark`**（`/setup` の Phase 4 完了時に実行）: `setup_done.flag` を `.claude/state/` に書き込む。これにより `/setup` 完了フラグの書き込みも Python スクリプト経由に統一され、`/setup` 初回実行時の Bash 許可ダイアログも解消した。
+- 挙動は旧 Bash と等価（フラグ書き込み・判定結果・出力文字列が一致）。冒頭で stdout/stderr を UTF-8 へ reconfigure（CLAUDE.md §9 準拠）。
+
+### 後方互換
+
+- スキルの利用方法・フラグの配置（`.claude/state/`・gitignore＋配布除外済み）・判定ロジックに変更なし。サブコマンドが `{mark|check}` → `{mark|check|setup-mark}` の 3 種に増えたが、既存呼び出しは影響なし。公開 API・CLI・DB スキーマに変更なし。**破壊的変更なし**。
+
 ## [2.38.0] - 2026-06-16
 
 ### 追加

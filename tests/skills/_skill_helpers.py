@@ -24,6 +24,7 @@ SKILL_PATHS = {
     "start": SKILLS_DIR / "start" / "SKILL.md",
     "dev-workflow": SKILLS_DIR / "dev-workflow" / "SKILL.md",
     "init-session": SKILLS_DIR / "init-session" / "SKILL.md",
+    "setup": SKILLS_DIR / "setup" / "SKILL.md",
 }
 
 # 見出しの「近傍」を判定するときに走査する行数。
@@ -54,6 +55,11 @@ def read_dev_workflow_skill() -> str:
 def read_init_session_skill() -> str:
     """`.claude/skills/init-session/SKILL.md` の内容を返す。"""
     return read_skill("init-session")
+
+
+def read_setup_skill() -> str:
+    """`.claude/skills/setup/SKILL.md` の内容を返す。"""
+    return read_skill("setup")
 
 
 def keyword_in_neighborhood(
