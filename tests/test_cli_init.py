@@ -11,8 +11,17 @@ import pytest
 from c3 import cli_init, cli_update
 
 
-def _run_init(target: Path, *, force: bool = False, platform: str = "claude") -> int:
-    return cli_init.handle(argparse.Namespace(target=target, force=force, platform=platform))
+def _run_init(
+    target: Path,
+    *,
+    force: bool = False,
+    platform: str = "claude",
+    git: bool = False,
+    no_git: bool = False,
+) -> int:
+    return cli_init.handle(
+        argparse.Namespace(target=target, force=force, platform=platform, git=git, no_git=no_git)
+    )
 
 
 def _run_update(target: Path, *, dry_run: bool = False, platform: str = "claude", yes: bool = False) -> int:
@@ -202,3 +211,258 @@ def test_update_codex_preserves_escaped_backslashes_in_managed_config(tmp_path: 
     assert rc == 0
     updated = config.read_text(encoding="utf-8")
     assert "\\\\" in updated
+
+
+# ---------------------------------------------------------------------------
+# git consent flow — new cases for c3 init --git / --no-git
+# ---------------------------------------------------------------------------
+
+
+def test_init_inside_repo_is_silent(tmp_path: Path, monkeypatch, capsys) -> None:
+    """INSIDE_REPO: git_init is never called and no git-specific message is emitted."""
+    from c3.gitutil import GitStatus
+
+    def never_called(_root):
+        raise AssertionError("git_init must not be called when already inside a repo")
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.INSIDE_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", never_called)
+
+    rc = _run_init(tmp_path)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "git init" not in out
+    assert "worktree" not in out
+
+
+def test_init_not_a_repo_with_git_flag(tmp_path: Path, monkeypatch, capsys) -> None:
+    """--git flag on a non-git directory: git_init is called and a success message is printed."""
+    from c3.gitutil import GitStatus
+
+    git_init_calls: list = []
+
+    def spy_git_init(root):
+        git_init_calls.append(root)
+        return True
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", spy_git_init)
+
+    rc = _run_init(tmp_path, git=True)
+
+    assert rc == 0
+    assert len(git_init_calls) == 1
+    out = capsys.readouterr().out
+    assert "git init を実行しました" in out
+
+
+def test_init_not_a_repo_with_no_git_flag(tmp_path: Path, monkeypatch, capsys) -> None:
+    """--no-git flag: git_init is not called and a guidance message is printed."""
+    from c3.gitutil import GitStatus
+
+    def never_called(_root):
+        raise AssertionError("git_init must not be called when --no-git is passed")
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", never_called)
+
+    rc = _run_init(tmp_path, no_git=True)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "worktree" in out
+
+
+def test_init_non_tty_no_flags(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Non-TTY, no flags: input() is never called, git_init is skipped, a warning is shown."""
+    from c3.gitutil import GitStatus
+
+    def never_called_git_init(_root):
+        raise AssertionError("git_init must not be called in non-TTY no-flag mode")
+
+    def never_called_input(_prompt: str) -> str:
+        raise AssertionError("input() must not be called in non-TTY mode")
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", never_called_git_init)
+    monkeypatch.setattr("sys.stdin", type("_NonTTY", (), {"isatty": staticmethod(lambda: False)})())
+    monkeypatch.setattr("builtins.input", never_called_input)
+
+    rc = _run_init(tmp_path)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "worktree" in out
+
+
+def test_init_tty_input_yes_calls_git_init(tmp_path: Path, monkeypatch) -> None:
+    """TTY, no flags, input='y': git_init is called and exit code is 0."""
+    from c3.gitutil import GitStatus
+
+    git_init_calls: list = []
+
+    def spy_git_init(root):
+        git_init_calls.append(root)
+        return True
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", spy_git_init)
+    monkeypatch.setattr("sys.stdin", type("_TTY", (), {"isatty": staticmethod(lambda: True)})())
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    rc = _run_init(tmp_path)
+
+    assert rc == 0
+    assert len(git_init_calls) == 1
+
+
+def test_init_tty_input_no_skips_git_init(tmp_path: Path, monkeypatch, capsys) -> None:
+    """TTY, no flags, input='n': git_init is not called and a guidance message is shown."""
+    from c3.gitutil import GitStatus
+
+    def never_called(_root):
+        raise AssertionError("git_init must not be called when user answers 'n'")
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", never_called)
+    monkeypatch.setattr("sys.stdin", type("_TTY", (), {"isatty": staticmethod(lambda: True)})())
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    rc = _run_init(tmp_path)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "worktree" in out
+
+
+def test_init_git_missing_warns_no_git_init(tmp_path: Path, monkeypatch, capsys) -> None:
+    """GIT_MISSING: a warning mentioning git is printed and git_init is not called."""
+    from c3.gitutil import GitStatus
+
+    def never_called(_root):
+        raise AssertionError("git_init must not be called when git is absent")
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.GIT_MISSING)
+    monkeypatch.setattr("c3.gitutil.git_init", never_called)
+
+    rc = _run_init(tmp_path)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "git" in out.lower()
+
+
+def test_init_mutual_exclusive_git_flags() -> None:
+    """--git and --no-git are mutually exclusive; passing both causes argparse exit 2."""
+    main_parser = argparse.ArgumentParser()
+    subparsers = main_parser.add_subparsers()
+    cli_init.register(subparsers)
+    with pytest.raises(SystemExit) as exc_info:
+        main_parser.parse_args(["init", "--git", "--no-git"])
+    assert exc_info.value.code == 2
+
+
+def test_init_git_init_failure_does_not_affect_exit_code(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """git_init returning False (failure) does not change c3 init's exit code."""
+    from c3.gitutil import GitStatus
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", lambda _root: False)
+
+    rc = _run_init(tmp_path, git=True)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "git init" in out
+
+
+# ---------------------------------------------------------------------------
+# L-01: sys.stdin is None ガード（CR-E-001）
+# ---------------------------------------------------------------------------
+
+
+def test_init_stdin_none_treated_as_non_tty(tmp_path: Path, monkeypatch, capsys) -> None:
+    """sys.stdin=None のとき非 TTY として扱い、AttributeError を起こさずに rc=0 を返す（L-01）。
+
+    git_init と input() は呼ばれず、worktree 誘導メッセージのみ stdout に出力する。
+    _maybe_init_git は例外を外に漏らさない設計であるため、None ガードが必須。
+    """
+    from c3.gitutil import GitStatus
+
+    def never_called_git_init(_root):
+        raise AssertionError("git_init must not be called when sys.stdin is None")
+
+    def never_called_input(_prompt: str) -> str:
+        raise AssertionError("input() must not be called when sys.stdin is None")
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", never_called_git_init)
+    monkeypatch.setattr("sys.stdin", None)
+    monkeypatch.setattr("builtins.input", never_called_input)
+
+    rc = _run_init(tmp_path)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "worktree" in out
+
+
+# ---------------------------------------------------------------------------
+# M-01: _input_fn 注入ポイント経由のテスト（CR-M-003）
+# ---------------------------------------------------------------------------
+
+
+def test_maybe_init_git_input_fn_yes_calls_git_init(tmp_path: Path, monkeypatch) -> None:
+    """_input_fn=lambda _: "y" を注入すると git_init が 1 回呼ばれる（M-01）。
+
+    _maybe_init_git に _input_fn キーワード引数（テスト注入ポイント）が追加されたとき、
+    "y" を返す関数を渡すと git_init が実行されることを検証する。
+    builtins.input の monkeypatch に依存せず、注入経由で挙動を制御できることを確認する。
+    """
+    from c3.gitutil import GitStatus
+    from c3.cli_init import _maybe_init_git
+
+    git_init_calls: list = []
+
+    def spy_git_init(root):
+        git_init_calls.append(root)
+        return True
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", spy_git_init)
+    monkeypatch.setattr(
+        "sys.stdin",
+        type("_TTY", (), {"isatty": staticmethod(lambda: True)})(),
+    )
+
+    _maybe_init_git(tmp_path, git=False, no_git=False, _input_fn=lambda _: "y")
+
+    assert len(git_init_calls) == 1
+
+
+def test_maybe_init_git_input_fn_no_skips_git_init(tmp_path: Path, monkeypatch, capsys) -> None:
+    """_input_fn=lambda _: "n" を注入すると git_init がスキップされ誘導メッセージが出る（M-01）。
+
+    _maybe_init_git に _input_fn キーワード引数（テスト注入ポイント）が追加されたとき、
+    "n" を返す関数を渡すと git_init が呼ばれず worktree 誘導メッセージのみ出力されることを検証する。
+    """
+    from c3.gitutil import GitStatus
+    from c3.cli_init import _maybe_init_git
+
+    def never_called(_root):
+        raise AssertionError("git_init must not be called when user answers 'n'")
+
+    monkeypatch.setattr("c3.gitutil.detect_git_status", lambda _root: GitStatus.NOT_A_REPO)
+    monkeypatch.setattr("c3.gitutil.git_init", never_called)
+    monkeypatch.setattr(
+        "sys.stdin",
+        type("_TTY", (), {"isatty": staticmethod(lambda: True)})(),
+    )
+
+    _maybe_init_git(tmp_path, git=False, no_git=False, _input_fn=lambda _: "n")
+
+    out = capsys.readouterr().out
+    assert "worktree" in out

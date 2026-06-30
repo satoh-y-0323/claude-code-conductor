@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.40.0] - 2026-06-30
+
+### 追加
+
+- **`c3 init` が非 git ディレクトリで同意の上 `git init` を実行**: C3 の並列実装（parallel-agents skill）は `isolation: "worktree"` で git worktree を使うため、対象ディレクトリが git リポジトリでないと実装フェーズで worktree 生成時に初めてハードエラーになっていた（失敗が実装まで遅延する UX 欠陥）。`c3 init` の時点で git 不在を検出し、**同意ベースで** `git init` まで済ませることで後の worktree 失敗を未然に防ぐ。C3 の核「`.claude/` に閉じる可逆性」を尊重し、黙って `.git/` を作る驚きは避ける設計。
+  - **検出**: `git rev-parse --is-inside-work-tree` で判定。既に git 管理下（親が repo のサブディレクトリを含む）なら何もしない（入れ子 repo を作らない）。
+  - **同意モデル**（非 git の場合のみ）: `--no-git` → init せず誘導メッセージのみ / `--git` → 確認なしで `git init`（CI・非対話の明示 opt-in）/ どちらも無し → TTY なら `[Y/n]` 確認・非 TTY なら `input()` を呼ばず警告のみ（黙って `.git/` を作らない・ハング回避）。
+  - **失敗時**: git コマンド不在・`git init` 失敗・タイムアウトのいずれも警告に倒し、`.claude/` の scaffold は成功扱い（`c3 init` の exit code に影響させない）。
+  - 新規 `src/c3/gitutil.py`（`GitStatus` Enum・`detect_git_status()` / `git_init()`、subprocess を `shell=False`・固定引数リスト・`timeout=10`・`encoding="utf-8"` で実行）に git プリミティブを分離し、UI 層（`cli_init.py`）と責務分離。
+
+### 後方互換
+
+- 既存の `c3 init`（git 管理下・`--target`・`--platform` 等）の挙動は不変。新フラグ `--git`/`--no-git` は opt-in。非 TTY（Claude Code の Bash ツール経由・CI）では従来どおり `.claude/` scaffold のみ行い git には触れない。公開 API・CLI 既存オプション・DB スキーマに変更なし。**破壊的変更なし**。
+
 ## [2.39.0] - 2026-06-24
 
 ### 改善
