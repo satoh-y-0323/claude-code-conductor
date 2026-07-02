@@ -63,76 +63,15 @@ def _load_hook_module() -> types.ModuleType:
 
 # ---------------------------------------------------------------------------
 # c3_db ヘルパー
+#
+# [v2.41.0 select-tier-hook] TestC3DbTierBandit（旧 read_tier_params /
+# update_tier_params の実 DB 蓄積前提テスト）は db-shims-and-cost タスクで
+# 両関数が deprecated no-op シムに置き換わったため削除した。
+# 等価カバレッジは role 次元付き新 API のテストとして
+# tests/test_db.py::TestReadAgentTierParams / TestUpdateAgentTierParams が
+# 引き継いでいる（O1/O2 群）。シム自体の初期値/no-op 挙動は
+# tests/test_db.py::TestDeprecatedShimBehavior が担保する。
 # ---------------------------------------------------------------------------
-
-
-class TestC3DbTierBandit:
-
-    def test_read_returns_defaults_when_no_rows(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "c3.db"
-        _create_c3_db(db_path)
-
-        from c3 import db as c3_db
-        params = c3_db.read_tier_params("medium", db_path=db_path)
-        assert set(params.keys()) == {"haiku", "sonnet", "opus"}
-        for tier, (alpha, beta, trials) in params.items():
-            assert alpha == 1.0
-            assert beta == 1.0
-            assert trials == 0
-
-    def test_update_success_increments_alpha(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "c3.db"
-        _create_c3_db(db_path)
-
-        from c3 import db as c3_db
-        ok = c3_db.update_tier_params(
-            "simple", "haiku", success=True, db_path=db_path,
-        )
-        assert ok is True
-
-        params = c3_db.read_tier_params("simple", db_path=db_path)
-        assert params["haiku"] == (2.0, 1.0, 1)  # alpha=1+1, beta=1, trials=1
-
-    def test_update_failure_increments_beta(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "c3.db"
-        _create_c3_db(db_path)
-
-        from c3 import db as c3_db
-        c3_db.update_tier_params(
-            "complex", "opus", success=False, db_path=db_path,
-        )
-
-        params = c3_db.read_tier_params("complex", db_path=db_path)
-        assert params["opus"] == (1.0, 2.0, 1)
-
-    def test_update_accumulates(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "c3.db"
-        _create_c3_db(db_path)
-
-        from c3 import db as c3_db
-        for _ in range(3):
-            c3_db.update_tier_params(
-                "medium", "sonnet", success=True, db_path=db_path,
-            )
-        for _ in range(2):
-            c3_db.update_tier_params(
-                "medium", "sonnet", success=False, db_path=db_path,
-            )
-
-        params = c3_db.read_tier_params("medium", db_path=db_path)
-        assert params["sonnet"] == (4.0, 3.0, 5)  # 1+3, 1+2, 5 trials
-
-    def test_db_not_found_returns_initial(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "missing" / "c3.db"
-        from c3 import db as c3_db
-        params = c3_db.read_tier_params("medium", db_path=db_path)
-        # defaults
-        assert all(p == (1.0, 1.0, 0) for p in params.values())
-
-        ok = c3_db.update_tier_params(
-            "medium", "haiku", success=True, db_path=db_path,
-        )
-        assert ok is False
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +206,209 @@ class TestContextAndStateFile:
             "mode": "thompson",
             "suggested_model": "opus",
         }
+
+
+# ---------------------------------------------------------------------------
+# [v2.41.0 select-tier-hook Phase 0] build_additional_context の誤り文言修正
+#
+# 旧文言「エージェント定義の frontmatter 指定が優先される」は事実誤りだった
+# （実際には frontmatter はデフォルトに過ぎず、Agent 呼び出し時に model: を
+# 明示指定すれば上書きできる。fork のみ例外。architecture-report §3-5 / ADR-3）。
+# 新文言は developer セル固定の推奨であることも明示する。
+# ---------------------------------------------------------------------------
+
+
+class TestPhase0BuildAdditionalContextWording:
+    """build_additional_context の Phase 0 文言修正テスト。"""
+
+    def _params(self) -> dict:
+        return {
+            "haiku": (10.0, 5.0, 14),
+            "sonnet": (10.0, 5.0, 14),
+            "opus": (10.0, 5.0, 14),
+        }
+
+    def test_old_incorrect_wording_removed(self) -> None:
+        """旧文言「frontmatter 指定が優先される」（事実誤り）が含まれないこと。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "sonnet", "thompson", self._params())
+        assert "frontmatter 指定が優先される" not in text
+        assert "frontmatter 指定" not in text
+
+    def test_new_wording_mentions_developer_baseline(self) -> None:
+        """新文言に「developer 基準」が含まれること（ADR-3: 推奨は developer セル固定）。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "sonnet", "thompson", self._params())
+        assert "developer 基準" in text
+
+    def test_new_wording_explains_override_via_explicit_model(self) -> None:
+        """新文言に「Agent 呼び出し時に model: を明示指定すれば上書きできます（fork を除く）」
+        相当の正確な説明が含まれること。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "sonnet", "thompson", self._params())
+        assert "model:" in text
+        assert "上書きできます" in text
+        assert "fork を除く" in text
+
+    def test_new_wording_mentions_frontmatter_as_default_not_priority(self) -> None:
+        """frontmatter は「デフォルト」であって「優先される」ものではないという
+        正確なニュアンスが文言に反映されていること。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "sonnet", "thompson", self._params())
+        assert "frontmatter" in text
+        assert "デフォルト" in text
+
+
+# ---------------------------------------------------------------------------
+# [v2.41.0 select-tier-hook] データ源切替
+#
+# main() は developer 固定で read_agent_tier_params("developer", complexity) を
+# 呼ぶ（旧 read_tier_params(complexity) ではない）。_db_failure_rate は
+# read_agent_failure_rate("developer", complexity, tier) を呼ぶ
+# （旧 read_tier_failure_rate(complexity, tier) ではない）。architecture-report §3-5。
+# ---------------------------------------------------------------------------
+
+
+class TestDataSourceSwitchToAgentTierParams:
+    """main() が read_agent_tier_params("developer", complexity) を使うことの検証。"""
+
+    def test_main_calls_read_agent_tier_params_with_developer_role(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """main() は c3_db.read_agent_tier_params("developer", complexity) を呼ぶ。
+
+        mock は read_agent_tier_params のみ持ち、旧 read_tier_params は持たない。
+        旧実装のままなら AttributeError が発生し Red になる。
+        """
+        mod = _load_hook_module()
+        monkeypatch.setattr(
+            mod, "TIER_SELECTION_PATH", str(tmp_path / "tier_selection.json"),
+        )
+
+        calls: list[tuple] = []
+
+        def _spy_read_agent_tier_params(role, complexity, **kw):
+            calls.append((role, complexity))
+            return {t: (1.0, 1.0, 0) for t in mod.TIERS}
+
+        mock_c3_db = types.SimpleNamespace(
+            read_agent_tier_params=_spy_read_agent_tier_params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+
+        payload = {"prompt": "新しい機能を追加してください"}
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+        rc = mod.main()
+        assert rc == 0
+        assert len(calls) == 1, "read_agent_tier_params が呼ばれていない（旧 API のままの可能性）"
+        role, complexity = calls[0]
+        assert role == "developer"
+        assert complexity == "medium"
+
+    def test_main_works_without_legacy_read_tier_params_attribute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """mock に旧 read_tier_params 属性が無くても main() が crash せず完了する。
+
+        main() が旧属性を参照していないことの証跡（旧実装のままなら
+        AttributeError で本テストが Red になる）。
+        """
+        mod = _load_hook_module()
+        monkeypatch.setattr(
+            mod, "TIER_SELECTION_PATH", str(tmp_path / "tier_selection.json"),
+        )
+
+        params = {t: (1.0, 1.0, 0) for t in mod.TIERS}
+        mock_c3_db = types.SimpleNamespace(
+            read_agent_tier_params=lambda role, complexity, **kw: params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "テスト"})))
+
+        rc = mod.main()
+        assert rc == 0
+
+
+class TestEscalationDataSourceSwitch:
+    """_db_failure_rate が read_agent_failure_rate("developer", complexity, tier) を使うことの検証。"""
+
+    def test_db_failure_rate_calls_read_agent_failure_rate_with_developer_role(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_db_failure_rate は c3_db.read_agent_failure_rate("developer", complexity, tier) を呼ぶ。
+
+        mock は read_agent_failure_rate のみ持ち、旧 read_tier_failure_rate は持たない。
+        旧実装のままなら AttributeError が発生し Red になる。
+        """
+        mod = _load_hook_module()
+        calls: list[tuple] = []
+
+        def _spy_read_agent_failure_rate(role, complexity, tier, **kw):
+            calls.append((role, complexity, tier))
+            return (0.7, 10)
+
+        mock_c3_db = types.SimpleNamespace(
+            read_agent_failure_rate=_spy_read_agent_failure_rate,
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+
+        rate, samples = mod._db_failure_rate("medium", "haiku")
+        assert rate == 0.7
+        assert samples == 10
+        assert len(calls) == 1, "read_agent_failure_rate が呼ばれていない（旧 API のままの可能性）"
+        role, complexity, tier = calls[0]
+        assert role == "developer"
+        assert complexity == "medium"
+        assert tier == "haiku"
+
+    def test_db_failure_rate_works_without_legacy_attribute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """mock に旧 read_tier_failure_rate 属性が無くても _db_failure_rate が動く。"""
+        mod = _load_hook_module()
+        mock_c3_db = types.SimpleNamespace(
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+        rate, samples = mod._db_failure_rate("simple", "sonnet")
+        assert rate is None
+        assert samples == 0
+
+    def test_db_failure_rate_returns_c3_db_none_tuple_when_module_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """c3_db インポート失敗時は (None, 0) を返す（後方互換・不変）。"""
+        mod = _load_hook_module()
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: None)
+        rate, samples = mod._db_failure_rate("medium", "haiku")
+        assert rate is None
+        assert samples == 0
+
+
+# ---------------------------------------------------------------------------
+# [v2.41.0 select-tier-hook] 不変性回帰テスト
+#
+# LEARNING_THRESHOLD の SSOT・値は本タスクで変更しない（意味の再定義のみ・
+# architecture-report ADR-3）。
+# ---------------------------------------------------------------------------
+
+
+class TestLearningThresholdUnchanged:
+    """LEARNING_THRESHOLD の SSOT・値が本タスクで不変であることの回帰テスト。"""
+
+    def test_learning_threshold_matches_db_ssot(self) -> None:
+        mod = _load_hook_module()
+        from c3 import db as c3_db
+        assert mod.LEARNING_THRESHOLD == c3_db.LEARNING_THRESHOLD
+
+    def test_learning_threshold_value_is_30(self) -> None:
+        mod = _load_hook_module()
+        assert mod.LEARNING_THRESHOLD == 30
 
 
 # ---------------------------------------------------------------------------
@@ -943,9 +1085,9 @@ class TestMainCostMapIntegration:
         }
 
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: tiebreak_params,
+            read_agent_tier_params=lambda role, complexity, **kw: tiebreak_params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},  # 実測なし → 全て静的 fallback
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),  # escalation しない
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),  # escalation しない
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
 
@@ -991,9 +1133,9 @@ class TestMainCostMapIntegration:
             "opus": (2.0, 8.0, 20),
         }
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: dominant_params,
+            read_agent_tier_params=lambda role, complexity, **kw: dominant_params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),  # escalation しない
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),  # escalation しない
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
 
@@ -1029,9 +1171,9 @@ class TestMainCostMapIntegration:
         }
         # read_tier_cost_rate_for_complexity（旧名なし）のみ定義 → 旧名があると AttributeError
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: params,
+            read_agent_tier_params=lambda role, complexity, **kw: params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},  # rate 関数・実測なし
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
 
@@ -1069,9 +1211,9 @@ class TestMainCostMapIntegration:
             "opus": (1.0, 10.0, 10),
         }
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: params,
+            read_agent_tier_params=lambda role, complexity, **kw: params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: dict(measured_rates),
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
 
@@ -2031,9 +2173,9 @@ class TestMainBackwardCompatE2E:
             "opus": (2.0, 8.0, 20),
         }
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: dominant_params,
+            read_agent_tier_params=lambda role, complexity, **kw: dominant_params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))
@@ -2064,9 +2206,9 @@ class TestMainBackwardCompatE2E:
             "opus": (2.0, 8.0, 20),
         }
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: dominant_params,
+            read_agent_tier_params=lambda role, complexity, **kw: dominant_params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))
@@ -2106,9 +2248,9 @@ class TestMainLambdaE2E:
             "opus": (5.0, 5.0, 30),
         }
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: tiebreak_params,
+            read_agent_tier_params=lambda role, complexity, **kw: tiebreak_params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},  # 静的 fallback 使用
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
 
@@ -2149,9 +2291,9 @@ class TestMainLambdaE2E:
             "opus": (5.0, 5.0, 30),
         }
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: tiebreak_params,
+            read_agent_tier_params=lambda role, complexity, **kw: tiebreak_params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
 
@@ -2276,9 +2418,9 @@ class TestMainLamZeroE2E:
             "opus": (2.0, 8.0, 20),
         }
         mock_c3_db = types.SimpleNamespace(
-            read_tier_params=lambda complexity, **kw: dominant_params,
+            read_agent_tier_params=lambda role, complexity, **kw: dominant_params,
             read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
-            read_tier_failure_rate=lambda complexity, tier: (None, 0),
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
         )
         monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "新しい機能を追加してください"})))

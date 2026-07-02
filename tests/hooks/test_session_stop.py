@@ -311,6 +311,72 @@ class TestWorktreeSkipSyncNotCalled:
         )
 
 
+class TestSyncTierBanditCostCallRemoved:
+    """P 群（db-shims-and-cost・Red 先行）: architecture-report ADR-4/§3-6 対応。
+
+    Phase 3 から `sync_tier_bandit_cost()` 呼び出しを完全に削除する
+    （ADR-4: cost 列キャッシュ廃止・`c3 tier stats` は `read_tier_cost_rate_summary` 直読みに変更）。
+    `ingest_session` は不変のため、worktree でない通常経路でも
+    引き続き呼ばれることを併せて確認する。
+    """
+
+    def test_sync_not_called_in_non_worktree_path(self, monkeypatch: pytest.MonkeyPatch):
+        """sync_tier_bandit_cost は worktree 判定に関わらず Phase 3 から呼ばれなくなる
+        （現行実装は is_worktree=False の通常経路で必ず呼ぶため Red）。
+        ingest_session は不変のため、同じ経路で引き続き呼ばれることも確認する。
+        """
+        module = _load_module()
+
+        stop_mock = MagicMock(run=MagicMock(return_value=0))
+        consolidate_mock = MagicMock(run_sync=MagicMock(return_value=0))
+
+        # is_worktree=False（通常のメインリポジトリ経路）
+        session_utils_mock = MagicMock()
+        session_utils_mock.is_worktree = MagicMock(return_value=False)
+
+        def _fake_load(name: str):
+            if name == "stop":
+                return stop_mock
+            if name == "consolidate_memory":
+                return consolidate_mock
+            if name == "session_utils":
+                return session_utils_mock
+            raise ValueError(f"unexpected module: {name}")
+
+        monkeypatch.setattr(module, "_load_module", _fake_load)
+        monkeypatch.setattr(
+            "sys.stdin",
+            type("S", (), {"read": staticmethod(
+                lambda: '{"session_id": "test-sess", "transcript_path": "/tmp/t.jsonl"}'
+            )})(),
+        )
+
+        sync_called = []
+        import c3.db  # noqa: PLC0415 — sys.modules["c3.db"] を確定させる
+        monkeypatch.setattr(
+            sys.modules["c3.db"], "sync_tier_bandit_cost",
+            lambda **kw: (sync_called.append(True), 0)[1],
+        )
+
+        ingest_called = []
+        import c3.usage_ingester  # noqa: PLC0415 — sys.modules["c3.usage_ingester"] を確定させる
+        monkeypatch.setattr(
+            sys.modules["c3.usage_ingester"], "ingest_session",
+            lambda **kw: ingest_called.append(kw),
+        )
+
+        result = module.main()
+
+        assert result == 0
+        assert ingest_called, (
+            "ingest_session は不変のため is_worktree=False 経路で引き続き呼ばれるはず"
+        )
+        assert not sync_called, (
+            "sync_tier_bandit_cost 呼び出しは Phase 3 から完全に削除されるべき"
+            "（ADR-4: cost 列キャッシュ廃止）"
+        )
+
+
 class TestSubprocessE2E:
     """subprocess で session_stop.py を起動して全体の挙動を確認する.
 

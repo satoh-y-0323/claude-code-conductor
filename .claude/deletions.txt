@@ -84,3 +84,6 @@ skills/wave-execution/SKILL.md
 docs/parallel-orchestra-manifest.md
 docs/po-worktree-writes.md
 hooks/po_heartbeat.py
+
+# ---- v2.41.0: tier-routing 学習シグナル再設計（record_agent_outcome.py へ置換） ----
+skills/dev-workflow/scripts/record_tier_outcome.py

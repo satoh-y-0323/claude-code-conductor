@@ -29,6 +29,7 @@ from pathlib import Path
 # tier-routing パラメータ（定数 + env 解決）は _db_params.py が SSOT。
 # 後方互換のため c3.db からも参照可能にする（cli_tier.py / select_tier.py 等）。
 from c3._db_params import (
+    AGENT_ROLES as AGENT_ROLES,
     COST_LAMBDA_DEFAULT as COST_LAMBDA_DEFAULT,
     COST_LAMBDA_MAX as COST_LAMBDA_MAX,
     COST_LAMBDA_MIN as COST_LAMBDA_MIN,
@@ -255,16 +256,140 @@ def read_tier_params(
     *,
     db_path: Path | None = None,
 ) -> dict[str, tuple[float, float, int]]:
-    """指定 complexity の各 Tier の (alpha, beta, trials) を返す。
+    """[Deprecated] 全 tier 一様 (1.0, 1.0, 0) を返す後方互換シム。
+
+    Deprecated: v2.41.0 で `read_agent_tier_params` に置換済み。次リリースで削除予定。
+
+    旧 tier_bandit テーブルは migration 004 で DROP 済みのため、DB には一切
+    接続せず常に uniform 初期値を返す（旧 select_tier.py が uniform 表示に
+    自然フォールバックする。ADR-5）。
 
     Args:
+        complexity: 後方互換のため受け取るが値は無視する。
+        db_path: 後方互換のため受け取るが値は無視する。
+
+    Returns:
+        ``{"haiku": (1.0, 1.0, 0), "sonnet": (1.0, 1.0, 0), "opus": (1.0, 1.0, 0)}``。
+    """
+    return {t: (1.0, 1.0, 0) for t in _TIER_BANDIT_TIERS}
+
+
+def update_tier_params(
+    complexity: str,
+    tier: str,
+    *,
+    success: bool,
+    db_path: Path | None = None,
+) -> bool:
+    """[Deprecated] no-op で True を返す後方互換シム。
+
+    Deprecated: v2.41.0 で `update_agent_tier_params` に置換済み。次リリースで削除予定。
+
+    旧 tier_bandit テーブルは DROP 済みのため DB には一切接続しない。False を
+    返すと旧 record_tier_outcome.py が json を保持し警告を出し続けるため、
+    常に True を返して静かに捨てる（ADR-5）。
+
+    Args:
+        complexity: 後方互換のため受け取るが値は無視する。
+        tier: 後方互換のため受け取るが値は無視する。
+        success: 後方互換のため受け取るが値は無視する。
+        db_path: 後方互換のため受け取るが値は無視する。
+
+    Returns:
+        常に True。
+    """
+    return True
+
+
+# Phase 2-B 用: tier_recent_outcomes ヘルパー（直近 N 件の outcome 履歴）
+
+# escalation 判定の最小サンプル数。これより少ないと escalation しない（統計的に弱い）。
+_FAILURE_RATE_MIN_SAMPLES = 5
+
+
+def record_tier_recent_outcome(
+    *,
+    complexity: str,
+    tier: str,
+    success: bool,
+    db_path: Path | None = None,
+    session_id: str | None = None,
+) -> bool:
+    """[Deprecated] no-op で True を返す後方互換シム。
+
+    Deprecated: v2.41.0 で `record_agent_outcome_event` に置換済み。次リリースで削除予定。
+
+    旧 tier_recent_outcomes テーブルは DROP 済みのため DB には一切接続しない。
+    False を返すと旧 record_tier_outcome.py が json を保持し警告を出し続けるため、
+    常に True を返して静かに捨てる（ADR-5）。
+
+    Args:
+        complexity: 後方互換のため受け取るが値は無視する。
+        tier: 後方互換のため受け取るが値は無視する。
+        success: 後方互換のため受け取るが値は無視する。
+        db_path: 後方互換のため受け取るが値は無視する。
+        session_id: 後方互換のため受け取るが値は無視する。
+
+    Returns:
+        常に True。
+    """
+    return True
+
+
+def read_tier_failure_rate(
+    complexity: str,
+    tier: str,
+    *,
+    last_n: int = 10,
+    db_path: Path | None = None,
+) -> tuple[float | None, int]:
+    """[Deprecated] 常に (None, 0) を返す後方互換シム。
+
+    Deprecated: v2.41.0 で `read_agent_failure_rate` に置換済み。次リリースで削除予定。
+
+    旧 tier_recent_outcomes テーブルは DROP 済みのため DB には一切接続しない。
+    ``(None, 0)`` はサンプル不足と同じ扱いのため、旧 select_tier.py の
+    escalation 判定が自然に無効化される（ADR-5）。
+
+    Args:
+        complexity: 後方互換のため受け取るが値は無視する。
+        tier: 後方互換のため受け取るが値は無視する。
+        last_n: 後方互換のため受け取るが値は無視する。
+        db_path: 後方互換のため受け取るが値は無視する。
+
+    Returns:
+        常に ``(None, 0)``。
+    """
+    return None, 0
+
+
+# ---------------------------------------------------------------------------
+# agent-tier-routing 学習シグナル再設計（v2.41.0 db-foundation）
+#
+# migration 004 で新設された agent_tier_bandit / agent_outcomes 用ヘルパー。
+# 旧 tier_bandit / tier_recent_outcomes 系（read_tier_params 等）と役割は同じだが、
+# PK/列に role が加わる（ADR-1: DROP + 新テーブル一本化）。
+# ---------------------------------------------------------------------------
+
+
+def read_agent_tier_params(
+    role: str,
+    complexity: str,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, tuple[float, float, int]]:
+    """指定 role/complexity の各 Tier の (alpha, beta, trials) を返す。
+
+    Args:
+        role: '_db_params.AGENT_ROLES' のいずれか（例: 'developer'）。
         complexity: 'simple' | 'medium' | 'complex'。
         db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
 
     Returns:
         ``{"haiku": (alpha, beta, trials), "sonnet": ..., "opus": ...}``。
         行が無い tier は ``(1.0, 1.0, 0)`` で初期化扱い（Beta(1,1)＝一様分布）。
-        DB 不在 / エラー時も全 tier を初期値で返す。
+        DB 不在 / エラー時も全 tier を初期値で返す。role が異なれば別セルとして
+        分離される（tester の更新が developer に漏れない）。
     """
     defaults: dict[str, tuple[float, float, int]] = {
         t: (1.0, 1.0, 0) for t in _TIER_BANDIT_TIERS
@@ -282,17 +407,17 @@ def read_tier_params(
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT tier, alpha, beta, trials "
-                "FROM tier_bandit "
-                "WHERE task_complexity = ?",
-                (complexity,),
+                "FROM agent_tier_bandit "
+                "WHERE role = ? AND task_complexity = ?",
+                (role, complexity),
             ).fetchall()
         finally:
             conn.close()
     except sqlite3.OperationalError as exc:
-        logger.debug("read_tier_params: table not found or inaccessible: %s", type(exc).__name__)
+        logger.debug("read_agent_tier_params: table not found or inaccessible: %s", type(exc).__name__)
         return defaults
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to read tier_params: %s", type(exc).__name__)
+        logger.warning("failed to read agent_tier_params: %s", type(exc).__name__)
         return defaults
 
     result = dict(defaults)
@@ -303,27 +428,31 @@ def read_tier_params(
     return result
 
 
-def update_tier_params(
+def update_agent_tier_params(
+    role: str,
     complexity: str,
     tier: str,
     *,
     success: bool,
     db_path: Path | None = None,
 ) -> bool:
-    """tier_bandit の (alpha, beta, trials) を 1 試行分更新する。
+    """agent_tier_bandit の (alpha, beta, trials) を 1 試行分更新する。
 
     Args:
+        role: '_db_params.AGENT_ROLES' のいずれか。
         complexity: 'simple' | 'medium' | 'complex'。
         tier: 'haiku' | 'sonnet' | 'opus'。
         success: True なら alpha+=1、False なら beta+=1。
         db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
 
     Returns:
-        UPDATE / INSERT 成功時 True、DB 不在 / エラー時 False。
+        UPSERT 成功時 True、DB 不在 / エラー時 False。
 
     Notes:
+        - 【DC-GP-002】success=True → alpha+=1、success=False → beta+=1。
+          いずれの場合も trials+=1・last_updated 更新（旧 update_tier_params と同一規則）。
         - 行が無ければ INSERT（初期 alpha=1.0, beta=1.0, trials=0 から開始）。
-        - last_updated は現在時刻（UTC ISO8601）に更新。
+        - PK は (role, task_complexity, tier) のため、role が異なれば別行になる。
     """
     if db_path is None:
         db_path = locate_c3_db()
@@ -331,7 +460,7 @@ def update_tier_params(
             return False
 
     if tier not in _TIER_BANDIT_TIERS:
-        logger.warning("update_tier_params: unknown tier %r (continuing)", tier)
+        logger.warning("update_agent_tier_params: unknown tier %r (continuing)", tier)
 
     from datetime import timezone as _tz  # noqa: PLC0415
     now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
@@ -345,16 +474,16 @@ def update_tier_params(
             _apply_busy_timeout(conn)
             # SQLite 3.24+ の UPSERT。既存行があれば加算更新、無ければ初期値 + 1 試行分
             conn.execute(
-                "INSERT INTO tier_bandit "
-                "(task_complexity, tier, alpha, beta, trials, last_updated) "
-                "VALUES (?, ?, ?, ?, 1, ?) "
-                "ON CONFLICT(task_complexity, tier) DO UPDATE SET "
+                "INSERT INTO agent_tier_bandit "
+                "(role, task_complexity, tier, alpha, beta, trials, last_updated) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?) "
+                "ON CONFLICT(role, task_complexity, tier) DO UPDATE SET "
                 "  alpha = alpha + ?, "
                 "  beta = beta + ?, "
                 "  trials = trials + 1, "
                 "  last_updated = excluded.last_updated",
                 (
-                    complexity, tier,
+                    role, complexity, tier,
                     1.0 + alpha_delta, 1.0 + beta_delta, now_iso,
                     alpha_delta, beta_delta,
                 ),
@@ -364,39 +493,39 @@ def update_tier_params(
             conn.close()
         return True
     except sqlite3.OperationalError as exc:
-        logger.debug("update_tier_params: table not found or inaccessible: %s", type(exc).__name__)
+        logger.debug("update_agent_tier_params: table not found or inaccessible: %s", type(exc).__name__)
         return False
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to update tier_params: %s", type(exc).__name__)
+        logger.warning("failed to update agent_tier_params: %s", type(exc).__name__)
         return False
 
 
-# Phase 2-B 用: tier_recent_outcomes ヘルパー（直近 N 件の outcome 履歴）
-
-# escalation 判定の最小サンプル数。これより少ないと escalation しない（統計的に弱い）。
-_FAILURE_RATE_MIN_SAMPLES = 5
-
-
-def record_tier_recent_outcome(
+def record_agent_outcome_event(
     *,
+    role: str,
     complexity: str,
     tier: str,
     success: bool,
-    db_path: Path | None = None,
+    gate: str | None = None,
+    note: str | None = None,
     session_id: str | None = None,
+    db_path: Path | None = None,
 ) -> bool:
-    """``tier_recent_outcomes`` に 1 件 INSERT する。
+    """``agent_outcomes`` に 1 件 INSERT する（履歴保持イベントログ）。
 
-    Phase 2-B のエスカレーション判定用。tier_bandit の累積 α/β とは別に、
-    直近 N 件の event を時系列で保持する。
+    agent_tier_bandit の累積 α/β とは別に、role/gate/note を含めた個々の
+    outcome イベントを時系列で全件保持する（escalation 判定・cost JOIN・
+    将来 OTel 源泉）。
 
     Args:
+        role: '_db_params.AGENT_ROLES' のいずれか。
         complexity: 'simple' | 'medium' | 'complex'。
         tier: 'haiku' | 'sonnet' | 'opus'。
         success: True なら成功、False なら失敗。
+        gate: ゲート ID（例: 'D-2.5'）。省略時 NULL。
+        note: 帰属理由等の自由記述。省略時 NULL。
+        session_id: セッション UUID。省略時 NULL。
         db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
-        session_id: セッション UUID（v2.22.0+）。省略時は NULL で保存。
-            cost 紐づけに使用。None の場合は既存行との後方互換を維持する。
 
     Returns:
         INSERT 成功時 True、DB 不在 / エラー時 False。
@@ -415,80 +544,38 @@ def record_tier_recent_outcome(
             conn.execute("PRAGMA journal_mode=WAL")
             _apply_busy_timeout(conn)
             conn.execute(
-                "INSERT INTO tier_recent_outcomes "
-                "(task_complexity, tier, success, ts, session_id) VALUES (?, ?, ?, ?, ?)",
-                (complexity, tier, 1 if success else 0, now_iso, session_id),
+                "INSERT INTO agent_outcomes "
+                "(role, task_complexity, tier, success, gate, note, session_id, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    role, complexity, tier, 1 if success else 0,
+                    gate, note, session_id, now_iso,
+                ),
             )
             conn.commit()
         finally:
             conn.close()
         return True
     except sqlite3.OperationalError as exc:
-        logger.debug("record_tier_recent_outcome: table not found or inaccessible: %s", type(exc).__name__)
+        logger.debug("record_agent_outcome_event: table not found or inaccessible: %s", type(exc).__name__)
         return False
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to record tier_recent_outcome: %s", type(exc).__name__)
+        logger.warning("failed to record agent_outcome_event: %s", type(exc).__name__)
         return False
 
 
-def read_recent_outcomes(
-    *,
-    limit: int = 10,
-    db_path: Path | None = None,
-) -> list[dict]:
-    """``tier_recent_outcomes`` から直近 ``limit`` 件を時系列降順で返す。
-
-    ``cli_tier._collect_snapshot`` の sqlite3 直接呼び出しを置き換えるヘルパー。
-    busy_timeout は BUSY_TIMEOUT_MS を冪等に適用する。
-
-    Args:
-        limit: 取得件数の上限（デフォルト 10）。
-        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
-
-    Returns:
-        各行を ``{"complexity", "tier", "success", "ts"}`` の dict にしたリスト。
-        DB 不在 / テーブル不在 / エラー時は空リストを返す（呼び出し側を止めない）。
-    """
-    if db_path is None:
-        db_path = locate_c3_db()
-        if db_path is None:
-            return []
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            _apply_busy_timeout(conn)
-            rows = conn.execute(
-                "SELECT task_complexity, tier, success, ts "
-                "FROM tier_recent_outcomes "
-                "ORDER BY ts DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.OperationalError as exc:
-        logger.debug("read_recent_outcomes: table not found or inaccessible: %s", type(exc).__name__)
-        return []
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("read_recent_outcomes: unexpected error: %s", type(exc).__name__)
-        return []
-
-    return [
-        {"complexity": complexity, "tier": tier, "success": bool(success), "ts": ts}
-        for complexity, tier, success, ts in rows
-    ]
-
-
-def read_tier_failure_rate(
+def read_agent_failure_rate(
+    role: str,
     complexity: str,
     tier: str,
     *,
     last_n: int = 10,
     db_path: Path | None = None,
 ) -> tuple[float | None, int]:
-    """直近 ``last_n`` 件の outcome から failure rate を計算する。
+    """直近 ``last_n`` 件の agent_outcomes から failure rate を計算する。
 
     Args:
+        role: '_db_params.AGENT_ROLES' のいずれか。
         complexity: 'simple' / 'medium' / 'complex'。
         tier: 'haiku' / 'sonnet' / 'opus'。
         last_n: 何件を対象にするか（デフォルト 10 件）。
@@ -500,7 +587,8 @@ def read_tier_failure_rate(
         - ``sample_count`` は実際に取得できた件数（最大 last_n）。
         - ``failure_rate`` は失敗件数 / sample_count。
         - サンプルが ``_FAILURE_RATE_MIN_SAMPLES`` 未満の場合は
-          ``failure_rate = None`` を返し、escalation 判定を skip する目印にする。
+          ``failure_rate = None`` を返し、escalation 判定を skip する目印にする
+          （旧 read_tier_failure_rate と同一規則を role 分離して継承）。
         - DB 不在 / エラー時も ``(None, 0)`` を返す。
     """
     if db_path is None:
@@ -513,18 +601,18 @@ def read_tier_failure_rate(
         try:
             _apply_busy_timeout(conn)
             rows = conn.execute(
-                "SELECT success FROM tier_recent_outcomes "
-                "WHERE task_complexity = ? AND tier = ? "
+                "SELECT success FROM agent_outcomes "
+                "WHERE role = ? AND task_complexity = ? AND tier = ? "
                 "ORDER BY ts DESC LIMIT ?",
-                (complexity, tier, last_n),
+                (role, complexity, tier, last_n),
             ).fetchall()
         finally:
             conn.close()
     except sqlite3.OperationalError as exc:
-        logger.debug("read_tier_failure_rate: table not found or inaccessible: %s", type(exc).__name__)
+        logger.debug("read_agent_failure_rate: table not found or inaccessible: %s", type(exc).__name__)
         return None, 0
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to read tier_failure_rate: %s", type(exc).__name__)
+        logger.warning("failed to read agent_failure_rate: %s", type(exc).__name__)
         return None, 0
 
     sample_count = len(rows)
@@ -533,6 +621,74 @@ def read_tier_failure_rate(
 
     failures = sum(1 for r in rows if r[0] == 0)
     return failures / sample_count, sample_count
+
+
+def read_recent_agent_outcomes(
+    *,
+    limit: int = 10,
+    role: str | None = None,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """``agent_outcomes`` から直近 ``limit`` 件を時系列降順で返す（cli_tier 用）。
+
+    Args:
+        limit: 取得件数の上限（デフォルト 10）。
+        role: 指定時は当該 role のみに絞り込む。省略時は全 role 対象。
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+
+    Returns:
+        各行を ``{"role", "complexity", "tier", "success", "gate", "note",
+        "session_id", "ts"}`` の dict にしたリスト。ts 降順。
+        DB 不在 / テーブル不在 / エラー時は空リストを返す（呼び出し側を止めない）。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            _apply_busy_timeout(conn)
+            if role is None:
+                rows = conn.execute(
+                    "SELECT role, task_complexity, tier, success, gate, note, "
+                    "session_id, ts "
+                    "FROM agent_outcomes "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT role, task_complexity, tier, success, gate, note, "
+                    "session_id, ts "
+                    "FROM agent_outcomes "
+                    "WHERE role = ? "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (role, limit),
+                ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_recent_agent_outcomes: table not found or inaccessible: %s", type(exc).__name__)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("read_recent_agent_outcomes: unexpected error: %s", type(exc).__name__)
+        return []
+
+    return [
+        {
+            "role": r_role,
+            "complexity": complexity,
+            "tier": tier,
+            "success": bool(success),
+            "gate": gate,
+            "note": note,
+            "session_id": session_id,
+            "ts": ts,
+        }
+        for r_role, complexity, tier, success, gate, note, session_id, ts in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -700,132 +856,6 @@ def read_agent_cost_summary(
     ]
 
 
-def read_tier_cost_summary(
-    *,
-    db_path: Path | None = None,
-) -> list[dict]:
-    """tier_recent_outcomes × agent_cost_runs を session_id で JOIN し、
-    complexity×tier 別コストを返す（粗い概算 / 精度向上は v2.23.0）。
-
-    2 段 CTE で重複計上を防ぐ:
-      - ``session_cost`` CTE: agent_cost_runs を mainline 除外しつつ
-        session_id 単位で SUM（1 session = 1 行）→ cost の重複計上を構造的に防ぐ
-      - ``outcome_sessions`` CTE: tier_recent_outcomes を
-        (session_id, task_complexity, tier) で DISTINCT 化。
-        session_id が NULL（v2.22.0 移行前行）は除外
-      - JOIN して complexity×tier 別に sessions / total_cost_usd / avg_cost_usd を算出
-
-    既知の不正確性（v2.22.0 許容・精度向上は v2.23.0）:
-      - session が複数の (complexity, tier) outcome を持つ場合、同一 session の cost が
-        複数の (complexity,tier) 行に重複加算されうる（1 session 内での cost 重複は防ぐが、
-        複数 outcome を持つ session の cross-outcome 重複は未解決）
-      - cost は session 全体の non-mainline 合計であり、特定 tier の model 行に限定しない
-      - agent_id 単位の紐づけはしていない
-
-    Args:
-        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
-
-    Returns:
-        各行を dict にしたリスト。キー:
-        ``complexity``(str) / ``tier``(str) / ``sessions``(int) /
-        ``total_cost_usd``(float) / ``avg_cost_usd``(float)。
-        ORDER BY total_cost_usd DESC。
-        テーブル不在 / データ不在 / session_id 全 NULL / JOIN 0 行 /
-        DB 不在 / エラー時は空リストを返す。
-    """
-    if db_path is None:
-        db_path = locate_c3_db()
-        if db_path is None:
-            return []
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            # WAL は書き込みヘルパー呼び出し時または migrate 時に設定済みの前提
-            # （read_agent_cost_summary 等の read ヘルパーと同方針 / CR-M-001）
-            _apply_busy_timeout(conn)
-            rows = conn.execute(
-                "WITH session_cost AS ("
-                "    SELECT session_id,"
-                "           SUM(total_cost_usd) AS session_cost_usd"
-                "    FROM agent_cost_runs"
-                "    WHERE agent_type <> 'mainline'"
-                "    GROUP BY session_id"
-                "),"
-                "outcome_sessions AS ("
-                "    SELECT DISTINCT session_id, task_complexity, tier"
-                "    FROM tier_recent_outcomes"
-                "    WHERE session_id IS NOT NULL"
-                ") "
-                "SELECT o.task_complexity            AS complexity,"
-                "       o.tier                       AS tier,"
-                "       COUNT(DISTINCT o.session_id) AS sessions,"
-                "       SUM(sc.session_cost_usd)     AS total_cost_usd,"
-                "       SUM(sc.session_cost_usd) / COUNT(DISTINCT o.session_id)"
-                "           AS avg_cost_usd "
-                "FROM outcome_sessions o "
-                "JOIN session_cost sc ON sc.session_id = o.session_id "
-                "GROUP BY o.task_complexity, o.tier "
-                "ORDER BY total_cost_usd DESC"
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.OperationalError as exc:
-        # テーブル不在（no such table）は [] を返す（DB 未初期化でも止めない）
-        logger.debug(
-            "read_tier_cost_summary: table not found or inaccessible: %s",
-            type(exc).__name__,
-        )
-        return []
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("read_tier_cost_summary: unexpected error: %s", type(exc).__name__)
-        return []
-
-    return [
-        {
-            "complexity": row[0],
-            "tier": row[1],
-            "sessions": int(row[2]),
-            "total_cost_usd": float(row[3]) if row[3] is not None else 0.0,
-            "avg_cost_usd": float(row[4]) if row[4] is not None else 0.0,
-        }
-        for row in rows
-    ]
-
-
-def read_tier_cost_for_complexity(
-    complexity: str,
-    *,
-    db_path: Path | None = None,
-) -> dict[str, float]:
-    """complexity 別の tier 平均コストを {tier: avg_cost_usd} で返す。
-
-    tie-break のハイブリッド cost 源（実測 avg_cost）。
-    complexity 一致 & avg_cost_usd > 0 のみ。
-    ``read_tier_cost_summary`` の薄いラッパー。
-
-    DB アクセスは ``read_tier_cost_summary`` に委譲するため、
-    DB 例外処理・busy_timeout・read 規約は同関数から継承される。
-    データ/DB 不在で ``read_tier_cost_summary`` が ``[]`` を返す場合、
-    本関数は ``{}`` を返す。
-
-    Args:
-        complexity: フィルタ対象の complexity 値（"simple" / "medium" / "complex"）。
-        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索
-                 （``read_tier_cost_summary`` に委譲）。
-
-    Returns:
-        ``{tier: avg_cost_usd}`` の dict。
-        該当データ不在・DB 不在・エラー時は ``{}``。
-    """
-    rows = read_tier_cost_summary(db_path=db_path)
-    return {
-        r["tier"]: r["avg_cost_usd"]
-        for r in rows
-        if r["complexity"] == complexity and r["avg_cost_usd"] > 0
-    }
-
-
 # ---------------------------------------------------------------------------
 # v2.24.0: model 一致集計・USD/MTok レート化（精度向上版）
 # ---------------------------------------------------------------------------
@@ -952,7 +982,7 @@ def read_tier_cost_rate_summary(
       3. ``(session_id, tier)`` 粒度で ``cost_sum`` と
          ``billable_tokens = input_tokens + output_tokens`` を集約。
          PK=(session_id, agent_id, model) のため行は元々一意 → 重複排除は構造的に成立。
-      4. ``tier_recent_outcomes`` を
+      4. ``agent_outcomes``（v2.41.0 で ``tier_recent_outcomes`` から差替。DC-GP-003）を
          ``DISTINCT (session_id, task_complexity, tier)``（``session_id IS NOT NULL``）で読み、
          ``(session_id, tier)`` バケットと突合して ``(complexity, tier)`` 別に集約。
       5. rate 化: ``rate_usd_per_mtok = total_cost_usd / (billable_tokens / 1_000_000)``。
@@ -1002,7 +1032,7 @@ def read_tier_cost_rate_summary(
             ).fetchall()
             outcome_rows = conn.execute(
                 "SELECT DISTINCT session_id, task_complexity, tier "
-                "FROM tier_recent_outcomes "
+                "FROM agent_outcomes "
                 "WHERE session_id IS NOT NULL"
             ).fetchall()
         finally:
@@ -1149,122 +1179,23 @@ def set_ingest_offset(
         return False
 
 
-def read_tier_bandit_cost(
-    *,
-    db_path: Path | None = None,
-) -> dict[tuple[str, str], tuple[float, int]]:
-    """tier_bandit テーブルから cost 列を読む。
-
-    cli_tier.py の _collect_snapshot が alpha/beta/trials（read_tier_params 由来）と
-    別 SELECT で cost を取得するために使う。
-
-    Args:
-        db_path: c3.db のパス。省略時は locate_c3_db() で探索。
-
-    Returns:
-        ``{(task_complexity, tier): (total_cost_usd, cost_samples)}`` の dict。
-        テーブル不在 / DB 不在 / エラー時は空 dict を返す。
-    """
-    if db_path is None:
-        db_path = locate_c3_db()
-        if db_path is None:
-            return {}
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            _apply_busy_timeout(conn)
-            rows = conn.execute(
-                "SELECT task_complexity, tier, total_cost_usd, cost_samples "
-                "FROM tier_bandit"
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.OperationalError as exc:
-        logger.debug("read_tier_bandit_cost: table not found or inaccessible: %s", type(exc).__name__)
-        return {}
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to read tier_bandit_cost: %s", type(exc).__name__)
-        return {}
-
-    return {
-        (row[0], row[1]): (float(row[2]), int(row[3]))
-        for row in rows
-    }
-
-
 def sync_tier_bandit_cost(
     *,
     db_path: Path | None = None,
 ) -> int:
-    """tier_bandit テーブルの cost 列を rate_summary 集計値で同期する（冪等 SET 同期）。
+    """[Deprecated] no-op で 0 を返す後方互換シム。
 
-    冪等性: 全行の cost 列を 0.0/0 にクリアしてから SET するため、
-    何度呼び出しても結果が同じになる（全クリア→SET の SET 同期）。
+    Deprecated: v2.41.0 で cost 列キャッシュ自体を廃止（ADR-4）。次リリースで削除予定。
 
-    動作:
-      1. ``read_tier_cost_rate_summary`` で (complexity, tier) 別集計を取得。
-      2. 1 トランザクション内で:
-         a. 全行 cost 列クリア: ``UPDATE tier_bandit SET total_cost_usd=0.0, cost_samples=0``
-            （alpha/beta/trials/last_updated は一切変更しない）。
-         b. 各集計行を ``UPDATE tier_bandit SET total_cost_usd=?, cost_samples=?
-            WHERE task_complexity=? AND tier=?`` で SET。
-            ``cost_samples`` は DISTINCT session 数（``read_tier_cost_rate_summary``
-            の ``sessions`` フィールド）を格納する。
-         c. ``commit()``。クリア後 SET 前に別プロセスが読む瞬間を作らないため
-            途中で commit しない（R1 冪等性保証）。
-      3. UPDATE-only: tier_bandit に行が存在しない (complexity, tier) は INSERT しない。
-         alpha/beta のない半端な bandit 行の生成を防ぐ（R4 回避）。
-
-    制限:
-        USD/MTok レートの再現には billable_tokens が必要であり、本テーブル単独では
-        再現不可。レートが必要な箇所は ``read_tier_cost_rate_summary`` /
-        ``read_tier_cost_rate_for_complexity`` を使うこと。
+    旧 tier_bandit テーブルは DROP 済みのため DB には一切接続しない
+    （``read_tier_cost_rate_summary`` も呼ばない）。cost レートが必要な箇所は
+    ``read_tier_cost_rate_summary`` / ``read_tier_cost_rate_for_complexity`` を
+    直読みすること。
 
     Args:
-        db_path: c3.db のパス。省略時は locate_c3_db() で探索。
-            None（locate_c3_db が None を返す）の場合は 0 を返す。
+        db_path: 後方互換のため受け取るが値は無視する。
 
     Returns:
-        cost を SET できた行数（rowcount > 0 の UPDATE 件数合計）。
-        DB 不在 / エラー時は 0 を返す（例外を投げない）。
-        例外発生時は ``finally: conn.close()`` 経由で rollback され、
-        cost 列がクリアされた状態で残る可能性がある。
-        戻り値 0 を受け取った呼び出し元は次回 session_stop での再試行に委ねる。
+        常に 0。
     """
-    if db_path is None:
-        db_path = locate_c3_db()
-        if db_path is None:
-            return 0
-
-    rows = read_tier_cost_rate_summary(db_path=db_path)
-
-    set_count = 0
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            _apply_busy_timeout(conn)
-            # Step 1: 全行 cost 列クリア（alpha/beta/trials/last_updated は触らない）
-            conn.execute("UPDATE tier_bandit SET total_cost_usd = 0.0, cost_samples = 0")
-            # Step 2: 各集計行を SET（UPDATE-only: tier_bandit に行が無い場合は rowcount=0）
-            for row in rows:
-                cur = conn.execute(
-                    "UPDATE tier_bandit "
-                    "SET total_cost_usd = ?, cost_samples = ? "
-                    "WHERE task_complexity = ? AND tier = ?",
-                    (row["total_cost_usd"], row["sessions"], row["complexity"], row["tier"]),
-                )
-                set_count += cur.rowcount
-            # Step 3: 全 SET が完了してから一括 commit（途中 commit しない）
-            conn.commit()
-        finally:
-            conn.close()
-    except sqlite3.OperationalError as exc:
-        logger.debug("sync_tier_bandit_cost: table not found or inaccessible: %s", type(exc).__name__)
-        return 0
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to sync_tier_bandit_cost: %s", type(exc).__name__)
-        return 0
-
-    return set_count
+    return 0

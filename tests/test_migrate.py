@@ -157,9 +157,26 @@ class TestMigrateApplyEmptyDb:
         assert len(applied_at) >= 10  # 最低 YYYY-MM-DD の長さ
 
     def test_apply_001_creates_all_tables(self, tmp_path: Path):
-        """B2: 001 適用後、全 5 テーブル + 4 INDEX が作成される。"""
+        """B2: 001 適用後、全 5 テーブル + 4 INDEX が作成される。
+
+        NOTE(v2.41.0 db-foundation): 004 が tier_bandit/tier_recent_outcomes を
+        DROP するため（ADR-1）、実 migrations ディレクトリ（004 含む）をそのまま
+        使うと本テストが検証したい「001 適用直後」の状態を確認できなくなる。
+        001 自体の DDL 検証という本テストの意図を保つため、001 のみを含む
+        一時ディレクトリに限定する。
+        """
+        import shutil  # noqa: PLC0415
+
+        from c3.migrate import _DEFAULT_MIGRATIONS_DIR  # noqa: PLC0415
+
         db_path = tmp_path / "c3.db"
-        apply_pending_migrations(db_path)
+        mdir_001_only = tmp_path / "migrations_001_only"
+        mdir_001_only.mkdir()
+        shutil.copy(
+            _DEFAULT_MIGRATIONS_DIR / "001_initial.sql",
+            mdir_001_only / "001_initial.sql",
+        )
+        apply_pending_migrations(db_path, migrations_dir=mdir_001_only)
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -548,9 +565,23 @@ class TestMigrate003TierCost:
 
         total_cost_usd / cost_samples は v2.23.0 用確保のみ
         （v2.22.0 では値の書き込み・読み出しなし）。
+
+        NOTE(v2.41.0 db-foundation): 004 が tier_bandit/tier_recent_outcomes を
+        DROP するため（ADR-1）、実 migrations ディレクトリ（004 含む）をそのまま
+        使うと 003 の効果を検証する前にテーブルが消えてしまう。003 自体の DDL 検証
+        という本テストの意図を保つため、001+002+003 のみを含む一時ディレクトリに
+        限定する（H6 と同じ手法）。
         """
+        import shutil  # noqa: PLC0415
+
+        from c3.migrate import _DEFAULT_MIGRATIONS_DIR  # noqa: PLC0415
+
         db_path = tmp_path / "c3.db"
-        apply_pending_migrations(db_path)
+        mdir_003_only = tmp_path / "migrations_003_only"
+        mdir_003_only.mkdir()
+        for name in ("001_initial.sql", "002_agent_cost_runs.sql", "003_tier_cost.sql"):
+            shutil.copy(_DEFAULT_MIGRATIONS_DIR / name, mdir_003_only / name)
+        apply_pending_migrations(db_path, migrations_dir=mdir_003_only)
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -627,8 +658,13 @@ class TestMigrate003TierCost:
         finally:
             conn.close()
 
-        # 003 を適用（実 migrations ディレクトリから。001+002 は schema_migrations に記録済みのためスキップ）
-        apply_pending_migrations(db_path)
+        # 003 を適用。NOTE(v2.41.0 db-foundation): 実 migrations ディレクトリを使うと
+        # 004（tier_bandit/tier_recent_outcomes を DROP・ADR-1）まで適用されてしまい
+        # 本テストが検証したい「003 適用直後の DEFAULT 値」を確認できなくなるため、
+        # mdir_tmp と同じ一時ディレクトリに 003 のみ追加コピーして限定適用する
+        # （001+002 は schema_migrations に記録済みのためスキップされる）。
+        shutil.copy(mdir_real / "003_tier_cost.sql", mdir_tmp / "003_tier_cost.sql")
+        apply_pending_migrations(db_path, migrations_dir=mdir_tmp)
 
         # 003 適用後のデータ確認
         conn = sqlite3.connect(str(db_path))
@@ -669,4 +705,201 @@ class TestMigrate003TierCost:
 
         assert "003" in migration_versions, (
             f"schema_migrations に '003' が記録されていません: {migration_versions}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# H 群: 004 migration 適用テスト (v2.41.0 db-foundation・tier-routing 学習シグナル再設計)
+# ---------------------------------------------------------------------------
+
+class TestMigrate004AgentOutcomes:
+    """H 群: 004_agent_outcomes.sql の適用テスト（Red 先行・未実装のため 004 は失敗する）。
+
+    architecture-report-20260702-214748.md §3-1 に従い、旧 tier_bandit /
+    tier_recent_outcomes を DROP し、agent_tier_bandit / agent_outcomes を新設する。
+    """
+
+    def test_apply_004_returns_version_in_applied(self, tmp_path: Path):
+        """H1: apply_pending_migrations の戻り値に '004' が含まれ、003 より後に適用される。"""
+        db_path = tmp_path / "c3.db"
+        applied = apply_pending_migrations(db_path)
+
+        assert "004" in applied, f"004 が applied に含まれない: {applied}"
+        assert applied.index("003") < applied.index("004"), "003 が 004 より前に来るはず"
+
+    def test_apply_004_creates_new_tables_and_drops_old(self, tmp_path: Path):
+        """H2: 004 適用後、旧 tier_bandit / tier_recent_outcomes が消滅し、
+        新 agent_tier_bandit / agent_outcomes が存在する。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "agent_tier_bandit" in tables, (
+            f"agent_tier_bandit テーブルが見つかりません: {tables}"
+        )
+        assert "agent_outcomes" in tables, (
+            f"agent_outcomes テーブルが見つかりません: {tables}"
+        )
+        assert "tier_bandit" not in tables, "旧 tier_bandit が消えていません"
+        assert "tier_recent_outcomes" not in tables, "旧 tier_recent_outcomes が消えていません"
+
+    def test_apply_004_creates_expected_indexes(self, tmp_path: Path):
+        """H3: agent_outcomes 用の 2 INDEX（cell / session）が作成される。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            indexes = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "idx_agent_outcomes_cell" in indexes, (
+            f"idx_agent_outcomes_cell INDEX が見つかりません: {indexes}"
+        )
+        assert "idx_agent_outcomes_session" in indexes, (
+            f"idx_agent_outcomes_session INDEX が見つかりません: {indexes}"
+        )
+
+    def test_agent_tier_bandit_columns(self, tmp_path: Path):
+        """H4: agent_tier_bandit の列構成が仕様通り（role/task_complexity/tier/alpha/beta/trials/last_updated）。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(agent_tier_bandit)").fetchall()
+            }
+        finally:
+            conn.close()
+
+        expected = {"role", "task_complexity", "tier", "alpha", "beta", "trials", "last_updated"}
+        assert expected.issubset(columns), (
+            f"agent_tier_bandit に不足している列: {expected - columns}"
+        )
+
+    def test_agent_outcomes_columns(self, tmp_path: Path):
+        """H5: agent_outcomes の列構成が仕様通り（role/task_complexity/tier/success/gate/note/session_id/ts）。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(agent_outcomes)").fetchall()
+            }
+        finally:
+            conn.close()
+
+        expected = {
+            "id", "role", "task_complexity", "tier", "success",
+            "gate", "note", "session_id", "ts",
+        }
+        assert expected.issubset(columns), (
+            f"agent_outcomes に不足している列: {expected - columns}"
+        )
+
+    def test_upgrade_from_003_drops_old_tables_and_data(self, tmp_path: Path):
+        """H6: 003 まで適用済み・データありの DB から 004 を適用すると、
+        旧テーブルと旧データが消え、新テーブルが（空で）存在する。
+
+        003→004 upgrade 経路（plan-report db-foundation の主眼）を固定する。
+        """
+        import shutil  # noqa: PLC0415
+
+        from c3.migrate import _DEFAULT_MIGRATIONS_DIR  # noqa: PLC0415
+
+        db_path = tmp_path / "c3.db"
+
+        # 001+002+003 のみを含む一時 migrations ディレクトリを作り、003 相当の DB を再現する
+        mdir_003_only = tmp_path / "migrations_003_only"
+        mdir_003_only.mkdir()
+        for name in ("001_initial.sql", "002_agent_cost_runs.sql", "003_tier_cost.sql"):
+            shutil.copy(_DEFAULT_MIGRATIONS_DIR / name, mdir_003_only / name)
+        apply_pending_migrations(db_path, migrations_dir=mdir_003_only)
+
+        # 003 段階の DB に旧テーブルへの既存データを投入する
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO tier_bandit (task_complexity, tier, alpha, beta, trials)"
+                " VALUES ('medium', 'sonnet', 3.0, 2.0, 4)"
+            )
+            conn.execute(
+                "INSERT INTO tier_recent_outcomes (task_complexity, tier, success, ts)"
+                " VALUES ('medium', 'sonnet', 1, '2026-01-01T00:00:00')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 実 migrations ディレクトリ（004 を含む）から続きを適用する
+        applied = apply_pending_migrations(db_path)
+        assert "004" in applied, f"004 が applied に含まれない: {applied}"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            # 新テーブルが存在すれば行数も確認（無ければ OperationalError で except に落ちる）
+            agent_tier_bandit_count = None
+            agent_outcomes_count = None
+            if "agent_tier_bandit" in tables:
+                agent_tier_bandit_count = conn.execute(
+                    "SELECT COUNT(*) FROM agent_tier_bandit"
+                ).fetchone()[0]
+            if "agent_outcomes" in tables:
+                agent_outcomes_count = conn.execute(
+                    "SELECT COUNT(*) FROM agent_outcomes"
+                ).fetchone()[0]
+        finally:
+            conn.close()
+
+        assert "tier_bandit" not in tables, "旧 tier_bandit のデータごと消えているはず"
+        assert "tier_recent_outcomes" not in tables, "旧 tier_recent_outcomes のデータごと消えているはず"
+        assert "agent_tier_bandit" in tables
+        assert "agent_outcomes" in tables
+        assert agent_tier_bandit_count == 0, "新テーブルは空で作成されるはず（移行データなし・DROP+CREATE）"
+        assert agent_outcomes_count == 0, "新テーブルは空で作成されるはず（移行データなし・DROP+CREATE）"
+
+    def test_apply_004_schema_migrations_records_004(self, tmp_path: Path):
+        """H7: 004 適用後 schema_migrations に '004' 行が記録されている。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            migration_versions = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "004" in migration_versions, (
+            f"schema_migrations に '004' が記録されていません: {migration_versions}"
         )

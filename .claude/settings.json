@@ -10,7 +10,7 @@
       "Bash(python .claude/hooks/recall_autorebuild.py*)",
       "Bash(python .claude/skills/dev-workflow/scripts/review_hint_inject.py*)",
       "Bash(python .claude/skills/dev-workflow/scripts/record_review_decision.py*)",
-      "Bash(python .claude/skills/dev-workflow/scripts/record_tier_outcome.py*)",
+      "Bash(python .claude/skills/dev-workflow/scripts/record_agent_outcome.py*)",
       "Bash(python .claude/skills/init-session/scripts/session_guard.py*)",
       "Read(**)",
       "Glob(**)",

@@ -41,6 +41,11 @@ ESCALATION_THRESHOLD_DEFAULT = 0.5
 COST_LAMBDA_MIN = 0.0
 COST_LAMBDA_MAX = 5.0
 
+# tier-routing 学習シグナルの記録対象 role（v2.41.0 db-foundation）。
+# agent_tier_bandit / agent_outcomes の role 列で許容される値の SSOT。
+# record_agent_outcome.py の --role 検証・cli_tier.py の role 別表示グルーピングが参照する。
+AGENT_ROLES: tuple[str, ...] = ("interviewer", "architect", "planner", "developer", "tester")
+
 
 def _resolve_float_env(
     env_key: str,

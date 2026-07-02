@@ -67,65 +67,18 @@ def _load_select_tier() -> types.ModuleType:
 
 # ---------------------------------------------------------------------------
 # c3_db ヘルパー
+#
+# [v2.41.0 select-tier-hook] TestRecentOutcomesHelpers の record_tier_recent_outcome /
+# read_tier_failure_rate 実 DB 蓄積前提テスト（3 件）は db-shims-and-cost タスクで
+# 両関数が deprecated no-op シムに置き換わったため削除した。等価カバレッジは
+# role 次元付き新 API のテストとして tests/test_db.py::TestRecordAgentOutcomeEvent /
+# TestReadAgentFailureRate（O3/O4 群）が引き継ぐ。シム自体の no-op 挙動は
+# tests/test_db.py::TestDeprecatedShimBehavior が担保する。
+# test_failure_rate_db_not_found は shim の (None, 0) 後方互換動作として維持する。
 # ---------------------------------------------------------------------------
 
 
 class TestRecentOutcomesHelpers:
-
-    def test_record_inserts_row(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "c3.db"
-        _create_c3_db(db_path)
-
-        from c3 import db as c3_db
-        ok = c3_db.record_tier_recent_outcome(
-            complexity="simple", tier="haiku", success=True, db_path=db_path,
-        )
-        assert ok is True
-
-        # tier_recent_outcomes に 1 行入っているか直接 SQL で確認
-        import sqlite3
-        conn = sqlite3.connect(str(db_path))
-        try:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM tier_recent_outcomes"
-            ).fetchone()[0]
-        finally:
-            conn.close()
-        assert count == 1
-
-    def test_failure_rate_computes_correctly(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "c3.db"
-        _create_c3_db(db_path)
-
-        from c3 import db as c3_db
-        # 10 件: 6 失敗 / 4 成功
-        for s in [True, True, True, True, False, False, False, False, False, False]:
-            c3_db.record_tier_recent_outcome(
-                complexity="simple", tier="haiku", success=s, db_path=db_path,
-            )
-
-        rate, samples = c3_db.read_tier_failure_rate(
-            "simple", "haiku", last_n=10, db_path=db_path,
-        )
-        assert samples == 10
-        assert rate == 0.6
-
-    def test_failure_rate_returns_none_below_min_samples(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "c3.db"
-        _create_c3_db(db_path)
-
-        from c3 import db as c3_db
-        # 4 件のみ（最小 5 件未満）
-        for _ in range(4):
-            c3_db.record_tier_recent_outcome(
-                complexity="simple", tier="haiku", success=False, db_path=db_path,
-            )
-
-        rate, samples = c3_db.read_tier_failure_rate(
-            "simple", "haiku", db_path=db_path,
-        )
-        assert samples == 4
-        assert rate is None  # サンプル不足
 
     def test_failure_rate_db_not_found(self, tmp_path: Path) -> None:
         from c3 import db as c3_db

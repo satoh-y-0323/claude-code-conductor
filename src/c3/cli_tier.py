@@ -3,14 +3,19 @@
 tier-routing (Phase 2 完成) の効果計測用ダッシュボード。
 
 主な機能:
-- ``c3 tier stats``: 全 complexity × tier の累積（tier_bandit）と直近 outcome を表形式表示
+- ``c3 tier stats``: role 別 complexity × tier の累積（agent_tier_bandit）と
+  直近 outcome（agent_outcomes）を表形式表示
 - ``c3 tier stats --json``: 機械可読 JSON 出力
 - ``c3 tier stats --recent N``: 直近 outcome の表示件数を変更（デフォルト 10）
+- ``c3 tier stats --role <role>``: 指定 role のみに絞り込む
 
 設計判断:
 - PO 廃止前の ``c3 status`` CLI パターンを踏襲（旧 ``cli_status.py`` / v2.0.0 で削除）
 - データがゼロでも「収集中」と分かる表示にする
 - escalation 発動回数は専用テーブルがないため今回は表示なし（将来拡張余地）
+- v2.41.0 cli-tier-stats タスクで role 次元（agent_tier_bandit / agent_outcomes）
+  に対応。旧フラット tier_bandit / learning_progress / tier_cost（session 合計
+  USD 概算セクション）は廃止（architecture-report-20260702-214748.md §3-7）
 """
 
 from __future__ import annotations
@@ -58,10 +63,24 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=_DEFAULT_RECENT_LIMIT,
         help=f"直近 outcome の表示件数（デフォルト {_DEFAULT_RECENT_LIMIT}）",
     )
+    stats.add_argument(
+        "--role",
+        default=None,
+        help="AGENT_ROLES のいずれかで絞り込む",
+    )
     stats.set_defaults(handler=handle_stats)
 
 
 def handle_stats(args: argparse.Namespace) -> int:
+    role_filter = getattr(args, "role", None)
+    if role_filter is not None and role_filter not in c3_db.AGENT_ROLES:
+        print(
+            f"--role の値が不正です: {role_filter!r}"
+            f"（有効な値: {', '.join(c3_db.AGENT_ROLES)}）",
+            file=sys.stderr,
+        )
+        return 1
+
     db_path = c3_db.locate_c3_db()
     if db_path is None or not db_path.exists():
         print(
@@ -72,7 +91,7 @@ def handle_stats(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        snapshot = _collect_snapshot(db_path, recent_limit=args.recent)
+        snapshot = _collect_snapshot(db_path, recent_limit=args.recent, role_filter=role_filter)
     except Exception as exc:  # noqa: BLE001
         print(
             f"DB アクセスエラー: {exc}\n"
@@ -89,61 +108,60 @@ def handle_stats(args: argparse.Namespace) -> int:
     return 0
 
 
-def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
-    """DB から tier_bandit / tier_recent_outcomes / agent_cost / tier_cost を読み snapshot dict を返す。"""
-    bandit_rows: list[dict[str, Any]] = []
-    total_trials = 0
+def _collect_snapshot(
+    db_path, recent_limit: int, role_filter: str | None = None,
+) -> dict[str, Any]:
+    """DB から role 別 tier_bandit / recent_outcomes / agent_cost / tier_cost_rate を読み snapshot dict を返す。
 
-    # cost 列は別 SELECT（read_tier_params は alpha/beta/trials 専用を維持）
-    bandit_cost: dict[tuple[str, str], tuple[float, int]] = c3_db.read_tier_bandit_cost(
-        db_path=db_path,
-    )
+    Args:
+        db_path: c3.db のパス。
+        recent_limit: 直近 outcome の取得件数上限。
+        role_filter: 指定時は当該 role のみに絞り込む（未指定時は全 AGENT_ROLES）。
+    """
+    roles: list[str] = [role_filter] if role_filter is not None else list(c3_db.AGENT_ROLES)
 
-    for complexity in _COMPLEXITIES:
-        params = c3_db.read_tier_params(complexity, db_path=db_path)
-        for tier in _TIERS:
-            alpha, beta, trials = params[tier]
-            total_trials += trials
-            denom = alpha + beta
-            expected = alpha / denom if denom > 0 else 0.5
-            cost_usd, cost_samples = bandit_cost.get((complexity, tier), (0.0, 0))
-            bandit_rows.append({
-                "complexity": complexity,
-                "tier": tier,
-                "alpha": alpha,
-                "beta": beta,
-                "trials": trials,
-                "expected_success_rate": expected,
-                "total_cost_usd": cost_usd,
-                "cost_samples": cost_samples,
-            })
+    tier_bandit_by_role: dict[str, dict[str, Any]] = {}
+    for role in roles:
+        rows: list[dict[str, Any]] = []
+        total_trials = 0
+        for complexity in _COMPLEXITIES:
+            params = c3_db.read_agent_tier_params(role, complexity, db_path=db_path)
+            for tier in _TIERS:
+                alpha, beta, trials = params[tier]
+                total_trials += trials
+                denom = alpha + beta
+                expected = alpha / denom if denom > 0 else 0.5
+                rows.append({
+                    "complexity": complexity,
+                    "tier": tier,
+                    "alpha": alpha,
+                    "beta": beta,
+                    "trials": trials,
+                    "expected_success_rate": expected,
+                })
+        mode = "uniform" if total_trials < _LEARNING_THRESHOLD else "thompson"
+        tier_bandit_by_role[role] = {
+            "trials": total_trials,
+            "threshold": _LEARNING_THRESHOLD,
+            "mode": mode,
+            "rows": rows,
+        }
 
-    recent_outcomes: list[dict[str, Any]] = c3_db.read_recent_outcomes(
+    recent_outcomes: list[dict[str, Any]] = c3_db.read_recent_agent_outcomes(
         limit=recent_limit,
+        role=role_filter,
         db_path=db_path,
     )
 
     agent_cost: list[dict[str, Any]] = c3_db.read_agent_cost_summary(db_path=db_path)
 
-    tier_cost: list[dict[str, Any]] = c3_db.read_tier_cost_summary(db_path=db_path)
-
     tier_cost_rate: list[dict[str, Any]] = c3_db.read_tier_cost_rate_summary(db_path=db_path)
 
-    if total_trials < _LEARNING_THRESHOLD:
-        mode = "uniform"
-    else:
-        mode = "thompson"
-
     return {
-        "learning_progress": {
-            "trials": total_trials,
-            "threshold": _LEARNING_THRESHOLD,
-            "mode": mode,
-        },
-        "tier_bandit": bandit_rows,
+        "roles": roles,
+        "tier_bandit_by_role": tier_bandit_by_role,
         "recent_outcomes": recent_outcomes,
         "agent_cost": agent_cost,
-        "tier_cost": tier_cost,
         "tier_cost_rate": tier_cost_rate,
         "routing_params": {
             "cost_lambda": c3_db.resolve_cost_lambda(),
@@ -155,45 +173,55 @@ def _collect_snapshot(db_path, recent_limit: int) -> dict[str, Any]:
 
 def _render_human(snapshot: dict[str, Any]) -> None:
     """人間向けの表形式で snapshot を stdout に出力する。"""
-    progress = snapshot["learning_progress"]
-    trials = progress["trials"]
-    threshold = progress["threshold"]
-    if progress["mode"] == "uniform":
-        mode_label = "学習データ収集中"
-    else:
-        mode_label = "Thompson Sampling 動作中"
-
-    print(f"学習データ収集状況: {trials} / {threshold} 試行（{mode_label}）")
+    print("== Tier 別累積（role 別グループ表示） ==")
     print()
+    for role in snapshot["roles"]:
+        group = snapshot["tier_bandit_by_role"][role]
+        role_safe = sanitize_terminal_text(str(role))
+        print(f"[{role_safe}]")
+        if group["trials"] == 0:
+            print("収集中")
+            print()
+            continue
 
-    print("== Tier 別累積（tier_bandit） ==")
-    print(
-        f"{'complexity':<12} {'tier':<8} {'trials':>6}  {'alpha':>5}  {'beta':>5}  "
-        f"{'期待成功率':>10}  {'cost_usd':>10}  {'cost_samples':>12}"
-    )
-    for row in snapshot["tier_bandit"]:
-        complexity_safe = sanitize_terminal_text(str(row["complexity"]))
-        tier_safe = sanitize_terminal_text(str(row["tier"]))
+        mode_label = "一様ルーティング中" if group["mode"] == "uniform" else "Thompson Sampling 動作中"
+        print(f"学習データ収集状況: {group['trials']} / {group['threshold']} 試行（{mode_label}）")
         print(
-            f"{complexity_safe:<12} {tier_safe:<8} "
-            f"{row['trials']:>6}  {row['alpha']:>5.2f}  {row['beta']:>5.2f}  "
-            f"{row['expected_success_rate'] * 100:>9.2f}%  "
-            f"${row['total_cost_usd']:>9.4f}  {row['cost_samples']:>12}"
+            f"{'complexity':<12} {'tier':<8} {'trials':>6}  {'alpha':>5}  {'beta':>5}  "
+            f"{'期待成功率':>10}"
         )
-    print()
+        for row in group["rows"]:
+            complexity_safe = sanitize_terminal_text(str(row["complexity"]))
+            tier_safe = sanitize_terminal_text(str(row["tier"]))
+            print(
+                f"{complexity_safe:<12} {tier_safe:<8} "
+                f"{row['trials']:>6}  {row['alpha']:>5.2f}  {row['beta']:>5.2f}  "
+                f"{row['expected_success_rate'] * 100:>9.2f}%"
+            )
+        print()
 
-    print(f"== 直近 outcome 履歴（tier_recent_outcomes、最新 {len(snapshot['recent_outcomes'])} 件） ==")
+    print(f"== 直近 outcome 履歴（最新 {len(snapshot['recent_outcomes'])} 件） ==")
     if not snapshot["recent_outcomes"]:
         print("（記録なし）")
     else:
-        print(f"{'ts':<25} {'complexity':<12} {'tier':<8} {'outcome':<10}")
+        print(
+            f"{'ts':<25} {'role':<12} {'complexity':<12} {'tier':<8} "
+            f"{'gate':<10} {'outcome':<10}"
+        )
         for row in snapshot["recent_outcomes"]:
             outcome = "success" if row["success"] else "failure"
-            print(f"{row['ts']:<25} {row['complexity']:<12} {row['tier']:<8} {outcome:<10}")
+            role_safe = sanitize_terminal_text(str(row["role"]))
+            complexity_safe = sanitize_terminal_text(str(row["complexity"]))
+            tier_safe = sanitize_terminal_text(str(row["tier"]))
+            gate_safe = sanitize_terminal_text(str(row["gate"])) if row["gate"] else ""
+            print(
+                f"{row['ts']:<25} {role_safe:<12} {complexity_safe:<12} {tier_safe:<8} "
+                f"{gate_safe:<10} {outcome:<10}"
+            )
     print()
 
     print("== 学習データ記録チャネル ==")
-    print("記録元: dev-workflow フェーズ E の最終承認時のみ（record_tier_outcome.py）")
+    print("記録元: dev-workflow の各フェーズ承認ゲート・並列タスク単位（record_agent_outcome.py）")
     print("直接指示作業ではデータが溜まりません（設計通り）")
     print()
 
@@ -216,25 +244,6 @@ def _render_human(snapshot: dict[str, Any]) -> None:
                 f"{row['cache_read_tokens']:>9}  {row['cache_create_tokens']:>9}"
                 f"{note}"
             )
-    print()
-
-    print("== Tier 別平均コスト（粗い概算・session 合計 USD） ==")
-    tier_cost = snapshot.get("tier_cost", [])
-    if not tier_cost:
-        print("（cost 紐づけデータ未収集）")
-    else:
-        print(f"{'complexity':<12} {'tier':<8} {'sessions':>8}  {'avg_usd':>10}  {'total_usd':>10}")
-        for row in tier_cost:
-            complexity_safe = sanitize_terminal_text(str(row["complexity"]))
-            tier_safe = sanitize_terminal_text(str(row["tier"]))
-            print(
-                f"{complexity_safe:<12} {tier_safe:<8} "
-                f"{row['sessions']:>8}  "
-                f"${row['avg_cost_usd']:>9.4f}  "
-                f"${row['total_cost_usd']:>9.4f}"
-            )
-    print()
-    print("（注: 粗い概算・session 合計 USD。v2.24.0 より rate セクション追加済み）")
     print()
 
     print("== Tier 別 USD/MTok レート（model 一致・tie-break が使用） ==")

@@ -22,14 +22,15 @@ from c3.db import (
     insert_agent_cost_run,
     locate_c3_db,
     read_agent_cost_summary,
-    read_tier_bandit_cost,
     read_tier_cost_rate_for_complexity,
     read_tier_cost_rate_summary,
-    read_tier_cost_summary,
-    read_tier_cost_for_complexity,
+    read_tier_failure_rate,
+    read_tier_params,
+    record_agent_outcome_event,
     record_tier_recent_outcome,
     set_ingest_offset,
     sync_tier_bandit_cost,
+    update_tier_params,
 )
 
 
@@ -341,332 +342,22 @@ def _make_c3_db_v003(tmp_path: Path) -> Path:
     return db_path
 
 
-def _seed_cost_run(db: Path, *, session_id: str, agent_id: str,
-                   agent_type: str, total_cost_usd: float,
-                   model: str = "claude-sonnet-4-6-20260101") -> None:
-    """agent_cost_runs に seed を挿入するヘルパー。"""
-    insert_agent_cost_run(
-        session_id=session_id,
-        agent_id=agent_id,
-        agent_type=agent_type,
-        description=None,
-        model=model,
-        attribution_skill=None,
-        input_tokens=100,
-        output_tokens=50,
-        cache_read_tokens=0,
-        cache_create_tokens=0,
-        total_cost_usd=total_cost_usd,
-        db_path=db,
-    )
+# 設計判断（db-shims-and-cost タスク）: H 群（TestTierCostHelpers）は
+# record_tier_recent_outcome（旧 tier_recent_outcomes への INSERT）を seed 手段として
+# read_tier_cost_summary の JOIN 結果を検証していたが、migration 004（db-foundation, fab3ed3）で
+# tier_recent_outcomes が DROP 済みのため、record_tier_recent_outcome は本タスクで
+# DB 非接続の no-op シムに置換した（ADR-5）。結果として read_tier_cost_summary は
+# JOIN 元テーブルが永続的に存在しないため常に [] を返す関数になった
+# （read_tier_cost_summary 自体は次タスク cli-tier-stats の判断まで温存・
+#  test-report §3-4 参照）。この関数の非空 JOIN 結果を前提にした H 群テストは
+# 恒久的に再現不能になったため、テストクラスごと削除する（_seed_cost_run も
+# H 群専用ヘルパーのため合わせて削除）。読み出し専用の空リスト回帰は J 群
+# （TestReadTierCostRateSummary 等・agent_outcomes ベース）が引き継ぐ。
 
 
-class TestTierCostHelpers:
-    """H 群: v2.22.0 で追加した session_id 拡張 + read_tier_cost_summary テスト。"""
-
-    def test_session_id_saved(self, tmp_path: Path):
-        """H1: session_id 付き呼び出しで DB に session_id が保存される。"""
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        db = _make_c3_db_v003(tmp_path)
-
-        ok = record_tier_recent_outcome(
-            complexity="medium",
-            tier="sonnet",
-            success=True,
-            session_id="sess-h1",
-            db_path=db,
-        )
-        assert ok is True
-
-        conn = _sqlite3.connect(str(db))
-        row = conn.execute(
-            "SELECT session_id FROM tier_recent_outcomes WHERE session_id = ?",
-            ("sess-h1",),
-        ).fetchone()
-        conn.close()
-        assert row is not None
-        assert row[0] == "sess-h1"
-
-    def test_session_id_null_backward_compat(self, tmp_path: Path):
-        """H2: session_id 省略（デフォルト None）で NULL 保存・既存呼び出しが壊れない。"""
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        db = _make_c3_db_v003(tmp_path)
-
-        ok = record_tier_recent_outcome(
-            complexity="simple",
-            tier="haiku",
-            success=True,
-            db_path=db,
-        )
-        assert ok is True
-
-        conn = _sqlite3.connect(str(db))
-        row = conn.execute(
-            "SELECT session_id FROM tier_recent_outcomes "
-            "ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        assert row is not None
-        assert row[0] is None, "session_id を省略したら NULL で保存されるべき"
-
-    def test_join_basic(self, tmp_path: Path):
-        """H3: JOIN 基本 — 同一 session_id で outcome + cost を seed → 期待コストが返る。"""
-        db = _make_c3_db_v003(tmp_path)
-        sess = "sess-h3"
-
-        record_tier_recent_outcome(
-            complexity="medium", tier="sonnet", success=True,
-            session_id=sess, db_path=db,
-        )
-        _seed_cost_run(db, session_id=sess, agent_id="agent-x",
-                       agent_type="developer", total_cost_usd=0.01)
-
-        result = read_tier_cost_summary(db_path=db)
-        assert len(result) == 1
-        row = result[0]
-        assert row["complexity"] == "medium"
-        assert row["tier"] == "sonnet"
-        assert row["sessions"] == 1
-        assert abs(row["total_cost_usd"] - 0.01) < 1e-9
-        assert abs(row["avg_cost_usd"] - 0.01) < 1e-9
-
-    def test_mainline_excluded(self, tmp_path: Path):
-        """H4: mainline の cost 行は集計に含まれない。"""
-        db = _make_c3_db_v003(tmp_path)
-        sess = "sess-h4"
-
-        record_tier_recent_outcome(
-            complexity="simple", tier="haiku", success=True,
-            session_id=sess, db_path=db,
-        )
-        # mainline のみ seed（集計除外対象）
-        _seed_cost_run(db, session_id=sess, agent_id="mainline",
-                       agent_type="mainline", total_cost_usd=0.05)
-
-        result = read_tier_cost_summary(db_path=db)
-        assert result == [], "mainline のみの session は JOIN 後に残らないはず"
-
-    def test_no_duplicate_cost_multiple_agent_rows(self, tmp_path: Path):
-        """H5: 同一 session_id で複数 agent_id×model 行 → session cost が 1 回だけ計上される。"""
-        db = _make_c3_db_v003(tmp_path)
-        sess = "sess-h5"
-
-        record_tier_recent_outcome(
-            complexity="complex", tier="opus", success=True,
-            session_id=sess, db_path=db,
-        )
-        # 同一 session で 3 agent_id×model（合計 0.03 USD）
-        _seed_cost_run(db, session_id=sess, agent_id="agent-a",
-                       agent_type="developer", total_cost_usd=0.01)
-        _seed_cost_run(db, session_id=sess, agent_id="agent-b",
-                       agent_type="developer", total_cost_usd=0.01,
-                       model="claude-haiku-4-5-20260101")
-        _seed_cost_run(db, session_id=sess, agent_id="agent-c",
-                       agent_type="tester", total_cost_usd=0.01)
-
-        result = read_tier_cost_summary(db_path=db)
-        assert len(result) == 1
-        row = result[0]
-        # session_cost CTE で先に SUM → 0.03 USD が 1 回だけ計上される
-        assert abs(row["total_cost_usd"] - 0.03) < 1e-9
-        assert row["sessions"] == 1
-
-    def test_no_duplicate_sessions_multiple_outcome_rows(self, tmp_path: Path):
-        """H5b: 同一 (session,complexity,tier) の outcome 複数行 → sessions が二重カウントされない。"""
-        db = _make_c3_db_v003(tmp_path)
-        sess = "sess-h5b"
-
-        # 同じ session×complexity×tier の outcome を 2 行 INSERT
-        record_tier_recent_outcome(
-            complexity="medium", tier="sonnet", success=True,
-            session_id=sess, db_path=db,
-        )
-        record_tier_recent_outcome(
-            complexity="medium", tier="sonnet", success=False,
-            session_id=sess, db_path=db,
-        )
-        _seed_cost_run(db, session_id=sess, agent_id="agent-x",
-                       agent_type="developer", total_cost_usd=0.02)
-
-        result = read_tier_cost_summary(db_path=db)
-        assert len(result) == 1
-        row = result[0]
-        # outcome_sessions CTE の DISTINCT で 1 行に潰されるため sessions=1
-        assert row["sessions"] == 1
-        assert abs(row["total_cost_usd"] - 0.02) < 1e-9
-
-    def test_null_session_id_excluded(self, tmp_path: Path):
-        """H6: session_id=NULL の outcome は集計対象外。"""
-        db = _make_c3_db_v003(tmp_path)
-
-        # session_id=None（NULL）で outcome を記録
-        record_tier_recent_outcome(
-            complexity="simple", tier="haiku", success=True,
-            db_path=db,  # session_id 省略 → NULL
-        )
-        # cost も seed するが、NULL session は JOIN 不能
-        _seed_cost_run(db, session_id="some-other-sess", agent_id="agent-x",
-                       agent_type="developer", total_cost_usd=0.01)
-
-        result = read_tier_cost_summary(db_path=db)
-        assert result == [], "session_id=NULL の outcome は集計対象外"
-
-    def test_empty_tables_returns_empty_list(self, tmp_path: Path):
-        """H7: テーブル空（seed なし）で [] を返す。"""
-        db = _make_c3_db_v003(tmp_path)
-        result = read_tier_cost_summary(db_path=db)
-        assert result == []
-
-    def test_db_absent_returns_empty_list(self, tmp_path: Path):
-        """H8: DB 不在で [] を返す（静かに失敗）。"""
-        absent_db = tmp_path / "no_such.db"
-        result = read_tier_cost_summary(db_path=absent_db)
-        assert result == []
-
-
-# ---------------------------------------------------------------------------
-# I 群: read_tier_cost_for_complexity (v2.23.0 T2)
-# ---------------------------------------------------------------------------
-
-
-class TestReadTierCostForComplexity:
-    """I 群: read_tier_cost_for_complexity のテスト。
-
-    read_tier_cost_summary の薄いラッパーであるため、DB セットアップは
-    H 群の _make_c3_db_v003 / _seed_cost_run / record_tier_recent_outcome を流用する。
-    """
-
-    def _seed_session(
-        self,
-        db: Path,
-        *,
-        complexity: str,
-        tier: str,
-        cost_usd: float,
-        session_id: str,
-    ) -> None:
-        """outcome + cost_run を 1 セッション分まとめて seed するヘルパー。"""
-        record_tier_recent_outcome(
-            complexity=complexity,
-            tier=tier,
-            success=True,
-            session_id=session_id,
-            db_path=db,
-        )
-        _seed_cost_run(
-            db,
-            session_id=session_id,
-            agent_id="agent-i",
-            agent_type="developer",
-            total_cost_usd=cost_usd,
-        )
-
-    def test_complexity_filter_returns_matching_rows_only(self, tmp_path: Path):
-        """I1: complexity が一致する行のみ {tier: avg_cost} で返す。
-
-        medium を指定したら medium 行の {tier: avg_cost} のみを返し、
-        他の complexity (simple/complex) は含まない。
-        """
-        db = _make_c3_db_v003(tmp_path)
-
-        self._seed_session(db, complexity="medium", tier="sonnet",
-                           cost_usd=0.02, session_id="i1-medium-sonnet")
-        self._seed_session(db, complexity="simple", tier="haiku",
-                           cost_usd=0.01, session_id="i1-simple-haiku")
-        self._seed_session(db, complexity="complex", tier="opus",
-                           cost_usd=0.05, session_id="i1-complex-opus")
-
-        result = read_tier_cost_for_complexity("medium", db_path=db)
-
-        assert isinstance(result, dict)
-        assert set(result.keys()) == {"sonnet"}
-        assert abs(result["sonnet"] - 0.02) < 1e-9
-        # simple / complex は含まない
-        assert "haiku" not in result
-        assert "opus" not in result
-
-    def test_avg_cost_zero_or_negative_excluded(self, tmp_path: Path):
-        """I2: avg_cost_usd <= 0 の行は除外される。
-
-        0 コストのセッションを seed しても結果に含まれないことを確認する。
-        ただし read_tier_cost_summary は avg_cost_usd が 0.0 の行を返しうるため、
-        本関数がそれを除外することを直接テストする。
-        本テストでは read_tier_cost_summary をモックして avg_cost_usd=0 の
-        データを注入することで、フィルタ動作を独立して検証する。
-        """
-        from unittest.mock import patch  # noqa: PLC0415
-
-        fake_rows = [
-            {"complexity": "medium", "tier": "haiku",
-             "sessions": 1, "total_cost_usd": 0.0, "avg_cost_usd": 0.0},
-            {"complexity": "medium", "tier": "sonnet",
-             "sessions": 1, "total_cost_usd": 0.01, "avg_cost_usd": 0.01},
-        ]
-        with patch("c3.db.read_tier_cost_summary", return_value=fake_rows):
-            result = read_tier_cost_for_complexity("medium")
-
-        # avg_cost_usd=0 の haiku は除外、sonnet のみ返る
-        assert "haiku" not in result
-        assert "sonnet" in result
-        assert abs(result["sonnet"] - 0.01) < 1e-9
-
-    def test_no_matching_complexity_returns_empty_dict(self, tmp_path: Path):
-        """I3: 該当 complexity のデータが無い場合は {} を返す。"""
-        db = _make_c3_db_v003(tmp_path)
-
-        # simple のみ seed
-        self._seed_session(db, complexity="simple", tier="haiku",
-                           cost_usd=0.01, session_id="i3-simple")
-
-        result = read_tier_cost_for_complexity("complex", db_path=db)
-        assert result == {}
-
-    def test_db_absent_returns_empty_dict(self, tmp_path: Path):
-        """I4: DB 不在（存在しないパスを db_path に渡す）で {} を返す。"""
-        absent_db = tmp_path / "no_such_i4.db"
-        result = read_tier_cost_for_complexity("medium", db_path=absent_db)
-        assert result == {}
-
-    def test_multiple_tiers_same_complexity(self, tmp_path: Path):
-        """I5: 同一 complexity で複数 tier が存在する場合、全て返る。"""
-        db = _make_c3_db_v003(tmp_path)
-
-        self._seed_session(db, complexity="medium", tier="haiku",
-                           cost_usd=0.01, session_id="i5-haiku")
-        self._seed_session(db, complexity="medium", tier="sonnet",
-                           cost_usd=0.02, session_id="i5-sonnet")
-
-        result = read_tier_cost_for_complexity("medium", db_path=db)
-
-        assert set(result.keys()) == {"haiku", "sonnet"}
-        assert abs(result["haiku"] - 0.01) < 1e-9
-        assert abs(result["sonnet"] - 0.02) < 1e-9
-
-    def test_existing_read_tier_cost_summary_tests_still_pass(self, tmp_path: Path):
-        """I6: read_tier_cost_summary 既存テストの代表例が本関数追加後も green（不変確認）。
-
-        H3 と同等のシナリオを再実行し、read_tier_cost_summary が
-        read_tier_cost_for_complexity の実装で一切変更されていないことを確認する。
-        """
-        db = _make_c3_db_v003(tmp_path)
-        sess = "i6-backward-compat"
-
-        record_tier_recent_outcome(
-            complexity="medium", tier="sonnet", success=True,
-            session_id=sess, db_path=db,
-        )
-        _seed_cost_run(db, session_id=sess, agent_id="agent-x",
-                       agent_type="developer", total_cost_usd=0.01)
-
-        # read_tier_cost_summary は変更なしに動作する
-        summary = read_tier_cost_summary(db_path=db)
-        assert len(summary) == 1
-        assert summary[0]["complexity"] == "medium"
-        assert abs(summary[0]["avg_cost_usd"] - 0.01) < 1e-9
-
-        # read_tier_cost_for_complexity も同じ結果を反映する
-        for_complexity = read_tier_cost_for_complexity("medium", db_path=db)
-        assert abs(for_complexity["sonnet"] - 0.01) < 1e-9
+# 設計判断（db-shims-and-cost タスク）: 旧 read_tier_cost_for_complexity（avg_cost_usd 版・
+# v2.23.0）は db.py から削除済み（architecture-report §3-3 削除対象）。当該関数専用の
+# I 群テスト（TestReadTierCostForComplexity）は関数不在のため丸ごと削除する。
 
 
 # ---------------------------------------------------------------------------
@@ -887,7 +578,8 @@ class TestReadTierCostRateSummary:
         db = _make_c3_db_v003(tmp_path)
         sess = "j2-1-rate"
 
-        record_tier_recent_outcome(
+        record_agent_outcome_event(
+            role="developer",
             complexity="medium", tier="sonnet", success=True,
             session_id=sess, db_path=db,
         )
@@ -917,7 +609,8 @@ class TestReadTierCostRateSummary:
         db = _make_c3_db_v003(tmp_path)
         sess = "j2-2-mainline"
 
-        record_tier_recent_outcome(
+        record_agent_outcome_event(
+            role="developer",
             complexity="simple", tier="haiku", success=True,
             session_id=sess, db_path=db,
         )
@@ -945,7 +638,8 @@ class TestReadTierCostRateSummary:
         db = _make_c3_db_v003(tmp_path)
         sess = "j2-3-model-match"
 
-        record_tier_recent_outcome(
+        record_agent_outcome_event(
+            role="developer",
             complexity="complex", tier="opus", success=True,
             session_id=sess, db_path=db,
         )
@@ -985,7 +679,8 @@ class TestReadTierCostRateSummary:
         db = _make_c3_db_v003(tmp_path)
         sess = "j2-4-unknown"
 
-        record_tier_recent_outcome(
+        record_agent_outcome_event(
+            role="developer",
             complexity="medium", tier="sonnet", success=True,
             session_id=sess, db_path=db,
         )
@@ -1009,7 +704,8 @@ class TestReadTierCostRateSummary:
         db = _make_c3_db_v003(tmp_path)
         sess = "j2-5-billable-zero"
 
-        record_tier_recent_outcome(
+        record_agent_outcome_event(
+            role="developer",
             complexity="simple", tier="haiku", success=True,
             session_id=sess, db_path=db,
         )
@@ -1069,7 +765,8 @@ class TestReadTierCostRateSummary:
         db = _make_c3_db_v003(tmp_path)
         sess = "j2-9-keys"
 
-        record_tier_recent_outcome(
+        record_agent_outcome_event(
+            role="developer",
             complexity="medium", tier="sonnet", success=True,
             session_id=sess, db_path=db,
         )
@@ -1127,7 +824,8 @@ class TestReadTierCostRateForComplexity:
         session_id: str,
     ) -> None:
         """outcome + cost_run (token 付き) を 1 セッション分まとめて seed するヘルパー。"""
-        record_tier_recent_outcome(
+        record_agent_outcome_event(
+            role="developer",
             complexity=complexity,
             tier=tier_for_outcome,
             success=True,
@@ -1297,7 +995,8 @@ class TestReadTierCostRateForComplexity:
         db = _make_c3_db_v003(tmp_path)
         sess = "k6-backward-compat"
 
-        record_tier_recent_outcome(
+        record_agent_outcome_event(
+            role="developer",
             complexity="medium", tier="sonnet", success=True,
             session_id=sess, db_path=db,
         )
@@ -1332,9 +1031,13 @@ class TestReadTierCostRateForComplexity:
 class TestExceptionLogTypeName:
     """C-(1): 例外発生時にログ本文へ型名が出て生 exc message が出ないことを検証。
 
-    read_tier_params を代表例として使用。corrupt なバイナリを DB として渡すことで
-    sqlite3.DatabaseError（not an SQLite3 database）を発生させ、
-    caplog でログ本文に型名が含まれ生 message が含まれないことを確認する。
+    read_agent_tier_params を代表例として使用する。
+    元は read_tier_params を代表例にしていたが、v2.41.0 db-shims-and-cost タスクで
+    read_tier_params は DB に一切接続しない deprecated シムに置換された（ADR-5）ため、
+    DB 例外パスを持つ後継の read_agent_tier_params に差し替えた（実装・ログ規約は同一）。
+    corrupt なバイナリを DB として渡すことで sqlite3.DatabaseError
+    （not an SQLite3 database）を発生させ、caplog でログ本文に型名が含まれ
+    生 message が含まれないことを確認する。
     """
 
     def test_read_tier_params_logs_exception_type_not_message(
@@ -1342,21 +1045,21 @@ class TestExceptionLogTypeName:
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """SR-R-001: read_tier_params は例外発生時に type(exc).__name__ をログに出す。
+        """SR-R-001: read_agent_tier_params は例外発生時に type(exc).__name__ をログに出す。
 
         corrupt DB を渡すと sqlite3.DatabaseError が上がる。
         - ログ本文に "DatabaseError" が含まれる
         - ログ本文に生 exc message（"not an SQLite3 database" 等）が含まれない
         - 戻り値は defaults（型名のみのログで例外を握る）
         """
-        from c3.db import read_tier_params  # noqa: PLC0415
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
 
         # corrupt なバイナリファイルを作成して DB として渡す
         corrupt_db = tmp_path / "corrupt.db"
         corrupt_db.write_bytes(b"this is not a valid sqlite3 database file")
 
         with caplog.at_level(logging.WARNING, logger="c3.db"):
-            result = read_tier_params("medium", db_path=corrupt_db)
+            result = read_agent_tier_params("developer", "medium", db_path=corrupt_db)
 
         # 戻り値は defaults（エラー時も全 tier を初期値で返す）
         assert isinstance(result, dict), "Should return dict on error"
@@ -1372,354 +1075,16 @@ class TestExceptionLogTypeName:
         )
 
 
-# ---------------------------------------------------------------------------
-# L 群: sync_tier_bandit_cost / read_tier_bandit_cost (v2.25.0 T3)
-# ---------------------------------------------------------------------------
-
-
-def _seed_bandit_row(
-    db: Path,
-    *,
-    complexity: str,
-    tier: str,
-    alpha: float = 2.0,
-    beta: float = 1.0,
-    trials: int = 3,
-) -> None:
-    """tier_bandit に 1 行 seed するヘルパー（L 群共通）。"""
-    import sqlite3 as _sqlite3  # noqa: PLC0415
-    from datetime import datetime, timezone  # noqa: PLC0415
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    conn = _sqlite3.connect(str(db))
-    try:
-        conn.execute(
-            "INSERT INTO tier_bandit "
-            "(task_complexity, tier, alpha, beta, trials, last_updated) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (complexity, tier, alpha, beta, trials, ts),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _seed_cost_session(
-    db: Path,
-    *,
-    complexity: str,
-    tier_outcome: str,
-    model: str,
-    session_id: str,
-    total_cost_usd: float,
-    input_tokens: int = 100,
-    output_tokens: int = 50,
-) -> None:
-    """outcome + cost_run を 1 セッション分 seed（L 群共通）。"""
-    record_tier_recent_outcome(
-        complexity=complexity,
-        tier=tier_outcome,
-        success=True,
-        session_id=session_id,
-        db_path=db,
-    )
-    insert_agent_cost_run(
-        session_id=session_id,
-        agent_id=f"agent-{session_id}",
-        agent_type="developer",
-        description=None,
-        model=model,
-        attribution_skill=None,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=0,
-        cache_create_tokens=0,
-        total_cost_usd=total_cost_usd,
-        db_path=db,
-    )
-
-
-class TestSyncTierBanditCost:
-    """L 群: sync_tier_bandit_cost (A1: 冪等 SET 同期) のテスト。"""
-
-    def test_idempotent_double_sync(self, tmp_path: Path):
-        """L1: 冪等性（最重要）— 同一 DB 状態で連続 2 回 sync しても cost 列が完全同一。"""
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        db = _make_c3_db_v003(tmp_path)
-
-        # tier_bandit に sonnet/medium 行を seed
-        _seed_bandit_row(db, complexity="medium", tier="sonnet")
-
-        # cost を生むセッションを seed
-        _seed_cost_session(
-            db,
-            complexity="medium",
-            tier_outcome="sonnet",
-            model="claude-sonnet-4-6-20260101",
-            session_id="l1-sess",
-            total_cost_usd=0.02,
-        )
-
-        # 1 回目 sync
-        count1 = sync_tier_bandit_cost(db_path=db)
-        conn = _sqlite3.connect(str(db))
-        rows1 = conn.execute(
-            "SELECT task_complexity, tier, total_cost_usd, cost_samples "
-            "FROM tier_bandit"
-        ).fetchall()
-        conn.close()
-
-        # 2 回目 sync
-        count2 = sync_tier_bandit_cost(db_path=db)
-        conn = _sqlite3.connect(str(db))
-        rows2 = conn.execute(
-            "SELECT task_complexity, tier, total_cost_usd, cost_samples "
-            "FROM tier_bandit"
-        ).fetchall()
-        conn.close()
-
-        assert count1 == count2, "SET 行数が 1 回目と 2 回目で同一であるべき"
-        assert rows1 == rows2, "cost 列が 2 回の sync で完全同一であるべき（冪等）"
-
-    def test_values_match_rate_summary(self, tmp_path: Path):
-        """L2: 値一致 — sync 後の tier_bandit.total_cost_usd/cost_samples が
-        rate_summary の total_cost_usd/sessions と (complexity,tier) ごとに一致する。"""
-        db = _make_c3_db_v003(tmp_path)
-
-        # haiku/simple と sonnet/medium の 2 行を tier_bandit に seed
-        _seed_bandit_row(db, complexity="simple", tier="haiku")
-        _seed_bandit_row(db, complexity="medium", tier="sonnet")
-
-        # haiku/simple: 2 セッション
-        _seed_cost_session(
-            db,
-            complexity="simple",
-            tier_outcome="haiku",
-            model="claude-haiku-4-5-20260101",
-            session_id="l2-haiku-1",
-            total_cost_usd=0.005,
-        )
-        _seed_cost_session(
-            db,
-            complexity="simple",
-            tier_outcome="haiku",
-            model="claude-haiku-4-5-20260101",
-            session_id="l2-haiku-2",
-            total_cost_usd=0.003,
-        )
-        # sonnet/medium: 1 セッション
-        _seed_cost_session(
-            db,
-            complexity="medium",
-            tier_outcome="sonnet",
-            model="claude-sonnet-4-6-20260101",
-            session_id="l2-sonnet-1",
-            total_cost_usd=0.015,
-        )
-
-        sync_tier_bandit_cost(db_path=db)
-
-        summary = read_tier_cost_rate_summary(db_path=db)
-        bandit_cost = read_tier_bandit_cost(db_path=db)
-
-        for row in summary:
-            key = (row["complexity"], row["tier"])
-            assert key in bandit_cost, f"{key} が bandit_cost に存在しない"
-            cost_usd, cost_samples = bandit_cost[key]
-            assert abs(cost_usd - row["total_cost_usd"]) < 1e-9, (
-                f"{key}: total_cost_usd 不一致 {cost_usd} vs {row['total_cost_usd']}"
-            )
-            assert cost_samples == row["sessions"], (
-                f"{key}: cost_samples {cost_samples} vs sessions {row['sessions']}"
-            )
-
-    def test_alpha_beta_trials_unchanged(self, tmp_path: Path):
-        """L3: alpha/beta/trials/last_updated が sync 前後で変わらない。"""
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        db = _make_c3_db_v003(tmp_path)
-
-        _seed_bandit_row(db, complexity="medium", tier="sonnet",
-                         alpha=3.5, beta=1.2, trials=7)
-        _seed_cost_session(
-            db,
-            complexity="medium",
-            tier_outcome="sonnet",
-            model="claude-sonnet-4-6-20260101",
-            session_id="l3-sess",
-            total_cost_usd=0.01,
-        )
-
-        # sync 前の alpha/beta/trials を記録
-        conn = _sqlite3.connect(str(db))
-        before = conn.execute(
-            "SELECT alpha, beta, trials, last_updated FROM tier_bandit "
-            "WHERE task_complexity = 'medium' AND tier = 'sonnet'"
-        ).fetchone()
-        conn.close()
-
-        sync_tier_bandit_cost(db_path=db)
-
-        conn = _sqlite3.connect(str(db))
-        after = conn.execute(
-            "SELECT alpha, beta, trials, last_updated FROM tier_bandit "
-            "WHERE task_complexity = 'medium' AND tier = 'sonnet'"
-        ).fetchone()
-        conn.close()
-
-        assert before == after, (
-            f"alpha/beta/trials/last_updated が sync で変わってはいけない: "
-            f"before={before}, after={after}"
-        )
-
-    def test_reset_rows_not_in_summary(self, tmp_path: Path):
-        """L4: 集計に現れない (complexity,tier) 行は cost 列が 0.0/0 にリセットされる。
-
-        tier_bandit に opus/complex を seed し cost を手動で書いておく。
-        集計には出ない（outcome が無い）ため sync 後に 0.0/0 になることを確認。
-        """
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        db = _make_c3_db_v003(tmp_path)
-
-        # opus/complex を tier_bandit に seed（cost を手動で書く）
-        conn = _sqlite3.connect(str(db))
-        try:
-            from datetime import datetime as _dt, timezone as _tz  # noqa: PLC0415
-            ts = _dt.now(_tz.utc).isoformat(timespec="seconds")
-            conn.execute(
-                "INSERT INTO tier_bandit "
-                "(task_complexity, tier, alpha, beta, trials, "
-                " total_cost_usd, cost_samples, last_updated) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                ("complex", "opus", 2.0, 1.0, 3, 9.99, 5, ts),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        # 集計（rate_summary）は空 → sync で 0 リセットされるべき
-        # （outcome・cost_run を seed しないので集計に出ない）
-        sync_tier_bandit_cost(db_path=db)
-
-        conn = _sqlite3.connect(str(db))
-        row = conn.execute(
-            "SELECT total_cost_usd, cost_samples FROM tier_bandit "
-            "WHERE task_complexity = 'complex' AND tier = 'opus'"
-        ).fetchone()
-        conn.close()
-
-        assert row is not None
-        assert abs(row[0] - 0.0) < 1e-12, f"total_cost_usd は 0.0 にリセットされるべき: {row[0]}"
-        assert row[1] == 0, f"cost_samples は 0 にリセットされるべき: {row[1]}"
-
-    def test_update_only_no_insert(self, tmp_path: Path):
-        """L5: UPDATE-only — 集計に出るが tier_bandit に行がない場合は INSERT されない。
-
-        tier_bandit に sonnet/medium 行は作らず、outcome + cost_run だけ seed する。
-        sync しても tier_bandit の行数が増えないことを確認。
-        """
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        db = _make_c3_db_v003(tmp_path)
-
-        # tier_bandit 行を作らずに集計データだけ seed
-        _seed_cost_session(
-            db,
-            complexity="medium",
-            tier_outcome="sonnet",
-            model="claude-sonnet-4-6-20260101",
-            session_id="l5-sess",
-            total_cost_usd=0.01,
-        )
-
-        # sync 前の行数（tier_bandit は空のはず）
-        conn = _sqlite3.connect(str(db))
-        count_before = conn.execute("SELECT COUNT(*) FROM tier_bandit").fetchone()[0]
-        conn.close()
-
-        result = sync_tier_bandit_cost(db_path=db)
-
-        conn = _sqlite3.connect(str(db))
-        count_after = conn.execute("SELECT COUNT(*) FROM tier_bandit").fetchone()[0]
-        conn.close()
-
-        assert count_before == count_after == 0, (
-            f"tier_bandit に行が無ければ INSERT されてはいけない: "
-            f"before={count_before}, after={count_after}"
-        )
-        # rowcount=0 なので SET 行数は 0
-        assert result == 0, f"INSERT されていないので戻り値は 0 であるべき: {result}"
-
-    def test_db_absent_returns_zero_no_exception(self, tmp_path: Path):
-        """L6: DB 不在パスを渡しても 0 を返し例外を投げない。"""
-        absent_db = tmp_path / "no_such_l6.db"
-        result = sync_tier_bandit_cost(db_path=absent_db)
-        assert result == 0, f"DB 不在で 0 を返すべき: {result}"
-
-    def test_return_value_is_set_count(self, tmp_path: Path):
-        """L7: 戻り値が SET できた行数（rowcount > 0 の UPDATE 件数）である。"""
-        db = _make_c3_db_v003(tmp_path)
-
-        # 2 行を tier_bandit に seed
-        _seed_bandit_row(db, complexity="simple", tier="haiku")
-        _seed_bandit_row(db, complexity="medium", tier="sonnet")
-
-        # 2 セッション seed（それぞれ別 complexity/tier）
-        _seed_cost_session(
-            db, complexity="simple", tier_outcome="haiku",
-            model="claude-haiku-4-5-20260101",
-            session_id="l7-haiku", total_cost_usd=0.005,
-        )
-        _seed_cost_session(
-            db, complexity="medium", tier_outcome="sonnet",
-            model="claude-sonnet-4-6-20260101",
-            session_id="l7-sonnet", total_cost_usd=0.01,
-        )
-
-        result = sync_tier_bandit_cost(db_path=db)
-        # 2 行が SET されたので 2 を返す
-        assert result == 2, f"SET 行数は 2 であるべき: {result}"
-
-
-class TestReadTierBanditCost:
-    """L 群追加: read_tier_bandit_cost の単体テスト。"""
-
-    def test_returns_cost_per_key(self, tmp_path: Path):
-        """LR1: tier_bandit の cost 列を (complexity, tier) キーで返す。"""
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        db = _make_c3_db_v003(tmp_path)
-
-        # cost 列も込みで直接 INSERT
-        conn = _sqlite3.connect(str(db))
-        try:
-            from datetime import datetime as _dt, timezone as _tz  # noqa: PLC0415
-            ts = _dt.now(_tz.utc).isoformat(timespec="seconds")
-            conn.execute(
-                "INSERT INTO tier_bandit "
-                "(task_complexity, tier, alpha, beta, trials, "
-                " total_cost_usd, cost_samples, last_updated) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                ("medium", "sonnet", 2.0, 1.0, 3, 0.05, 2, ts),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        result = read_tier_bandit_cost(db_path=db)
-
-        assert ("medium", "sonnet") in result
-        cost_usd, cost_samples = result[("medium", "sonnet")]
-        assert abs(cost_usd - 0.05) < 1e-9
-        assert cost_samples == 2
-
-    def test_db_absent_returns_empty_dict(self, tmp_path: Path):
-        """LR2: DB 不在で {} を返す（例外なし）。"""
-        absent_db = tmp_path / "no_such_lr2.db"
-        result = read_tier_bandit_cost(db_path=absent_db)
-        assert result == {}
-
-    def test_empty_table_returns_empty_dict(self, tmp_path: Path):
-        """LR3: tier_bandit が空なら {} を返す。"""
-        db = _make_c3_db_v003(tmp_path)
-        result = read_tier_bandit_cost(db_path=db)
-        assert result == {}
+# 設計判断（db-shims-and-cost タスク）: L 群（TestSyncTierBanditCost /
+# TestReadTierBanditCost）は旧 tier_bandit テーブルへの直接 SQL INSERT・
+# sync_tier_bandit_cost の SET 同期・read_tier_bandit_cost の cost 列読み出しを
+# 前提にしていたが、architecture-report ADR-4 により両関数とも廃止した
+# （sync_tier_bandit_cost は DB 非接続の no-op シム、read_tier_bandit_cost は
+# 完全削除）。tier_bandit テーブル自体も migration 004 で DROP 済みのため、
+# 旧仕様を検証する L 群は恒久的に再現不能となり丸ごと削除する
+# （_seed_bandit_row / _seed_cost_session も L 群専用ヘルパーのため合わせて削除）。
+# シムの新挙動（DB 非接続 no-op）は TestDeprecatedShimBehavior /
+# TestDeprecatedFunctionsRemoved が引き継ぐ。
 
 
 # ---------------------------------------------------------------------------
@@ -2014,16 +1379,19 @@ class TestMissingTableLogsDebugNotWarning:
     def test_read_tier_params_missing_table_is_debug_not_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """代表例は read_agent_tier_params（v2.41.0 db-shims-and-cost で read_tier_params が
+        DB 非接続の deprecated シムに置換されたため、DB 例外パスを持つ後継関数に差し替え。
+        ADR-5 / 実装・ログ規約は read_tier_params と同一）。"""
         import sqlite3  # noqa: PLC0415
 
-        from c3.db import read_tier_params  # noqa: PLC0415
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
 
-        # マイグレーション未適用＝tier_bandit テーブルが無い有効な空 DB
+        # マイグレーション未適用＝agent_tier_bandit テーブルが無い有効な空 DB
         empty_db = tmp_path / "empty.db"
         sqlite3.connect(str(empty_db)).close()
 
         with caplog.at_level(logging.DEBUG, logger="c3.db"):
-            result = read_tier_params("medium", db_path=empty_db)
+            result = read_agent_tier_params("developer", "medium", db_path=empty_db)
 
         # 戻り値は defaults（graceful degradation 維持）
         assert "haiku" in result
@@ -2062,3 +1430,816 @@ class TestMissingTableLogsDebugNotWarning:
             f"missing-table は WARNING を出すべきでない: {[r.getMessage() for r in warnings]}"
         )
         assert "table not found or inaccessible" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# O 群: agent-tier-routing 学習シグナル再設計（v2.41.0 db-foundation・Red 先行）
+#
+# architecture-report-20260702-214748.md §3-2/§3-3 に対応。新シンボル
+# （AGENT_ROLES / read_agent_tier_params / update_agent_tier_params /
+#  record_agent_outcome_event / read_agent_failure_rate / read_recent_agent_outcomes）
+# は本タスク時点で未実装のため、モジュール冒頭の import には加えず各テスト内で
+# ローカル import する（本ファイル全体の collection を壊さないため。既存 N7 群までの
+# パターンを踏襲）。
+# ---------------------------------------------------------------------------
+
+
+def _make_c3_db_v004(tmp_path: Path) -> Path:
+    """tmp_path に c3.db を作成し、004 (agent_tier_bandit/agent_outcomes) まで
+    migration を適用する。
+
+    NOTE: 004_agent_outcomes.sql が未実装の間は 001〜003 までしか適用されない
+    （apply_pending_migrations はディレクトリに存在するファイルのみを対象にする）。
+    004 実装後は本ヘルパーで agent_tier_bandit / agent_outcomes が使える DB を返す。
+    """
+    from c3.migrate import apply_pending_migrations  # noqa: PLC0415
+    db_path = tmp_path / "c3.db"
+    apply_pending_migrations(db_path)
+    return db_path
+
+
+class TestAgentRolesConstant:
+    """O0 群: `_db_params.AGENT_ROLES` の存在と値（v2.41.0 db-foundation）。"""
+
+    def test_agent_roles_defined_and_ordered(self):
+        """O0-1: AGENT_ROLES が定義されており、要件どおりの 5 role である。"""
+        import c3._db_params as db_params_mod  # noqa: PLC0415
+
+        assert hasattr(db_params_mod, "AGENT_ROLES"), "_db_params.AGENT_ROLES が未定義"
+        assert db_params_mod.AGENT_ROLES == (
+            "interviewer", "architect", "planner", "developer", "tester"
+        )
+
+
+class TestReadAgentTierParams:
+    """O1 群: read_agent_tier_params(role, complexity, *, db_path=None) のテスト。"""
+
+    def test_defaults_when_no_rows(self, tmp_path: Path):
+        """O1-1: 行が無い role/complexity は全 tier (1.0, 1.0, 0) で返る。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        result = read_agent_tier_params("developer", "medium", db_path=db)
+
+        assert result == {
+            "haiku": (1.0, 1.0, 0),
+            "sonnet": (1.0, 1.0, 0),
+            "opus": (1.0, 1.0, 0),
+        }
+
+    def test_reflects_updated_params(self, tmp_path: Path):
+        """O1-2: update_agent_tier_params で更新した値が読み出せる。"""
+        from c3.db import read_agent_tier_params, update_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
+
+        result = read_agent_tier_params("developer", "medium", db_path=db)
+        assert result["sonnet"] == (2.0, 1.0, 1)
+        # 未更新の他 tier は初期値のまま
+        assert result["haiku"] == (1.0, 1.0, 0)
+
+    def test_role_isolation(self, tmp_path: Path):
+        """O1-3: role が異なれば同一 complexity/tier でも別セルとして扱われる。"""
+        from c3.db import read_agent_tier_params, update_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
+
+        developer_result = read_agent_tier_params("developer", "medium", db_path=db)
+        tester_result = read_agent_tier_params("tester", "medium", db_path=db)
+
+        assert developer_result["sonnet"] == (2.0, 1.0, 1)
+        assert tester_result["sonnet"] == (1.0, 1.0, 0), (
+            "tester role には developer の更新が漏れてはいけない"
+        )
+
+    def test_db_absent_returns_defaults(self, tmp_path: Path):
+        """O1-4: DB 不在で全 tier 初期値を返す（静かな失敗）。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        absent_db = tmp_path / "no_such.db"
+
+        result = read_agent_tier_params("developer", "simple", db_path=absent_db)
+        assert result == {
+            "haiku": (1.0, 1.0, 0),
+            "sonnet": (1.0, 1.0, 0),
+            "opus": (1.0, 1.0, 0),
+        }
+
+
+class TestUpdateAgentTierParams:
+    """O2 群: update_agent_tier_params(role, complexity, tier, *, success, db_path=None)。
+
+    【DC-GP-002】success=True → alpha+=1, success=False → beta+=1、いずれも trials+=1・
+    last_updated 更新（旧 update_tier_params と同一規則）。
+    """
+
+    def test_success_increments_alpha_and_trials(self, tmp_path: Path):
+        """O2-1: 初回 success=True で (2.0, 1.0, 1) になる。"""
+        import sqlite3  # noqa: PLC0415
+        from c3.db import update_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        ok = update_agent_tier_params("developer", "simple", "haiku", success=True, db_path=db)
+        assert ok is True
+
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT alpha, beta, trials FROM agent_tier_bandit "
+            "WHERE role='developer' AND task_complexity='simple' AND tier='haiku'"
+        ).fetchone()
+        conn.close()
+        assert row == (2.0, 1.0, 1)
+
+    def test_failure_increments_beta_and_trials(self, tmp_path: Path):
+        """O2-2: 初回 success=False で (1.0, 2.0, 1) になる。"""
+        import sqlite3  # noqa: PLC0415
+        from c3.db import update_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        update_agent_tier_params("developer", "simple", "haiku", success=False, db_path=db)
+
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT alpha, beta, trials FROM agent_tier_bandit "
+            "WHERE role='developer' AND task_complexity='simple' AND tier='haiku'"
+        ).fetchone()
+        conn.close()
+        assert row == (1.0, 2.0, 1)
+
+    def test_upsert_accumulates_across_calls(self, tmp_path: Path):
+        """O2-3: 複数回呼ぶと UPSERT で加算蓄積される（success→success→failure）。"""
+        import sqlite3  # noqa: PLC0415
+        from c3.db import update_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
+        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
+        update_agent_tier_params("developer", "medium", "sonnet", success=False, db_path=db)
+
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT alpha, beta, trials FROM agent_tier_bandit "
+            "WHERE role='developer' AND task_complexity='medium' AND tier='sonnet'"
+        ).fetchone()
+        conn.close()
+        assert row == (3.0, 2.0, 3)
+
+    def test_role_pk_isolation(self, tmp_path: Path):
+        """O2-4: PK に role を含むため、同じ complexity/tier でも role が違えば別行になる。"""
+        import sqlite3  # noqa: PLC0415
+        from c3.db import update_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
+        update_agent_tier_params("tester", "medium", "sonnet", success=True, db_path=db)
+
+        conn = sqlite3.connect(str(db))
+        rows = conn.execute(
+            "SELECT role, alpha, beta, trials FROM agent_tier_bandit "
+            "WHERE task_complexity='medium' AND tier='sonnet' ORDER BY role"
+        ).fetchall()
+        conn.close()
+        assert len(rows) == 2, "role が異なれば別行になるべき"
+        assert {r[0] for r in rows} == {"developer", "tester"}
+
+    def test_db_absent_returns_false(self, tmp_path: Path):
+        """O2-5: DB 不在で False を返す。"""
+        from c3.db import update_agent_tier_params  # noqa: PLC0415
+        absent_db = tmp_path / "no_such.db"
+
+        ok = update_agent_tier_params(
+            "developer", "simple", "haiku", success=True, db_path=absent_db
+        )
+        assert ok is False
+
+
+class TestRecordAgentOutcomeEvent:
+    """O3 群: record_agent_outcome_event(*, role, complexity, tier, success, gate=None,
+    note=None, session_id=None, db_path=None)。"""
+
+    def test_insert_succeeds_and_row_readable(self, tmp_path: Path):
+        """O3-1: INSERT 成功で True を返し、agent_outcomes に行が現れる。"""
+        import sqlite3  # noqa: PLC0415
+        from c3.db import record_agent_outcome_event  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        ok = record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=True, gate="D-2.5", note="impl done",
+            session_id="sess-o3-1", db_path=db,
+        )
+        assert ok is True
+
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT role, task_complexity, tier, success, gate, note, session_id "
+            "FROM agent_outcomes WHERE session_id = 'sess-o3-1'"
+        ).fetchone()
+        conn.close()
+        assert row == ("developer", "medium", "sonnet", 1, "D-2.5", "impl done", "sess-o3-1")
+
+    def test_optional_fields_default_to_null(self, tmp_path: Path):
+        """O3-2: gate/note/session_id 省略で NULL 保存。"""
+        import sqlite3  # noqa: PLC0415
+        from c3.db import record_agent_outcome_event  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        record_agent_outcome_event(
+            role="architect", complexity="complex", tier="opus", success=False, db_path=db,
+        )
+
+        conn = sqlite3.connect(str(db))
+        row = conn.execute(
+            "SELECT gate, note, session_id, success FROM agent_outcomes "
+            "WHERE role='architect' AND task_complexity='complex' AND tier='opus'"
+        ).fetchone()
+        conn.close()
+        assert row == (None, None, None, 0)
+
+    def test_multiple_events_all_recorded(self, tmp_path: Path):
+        """O3-3: 複数回呼ぶと全件が別行として蓄積される（bandit セルの上書きと異なり履歴保持）。"""
+        import sqlite3  # noqa: PLC0415
+        from c3.db import record_agent_outcome_event  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        for i in range(3):
+            record_agent_outcome_event(
+                role="developer", complexity="medium", tier="sonnet",
+                success=True, session_id=f"sess-{i}", db_path=db,
+            )
+
+        conn = sqlite3.connect(str(db))
+        count = conn.execute(
+            "SELECT COUNT(*) FROM agent_outcomes WHERE role='developer'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 3
+
+    def test_db_absent_returns_false(self, tmp_path: Path):
+        """O3-4: DB 不在で False を返す。"""
+        from c3.db import record_agent_outcome_event  # noqa: PLC0415
+        absent_db = tmp_path / "no_such.db"
+
+        ok = record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=True, db_path=absent_db,
+        )
+        assert ok is False
+
+
+class TestReadAgentFailureRate:
+    """O4 群: read_agent_failure_rate(role, complexity, tier, *, last_n=10, db_path=None)。
+
+    `_FAILURE_RATE_MIN_SAMPLES=5` を継承（旧 read_tier_failure_rate と同一規則）。
+    """
+
+    def _seed_events(self, db, *, role, complexity, tier, outcomes, session_prefix):
+        from c3.db import record_agent_outcome_event  # noqa: PLC0415
+        for i, success in enumerate(outcomes):
+            record_agent_outcome_event(
+                role=role, complexity=complexity, tier=tier, success=success,
+                session_id=f"{session_prefix}-{i}", db_path=db,
+            )
+
+    def test_below_min_samples_returns_none(self, tmp_path: Path):
+        """O4-1: サンプル数が 5 未満なら failure_rate=None・sample_count は実数。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        self._seed_events(
+            db, role="developer", complexity="medium", tier="sonnet",
+            outcomes=[True, False, True], session_prefix="o4-1",
+        )
+
+        rate, count = read_agent_failure_rate("developer", "medium", "sonnet", db_path=db)
+        assert rate is None
+        assert count == 3
+
+    def test_at_min_samples_computes_rate(self, tmp_path: Path):
+        """O4-2: サンプル数が 5 以上なら failure_rate を計算する（2/5=0.4）。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        self._seed_events(
+            db, role="developer", complexity="medium", tier="sonnet",
+            outcomes=[True, True, False, True, False], session_prefix="o4-2",
+        )
+
+        rate, count = read_agent_failure_rate("developer", "medium", "sonnet", db_path=db)
+        assert count == 5
+        assert rate == pytest.approx(0.4)
+
+    def test_role_isolation(self, tmp_path: Path):
+        """O4-3: role が違うイベントは failure_rate 計算に混ざらない。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        # developer: 5 件全部成功
+        self._seed_events(
+            db, role="developer", complexity="medium", tier="sonnet",
+            outcomes=[True] * 5, session_prefix="o4-3-dev",
+        )
+        # tester: 5 件全部失敗（developer の計算に混ざってはいけない）
+        self._seed_events(
+            db, role="tester", complexity="medium", tier="sonnet",
+            outcomes=[False] * 5, session_prefix="o4-3-test",
+        )
+
+        dev_rate, dev_count = read_agent_failure_rate(
+            "developer", "medium", "sonnet", db_path=db
+        )
+        assert dev_count == 5
+        assert dev_rate == pytest.approx(0.0)
+
+    def test_db_absent_returns_none_zero(self, tmp_path: Path):
+        """O4-4: DB 不在で (None, 0) を返す。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        absent_db = tmp_path / "no_such.db"
+
+        rate, count = read_agent_failure_rate(
+            "developer", "medium", "sonnet", db_path=absent_db
+        )
+        assert rate is None
+        assert count == 0
+
+
+class TestReadRecentAgentOutcomes:
+    """O5 群: read_recent_agent_outcomes(*, limit=10, role=None, db_path=None)（cli_tier 用）。"""
+
+    def test_returns_events_ordered_desc(self, tmp_path: Path):
+        """O5-1: 直近順（ts 降順）で返る。
+
+        record_agent_outcome_event は ts をその場の現在時刻（秒精度）で決めるため、
+        短時間の連続呼び出しでは ts が同値になりうる（同一秒内実行のフレーク要因）。
+        順序を厳密に検証するため、ここでは直接 SQL で ts の異なる 2 行を投入する。
+        """
+        import sqlite3  # noqa: PLC0415
+        from c3.db import read_recent_agent_outcomes  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "INSERT INTO agent_outcomes (role, task_complexity, tier, success, gate, ts) "
+                "VALUES ('developer', 'medium', 'sonnet', 1, 'D-2.5', '2026-01-01T00:00:00')"
+            )
+            conn.execute(
+                "INSERT INTO agent_outcomes (role, task_complexity, tier, success, gate, ts) "
+                "VALUES ('developer', 'medium', 'sonnet', 0, 'D-3', '2026-01-02T00:00:00')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = read_recent_agent_outcomes(db_path=db)
+        assert len(result) == 2
+        # 新しい ts (2026-01-02) を持つ行が先頭
+        assert result[0]["gate"] == "D-3"
+        assert result[1]["gate"] == "D-2.5"
+
+    def test_role_filter(self, tmp_path: Path):
+        """O5-2: role 指定で絞り込まれる。"""
+        from c3.db import read_recent_agent_outcomes, record_agent_outcome_event  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=True, session_id="o5-2-dev", db_path=db,
+        )
+        record_agent_outcome_event(
+            role="tester", complexity="medium", tier="sonnet",
+            success=True, session_id="o5-2-test", db_path=db,
+        )
+
+        result = read_recent_agent_outcomes(role="tester", db_path=db)
+        assert len(result) == 1
+        assert result[0]["role"] == "tester"
+
+    def test_limit_applied(self, tmp_path: Path):
+        """O5-3: limit で件数が制限される。"""
+        from c3.db import read_recent_agent_outcomes, record_agent_outcome_event  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        for i in range(5):
+            record_agent_outcome_event(
+                role="developer", complexity="medium", tier="sonnet",
+                success=True, session_id=f"o5-3-{i}", db_path=db,
+            )
+
+        result = read_recent_agent_outcomes(limit=2, db_path=db)
+        assert len(result) == 2
+
+    def test_db_absent_returns_empty_list(self, tmp_path: Path):
+        """O5-4: DB 不在で [] を返す。"""
+        from c3.db import read_recent_agent_outcomes  # noqa: PLC0415
+        absent_db = tmp_path / "no_such.db"
+
+        result = read_recent_agent_outcomes(db_path=absent_db)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# P 群: agent-tier-routing 学習シグナル再設計（v2.41.0 db-shims-and-cost・Red 先行）
+#
+# architecture-report-20260702-214748.md ADR-4/ADR-5・§3-3・§5 に対応。
+#
+# P0: deprecated シム 5 関数（read_tier_params/read_tier_failure_rate/
+#     update_tier_params/record_tier_recent_outcome/sync_tier_bandit_cost）の
+#     初期値/no-op 挙動。「DB に一切触れない」ことを sqlite3.connect スパイで検証する
+#     （旧テーブル tier_bandit/tier_recent_outcomes は 004 で DROP 済みのため、
+#     現行実装は例外捕捉経由でも初期値/False を返すことがあり、戻り値だけでは
+#     shim 化の Red を検出できないケースがある。connect 未呼び出しの確認で
+#     「例外に頼った偶然の初期値返却」と「真の no-op shim」を区別する）。
+# P1: 【DC-GP-004】旧 select_tier.py / 旧 record_tier_outcome.py の実呼び出し形
+#     （位置引数・キーワード）でシムが TypeError なく呼べることの固定。
+# P2: 【DC-GP-003】cost JOIN 差替（tier_recent_outcomes → agent_outcomes）の
+#     結果同値性・DISTINCT 二重計上なし。
+# P3: 廃止確認（read_tier_bandit_cost / 旧 read_recent_outcomes が db.py から消える）。
+#
+# NOTE(developer への引き継ぎ): 本ファイル冒頭の
+# `from c3.db import (..., read_tier_bandit_cost, ..., read_tier_cost_for_complexity, ...)`
+# は該当関数削除と同時に ImportError で本ファイル全体の collection が壊れる。
+# Green フェーズで対応が必要（詳細は test-report 参照）。
+# ---------------------------------------------------------------------------
+
+
+def _make_v004_db(tmp_path: Path) -> Path:
+    """P 群専用エイリアス。実体は O 群の `_make_c3_db_v004` と同じ
+    （004 まで migration 適用済みの c3.db を作る）。可読性のため別名で参照する。
+    """
+    return _make_c3_db_v004(tmp_path)
+
+
+class TestDeprecatedShimBehavior:
+    """P0 群: ADR-5 deprecated シム 5 関数の初期値/no-op 挙動 + DB 非アクセス確認。"""
+
+    def _spy_connect(self, monkeypatch: pytest.MonkeyPatch) -> list:
+        """c3.db モジュールが使う sqlite3.connect を監視するスパイを仕込む。
+
+        真の no-op shim なら DB へ一切接続しないはず。呼び出し回数のリストを返す。
+        """
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        import c3.db as db_module  # noqa: PLC0415
+
+        calls: list = []
+        real_connect = _sqlite3.connect
+
+        def _tracking_connect(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(db_module.sqlite3, "connect", _tracking_connect)
+        return calls
+
+    def test_read_tier_params_shim_all_tiers_uniform_no_db_access(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """P0-1: read_tier_params は常に全 tier (1.0,1.0,0) を返し DB に接続しない。"""
+        db = _make_v004_db(tmp_path)
+        calls = self._spy_connect(monkeypatch)
+
+        result = read_tier_params("medium", db_path=db)
+
+        assert result == {
+            "haiku": (1.0, 1.0, 0),
+            "sonnet": (1.0, 1.0, 0),
+            "opus": (1.0, 1.0, 0),
+        }
+        assert calls == [], (
+            "read_tier_params は deprecated shim として DB に一切接続してはいけない"
+        )
+
+    def test_read_tier_failure_rate_shim_returns_none_zero_no_db_access(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """P0-2: read_tier_failure_rate は常に (None, 0) を返し DB に接続しない。"""
+        db = _make_v004_db(tmp_path)
+        calls = self._spy_connect(monkeypatch)
+
+        result = read_tier_failure_rate("medium", "sonnet", db_path=db)
+
+        assert result == (None, 0)
+        assert calls == [], (
+            "read_tier_failure_rate は deprecated shim として DB に一切接続してはいけない"
+        )
+
+    def test_update_tier_params_shim_returns_true_no_db_access(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """P0-3: update_tier_params は no-op で True を返し DB に接続しない（False だと
+        旧 record_tier_outcome.py が json を保持し続け警告が毎回出る/ADR-5）。"""
+        db = _make_v004_db(tmp_path)
+        calls = self._spy_connect(monkeypatch)
+
+        ok = update_tier_params("medium", "sonnet", success=True, db_path=db)
+
+        assert ok is True
+        assert calls == [], (
+            "update_tier_params は deprecated shim として DB に一切接続してはいけない"
+        )
+
+        # agent_tier_bandit（新テーブル）が不変であることも確認する
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        conn = _sqlite3.connect(str(db))
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM agent_tier_bandit").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 0
+
+    def test_record_tier_recent_outcome_shim_returns_true_no_db_access(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """P0-4: record_tier_recent_outcome は no-op で True を返し DB に接続しない。"""
+        db = _make_v004_db(tmp_path)
+        calls = self._spy_connect(monkeypatch)
+
+        ok = record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=True,
+            session_id="p0-4-sess", db_path=db,
+        )
+
+        assert ok is True
+        assert calls == [], (
+            "record_tier_recent_outcome は deprecated shim として DB に一切接続してはいけない"
+        )
+
+        # agent_outcomes（新テーブル）が不変であることも確認する
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        conn = _sqlite3.connect(str(db))
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM agent_outcomes").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 0
+
+    def test_sync_tier_bandit_cost_shim_no_db_access(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """P0-5: sync_tier_bandit_cost は no-op で DB に接続しない
+        （旧実装は read_tier_cost_rate_summary 経由で必ず sqlite3.connect していた）。"""
+        db = _make_v004_db(tmp_path)
+        # agent_outcomes/agent_cost_runs にデータがあっても shim なら参照しないはず
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=True, session_id="p0-5-sess", db_path=db,
+        )
+        insert_agent_cost_run(
+            session_id="p0-5-sess", agent_id="agent-1", agent_type="developer",
+            description=None, model="claude-sonnet-4-6-20260101",
+            attribution_skill=None, input_tokens=100, output_tokens=50,
+            cache_read_tokens=0, cache_create_tokens=0, total_cost_usd=0.05,
+            db_path=db,
+        )
+        calls = self._spy_connect(monkeypatch)
+
+        result = sync_tier_bandit_cost(db_path=db)
+
+        assert not result, "sync_tier_bandit_cost は no-op 相当（0 件）を返すはず"
+        assert calls == [], (
+            "sync_tier_bandit_cost は deprecated shim として DB に一切接続してはいけない"
+        )
+
+
+class TestShimSignatureCompat:
+    """P1 群: 【DC-GP-004】旧 select_tier.py / 旧 record_tier_outcome.py の実呼び出し形で
+    シムが TypeError なく呼べることを固定する（シグネチャ整合）。
+
+    呼び出し形は現行コードから抽出:
+      - .claude/hooks/select_tier.py L759: c3_db.read_tier_params(complexity)
+      - .claude/hooks/select_tier.py L443: c3_db.read_tier_failure_rate(complexity, tier)
+      - .claude/skills/dev-workflow/scripts/record_tier_outcome.py L205-209:
+        c3_db.update_tier_params(complexity, tier, success=success)
+      - .claude/skills/dev-workflow/scripts/record_tier_outcome.py L217-222:
+        c3_db.record_tier_recent_outcome(complexity=..., tier=..., success=..., session_id=...)
+      - .claude/hooks/session_stop.py L107: sync_tier_bandit_cost()（引数なし）
+    """
+
+    def test_read_tier_params_positional_call(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """P1-1: 旧 select_tier.py の呼び出し形 read_tier_params(complexity)（db_path キーワードなし）。
+
+        旧呼び出し形は db_path を渡さないため、locate_c3_db() が実 FS を探索してしまわない
+        よう C3_DB_PATH env で db を指す（呼び出し形 read_tier_params(complexity) は維持）。
+        """
+        db = _make_v004_db(tmp_path)
+        monkeypatch.setenv("C3_DB_PATH", str(db))
+
+        result = read_tier_params("medium")
+
+        assert result == {
+            "haiku": (1.0, 1.0, 0),
+            "sonnet": (1.0, 1.0, 0),
+            "opus": (1.0, 1.0, 0),
+        }
+
+    def test_read_tier_failure_rate_positional_call(self):
+        """P1-2: 旧 select_tier.py の呼び出し形 read_tier_failure_rate(complexity, tier)。"""
+        result = read_tier_failure_rate("medium", "sonnet")
+        assert result == (None, 0)
+
+    def test_update_tier_params_mixed_call(self, tmp_path: Path):
+        """P1-3: 旧 record_tier_outcome.py の呼び出し形
+        update_tier_params(complexity, tier, success=success)。"""
+        db = _make_v004_db(tmp_path)
+        ok = update_tier_params("medium", "sonnet", success=True, db_path=db)
+        assert ok is True
+
+    def test_record_tier_recent_outcome_kwargs_call(self, tmp_path: Path):
+        """P1-4: 旧 record_tier_outcome.py の呼び出し形
+        record_tier_recent_outcome(complexity=..., tier=..., success=..., session_id=...)。"""
+        db = _make_v004_db(tmp_path)
+        ok = record_tier_recent_outcome(
+            complexity="medium", tier="sonnet", success=False, session_id="p1-4-sess",
+            db_path=db,
+        )
+        assert ok is True
+
+    def test_sync_tier_bandit_cost_no_args_call(self, monkeypatch: pytest.MonkeyPatch):
+        """P1-5: 旧 session_stop.py の呼び出し形 sync_tier_bandit_cost()（引数なし）。
+
+        locate_c3_db() が実 FS を探索して None を返す環境（本テストの tmp cwd 想定）で
+        呼んでも TypeError にならないことのみを固定する（DB 内容は問わない）。
+        """
+        import c3.db as db_module  # noqa: PLC0415
+        monkeypatch.setattr(db_module, "locate_c3_db", lambda *a, **kw: None)
+
+        result = sync_tier_bandit_cost()
+        assert result == 0
+
+
+class TestCostJoinAgentOutcomes:
+    """P2 群: 【DC-GP-003】read_tier_cost_rate_summary / read_tier_cost_rate_for_complexity の
+    JOIN 先差替（tier_recent_outcomes → agent_outcomes）の結果同値性・DISTINCT 二重計上なし。
+
+    旧テーブル tier_recent_outcomes は 004 で DROP 済みのため、現行実装（JOIN 元が
+    旧テーブルのまま）は必ず sqlite3.OperationalError 経由で空リストを返す。
+    agent_outcomes に実データを積んでも空リストのままであることが Red の実体。
+    """
+
+    def test_read_tier_cost_rate_summary_reflects_agent_outcomes(self, tmp_path: Path):
+        """P2-1: agent_outcomes + agent_cost_runs を積んだら空でない集計が返る
+        （現行実装は JOIN 元が旧テーブルのままのため [] のまま＝Red）。"""
+        db = _make_v004_db(tmp_path)
+        sess = "p2-1-sess"
+        insert_agent_cost_run(
+            session_id=sess, agent_id="agent-1", agent_type="developer",
+            description=None, model="claude-sonnet-4-6-20260101",
+            attribution_skill=None, input_tokens=100, output_tokens=50,
+            cache_read_tokens=0, cache_create_tokens=0, total_cost_usd=0.05,
+            db_path=db,
+        )
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=True, session_id=sess, db_path=db,
+        )
+
+        result = read_tier_cost_rate_summary(db_path=db)
+
+        assert result != [], (
+            "agent_outcomes に実データがあるのに [] のままなら JOIN 元が "
+            "tier_recent_outcomes のまま未差替（Red）"
+        )
+        match = [r for r in result if r["complexity"] == "medium" and r["tier"] == "sonnet"]
+        assert len(match) == 1
+        assert match[0]["sessions"] == 1
+        assert match[0]["billable_tokens"] == 150
+        assert abs(match[0]["total_cost_usd"] - 0.05) < 1e-9
+
+    def test_result_matches_pure_function_with_equivalent_rows(self, tmp_path: Path):
+        """P2-2: 旧新結果同値性。DB 経由の結果が、同一データを直接
+        _compute_tier_cost_rate_summary に渡した場合と一致すること
+        （JOIN 元テーブルが変わっても集計アルゴリズム自体は不変であることの固定）。"""
+        db = _make_v004_db(tmp_path)
+        sess = "p2-2-sess"
+        model = "claude-sonnet-4-6-20260101"
+        insert_agent_cost_run(
+            session_id=sess, agent_id="agent-1", agent_type="developer",
+            description=None, model=model,
+            attribution_skill=None, input_tokens=200, output_tokens=100,
+            cache_read_tokens=0, cache_create_tokens=0, total_cost_usd=0.08,
+            db_path=db,
+        )
+        record_agent_outcome_event(
+            role="developer", complexity="complex", tier="sonnet",
+            success=True, session_id=sess, db_path=db,
+        )
+
+        actual = read_tier_cost_rate_summary(db_path=db)
+
+        cost_rows = [(sess, model, 0.08, 200, 100)]
+        outcome_rows = [(sess, "complex", "sonnet")]
+        expected = _compute_tier_cost_rate_summary(cost_rows, outcome_rows)
+
+        assert actual == expected
+
+    def test_multiple_agent_outcomes_rows_same_session_not_double_counted(
+        self, tmp_path: Path
+    ):
+        """P2-3: 同一 (session,complexity,tier) の agent_outcomes 行が role 違いで複数あっても
+        DISTINCT で sessions が二重計上されない。"""
+        db = _make_v004_db(tmp_path)
+        sess = "p2-3-sess"
+        insert_agent_cost_run(
+            session_id=sess, agent_id="agent-1", agent_type="developer",
+            description=None, model="claude-sonnet-4-6-20260101",
+            attribution_skill=None, input_tokens=100, output_tokens=50,
+            cache_read_tokens=0, cache_create_tokens=0, total_cost_usd=0.02,
+            db_path=db,
+        )
+        # 同じ session×complexity×tier に対して role 違いで 2 行 INSERT
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=True, session_id=sess, db_path=db,
+        )
+        record_agent_outcome_event(
+            role="tester", complexity="medium", tier="sonnet",
+            success=False, session_id=sess, db_path=db,
+        )
+
+        result = read_tier_cost_rate_summary(db_path=db)
+        match = [r for r in result if r["complexity"] == "medium" and r["tier"] == "sonnet"]
+        assert len(match) == 1
+        assert match[0]["sessions"] == 1, (
+            "同一 session の agent_outcomes 複数行が DISTINCT で 1 session に潰されるはず"
+        )
+        assert abs(match[0]["total_cost_usd"] - 0.02) < 1e-9
+
+    def test_read_tier_cost_rate_for_complexity_reflects_agent_outcomes(self, tmp_path: Path):
+        """P2-4: read_tier_cost_rate_for_complexity も agent_outcomes を反映する。"""
+        db = _make_v004_db(tmp_path)
+        sess = "p2-4-sess"
+        insert_agent_cost_run(
+            session_id=sess, agent_id="agent-1", agent_type="developer",
+            description=None, model="claude-sonnet-4-6-20260101",
+            attribution_skill=None, input_tokens=100, output_tokens=50,
+            cache_read_tokens=0, cache_create_tokens=0, total_cost_usd=0.05,
+            db_path=db,
+        )
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=True, session_id=sess, db_path=db,
+        )
+
+        result = read_tier_cost_rate_for_complexity("medium", db_path=db)
+
+        assert result != {}, (
+            "agent_outcomes に実データがあるのに {} のままなら JOIN 元が未差替（Red）"
+        )
+        assert "sonnet" in result
+        assert result["sonnet"] > 0
+
+
+class TestDeprecatedFunctionsRemoved:
+    """P3 群: 廃止確認。read_tier_bandit_cost / 旧 read_recent_outcomes /
+    read_tier_cost_summary が db.py から消える。
+
+    NOTE (CR-Q-005 で事実誤認を修正): read_tier_cost_for_complexity（旧・
+    avg_cost_usd 版）は grep 調査の結果 production コードから未参照と確認済み。
+    cost 表示に実際に使われているのは read_tier_cost_rate_summary（新・
+    agent_outcomes ベースの rate 版）であり、read_tier_cost_summary ではない
+    （旧コメントの「実際に cost 表示へ使われているのは read_tier_cost_summary の方」
+    は事実誤認だった。cli_tier.py から read_tier_cost_summary への参照は 0 件）。
+    read_tier_cost_summary 自体も、migration 004 で DROP 済みの
+    tier_recent_outcomes を直接参照する恒久デッドコードのため、本 Round で
+    削除対象に追加する。
+    """
+
+    def test_read_tier_bandit_cost_removed(self):
+        """P3-1: read_tier_bandit_cost が db.py に存在しない。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "read_tier_bandit_cost"), (
+            "read_tier_bandit_cost は ADR-4 により削除対象（cost 列キャッシュ廃止）"
+        )
+
+    def test_read_recent_outcomes_removed(self):
+        """P3-2: 旧 read_recent_outcomes（tier_recent_outcomes 版）が db.py に存在しない。
+
+        read_recent_agent_outcomes（新・agent_outcomes 版）とは別関数。
+        """
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "read_recent_outcomes"), (
+            "旧 read_recent_outcomes は read_recent_agent_outcomes に置換され削除対象"
+        )
+
+    def test_read_tier_cost_for_complexity_removed(self):
+        """P3-3: 旧 read_tier_cost_for_complexity（avg_cost_usd 版・v2.23.0）が
+        residual として db.py に存在しない
+        （read_tier_cost_rate_for_complexity という同名に近い rate 版は残る）。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "read_tier_cost_for_complexity"), (
+            "旧 read_tier_cost_for_complexity は production コード未参照の residual"
+        )
+
+    def test_read_tier_cost_summary_removed(self):
+        """P3-4: CR-Q-005 read_tier_cost_summary が db.py から削除される。
+
+        DROP 済み tier_recent_outcomes を直接参照する恒久デッドコードであり
+        （呼び出し元 0 件を grep で確認済み）、ADR-5 の deprecated シムとも異なり
+        Deprecated: タグも付いていなかったため完全削除の対象とする。
+        """
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "read_tier_cost_summary"), (
+            "read_tier_cost_summary は DROP 済み tier_recent_outcomes を参照する"
+            "恒久デッドコードのため削除対象（CR-Q-005）"
+        )

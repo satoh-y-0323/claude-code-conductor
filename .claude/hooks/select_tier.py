@@ -11,8 +11,9 @@ MVP スコープ（ユーザー承認済み）:
 
 学習データ:
 - 結果は ``.claude/state/tier_selection.json`` に直近 1 件のみ書き込む
-- dev-workflow フェーズ E の承認/否認時に ``record_tier_outcome.py`` が
-  この json を読んで ``tier_bandit`` テーブルを更新する
+- dev-workflow の各フェーズ承認ゲート（並列タスク単位を含む）で
+  ``record_agent_outcome.py`` がこの json を読んで ``agent_tier_bandit``
+  テーブルを更新する
 
 入力 / 出力:
 - stdin: UserPromptSubmit payload（``prompt`` フィールドを参照）
@@ -70,7 +71,7 @@ COMPLEX_KEYWORDS = frozenset({
     "リファクタ", "再設計", "移行", "セキュリティ", "並行",
 })
 
-# 結果の永続化先（dev-workflow フェーズ E の record_tier_outcome.py が読む）
+# 結果の永続化先（dev-workflow の各フェーズ承認ゲートで record_agent_outcome.py が読む）
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 TIER_SELECTION_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_selection.json")
@@ -244,7 +245,7 @@ def _read_prompt_history() -> list[dict]:
     """prompt-history.jsonl から末尾 N 行を読み込む。
 
     各行は ``{"ts", "prompt_hash", "prompt_prefix", "complexity", "tier", "outcome"}``
-    の形式（record_tier_outcome.py が書き込む）。
+    の形式（record_agent_outcome.py が書き込む）。
     壊れた行はスキップ。ファイル不在時は空リスト。
     """
     if not os.path.isfile(PROMPT_HISTORY_PATH):
@@ -440,7 +441,7 @@ def _db_failure_rate(complexity: str, tier: str) -> tuple:
     c3_db = _load_c3_db_module()
     if c3_db is None:
         return None, 0
-    return c3_db.read_tier_failure_rate(complexity, tier)
+    return c3_db.read_agent_failure_rate("developer", complexity, tier)
 
 
 def maybe_escalate(
@@ -500,7 +501,7 @@ def write_tier_selection(
 ) -> None:
     """直近の選択結果を ``tier_selection.json`` に書く。
 
-    record_tier_outcome.py がこの json を読んで α/β を更新する。
+    record_agent_outcome.py がこの json を読んで agent_tier_bandit の α/β を更新する。
     既存ファイルは上書きされる（最新 1 件のみ保持）。
 
     ``suggested_model`` を併せて書く。tier 名と model の短縮名は同一とする。
@@ -597,9 +598,10 @@ def build_additional_context(
         suffix += " [cost-aware: 成功率拮抗のため低コスト Tier を選択]"
 
     return (
-        f"[tier-routing 推奨] 複雑度: {complexity} / 推奨 Tier: {tier}（{confidence}）。"
-        f" 親 Claude の Agent ツール経由ではエージェント定義の frontmatter 指定が"
-        f" 優先されるため、コスト最適化したい場合は手動切替してください。{suffix}"
+        f"[tier-routing 推奨] 複雑度: {complexity} / 推奨 Tier: {tier}（{confidence}・developer 基準）。"
+        f" エージェント定義 frontmatter の model がデフォルトですが、Agent 呼び出し時に"
+        f" model: を明示指定すれば上書きできます（fork を除く）。"
+        f" コスト最適化したい場合は手動指定してください。{suffix}"
     )
 
 
@@ -756,7 +758,7 @@ def main() -> int:
         # DB ヘルパーが無い環境でも uniform 選択で推奨を返す
         params = {t: (1.0, 1.0, 0) for t in TIERS}
     else:
-        params = c3_db.read_tier_params(complexity)
+        params = c3_db.read_agent_tier_params("developer", complexity)
 
     # v2.24.0: cost_map をハイブリッド解決（実測 rate USD/MTok を主に、欠損 tier は静的単価で補完）。
     # rate 化により measured(実測)と tier_reference_cost(静的)が同次元（USD/MTok）になり単位整合済み。

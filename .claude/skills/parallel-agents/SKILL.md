@@ -212,6 +212,14 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 - 「スキップして次の wave へ」 → 失敗内容をセッションファイルの `## 試みたが失敗したアプローチ` に追記して次の wave へ
 - 「中断」 → セッションファイルの該当 wave 行は `- [ ]` のままにしてスキル終了
 
+**tier-routing 結果記録（失敗タスク）**: 選択肢に関わらず、この wave で失敗した各タスクのうち `wt_developer`/`wt_tester` で起動したものについて、1 タスク = 1 記録で failure を記録する（`wt_developer`→`--role developer`、`wt_tester`→`--role tester`。`--execution subagent`）。`code-reviewer`/`security-reviewer`/`wt_systematic-debugger` のタスクは記録対象外。**「スキップして次の wave へ」を選んだ場合も、次の wave に進む前に必ずこの記録を済ませること**（`--complexity` は dev-workflow 開始時の `[tier-routing 推奨]` 表示の複雑度をそのまま渡す。「リトライ」を選び再実行が成功した場合は 1 タスク 1 記録の原則により 2-F-4 で改めて success を記録する＝リトライ結果は新たな別記録になる）:
+```bash
+python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+  --role {developer|tester} --outcome failure --gate 2-E \
+  --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
+  --task {task_id}
+```
+
 ### 2-F: wave 完了処理（成功時のみ）
 
 全タスク成功した wave に対して以下を順に実行する。
@@ -295,6 +303,14 @@ git branch -D worktree-agent-{id}
       'Wave {N} success', \
       '- 成功タスク: {M}件\n- 残 wave: {K}/{TOTAL}\n- 成果物: {要約}')")
   ```
+
+**tier-routing 結果記録（成功タスクのみ）**: この wave で成功した各タスクのうち `wt_developer`/`wt_tester` で起動したものについて、1 タスク = 1 記録で success を記録する（`wt_developer`→`--role developer`、`wt_tester`→`--role tester`。`--execution subagent`）。`code-reviewer`/`security-reviewer`/`wt_systematic-debugger` のタスクは記録対象外（`--complexity` は dev-workflow 開始時の `[tier-routing 推奨]` 表示の複雑度をそのまま渡す）:
+```bash
+python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+  --role {developer|tester} --outcome success --gate 2-D \
+  --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
+  --task {task_id}
+```
 
 checkpoint の summary には KEEP ルール（設計判断・決定事項・解決済みのハマりどころ）に該当する情報のみ書く。雑談・進捗報告はセッションファイル本体（`## うまくいったアプローチ` 等）へ。
 
