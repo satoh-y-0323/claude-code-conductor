@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.41.0] - 2026-07-03
+
+### 変更
+
+- **tier-routing 学習シグナルを role 別・per-gate 記録に再設計**: 従来の学習記録には (a) 記録される tier が「hook が推奨した tier」であり「エージェントが実際に使った tier」ではない**帰属ズレ**、(b) 記録がフェーズ E-2 の 1 箇所のみ（1 ワークフロー = 最大 1 記録）でレビュワーの成功と成果物の手戻りを区別できない**単一シグナル**、という構造的欠陥があった。本リリースで学習基盤を全面的に置き換える。
+  - **新テーブル**（migration 004）: `agent_tier_bandit`（PK: role × task_complexity × tier の Thompson Sampling パラメータ）と `agent_outcomes`（per-gate イベントログ。gate/note/session_id 付き）。
+  - **新記録 CLI `record_agent_outcome.py`**: `--role/--outcome/--gate/--execution/--complexity` 必須。tier は `agents/{role}.md` frontmatter からスクリプトが自己解決し `resolve_tier` で正規化（LLM の申告に依存しない＝帰属ズレの構造的再発防止）。`--execution subagent` のみ bandit を更新し、`persona`（親 Claude ペルソナ採用時）はイベントログのみ（tier レバーが存在しないため。`--tier` 省略時は `unknown`）。dedupe（`--task` 対応・ESCAPE 付き LIKE・5 分窓）、`--note` の秘密情報マスク→切り詰め、`--gate E-2` 記録時の prompt-history 追記（類似度推定の母数維持）、`--final` での `tier_selection.json` 削除を実装。
+  - **記録ポイント**: dev-workflow の A-4/B-3/C-2/C-3/D-2.5/D-3/D-5/E-1/E-2 の各承認ゲートと parallel-agents の 2-D/2-E（タスク単位）に記録ブロックを挿入。学習機会が 1 ワークフロー最大 1 回 → 5〜15 回に増加。E 差し戻し時は指摘の最上流起因（実装→developer デフォルト／設計→architect／計画→planner）に帰属。レビュワー（code-reviewer/security-reviewer/design-critic）は recall（見落とし）が測定不能なため学習対象外。
+  - **`select_tier.py`**: 「エージェント定義の frontmatter 指定が優先される」という**誤り文言を修正**（実際は Agent 呼び出し時に `model:` を明示指定すれば上書き可能・fork を除く）。推奨の Thompson データ源を developer × complexity セルに切替（表示に「developer 基準」明記）。ワークフロー開始時の複雑度はセッションファイルの `tier-routing複雑度:` 行に永続化（コンパクション耐性）。
+  - **`c3 tier stats`**: role 別グループ表示・`--role` フィルタ追加・cost 表示を `read_tier_cost_rate_summary` 直読みに簡素化。
+
+### 破壊的変更
+
+- **旧学習テーブル `tier_bandit` / `tier_recent_outcomes` を DROP**（migration 004 が `c3 update` 後の session 開始時に自動適用）。既存の学習データ（試行履歴）は**リセットされる**。旧データは帰属ズレにより tier の優劣を測れていないノイズであるため移行しない。
+- **`record_tier_outcome.py` を削除**し `record_agent_outcome.py` に置換（`deletions.txt` 記載・`settings.json` の permissions.allow も差替）。旧スクリプトを直接呼んでいるカスタマイズは移行が必要。
+- **`c3 tier stats --json` の出力形状を変更**（`learning_progress`/フラット `tier_bandit`/`tier_cost` キーを廃止し role 別構造 `tier_bandit_by_role` 等に変更。互換キーなし）。
+- **`src/c3/db.py` の旧 API を整理**: `read_tier_bandit_cost` / `read_recent_outcomes` / `read_tier_cost_for_complexity` / `read_tier_cost_summary` を削除。`read_tier_params` / `read_tier_failure_rate` / `update_tier_params` / `record_tier_recent_outcome` / `sync_tier_bandit_cost` は**混在バージョン安全性のための deprecated シム**（DB 非接続の no-op/初期値返却）として 1 リリースのみ残置し、**次リリースで削除予定**。
+
+### 後方互換
+
+- 環境変数（`C3_TIER_EPSILON` / `C3_TIER_COST_LAMBDA` / `C3_ESCALATION_THRESHOLD`）・`LEARNING_THRESHOLD=30`・cost-aware tie-break のロジックは不変。
+- pip 側のみ更新済みで `.claude/` 未更新（`c3 update` 未実行）の環境でも、deprecated シムにより旧 hook（select_tier.py）はクラッシュせず uniform 表示に自然フォールバックする。
+
 ## [2.40.0] - 2026-06-30
 
 ### 追加
