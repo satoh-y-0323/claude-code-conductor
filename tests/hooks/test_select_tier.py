@@ -260,6 +260,111 @@ class TestPhase0BuildAdditionalContextWording:
 
 
 # ---------------------------------------------------------------------------
+# [tier-routing 自動適用（フェーズ2）] build_additional_context 指示形文言
+# （architecture-report-20260703-081149.md §3-2・plan-report-20260703-082727.md
+# B1・design-review-report-20260703-084500.md DC-AM-002 反映）
+#
+# ソフト適用（developer / wt_developer の Agent 呼び出し model: に推奨 Tier を
+# 明示指定させる指示）を additionalContext に追加する。現行実装（Phase 0 文言・
+# 上記 TestPhase0BuildAdditionalContextWording が検証する文言）は推奨の提示に
+# 留まり、末尾は「コスト最適化したい場合は手動指定してください。」という
+# 手動判断に委ねる弱い文言のままである。本セクションの新規アサーションは
+# いずれも現行実装に対して赤（新規指示テキストが存在しないため）。
+#
+# 設計メモ（developer への申し送り）: 上記 TestPhase0BuildAdditionalContextWording
+# の既存アサーション（developer 基準・frontmatter・デフォルト・上書きできます・
+# fork を除く）はここでは意図的に変更していない。新指示ブロックは既存文言の
+# 「コスト最適化したい場合は手動指定してください。」の部分のみを置換／削除する
+# 加算的な変更として実装すれば、新旧アサーション双方を同時に満たせる
+# （test-report 側で実行結果と合わせて詳細を記載）。
+# ---------------------------------------------------------------------------
+
+
+class TestSoftApplyDirectiveWording:
+    """新 additionalContext 文言（指示形・ソフト適用対象明記）のアサーション。"""
+
+    def _params(self) -> dict:
+        return {
+            "haiku": (10.0, 5.0, 14),
+            "sonnet": (10.0, 5.0, 14),
+            "opus": (10.0, 5.0, 14),
+        }
+
+    def _uniform_params(self) -> dict:
+        return {
+            "haiku": (1.0, 1.0, 0),
+            "sonnet": (1.0, 1.0, 0),
+            "opus": (1.0, 1.0, 0),
+        }
+
+    def test_old_manual_opt_in_phrase_removed(self) -> None:
+        """旧文言「コスト最適化したい場合は手動指定してください」（手動判断に
+        委ねる弱い提示）は除去されていること。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
+        assert "コスト最適化したい場合は手動指定してください" not in text
+
+    def test_directive_form_present(self) -> None:
+        """指示形（「〜すること」の命令形）で developer/wt_developer への適用を
+        明記すること。「指示:」マーカーと「適用すること」を含む。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
+        assert "指示:" in text
+        assert "適用すること" in text
+
+    def test_model_tier_instruction_uses_effective_tier(self) -> None:
+        """model: {tier} の形で実効 tier（引数の tier。main() からは
+        effective_tier が渡される）を指示に含めること。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
+        assert "model: haiku" in text
+
+        text_opus = mod.build_additional_context("complex", "opus", "thompson", self._params())
+        assert "model: opus" in text_opus
+
+    def test_developer_and_wt_developer_both_named(self) -> None:
+        """developer と wt_developer の両方が適用対象として明記されること。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
+        assert "developer" in text
+        assert "wt_developer" in text
+
+    def test_fork_excluded_from_application(self) -> None:
+        """fork は model 上書き不可のため対象外であることが明記されること。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
+        assert "fork" in text
+        # fork 除外と role gating（developer/wt_developer 限定）の両方で
+        # 「対象外」という語が使われるため最低 2 箇所出現する。
+        assert text.count("対象外") >= 2
+
+    def test_applies_during_uniform_period_too(self) -> None:
+        """学習データ収集中（uniform モード）でも常に適用する旨が明記される
+        こと（mode に関わらず指示テキストが出ること）。"""
+        mod = _load_hook_module()
+        text_thompson = mod.build_additional_context(
+            "medium", "haiku", "thompson", self._params(),
+        )
+        text_uniform = mod.build_additional_context(
+            "simple", "haiku", "uniform", self._uniform_params(),
+        )
+        for text in (text_thompson, text_uniform):
+            assert "指示:" in text
+            assert "model: haiku" in text
+        assert "常に適用する" in text_uniform
+
+    def test_tester_and_persona_roles_noted_as_out_of_scope(self) -> None:
+        """tester 等の他 role、および親 Claude ペルソナで動かす role
+        （architect / planner を含む）は tier レバーが無いため対象外である
+        ことが明記されること。"""
+        mod = _load_hook_module()
+        text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
+        assert "tester" in text
+        assert "architect" in text
+        assert "planner" in text
+
+
+# ---------------------------------------------------------------------------
 # [v2.41.0 select-tier-hook] データ源切替
 #
 # main() は developer 固定で read_agent_tier_params("developer", complexity) を

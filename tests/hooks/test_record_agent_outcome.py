@@ -374,7 +374,10 @@ class TestTierResolution:
         bandit 更新に使うこと（--tier 省略時）。"""
         _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
         mod = _load_hook_module("rao_tier_frontmatter")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         rc = mod.main([
             "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
@@ -411,7 +414,10 @@ class TestTierResolution:
         --execution=subagent では警告 + 記録スキップ（bandit セル汚染防止）。"""
         _write_agent_frontmatter(agents_dir, "developer", "model: claude-future-x1")
         mod = _load_hook_module("rao_tier_unresolvable_subagent")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         rc = mod.main([
             "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
@@ -483,7 +489,10 @@ class TestTierResolution:
         リテラル "{role}" ではなく実際の role 名で展開されること。"""
         _write_agent_frontmatter(agents_dir, "developer", "model: claude-future-x1")
         mod = _load_hook_module("rao_tier_fstring_fix")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         rc = mod.main([
             "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
@@ -566,7 +575,10 @@ class TestExecutionBranch:
     ) -> None:
         _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
         mod = _load_hook_module("rao_exec_subagent")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         rc = mod.main([
             "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
@@ -1089,6 +1101,9 @@ class TestDbUnavailable:
 
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: None)
         monkeypatch.setattr(mod, "AGENTS_DIR", str(agents_dir))
+        monkeypatch.setattr(
+            mod, "TIER_SELECTION_PATH", str(tmp_path / "state" / "nonexistent.json"),
+        )
 
         rc = mod.main([
             "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
@@ -1124,7 +1139,10 @@ class TestNoteHardening:
         """3000 文字超の --note は 2000 文字相当へ切り詰められて保存される。"""
         _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
         mod = _load_hook_module("rao_long_note_truncated")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         long_note = "N" * 3000
         rc = mod.main([
@@ -1147,7 +1165,10 @@ class TestNoteHardening:
         """200 文字超の --gate は 200 文字相当へ切り詰められて保存される。"""
         _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
         mod = _load_hook_module("rao_long_gate_truncated")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         long_gate = "G" * 300
         rc = mod.main([
@@ -1203,7 +1224,10 @@ class TestNoteHardening:
         """--note 中の password=xxx は *** にマスクされて保存される。"""
         _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
         mod = _load_hook_module("rao_note_mask_password")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         rc = mod.main([
             "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
@@ -1223,7 +1247,10 @@ class TestNoteHardening:
         """--note 中の api_key=xxx は *** にマスクされて保存される。"""
         _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
         mod = _load_hook_module("rao_note_mask_api_key")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         rc = mod.main([
             "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
@@ -1243,7 +1270,10 @@ class TestNoteHardening:
         """--note 中の Bearer トークンは *** にマスクされて保存される。"""
         _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
         mod = _load_hook_module("rao_note_mask_bearer")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         rc = mod.main([
             "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
@@ -1309,7 +1339,10 @@ class TestNoteHardening:
         """
         _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
         mod = _load_hook_module("rao_mask_before_truncate_order")
-        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
 
         secret_filler = "A" * 3000
         note = (
@@ -1336,3 +1369,595 @@ class TestNoteHardening:
             "（truncate が mask より先に適用されている疑い）"
         )
         assert "-----END PRIVATE KEY-----" in stored
+
+
+# ---------------------------------------------------------------------------
+# Group 9: soft-apply tier 解決（architecture-report-20260703-081149.md §3-1・
+# ADR-AS-1〜ADR-AS-4・plan-report-20260703-082727.md A1 観点 1〜7）
+#
+# 対象: developer + --execution subagent + --tier 省略時、tier_selection.json
+# の tier（無ければ suggested_model）を resolve_tier で正規化して優先 2 として
+# 採用する（_SOFT_APPLY_ROLES = ("developer",) の gating。ADR-AS-1）。
+#
+# 現行実装（本ファイル対象の record_agent_outcome.py）は tier_selection.json
+# を tier 解決に一切使わず常に frontmatter を解決するため、観点 1
+# （TestSoftApplyTierResolution 全 3 件）は現行実装に対して **赤**。
+# fallback（観点 2）・エスケープハッチ（観点 3）・並列 --tier 明示（観点
+# 3-B）・非対象 role 負テスト（観点 4）・帰属語彙拡張（観点 5）・persona
+# 不変（観点 6）・不変性回帰（観点 7）は、現行実装がもともと
+# tier_selection.json を読まない（＝常にフロントマター/明示 --tier のみを
+# 見る）ため新規挙動を要求せず、**現行実装に対して緑**（soft-apply 実装
+# 後の非破壊確認のための回帰保護として先行追加する）。
+# どの観点が赤/緑かは test-report に実行結果として明記する。
+# ---------------------------------------------------------------------------
+
+
+class TestSoftApplyTierResolution:
+    """観点 1: developer subagent の soft-apply 解決（tier_selection.json 優先 2）。"""
+
+    def test_soft_apply_haiku_from_tier_selection_wins_over_frontmatter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """developer + subagent + --tier 省略 + tier_selection.json tier=haiku
+        + frontmatter model: sonnet → (developer, *, haiku) で記録される
+        （frontmatter の sonnet にはならない）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="haiku", session_id="sess-soft-haiku")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_apply_haiku")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None, (
+            "soft-apply 未実装のため tier_selection.json の tier=haiku が"
+            "無視されている（Red フェーズの想定挙動）"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is None, (
+            "frontmatter の sonnet に fallback してしまっている"
+            "（soft-apply 未実装時の現行挙動）"
+        )
+
+    def test_soft_apply_opus_from_tier_selection_wins_over_frontmatter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier=opus でも同様（探索データが正しい tier セルに帰属すること）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="opus", session_id="sess-soft-opus")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_apply_opus")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "complex",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "complex", "opus") is not None
+        assert _bandit_row(db_path, "developer", "complex", "sonnet") is None
+
+    def test_soft_apply_falls_back_to_suggested_model_when_tier_key_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier_selection.json に "tier" キーが無く "suggested_model" のみの
+        場合でも soft-apply は suggested_model を採用する（ADR-AS-1: tier
+        無ければ suggested_model）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, suggested_model="haiku", session_id="sess-soft-suggested",
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_apply_suggested_model")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None
+
+
+class TestSoftApplyFallback:
+    """観点 2: fallback（tier_selection.json 不在 / tier 欠落 / 不正値 →
+    frontmatter）。現行実装は元々 tier_selection.json を一切読まないため、
+    以下はいずれも現行実装に対して緑（回帰保護テスト）。soft-apply 実装後も
+    frontmatter fallback の宛先が変わらないことを固定する。
+    """
+
+    def test_fallback_when_tier_selection_file_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_fallback_absent")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None
+
+    def test_fallback_when_tier_and_suggested_model_both_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier_selection.json は存在するが tier/suggested_model キーが無い
+        （session_id のみ）場合も frontmatter fallback する。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, session_id="sess-fallback-nofield")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_fallback_nofield")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None
+
+    def test_fallback_when_tier_value_unresolvable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier_selection.json の tier が resolve_tier で正規化不能な値
+        （TIERS 語彙外）の場合、frontmatter fallback する。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, tier="claude-future-x1", session_id="sess-fallback-invalid",
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_fallback_invalid")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None
+
+
+class TestSoftApplyEscapeHatch:
+    """観点 3: エスケープハッチ（ADR-AS-2）。--tier 明示（優先 1）は
+    tier_selection.json の soft-apply（優先 2）より常に優先する。現行実装は
+    元々 --tier 優先 1 を実装済みのため、この観点は現行実装に対して緑
+    （soft-apply 実装後も優先順位が壊れないことを固定する回帰テスト）。
+    """
+
+    def test_explicit_tier_overrides_soft_apply_tier_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="haiku", session_id="sess-escape")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_escape_hatch")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+            "--tier", "sonnet",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is None
+
+
+class TestParallelExplicitTierResolution:
+    """観点 3-B（C-3 DC-GP-001 対応・ADR-AS-4）: 並列（worktree）経路は親が
+    --tier を明示して申告する。tier_selection.json の状態（不在／別値）に
+    かかわらず --tier の値がそのまま記録されることを固定する（worktree の
+    state 分離の影響を受けないことの単体保証）。現行実装は既に --tier 優先 1
+    を実装済みのため、この観点は現行実装に対して緑（並列経路対応の追加
+    コードが不要であること自体を裏付ける回帰テスト）。
+    """
+
+    def test_explicit_tier_wins_when_tier_selection_file_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_parallel_tier_absent_selection")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-3",
+            "--execution", "subagent", "--complexity", "medium",
+            "--tier", "haiku",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None
+
+    def test_explicit_tier_wins_over_different_tier_selection_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier_selection.json が存在し別値（opus）を持っていても
+        --tier haiku が優先され、tier_selection.json は読まれない。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="opus", session_id="sess-parallel-diff")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_parallel_tier_diff_selection")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-3",
+            "--execution", "subagent", "--complexity", "medium",
+            "--tier", "haiku",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None
+        assert _bandit_row(db_path, "developer", "medium", "opus") is None
+
+
+class TestSoftApplyRoleGating:
+    """観点 4（重要）: 非対象 role（tester）は tier_selection.json を読まない。
+    _SOFT_APPLY_ROLES = ("developer",) の gating 固定。現行実装はそもそも
+    tier_selection.json を tier 解決に使わないため、この観点は現行実装に
+    対して緑（soft-apply 実装後も tester が巻き込まれないことを固定する
+    回帰テスト・最重要ケース）。
+    """
+
+    def test_tester_role_ignores_tier_selection_and_resolves_frontmatter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="haiku", session_id="sess-tester-gating")
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module("rao_tester_role_gating")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "tester", "--outcome", "success", "--gate", "D-3",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "tester", "medium", "sonnet") is not None, (
+            "tester は frontmatter 解決のままであるべき"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "haiku") is None, (
+            "tester が tier_selection.json の tier=haiku を読んでしまっている"
+            "（role gating の欠陥）"
+        )
+
+
+class TestAttributionVocabularyTester:
+    """観点 5（§3-7 帰属語彙拡張）: tester + subagent + gate=E-1/E-2 +
+    outcome=failure → tester bandit セル更新・frontmatter=sonnet 解決。
+    D-3 の欠陥所在分岐で --role tester / --role developer がそれぞれ正しい
+    role セルに記録されること。現行実装は role・gate 名で分岐せず汎用的に
+    動くため、この観点は現行実装に対して緑（帰属語彙の拡張が
+    record_agent_outcome.py 側の新規コードを要さないことの裏付け）。
+    """
+
+    @pytest.mark.parametrize("gate", ["E-1", "E-2"])
+    def test_tester_failure_recorded_to_tester_cell(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path, gate: str,
+    ) -> None:
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module(f"rao_attrib_tester_{gate.replace('-', '_')}")
+        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+
+        rc = mod.main([
+            "--role", "tester", "--outcome", "failure", "--gate", gate,
+            "--execution", "subagent", "--complexity", "medium",
+            "--note", "テストコード欠陥によりアサーションが誤っていた",
+        ])
+        assert rc == 0
+        row = _bandit_row(db_path, "tester", "medium", "sonnet")
+        assert row is not None
+        assert row[1] == pytest.approx(2.0)  # beta += 1（failure）
+
+    def test_d3_role_gating_developer_vs_tester_distinct_cells(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """D-3 の欠陥所在判定: --role developer / --role tester がそれぞれ
+        正しい role の bandit セルに記録され、互いに混線しない。"""
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module("rao_d3_role_distinct_cells")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
+
+        rc1 = mod.main([
+            "--role", "developer", "--outcome", "failure", "--gate", "D-3",
+            "--execution", "subagent", "--complexity", "medium",
+            "--note", "プロダクトコード欠陥",
+        ])
+        rc2 = mod.main([
+            "--role", "tester", "--outcome", "failure", "--gate", "D-3",
+            "--execution", "subagent", "--complexity", "medium",
+            "--note", "テストコード欠陥",
+        ])
+        assert rc1 == 0 and rc2 == 0
+        dev_row = _bandit_row(db_path, "developer", "medium", "sonnet")
+        tester_row = _bandit_row(db_path, "tester", "medium", "sonnet")
+        assert dev_row is not None and dev_row[1] == pytest.approx(2.0)
+        assert tester_row is not None and tester_row[1] == pytest.approx(2.0)
+
+
+class TestPersonaInvariantIgnoresTierSelection:
+    """観点 6: persona は --tier 省略時、tier_selection.json に tier
+    フィールドがあっても "unknown" 固定のまま（tier_selection.json を
+    読まない）。現行実装は persona を常に "unknown" 固定しているため、この
+    観点は現行実装に対して緑（soft-apply 実装後も persona が巻き込まれ
+    ないことを固定する回帰テスト）。
+    """
+
+    def test_persona_stays_unknown_even_when_tier_selection_has_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="haiku", session_id="sess-persona-gating")
+        mod = _load_hook_module("rao_persona_ignores_tier_selection")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "architect", "--outcome", "success", "--gate", "E-1",
+            "--execution", "persona", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _count_agent_outcomes(db_path, role="architect", tier="unknown") == 1
+        assert _count_agent_outcomes(db_path, role="architect", tier="haiku") == 0
+
+
+class TestSoftApplyInvarianceRegression:
+    """観点 7: 不変性回帰。soft-apply 経路（tier_selection.json に tier
+    フィールドがある状態）でも dedupe / exit 0 / E-2 prompt-history /
+    --final の既存挙動が壊れないこと。現行実装ではこれらの経路は soft-apply
+    未実装でも同一コードパスを通るため、この観点は現行実装に対して緑
+    （soft-apply 実装後の非破壊確認のベースライン）。
+    """
+
+    def test_dedupe_key_unaffected_by_soft_apply_tier_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier 解決元（soft-apply か frontmatter か）が変わっても dedupe
+        キー (session_id, gate, role, outcome, task) は tier を含まないため、
+        同一イベントの 2 回目は skip される。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, tier="haiku", session_id="sess-soft-dedupe",
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_dedupe")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        argv = [
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ]
+        assert mod.main(argv) == 0
+        assert mod.main(argv) == 0
+        assert _count_agent_outcomes(db_path, role="developer") == 1
+
+    def test_e2_prompt_history_still_appends_with_soft_apply_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        history_path = tmp_path / "logs" / "prompt-history.jsonl"
+        _write_tier_selection(
+            sel_path, tier="haiku", session_id="sess-soft-e2",
+            prompt_prefix="ソフト適用確認", prompt_hash="soft001",
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_e2_history")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, history_path=history_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "E-2",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert history_path.is_file()
+        record = json.loads(history_path.read_text(encoding="utf-8").strip())
+        assert record["outcome"] == "success"
+
+    def test_final_flag_deletes_selection_even_when_soft_apply_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="haiku", session_id="sess-soft-final")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_soft_final")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "E-2",
+            "--execution", "subagent", "--complexity", "medium", "--final",
+        ])
+        assert rc == 0
+        assert not sel_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Group 10: CR-E-001 回帰テスト（code-review-report-20260703-094145.md）
+#
+# soft-apply tier 解決（優先 2・_SOFT_APPLY_ROLES）が tier_selection.json の
+# "tier"/"suggested_model" フィールドへ型チェックを行わず c3_pricing.resolve_tier
+# へ渡している欠陥（record_agent_outcome.py:561-566）の回帰テスト。
+# resolve_tier(model: str) は内部で無条件に model.lower() を呼ぶため、フィールド
+# 値が非文字列（int/list/dict）だと AttributeError が main() から非捕捉のまま
+# 伝播し、「全エラー exit 0 流儀」の不変が破られる。
+#
+# 現行実装（isinstance ガード未実装）に対しては、mod.main() 呼び出し自体が
+# AttributeError を送出してテスト実行が異常終了するため、以下は正しい理由で
+# 赤になる（Red フェーズの想定挙動）。F1 で isinstance(soft_apply_raw, str)
+# ガードを追加し、非文字列値では frontmatter fallback（優先 3）へ落とすことで
+# 緑になる。
+# ---------------------------------------------------------------------------
+
+
+class TestSoftApplyNonStringTierGuard:
+    """CR-E-001: tier_selection.json の tier/suggested_model が非文字列でも
+    クラッシュせず exit 0・frontmatter へ fallback して記録されること。"""
+
+    def test_non_string_tier_int_falls_back_to_frontmatter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier が int（例: 123）の場合。resolve_tier(123) は 123.lower() で
+        AttributeError を送出するため、ガード未実装の現行実装では
+        mod.main() 呼び出し自体が例外で異常終了し、本テストは赤になる。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier=123, session_id="sess-nonstr-tier-int")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_nonstring_tier_int")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None, (
+            "非文字列 tier(int) で AttributeError がクラッシュせず frontmatter "
+            "(sonnet) へ fallback すること"
+        )
+
+    def test_non_string_tier_list_falls_back_to_frontmatter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier が list（例: ["opus"]）の場合。同様に list には .lower() が無く
+        AttributeError となるため、現行実装では赤になる。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, tier=["opus"], session_id="sess-nonstr-tier-list",
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_nonstring_tier_list")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None, (
+            "非文字列 tier(list) で AttributeError がクラッシュせず frontmatter "
+            "(sonnet) へ fallback すること"
+        )
+
+    def test_non_string_tier_dict_falls_back_to_frontmatter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """tier が dict（例: {"x": 1}）の場合。同様に dict には .lower() が無く
+        AttributeError となるため、現行実装では赤になる。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, tier={"x": 1}, session_id="sess-nonstr-tier-dict",
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_nonstring_tier_dict")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None, (
+            "非文字列 tier(dict) で AttributeError がクラッシュせず frontmatter "
+            "(sonnet) へ fallback すること"
+        )
+
+    def test_non_string_suggested_model_falls_back_to_frontmatter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """"tier" キーが無く "suggested_model" が非文字列（例: 123）の場合も
+        同じ経路（soft_apply_raw = selection.get("tier") or
+        selection.get("suggested_model")）を通るため、現行実装では赤になる。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, suggested_model=123, session_id="sess-nonstr-suggested",
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_nonstring_suggested_model")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None, (
+            "非文字列 suggested_model(int) で AttributeError がクラッシュせず "
+            "frontmatter (sonnet) へ fallback すること"
+        )

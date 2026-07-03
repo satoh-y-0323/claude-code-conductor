@@ -14,12 +14,33 @@ Usage:
   ``required=True``（``SystemExit(2)``）ではなく ``required=False`` + main() 内
   チェックで stderr 警告 + ``return 0``（記録スキップ）とする
   （「全エラー exit 0 流儀」を貫くため。呼び出し元の dev-workflow を止めない）。
-- --tier 省略時、--execution=subagent は ``.claude/agents/{role}.md`` の
-  frontmatter `model:` 行を自己解決し、``pricing.resolve_tier`` で正規化する
-  （帰属ズレの構造的再発防止）。解決不能時は記録スキップ。
-  --execution=persona は --tier 省略時、frontmatter へは fallback せず常に
-  tier="unknown" 固定でイベントログのみ記録する（frontmatter は subagent の
-  実使用 tier であり、persona の実行時には親モデルが効くため）。
+- --tier 省略時の tier 解決優先順位（architecture-report-20260703-081149.md
+  §3-1・ADR-AS-1〜AS-4。tier-routing 自動適用フェーズ2・ソフト適用）:
+
+    | 優先 | ソース                                            | 対象                          |
+    |----|--------------------------------------------------|-------------------------------|
+    | 1  | --tier（明示・TIERS 検証）                        | 全 role（並列/worktree 経路は常用申告） |
+    | 2  | tier_selection.json の tier→suggested_model       | _SOFT_APPLY_ROLES（developer）・逐次経路のみ |
+    | 3  | agents/{role}.md frontmatter model:               | developer 以外、および 2 が不成立の developer |
+    | 4  | 解決不能                                          | 記録スキップ（stderr 警告 + exit 0） |
+
+  --execution=subagent かつ role が _SOFT_APPLY_ROLES に含まれる場合（現状
+  developer のみ）、--tier 省略時は tier_selection.json（select_tier.py が
+  UserPromptSubmit で書く推奨/実効 tier の SSOT）の `tier`（無ければ
+  `suggested_model`）を ``pricing.resolve_tier`` で正規化し優先 2 として
+  採用する。tier_selection.json が無い・値が不正（正規化不能）・role が
+  対象外（tester 等）のときは優先 3（frontmatter 自己解決）へ fallback する。
+  逸脱時の是正エスケープハッチ（ADR-AS-2）: 親が起動時に指定した model: が
+  推奨 Tier と異なる場合は必ず --tier に実際の tier を付す運用を dev-workflow
+  SKILL.md 側が担う（本スクリプトは優先 1 で受けるのみでコード変更は無い）。
+  並列（worktree isolation）経路は wt_developer→developer の記録を親 Claude
+  が main リポジトリで実行し、tier_selection.json を読まず常に --tier を
+  明示する（ADR-AS-4）。そのため本スクリプトは並列経路向けの追加コードを
+  持たず、優先 1（--tier 明示）を共用するだけで足りる。
+  --execution=persona は --tier 省略時、frontmatter へも tier_selection.json
+  へも fallback せず常に tier="unknown" 固定でイベントログのみ記録する
+  （frontmatter/tier_selection は subagent の実使用 tier であり、persona の
+  実行時には親モデルが効くため）。
 - --tier を明示した場合は TIERS(haiku/sonnet/opus) に含まれるか検証し、
   含まれなければ警告 + 記録スキップとする。ただし --execution=persona かつ
   --tier unknown は明示的な escape 値として許容する。
@@ -85,6 +106,11 @@ _VALID_COMPLEXITIES = ("simple", "medium", "complex")
 # db.py の _TIER_BANDIT_TIERS と同じ語彙。SSOT はそちら側にあるが、依存を
 # 増やさないためこのスクリプト内でも同じ値を保持する）。
 _VALID_TIERS = ("haiku", "sonnet", "opus")
+# architecture-report-20260703-081149.md §3-1 / ADR-AS-1: tier_selection.json
+# を tier 解決の SSOT として読む role の一覧（ソフト適用対象）。将来 role を
+# 追加する場合はこのタプルを拡張するだけでよい（SSOT）。tester 等はここに
+# 含めず frontmatter 自己解決のまま（role gating）。
+_SOFT_APPLY_ROLES = ("developer",)
 # Round1 CR-NEW: dedupe キーへ --task を組み込むため、agent_outcomes への
 # task 列追加（migration）はせず note フィールドの先頭にマーカーを埋め込んで
 # 表現する。
@@ -207,7 +233,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tier", default=None,
-        help="省略時は agents/{role}.md の model: を自己解決する",
+        help="省略時は developer は tier_selection.json（soft-apply・逸脱時は "
+        "frontmatter fallback）、それ以外は agents/{role}.md の model: を"
+        "自己解決する",
     )
     parser.add_argument("--note", default=None, help="帰属理由等の自由記述")
     parser.add_argument(
@@ -502,6 +530,10 @@ def main(argv: list[str] | None = None) -> int:
     c3_pricing = _load_pricing_module()
     tier_override = args.tier
 
+    # ADR-AS-1: selection（tier_selection.json）の読み取りは tier 解決より前に
+    # 1 度だけ行う（session_id 用読み取りと共用・二重 open 回避）。
+    selection = _read_selection()
+
     if tier_override is not None:
         if tier_override in _VALID_TIERS:
             tier = tier_override
@@ -522,7 +554,31 @@ def main(argv: list[str] | None = None) -> int:
         # DC-AS-001 の誤帰属がイベントログに再発するため）。
         tier = "unknown"
     else:
-        tier = _resolve_tier_from_frontmatter(role, c3_pricing)
+        tier = None
+        # ADR-AS-1 優先 2: role が soft-apply 対象（_SOFT_APPLY_ROLES）なら
+        # tier_selection.json の tier（無ければ suggested_model）を
+        # resolve_tier で正規化し、_VALID_TIERS に含まれれば採用する。
+        # 逐次経路（worktree なし）のみが対象。並列（worktree）経路は親が
+        # --tier を明示するため優先 1 で解決され、ここには来ない（ADR-AS-4）。
+        if role in _SOFT_APPLY_ROLES and selection is not None:
+            soft_apply_raw = selection.get("tier") or selection.get("suggested_model")
+            # 非文字列ガード: resolve_tier() は内部で無条件に model.lower() を
+            # 呼ぶため、tier_selection.json の破損・レース等で tier/
+            # suggested_model が非文字列（int/list/dict 等）だと AttributeError
+            # が未捕捉で伝播し、全エラー exit 0 不変を破る。_read_selection() が
+            # dict 型を弾くのと同じ防御思想でフィールド型も検証し、非文字列は
+            # soft-apply を採らず優先3（frontmatter fallback）へ落とす。
+            if (
+                isinstance(soft_apply_raw, str)
+                and c3_pricing is not None
+            ):
+                resolved = c3_pricing.resolve_tier(soft_apply_raw)
+                if resolved in _VALID_TIERS:
+                    tier = resolved
+        if tier is None:
+            # 優先 3: frontmatter 自己解決（非対象 role、または soft-apply が
+            # 不成立だった developer の fallback）。
+            tier = _resolve_tier_from_frontmatter(role, c3_pricing)
         if tier is None:
             print(
                 f"[record_agent_outcome] tier unresolved for role={role!r} "
@@ -541,7 +597,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         db_path = None
 
-    selection = _read_selection()
     session_id = selection.get("session_id") if selection else None
 
     if session_id is not None:
