@@ -46,6 +46,18 @@ COST_LAMBDA_MAX = 5.0
 # record_agent_outcome.py の --role 検証・cli_tier.py の role 別表示グルーピングが参照する。
 AGENT_ROLES: tuple[str, ...] = ("interviewer", "architect", "planner", "developer", "tester")
 
+# bandit 集計・escalation failure_rate でカウントする客観 gate の SSOT（フェーズ2.5・ADR-25-1）。
+# D-2.5=実装完了 / D-3・D-5=テスト合否（「動く実装」の直接測定） / D-2.5-stuck=自力完走不能。
+# E-1/E-2（レビュー指摘由来）は success/failure とも対称に除外する（含めない）。
+# db.py の read_agent_tier_params / read_agent_failure_rate が read-side でのみ参照する
+# （record 側は全 gate を無条件記録するため参照不要）。
+BANDIT_GATES: tuple[str, ...] = ("D-2.5", "D-3", "D-5", "D-2.5-stuck")
+
+# escalation failure_rate 計算の時間窓デフォルト（日数・フェーズ2.5・ADR-25-2）。
+# C3_FAILURE_WINDOW_DAYS 環境変数で上書き可。妥当域は半開区間 (0, 3650]（0 拒否・上限 10 年）。
+# 本定数が SSOT（read_agent_failure_rate がここから解決する）。
+FAILURE_WINDOW_DAYS_DEFAULT = 14.0
+
 
 def _resolve_float_env(
     env_key: str,
@@ -145,4 +157,23 @@ def resolve_escalation_threshold() -> float:
         log_prefix="[c3:escalation]",
     )
     # default=ESCALATION_THRESHOLD_DEFAULT のため None になり得ない（戻り値型を float に絞る）
+    return cast(float, value)
+
+
+def resolve_failure_window_days() -> float:
+    """``C3_FAILURE_WINDOW_DAYS`` を安全に解決する（read_agent_failure_rate 用 SSOT）。
+
+    妥当域: (0, 3650]（x=0 拒否の半開区間・上限 10 年で過大窓を弾く）。
+    default が float のため戻り値は常に float。
+    詳細な共通挙動は :func:`_resolve_float_env` を参照。
+    """
+    value = _resolve_float_env(
+        "C3_FAILURE_WINDOW_DAYS",
+        FAILURE_WINDOW_DAYS_DEFAULT,
+        min_val=0.0,
+        max_val=3650.0,
+        min_inclusive=False,
+        log_prefix="[c3:failure_window]",
+    )
+    # default=FAILURE_WINDOW_DAYS_DEFAULT のため None になり得ない（戻り値型を float に絞る）
     return cast(float, value)

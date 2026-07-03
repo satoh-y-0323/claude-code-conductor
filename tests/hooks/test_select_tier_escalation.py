@@ -72,21 +72,24 @@ def _load_select_tier() -> types.ModuleType:
 # read_tier_failure_rate 実 DB 蓄積前提テスト（3 件）は db-shims-and-cost タスクで
 # 両関数が deprecated no-op シムに置き換わったため削除した。等価カバレッジは
 # role 次元付き新 API のテストとして tests/test_db.py::TestRecordAgentOutcomeEvent /
-# TestReadAgentFailureRate（O3/O4 群）が引き継ぐ。シム自体の no-op 挙動は
-# tests/test_db.py::TestDeprecatedShimBehavior が担保する。
-# test_failure_rate_db_not_found は shim の (None, 0) 後方互換動作として維持する。
+# TestReadAgentFailureRate（O3/O4 群）が引き継ぐ。
+#
+# [tier-routing フェーズ2.5・T1 tester 判断（plan writes 外の追加移行）]
+# read_tier_failure_rate / record_tier_recent_outcome / update_tier_params の
+# 3 シムは ⑤（ADR-25-4）で db.py から完全削除される。本ファイルはこれらを
+# モジュールレベルで直接呼び出しており（T1 の plan writes には含まれていな
+# かったが、削除後に実 AttributeError で壊れることを grep 監査で発見した
+# ため、移行リスク潰しの一環として本ファイルも合わせて更新する）:
+#   - test_failure_rate_db_not_found: シムの (None, 0) 後方互換動作を検証
+#     していたが、シム自体が消えるため削除する（等価カバレッジは
+#     tests/test_db.py::TestReadAgentFailureRate::test_db_absent_returns_none_zero）。
+#   - TestMainEscalationIntegration.test_main_writes_escalated_flag /
+#     TestResolveEscalationThresholdInMain.test_threshold_07_high_rate_no_escalation:
+#     record_tier_recent_outcome / update_tier_params でのデータ投入を
+#     record_agent_outcome_event（role="developer", gate="D-2.5"）へ置換する
+#     （導出 bandit も同じ agent_outcomes を読むため、BANDIT_GATES 対象 gate の
+#     イベントを積むだけで trials 集計・failure rate 計算の両方に反映される）。
 # ---------------------------------------------------------------------------
-
-
-class TestRecentOutcomesHelpers:
-
-    def test_failure_rate_db_not_found(self, tmp_path: Path) -> None:
-        from c3 import db as c3_db
-        rate, samples = c3_db.read_tier_failure_rate(
-            "simple", "haiku", db_path=tmp_path / "missing.db",
-        )
-        assert rate is None
-        assert samples == 0
 
 
 # ---------------------------------------------------------------------------
@@ -160,17 +163,24 @@ class TestMainEscalationIntegration:
         db_path = tmp_path / "c3.db"
         _create_c3_db(db_path)
 
-        # haiku 失敗を 6 件積む
+        # haiku 失敗を 6 件積む（BANDIT_GATES 対象 gate="D-2.5" で record_agent_outcome_event
+        # 経由・シム record_tier_recent_outcome は⑤で削除されるため使わない）
         from c3 import db as c3_db
-        for _ in range(6):
-            c3_db.record_tier_recent_outcome(
-                complexity="simple", tier="haiku", success=False, db_path=db_path,
+        for i in range(6):
+            c3_db.record_agent_outcome_event(
+                role="developer", complexity="simple", tier="haiku", success=False,
+                gate="D-2.5", session_id=f"escalation-haiku-fail-{i}", db_path=db_path,
             )
-        # tier_bandit に 30 試行ぶん仕込んで thompson モードに入るようにする
-        # （uniform 期はランダムで haiku 以外が選ばれると escalation 経路を通らない）
-        for _ in range(50):
-            c3_db.update_tier_params(
-                "simple", "haiku", success=False, db_path=db_path,
+        # role=developer/complexity=simple の合計 trials を 30 試行以上にして
+        # thompson モードに入るようにする（uniform 期はランダムで haiku 以外が
+        # 選ばれると escalation 経路を通らない）。導出 bandit は agent_outcomes の
+        # BANDIT_GATES 対象イベントを role×complexity で合算するため、haiku の
+        # failure rate を汚さないよう別 tier（opus）に success を積む
+        # （シム update_tier_params は⑤で削除されるため使わない）。
+        for i in range(30):
+            c3_db.record_agent_outcome_event(
+                role="developer", complexity="simple", tier="opus", success=True,
+                gate="D-2.5", session_id=f"escalation-trials-{i}", db_path=db_path,
             )
 
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
@@ -382,15 +392,22 @@ class TestResolveEscalationThresholdInMain:
         _create_c3_db(db_path)
 
         from c3 import db as c3_db
-        # haiku の failure を 6/10 件積む（rate ≈ 0.6）
-        for s in [True, True, True, True, False, False, False, False, False, False]:
-            c3_db.record_tier_recent_outcome(
-                complexity="simple", tier="haiku", success=s, db_path=db_path,
+        # haiku の failure を 6/10 件積む（rate ≈ 0.6・BANDIT_GATES 対象 gate="D-2.5"。
+        # シム record_tier_recent_outcome は⑤で削除されるため使わない）
+        for i, s in enumerate(
+            [True, True, True, True, False, False, False, False, False, False]
+        ):
+            c3_db.record_agent_outcome_event(
+                role="developer", complexity="simple", tier="haiku", success=s,
+                gate="D-2.5", session_id=f"threshold-haiku-{i}", db_path=db_path,
             )
-        # thompson モード（30 試行超）に入るよう haiku のパラメータを設定
-        for _ in range(50):
-            c3_db.update_tier_params(
-                "simple", "haiku", success=False, db_path=db_path,
+        # thompson モード（30 試行超）に入るよう role=developer/complexity=simple の
+        # 合計 trials を稼ぐ（haiku の failure rate を汚さないよう別 tier=opus に
+        # success を積む。シム update_tier_params は⑤で削除されるため使わない）
+        for i in range(30):
+            c3_db.record_agent_outcome_event(
+                role="developer", complexity="simple", tier="opus", success=True,
+                gate="D-2.5", session_id=f"threshold-trials-{i}", db_path=db_path,
             )
 
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)

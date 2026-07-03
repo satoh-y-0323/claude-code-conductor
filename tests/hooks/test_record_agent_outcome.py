@@ -181,14 +181,32 @@ def _latest_agent_outcome(db_path: Path, role: str) -> tuple[str | None, str | N
 
 
 def _bandit_row(db_path: Path, role: str, complexity: str, tier: str):
+    """(role, complexity, tier) の agent_outcomes 行から (alpha, beta, trials) を
+    Beta(1,1) 事前分布 + 観測で導出して返す（行が無ければ None）。
+
+    旧 ``agent_tier_bandit`` 累積テーブル（migration 005 で DROP 済み・
+    フェーズ2.5 ADR-25-4）は本関数が直接読んでいたが、テーブル自体が存在
+    しなくなったため ``agent_outcomes`` から同じ数式（alpha=1+succ /
+    beta=1+fail / trials=count）で導出する。これにより、本ファイルの
+    既存テスト（「record_agent_outcome.py が正しい tier セルにイベントを
+    記録したか」を検証する意図）の assertion 形（row[0]/row[1]/row[2] /
+    is None 判定）を書き換えずに新スキーマへ移行できる。
+
+    gate によるフィルタは行わない（db.read_agent_tier_params の
+    BANDIT_GATES フィルタとは別物。本ヘルパーは record_agent_outcome.py が
+    「どの (role, complexity, tier) にイベントを書いたか」の単体確認用）。
+    """
     conn = sqlite3.connect(str(db_path))
     try:
         cur = conn.execute(
-            "SELECT alpha, beta, trials FROM agent_tier_bandit "
+            "SELECT SUM(success), SUM(1 - success), COUNT(*) FROM agent_outcomes "
             "WHERE role = ? AND task_complexity = ? AND tier = ?",
             (role, complexity, tier),
         )
-        return cur.fetchone()
+        succ, fail, trials = cur.fetchone()
+        if not trials:
+            return None
+        return (1.0 + (succ or 0), 1.0 + (fail or 0), trials)
     finally:
         conn.close()
 
@@ -588,11 +606,20 @@ class TestExecutionBranch:
         assert _bandit_row(db_path, "developer", "medium", "sonnet")[2] == 1  # trials
         assert _count_agent_outcomes(db_path, role="developer") == 1
 
-    def test_persona_does_not_update_bandit(
+    def test_persona_records_event_only(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         db_path: Path, agents_dir: Path,
     ) -> None:
-        """persona は bandit を更新せずイベントログのみ記録する。"""
+        """persona はイベントログのみ記録する。
+
+        フェーズ2.5（ADR-25-4）で agent_tier_bandit 累積テーブル自体が
+        DROP され、T4 完了後は execution=="subagent" 分岐も
+        update_agent_tier_params を呼ばなくなる。つまり persona/subagent の
+        いずれの実行でも「bandit 更新」という別経路はもはや存在しない
+        （旧テストが検証していた「persona は bandit 行を作らない」という
+        区別自体が構造的に無意味化した）。したがって本テストは
+        record_agent_outcome_event が --tier で明示した値・complexity で
+        正しく 1 件記録されることのみを検証する。"""
         mod = _load_hook_module("rao_exec_persona")
         _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
 
@@ -602,10 +629,10 @@ class TestExecutionBranch:
             "--tier", "opus",
         ])
         assert rc == 0
-        # bandit は行が作られない（persona は更新しない）
-        assert _bandit_row(db_path, "planner", "complex", "opus") is None
-        # イベントログには記録される
-        assert _count_agent_outcomes(db_path, role="planner", success=0) == 1
+        assert _count_agent_outcomes(
+            db_path, role="planner", task_complexity="complex",
+            tier="opus", success=0,
+        ) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1961,3 +1988,235 @@ class TestSoftApplyNonStringTierGuard:
             "非文字列 suggested_model(int) で AttributeError がクラッシュせず "
             "frontmatter (sonnet) へ fallback すること"
         )
+
+
+# ---------------------------------------------------------------------------
+# Group 11（フェーズ2.5・T3 test-record-skill・plan-report-20260703-151314.md
+# T3 / architecture-report-20260703-150507.md ADR-25-4・ADR-25-6）
+#
+# 対象: (1) execution=="subagent" 分岐から update_agent_tier_params 呼び出しが
+# 削除され persona/subagent 両分岐が record_agent_outcome_event のみへ縮退する
+# こと。(2)(3) D-2.5-stuck の記録経路と D-2.5 本体との dedupe 非衝突（共存）。
+#
+# 現行実装（T4 未実施）は L634-638 相当で依然 update_agent_tier_params を
+# 呼んでおり、c3.db から当該関数は T2 で削除済みのため AttributeError が
+# 発生し記録全体がスキップされる。よって本節のテストは正しい理由
+# （T4 未実施＝機能未実装）で赤になる（tester/T3 完了条件）。
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateCallRemoved:
+    """ADR-25-4: subagent 記録は update_agent_tier_params を呼ばず
+    record_agent_outcome_event のみで完結すること。"""
+
+    def test_subagent_records_event_without_update_agent_tier_params(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        from c3 import db as c3_db
+
+        assert not hasattr(c3_db, "update_agent_tier_params"), (
+            "c3.db.update_agent_tier_params は T2 で削除済みのはず"
+            "（このテストの前提が崩れている）"
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_update_call_removed")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _count_agent_outcomes(
+            db_path, role="developer", task_complexity="medium", tier="sonnet",
+        ) == 1, (
+            "record_agent_outcome.py が依然 update_agent_tier_params を呼んで"
+            "おり、c3.db から削除済み（T2 完了）のため AttributeError で記録"
+            "全体がスキップされている（T4 で呼び出しを削除すれば緑化する想定"
+            "の Red）"
+        )
+
+    def test_subagent_does_not_raise_attribute_error_internally(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """T4 完了後は update_agent_tier_params 呼び出し自体が無くなるため、
+        stderr に AttributeError 由来の recording failed ログが出ないこと。"""
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_no_attribute_error_stderr")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "AttributeError" not in err, (
+            "update_agent_tier_params 呼び出しの残骸で AttributeError が"
+            f"発生している（T4 待ち）: {err!r}"
+        )
+
+    def test_persona_branch_also_reduces_to_event_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """persona 分岐は元々 record_agent_outcome_event のみを呼んでおり、
+        T4 後も subagent と同じ「記録のみ」に統一される（縮退の対称性）。
+        本テストは現行実装でも persona 経路自体は既に緑のはずだが、
+        「両分岐が記録のみへ縮退したこと」を明示的に固定する回帰ガードとして
+        Group 11 に置く。"""
+        mod = _load_hook_module("rao_persona_reduced_to_event_only")
+        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+
+        rc = mod.main([
+            "--role", "architect", "--outcome", "success", "--gate", "E-1",
+            "--execution", "persona", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _count_agent_outcomes(
+            db_path, role="architect", tier="unknown", success=1,
+        ) == 1
+
+
+class TestStuckGateRecording:
+    """ADR-25-6: D-2.5-stuck の failure 記録（--tier 省略・soft-apply 解決）が
+    agent_outcomes に記録され、記録後の導出 read_agent_tier_params（db.py・
+    BANDIT_GATES フィルタ）に D-2.5-stuck が算入されること（β 増加）。"""
+
+    def test_stuck_gate_failure_recorded_with_soft_apply_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="opus", session_id="sess-stuck-1")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_stuck_gate")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "failure",
+            "--gate", "D-2.5-stuck", "--execution", "subagent",
+            "--complexity", "medium",
+            "--note", "stuck: debug-needed 検出（自力完走不能）",
+        ])
+        assert rc == 0
+        assert _count_agent_outcomes(
+            db_path, role="developer", gate="D-2.5-stuck",
+            task_complexity="medium", tier="opus", success=0,
+        ) == 1, (
+            "D-2.5-stuck failure が soft-apply 解決 tier(opus) で記録される"
+            "べきだが、update_agent_tier_params 呼び出し残存の AttributeError "
+            "で記録全体がスキップされている（T4 待ち）"
+        )
+
+    def test_stuck_failure_increases_beta_in_derived_bandit_params(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """記録した D-2.5-stuck failure が read_agent_tier_params（BANDIT_GATES
+        経由の導出集計）の beta に反映されること（ADR-25-1: D-2.5-stuck は
+        BANDIT_GATES に含まれる客観 gate）。"""
+        from c3 import db as c3_db
+
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="opus", session_id="sess-stuck-beta")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_stuck_beta_increase")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "failure",
+            "--gate", "D-2.5-stuck", "--execution", "subagent",
+            "--complexity", "medium",
+        ])
+        assert rc == 0
+        params = c3_db.read_agent_tier_params("developer", "medium", db_path=db_path)
+        alpha, beta, trials = params["opus"]
+        assert trials == 1, (
+            "D-2.5-stuck failure が導出集計（BANDIT_GATES）に算入されていない"
+            "（record_agent_outcome.py 側の記録自体が T4 待ちで欠落している"
+            "疑い）"
+        )
+        assert beta == pytest.approx(2.0), "beta（1.0+fail）が増加していない"
+        assert alpha == pytest.approx(1.0), "failure のため alpha は増加しない"
+
+
+class TestStuckAndD25Coexist:
+    """ADR-25-6・plan T3-3: 同一 session_id で D-2.5-stuck(failure) と
+    D-2.5(success) が別 gate として共存記録されること（dedupe が gate 違いを
+    弾かないこと）。C-3 DC-AM-002 対応: 本単体テストが stuck 記録経路の
+    唯一の権威的保証（ワークフロー内の非決定的な発生に頼らない）。"""
+
+    def test_stuck_failure_and_d25_success_both_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="opus", session_id="sess-stuck-dedupe")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_stuck_dedupe_coexist")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        rc_stuck = mod.main([
+            "--role", "developer", "--outcome", "failure",
+            "--gate", "D-2.5-stuck", "--execution", "subagent",
+            "--complexity", "medium",
+        ])
+        rc_success = mod.main([
+            "--role", "developer", "--outcome", "success",
+            "--gate", "D-2.5", "--execution", "subagent",
+            "--complexity", "medium",
+        ])
+        assert rc_stuck == 0 and rc_success == 0
+        assert _count_agent_outcomes(
+            db_path, role="developer", gate="D-2.5-stuck", success=0,
+        ) == 1, "D-2.5-stuck(failure) が dedupe に弾かれて記録されていない"
+        assert _count_agent_outcomes(
+            db_path, role="developer", gate="D-2.5", success=1,
+        ) == 1, "D-2.5(success) が D-2.5-stuck と衝突して記録されていない"
+
+    def test_same_session_stuck_twice_within_5min_still_deduped_by_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """同一 (session_id, gate=D-2.5-stuck, role, outcome) が 5 分以内に
+        2 回発生した場合は dedupe が効き 1 件のみ記録される（gate 単位の
+        dedupe が壊れていないことの回帰確認。stuck という gate が特別扱いで
+        dedupe をすり抜けないことを固定する）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="opus", session_id="sess-stuck-twice")
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_stuck_twice_dedupe")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+        )
+
+        argv = [
+            "--role", "developer", "--outcome", "failure",
+            "--gate", "D-2.5-stuck", "--execution", "subagent",
+            "--complexity", "medium",
+        ]
+        assert mod.main(argv) == 0
+        assert mod.main(argv) == 0
+        assert _count_agent_outcomes(
+            db_path, role="developer", gate="D-2.5-stuck",
+        ) == 1

@@ -44,9 +44,10 @@ Usage:
 - --tier を明示した場合は TIERS(haiku/sonnet/opus) に含まれるか検証し、
   含まれなければ警告 + 記録スキップとする。ただし --execution=persona かつ
   --tier unknown は明示的な escape 値として許容する。
-- --execution=subagent のみ bandit（agent_tier_bandit）を更新する。
-  --execution=persona は agent_outcomes イベントログのみ（親 Claude ペルソナは
-  実行時に frontmatter の model が効かないため）。
+- 両 execution モードとも agent_outcomes イベントログに記録する。bandit params は
+  読み取り時に agent_outcomes から導出計算される（agent_tier_bandit 削除・
+  ADR-25-4）。--execution=persona は親 Claude ペルソナ実行のため frontmatter
+  model が効かず tier="unknown" で記録される。
 - dedupe: 同一 (session_id, gate, role, outcome, task) が直近 5 分以内に
   記録済みなら 2 回目は skip。--task は任意引数で、省略時同士は従来通り
   (session_id, gate, role, outcome) のみで判定する（後方互換）。task の
@@ -632,19 +633,10 @@ def main(argv: list[str] | None = None) -> int:
     note = _compose_note(note_body, task)
 
     try:
-        if execution == "subagent":
-            c3_db.update_agent_tier_params(
-                role, complexity, tier, success=success, db_path=db_path
-            )
-            c3_db.record_agent_outcome_event(
-                role=role, complexity=complexity, tier=tier, success=success,
-                gate=gate, note=note, session_id=session_id, db_path=db_path,
-            )
-        else:  # persona
-            c3_db.record_agent_outcome_event(
-                role=role, complexity=complexity, tier=tier, success=success,
-                gate=gate, note=note, session_id=session_id, db_path=db_path,
-            )
+        c3_db.record_agent_outcome_event(
+            role=role, complexity=complexity, tier=tier, success=success,
+            gate=gate, note=note, session_id=session_id, db_path=db_path,
+        )
     except Exception as exc:  # noqa: BLE001
         print(
             f"[record_agent_outcome] recording failed: {type(exc).__name__}",

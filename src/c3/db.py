@@ -30,15 +30,18 @@ from pathlib import Path
 # 後方互換のため c3.db からも参照可能にする（cli_tier.py / select_tier.py 等）。
 from c3._db_params import (
     AGENT_ROLES as AGENT_ROLES,
+    BANDIT_GATES as BANDIT_GATES,
     COST_LAMBDA_DEFAULT as COST_LAMBDA_DEFAULT,
     COST_LAMBDA_MAX as COST_LAMBDA_MAX,
     COST_LAMBDA_MIN as COST_LAMBDA_MIN,
     EPSILON_TIEBREAK as EPSILON_TIEBREAK,
     ESCALATION_THRESHOLD_DEFAULT as ESCALATION_THRESHOLD_DEFAULT,
+    FAILURE_WINDOW_DAYS_DEFAULT as FAILURE_WINDOW_DAYS_DEFAULT,
     LEARNING_THRESHOLD as LEARNING_THRESHOLD,
     resolve_cost_lambda as resolve_cost_lambda,
     resolve_epsilon as resolve_epsilon,
     resolve_escalation_threshold as resolve_escalation_threshold,
+    resolve_failure_window_days as resolve_failure_window_days,
 )
 
 logger = logging.getLogger(__name__)
@@ -251,124 +254,18 @@ def aggregate_decisions(rows: list[dict]) -> dict:
 _TIER_BANDIT_TIERS: tuple[str, ...] = ("haiku", "sonnet", "opus")
 
 
-def read_tier_params(
-    complexity: str,
-    *,
-    db_path: Path | None = None,
-) -> dict[str, tuple[float, float, int]]:
-    """[Deprecated] 全 tier 一様 (1.0, 1.0, 0) を返す後方互換シム。
-
-    Deprecated: v2.41.0 で `read_agent_tier_params` に置換済み。次リリースで削除予定。
-
-    旧 tier_bandit テーブルは migration 004 で DROP 済みのため、DB には一切
-    接続せず常に uniform 初期値を返す（旧 select_tier.py が uniform 表示に
-    自然フォールバックする。ADR-5）。
-
-    Args:
-        complexity: 後方互換のため受け取るが値は無視する。
-        db_path: 後方互換のため受け取るが値は無視する。
-
-    Returns:
-        ``{"haiku": (1.0, 1.0, 0), "sonnet": (1.0, 1.0, 0), "opus": (1.0, 1.0, 0)}``。
-    """
-    return {t: (1.0, 1.0, 0) for t in _TIER_BANDIT_TIERS}
-
-
-def update_tier_params(
-    complexity: str,
-    tier: str,
-    *,
-    success: bool,
-    db_path: Path | None = None,
-) -> bool:
-    """[Deprecated] no-op で True を返す後方互換シム。
-
-    Deprecated: v2.41.0 で `update_agent_tier_params` に置換済み。次リリースで削除予定。
-
-    旧 tier_bandit テーブルは DROP 済みのため DB には一切接続しない。False を
-    返すと旧 record_tier_outcome.py が json を保持し警告を出し続けるため、
-    常に True を返して静かに捨てる（ADR-5）。
-
-    Args:
-        complexity: 後方互換のため受け取るが値は無視する。
-        tier: 後方互換のため受け取るが値は無視する。
-        success: 後方互換のため受け取るが値は無視する。
-        db_path: 後方互換のため受け取るが値は無視する。
-
-    Returns:
-        常に True。
-    """
-    return True
-
-
 # Phase 2-B 用: tier_recent_outcomes ヘルパー（直近 N 件の outcome 履歴）
 
 # escalation 判定の最小サンプル数。これより少ないと escalation しない（統計的に弱い）。
 _FAILURE_RATE_MIN_SAMPLES = 5
 
 
-def record_tier_recent_outcome(
-    *,
-    complexity: str,
-    tier: str,
-    success: bool,
-    db_path: Path | None = None,
-    session_id: str | None = None,
-) -> bool:
-    """[Deprecated] no-op で True を返す後方互換シム。
-
-    Deprecated: v2.41.0 で `record_agent_outcome_event` に置換済み。次リリースで削除予定。
-
-    旧 tier_recent_outcomes テーブルは DROP 済みのため DB には一切接続しない。
-    False を返すと旧 record_tier_outcome.py が json を保持し警告を出し続けるため、
-    常に True を返して静かに捨てる（ADR-5）。
-
-    Args:
-        complexity: 後方互換のため受け取るが値は無視する。
-        tier: 後方互換のため受け取るが値は無視する。
-        success: 後方互換のため受け取るが値は無視する。
-        db_path: 後方互換のため受け取るが値は無視する。
-        session_id: 後方互換のため受け取るが値は無視する。
-
-    Returns:
-        常に True。
-    """
-    return True
-
-
-def read_tier_failure_rate(
-    complexity: str,
-    tier: str,
-    *,
-    last_n: int = 10,
-    db_path: Path | None = None,
-) -> tuple[float | None, int]:
-    """[Deprecated] 常に (None, 0) を返す後方互換シム。
-
-    Deprecated: v2.41.0 で `read_agent_failure_rate` に置換済み。次リリースで削除予定。
-
-    旧 tier_recent_outcomes テーブルは DROP 済みのため DB には一切接続しない。
-    ``(None, 0)`` はサンプル不足と同じ扱いのため、旧 select_tier.py の
-    escalation 判定が自然に無効化される（ADR-5）。
-
-    Args:
-        complexity: 後方互換のため受け取るが値は無視する。
-        tier: 後方互換のため受け取るが値は無視する。
-        last_n: 後方互換のため受け取るが値は無視する。
-        db_path: 後方互換のため受け取るが値は無視する。
-
-    Returns:
-        常に ``(None, 0)``。
-    """
-    return None, 0
-
-
 # ---------------------------------------------------------------------------
 # agent-tier-routing 学習シグナル再設計（v2.41.0 db-foundation）
 #
-# migration 004 で新設された agent_tier_bandit / agent_outcomes 用ヘルパー。
-# 旧 tier_bandit / tier_recent_outcomes 系（read_tier_params 等）と役割は同じだが、
-# PK/列に role が加わる（ADR-1: DROP + 新テーブル一本化）。
+# migration 005（フェーズ2.5）で agent_outcomes 導出集計へ全面移行した
+# agent-tier-routing ヘルパー群。旧 agent_tier_bandit テーブルは DROP され、
+# 学習シグナルは agent_outcomes からの読み取り時導出に統一。
 # ---------------------------------------------------------------------------
 
 
@@ -380,6 +277,17 @@ def read_agent_tier_params(
 ) -> dict[str, tuple[float, float, int]]:
     """指定 role/complexity の各 Tier の (alpha, beta, trials) を返す。
 
+    フェーズ2.5（ADR-25-3）で ``agent_tier_bandit`` 累積テーブル読みから
+    ``agent_outcomes`` イベントログの GROUP BY 導出集計へ移行した。
+    ``BANDIT_GATES``（D-2.5 / D-3 / D-5 / D-2.5-stuck）に該当する gate の
+    イベントのみを集計対象とし、E-1/E-2（レビュー指摘由来）は success/failure
+    とも対称に除外される（read-side フィルタ 1 点で完結・記録層は全 gate 継続）。
+    シグナル定義（BANDIT_GATES）を変えても過去ログへ即遡及再計算される（累積
+    テーブルに依存しない）のが導出化の眼目。
+
+    集計規則: ``alpha = 1.0 + Σsuccess`` / ``beta = 1.0 + Σ(1 - success)`` /
+    ``trials = COUNT(*)``（Beta(1,1) 事前分布 + 観測）。
+
     Args:
         role: '_db_params.AGENT_ROLES' のいずれか（例: 'developer'）。
         complexity: 'simple' | 'medium' | 'complex'。
@@ -387,9 +295,11 @@ def read_agent_tier_params(
 
     Returns:
         ``{"haiku": (alpha, beta, trials), "sonnet": ..., "opus": ...}``。
-        行が無い tier は ``(1.0, 1.0, 0)`` で初期化扱い（Beta(1,1)＝一様分布）。
-        DB 不在 / エラー時も全 tier を初期値で返す。role が異なれば別セルとして
-        分離される（tester の更新が developer に漏れない）。
+        BANDIT_GATES 該当イベントが無い tier は ``(1.0, 1.0, 0)`` で初期化扱い
+        （Beta(1,1)＝一様分布）。DB 不在 / エラー時も全 tier を初期値で返す。
+        role が異なれば別セルとして分離される（tester の更新が developer に漏れない）。
+        E-gate しか記録されない role（reviewer 系）は恒久的に全 tier uniform になる
+        （BANDIT_GATES に該当 gate を持たないため・意図どおり・ADR-25-3 DC-AS-002）。
     """
     defaults: dict[str, tuple[float, float, int]] = {
         t: (1.0, 1.0, 0) for t in _TIER_BANDIT_TIERS
@@ -400,16 +310,25 @@ def read_agent_tier_params(
         if db_path is None:
             return defaults
 
+    # gate IN の placeholder は BANDIT_GATES 長から動的生成する（DC-GP-001）。
+    # literal '(?, ?, ?, ?)' 写経は将来 BANDIT_GATES 増減でバインド個数エラーを招く。
+    gate_placeholders = ",".join("?" * len(BANDIT_GATES))
+
     try:
         conn = sqlite3.connect(str(db_path))
         try:
             _apply_busy_timeout(conn)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT tier, alpha, beta, trials "
-                "FROM agent_tier_bandit "
-                "WHERE role = ? AND task_complexity = ?",
-                (role, complexity),
+                "SELECT tier, "
+                "       SUM(success)     AS succ, "
+                "       SUM(1 - success) AS fail, "
+                "       COUNT(*)         AS trials "
+                "FROM agent_outcomes "
+                "WHERE role = ? AND task_complexity = ? "
+                f"  AND gate IN ({gate_placeholders}) "
+                "GROUP BY tier",
+                (role, complexity, *BANDIT_GATES),
             ).fetchall()
         finally:
             conn.close()
@@ -424,80 +343,11 @@ def read_agent_tier_params(
     for r in rows:
         tier = r["tier"]
         if tier in result:
-            result[tier] = (float(r["alpha"]), float(r["beta"]), int(r["trials"]))
+            succ = int(r["succ"] or 0)
+            fail = int(r["fail"] or 0)
+            trials = int(r["trials"] or 0)
+            result[tier] = (1.0 + succ, 1.0 + fail, trials)
     return result
-
-
-def update_agent_tier_params(
-    role: str,
-    complexity: str,
-    tier: str,
-    *,
-    success: bool,
-    db_path: Path | None = None,
-) -> bool:
-    """agent_tier_bandit の (alpha, beta, trials) を 1 試行分更新する。
-
-    Args:
-        role: '_db_params.AGENT_ROLES' のいずれか。
-        complexity: 'simple' | 'medium' | 'complex'。
-        tier: 'haiku' | 'sonnet' | 'opus'。
-        success: True なら alpha+=1、False なら beta+=1。
-        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
-
-    Returns:
-        UPSERT 成功時 True、DB 不在 / エラー時 False。
-
-    Notes:
-        - 【DC-GP-002】success=True → alpha+=1、success=False → beta+=1。
-          いずれの場合も trials+=1・last_updated 更新（旧 update_tier_params と同一規則）。
-        - 行が無ければ INSERT（初期 alpha=1.0, beta=1.0, trials=0 から開始）。
-        - PK は (role, task_complexity, tier) のため、role が異なれば別行になる。
-    """
-    if db_path is None:
-        db_path = locate_c3_db()
-        if db_path is None:
-            return False
-
-    if tier not in _TIER_BANDIT_TIERS:
-        logger.warning("update_agent_tier_params: unknown tier %r (continuing)", tier)
-
-    from datetime import timezone as _tz  # noqa: PLC0415
-    now_iso = datetime.now(_tz.utc).isoformat(timespec="seconds")
-    alpha_delta = 1.0 if success else 0.0
-    beta_delta = 0.0 if success else 1.0
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            _apply_busy_timeout(conn)
-            # SQLite 3.24+ の UPSERT。既存行があれば加算更新、無ければ初期値 + 1 試行分
-            conn.execute(
-                "INSERT INTO agent_tier_bandit "
-                "(role, task_complexity, tier, alpha, beta, trials, last_updated) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?) "
-                "ON CONFLICT(role, task_complexity, tier) DO UPDATE SET "
-                "  alpha = alpha + ?, "
-                "  beta = beta + ?, "
-                "  trials = trials + 1, "
-                "  last_updated = excluded.last_updated",
-                (
-                    role, complexity, tier,
-                    1.0 + alpha_delta, 1.0 + beta_delta, now_iso,
-                    alpha_delta, beta_delta,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        return True
-    except sqlite3.OperationalError as exc:
-        logger.debug("update_agent_tier_params: table not found or inaccessible: %s", type(exc).__name__)
-        return False
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to update agent_tier_params: %s", type(exc).__name__)
-        return False
 
 
 def record_agent_outcome_event(
@@ -569,32 +419,50 @@ def read_agent_failure_rate(
     complexity: str,
     tier: str,
     *,
-    last_n: int = 10,
+    window_days: float | None = None,
     db_path: Path | None = None,
 ) -> tuple[float | None, int]:
-    """直近 ``last_n`` 件の agent_outcomes から failure rate を計算する。
+    """時間窓内の agent_outcomes（BANDIT_GATES のみ）から failure rate を計算する。
+
+    フェーズ2.5（ADR-25-2）で直近 ``last_n`` 件窓から時間窓（``window_days``）+
+    ``gate IN BANDIT_GATES`` フィルタへ全面移行した。cutoff より新しく、かつ
+    BANDIT_GATES（D-2.5 / D-3 / D-5 / D-2.5-stuck）に該当する gate のイベント
+    のみを対象とする。E-1/E-2（レビュー指摘由来）の失敗は escalation シグナルを
+    押し上げなくなる（②の gate 除外を bandit だけでなく escalation にも一貫適用）。
 
     Args:
         role: '_db_params.AGENT_ROLES' のいずれか。
         complexity: 'simple' / 'medium' / 'complex'。
         tier: 'haiku' / 'sonnet' / 'opus'。
-        last_n: 何件を対象にするか（デフォルト 10 件）。
+        window_days: 時間窓の日数。``None`` のとき ``resolve_failure_window_days()``
+            で解決する（env ``C3_FAILURE_WINDOW_DAYS`` 未設定なら既定 14.0 日）。
         db_path: c3.db のパス。
 
     Returns:
         ``(failure_rate, sample_count)`` のタプル。
 
-        - ``sample_count`` は実際に取得できた件数（最大 last_n）。
+        - ``sample_count`` は窓内かつ BANDIT_GATES 該当の実イベント件数。
         - ``failure_rate`` は失敗件数 / sample_count。
         - サンプルが ``_FAILURE_RATE_MIN_SAMPLES`` 未満の場合は
-          ``failure_rate = None`` を返し、escalation 判定を skip する目印にする
-          （旧 read_tier_failure_rate と同一規則を role 分離して継承）。
+          ``failure_rate = None`` を返し、escalation 判定を skip する目印にする。
         - DB 不在 / エラー時も ``(None, 0)`` を返す。
     """
     if db_path is None:
         db_path = locate_c3_db()
         if db_path is None:
             return None, 0
+
+    if window_days is None:
+        window_days = resolve_failure_window_days()
+
+    # cutoff は record 側書式（UTC 秒精度 ISO 文字列）と一致させ文字列比較する。
+    from datetime import timedelta, timezone as _tz  # noqa: PLC0415
+    cutoff = (
+        datetime.now(_tz.utc) - timedelta(days=window_days)
+    ).isoformat(timespec="seconds")
+
+    # gate IN の placeholder は BANDIT_GATES 長から動的生成する（DC-GP-001）。
+    gate_placeholders = ",".join("?" * len(BANDIT_GATES))
 
     try:
         conn = sqlite3.connect(str(db_path))
@@ -603,8 +471,10 @@ def read_agent_failure_rate(
             rows = conn.execute(
                 "SELECT success FROM agent_outcomes "
                 "WHERE role = ? AND task_complexity = ? AND tier = ? "
-                "ORDER BY ts DESC LIMIT ?",
-                (role, complexity, tier, last_n),
+                f"  AND gate IN ({gate_placeholders}) "
+                "  AND ts >= ? "
+                "ORDER BY ts DESC",
+                (role, complexity, tier, *BANDIT_GATES, cutoff),
             ).fetchall()
         finally:
             conn.close()
@@ -1177,25 +1047,3 @@ def set_ingest_offset(
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to set_ingest_offset: %s", type(exc).__name__)
         return False
-
-
-def sync_tier_bandit_cost(
-    *,
-    db_path: Path | None = None,
-) -> int:
-    """[Deprecated] no-op で 0 を返す後方互換シム。
-
-    Deprecated: v2.41.0 で cost 列キャッシュ自体を廃止（ADR-4）。次リリースで削除予定。
-
-    旧 tier_bandit テーブルは DROP 済みのため DB には一切接続しない
-    （``read_tier_cost_rate_summary`` も呼ばない）。cost レートが必要な箇所は
-    ``read_tier_cost_rate_summary`` / ``read_tier_cost_rate_for_complexity`` を
-    直読みすること。
-
-    Args:
-        db_path: 後方互換のため受け取るが値は無視する。
-
-    Returns:
-        常に 0。
-    """
-    return 0

@@ -729,9 +729,26 @@ class TestMigrate004AgentOutcomes:
 
     def test_apply_004_creates_new_tables_and_drops_old(self, tmp_path: Path):
         """H2: 004 適用後、旧 tier_bandit / tier_recent_outcomes が消滅し、
-        新 agent_tier_bandit / agent_outcomes が存在する。"""
+        新 agent_tier_bandit / agent_outcomes が存在する。
+
+        フェーズ2.5（ADR-25-4）で 005 が agent_tier_bandit を DROP するため、
+        デフォルト migrations ディレクトリ（005 含む）を通しで適用すると
+        「004 適用後」の状態を検証できない。004 時点の状態を確認する意図を
+        保つため、H6/I4 と同型の 001〜004 限定ディレクトリで適用する。
+        """
+        import shutil  # noqa: PLC0415
+
+        from c3.migrate import _DEFAULT_MIGRATIONS_DIR  # noqa: PLC0415
+
         db_path = tmp_path / "c3.db"
-        apply_pending_migrations(db_path)
+        mdir_004_only = tmp_path / "migrations_004_only"
+        mdir_004_only.mkdir()
+        for name in (
+            "001_initial.sql", "002_agent_cost_runs.sql",
+            "003_tier_cost.sql", "004_agent_outcomes.sql",
+        ):
+            shutil.copy(_DEFAULT_MIGRATIONS_DIR / name, mdir_004_only / name)
+        apply_pending_migrations(db_path, migrations_dir=mdir_004_only)
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -777,9 +794,24 @@ class TestMigrate004AgentOutcomes:
         )
 
     def test_agent_tier_bandit_columns(self, tmp_path: Path):
-        """H4: agent_tier_bandit の列構成が仕様通り（role/task_complexity/tier/alpha/beta/trials/last_updated）。"""
+        """H4: agent_tier_bandit の列構成が仕様通り（role/task_complexity/tier/alpha/beta/trials/last_updated）。
+
+        005（ADR-25-4）が agent_tier_bandit を DROP するため、H2 と同じ理由で
+        001〜004 限定ディレクトリで適用し「004 時点」の列構成を検証する。
+        """
+        import shutil  # noqa: PLC0415
+
+        from c3.migrate import _DEFAULT_MIGRATIONS_DIR  # noqa: PLC0415
+
         db_path = tmp_path / "c3.db"
-        apply_pending_migrations(db_path)
+        mdir_004_only = tmp_path / "migrations_004_only"
+        mdir_004_only.mkdir()
+        for name in (
+            "001_initial.sql", "002_agent_cost_runs.sql",
+            "003_tier_cost.sql", "004_agent_outcomes.sql",
+        ):
+            shutil.copy(_DEFAULT_MIGRATIONS_DIR / name, mdir_004_only / name)
+        apply_pending_migrations(db_path, migrations_dir=mdir_004_only)
 
         conn = sqlite3.connect(str(db_path))
         try:
@@ -822,6 +854,12 @@ class TestMigrate004AgentOutcomes:
         旧テーブルと旧データが消え、新テーブルが（空で）存在する。
 
         003→004 upgrade 経路（plan-report db-foundation の主眼）を固定する。
+
+        NOTE(フェーズ2.5・ADR-25-4): 005 が agent_tier_bandit を DROP する
+        ため、デフォルト migrations ディレクトリ（005 含む）で「続きを適用」
+        すると 004 時点の状態（agent_tier_bandit 存在）を検証できない。
+        004 自体の upgrade 効果を検証する意図を保つため、継続適用も
+        001〜004 限定ディレクトリで行う（005 は適用しない）。
         """
         import shutil  # noqa: PLC0415
 
@@ -851,8 +889,15 @@ class TestMigrate004AgentOutcomes:
         finally:
             conn.close()
 
-        # 実 migrations ディレクトリ（004 を含む）から続きを適用する
-        applied = apply_pending_migrations(db_path)
+        # 001〜004 限定ディレクトリ（005 非含有）から続きを適用する
+        mdir_004_only = tmp_path / "migrations_004_only"
+        mdir_004_only.mkdir()
+        for name in (
+            "001_initial.sql", "002_agent_cost_runs.sql",
+            "003_tier_cost.sql", "004_agent_outcomes.sql",
+        ):
+            shutil.copy(_DEFAULT_MIGRATIONS_DIR / name, mdir_004_only / name)
+        applied = apply_pending_migrations(db_path, migrations_dir=mdir_004_only)
         assert "004" in applied, f"004 が applied に含まれない: {applied}"
 
         conn = sqlite3.connect(str(db_path))
@@ -902,4 +947,134 @@ class TestMigrate004AgentOutcomes:
 
         assert "004" in migration_versions, (
             f"schema_migrations に '004' が記録されていません: {migration_versions}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# I 群: 005 migration 適用テスト (tier-routing フェーズ2.5・ADR-25-4・Red 先行)
+# ---------------------------------------------------------------------------
+
+class TestMigrate005DropAgentTierBandit:
+    """I 群: 005_drop_agent_tier_bandit.sql の適用テスト（Red 先行・未実装のため 005 は失敗する）。
+
+    architecture-report-20260703-150507.md ADR-25-4 に従い、004 で導入された
+    agent_tier_bandit を DROP する（read_agent_tier_params が agent_outcomes
+    からの導出集計に置換されたため累積テーブルが不要になった）。
+    agent_outcomes はイベントログとして不変で残す。H 群（004）と同型。
+    """
+
+    def test_apply_005_returns_version_in_applied(self, tmp_path: Path):
+        """I1: apply_pending_migrations の戻り値に '005' が含まれ、004 より後に適用される。"""
+        db_path = tmp_path / "c3.db"
+        applied = apply_pending_migrations(db_path)
+
+        assert "005" in applied, f"005 が applied に含まれない: {applied}"
+        assert applied.index("004") < applied.index("005"), "004 が 005 より前に来るはず"
+
+    def test_apply_005_drops_agent_tier_bandit_keeps_agent_outcomes(self, tmp_path: Path):
+        """I2: 005 適用後、agent_tier_bandit が消滅し agent_outcomes は存置される。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "agent_tier_bandit" not in tables, (
+            f"agent_tier_bandit が消えていません（ADR-25-4）: {tables}"
+        )
+        assert "agent_outcomes" in tables, (
+            f"agent_outcomes テーブルが見つかりません（イベントログは不変のはず）: {tables}"
+        )
+
+    def test_apply_005_schema_migrations_records_005(self, tmp_path: Path):
+        """I3: 005 適用後 schema_migrations に '005' 行が記録されている。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            migration_versions = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "005" in migration_versions, (
+            f"schema_migrations に '005' が記録されていません: {migration_versions}"
+        )
+
+    def test_upgrade_from_004_drops_agent_tier_bandit_and_data(self, tmp_path: Path):
+        """I4: 004 まで適用済み・agent_tier_bandit にデータありの DB から 005 を適用すると、
+        agent_tier_bandit がデータごと消え、agent_outcomes の既存データは保持される。
+
+        004→005 upgrade 経路（tier-routing フェーズ2.5 の主眼）を固定する。
+        """
+        import shutil  # noqa: PLC0415
+
+        from c3.migrate import _DEFAULT_MIGRATIONS_DIR  # noqa: PLC0415
+
+        db_path = tmp_path / "c3.db"
+
+        # 001〜004 のみを含む一時 migrations ディレクトリを作り、004 相当の DB を再現する
+        mdir_004_only = tmp_path / "migrations_004_only"
+        mdir_004_only.mkdir()
+        for name in (
+            "001_initial.sql", "002_agent_cost_runs.sql",
+            "003_tier_cost.sql", "004_agent_outcomes.sql",
+        ):
+            shutil.copy(_DEFAULT_MIGRATIONS_DIR / name, mdir_004_only / name)
+        apply_pending_migrations(db_path, migrations_dir=mdir_004_only)
+
+        # 004 段階の DB に agent_tier_bandit / agent_outcomes への既存データを投入する
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO agent_tier_bandit "
+                "(role, task_complexity, tier, alpha, beta, trials, last_updated)"
+                " VALUES ('developer', 'medium', 'sonnet', 3.0, 2.0, 4, '2026-01-01T00:00:00')"
+            )
+            conn.execute(
+                "INSERT INTO agent_outcomes "
+                "(role, task_complexity, tier, success, gate, ts)"
+                " VALUES ('developer', 'medium', 'sonnet', 1, 'D-2.5', '2026-01-01T00:00:00')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 実 migrations ディレクトリ（005 を含む）から続きを適用する
+        applied = apply_pending_migrations(db_path)
+        assert "005" in applied, f"005 が applied に含まれない: {applied}"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            agent_outcomes_count = None
+            if "agent_outcomes" in tables:
+                agent_outcomes_count = conn.execute(
+                    "SELECT COUNT(*) FROM agent_outcomes"
+                ).fetchone()[0]
+        finally:
+            conn.close()
+
+        assert "agent_tier_bandit" not in tables, "agent_tier_bandit はデータごと消えているはず"
+        assert "agent_outcomes" in tables
+        assert agent_outcomes_count == 1, (
+            "agent_outcomes の既存データは 005（DROP 対象外）で保持されるはず"
         )

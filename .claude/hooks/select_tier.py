@@ -16,8 +16,8 @@ MVP スコープ（ユーザー承認済み・tier-routing 自動適用フェー
 学習データ:
 - 結果は ``.claude/state/tier_selection.json`` に直近 1 件のみ書き込む
 - dev-workflow の各フェーズ承認ゲート（並列タスク単位を含む）で
-  ``record_agent_outcome.py`` がこの json を読んで ``agent_tier_bandit``
-  テーブルを更新する
+  ``record_agent_outcome.py`` が結果を ``agent_outcomes`` イベントログに記録し、
+  bandit params（α/β）は読み取り時に ``read_agent_tier_params`` が導出集計で計算する
 
 入力 / 出力:
 - stdin: UserPromptSubmit payload（``prompt`` フィールドを参照）
@@ -505,8 +505,8 @@ def write_tier_selection(
 ) -> None:
     """直近の選択結果を ``tier_selection.json`` に書く。
 
-    record_agent_outcome.py がこの json を読んで agent_tier_bandit の α/β を更新する。
-    既存ファイルは上書きされる（最新 1 件のみ保持）。
+    record_agent_outcome.py が結果を ``agent_outcomes`` イベントログに記録し、
+    α/β は読み取り時に導出される。既存ファイルは上書きされる（最新 1 件のみ保持）。
 
     ``suggested_model`` を併せて書く。tier 名と model の短縮名は同一とする。
     （PO 廃止前は runner.py が読んで ``claude --agents`` 用に使っていたが、v2.0.0 以降は

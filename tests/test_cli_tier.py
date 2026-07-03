@@ -56,29 +56,38 @@ def _create_c3_db(db_path: Path) -> None:
     apply_pending_migrations(db_path)
 
 
-def _seed_bandit(
+def _seed_bandit_via_outcomes(
     db_path: Path,
     *,
     role: str,
     complexity: str,
     tier: str,
-    alpha: float,
-    beta: float,
-    trials: int,
+    success_count: int,
+    failure_count: int,
+    gate: str = "D-2.5",
 ) -> None:
-    """agent_tier_bandit に 1 セルを直接 INSERT する（alpha/beta/trials を精密制御）。"""
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        conn.execute(
-            "INSERT INTO agent_tier_bandit "
-            "(role, task_complexity, tier, alpha, beta, trials, last_updated) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (role, complexity, tier, alpha, beta, trials, ts),
+    """旧 `_seed_bandit`（agent_tier_bandit 直接 INSERT）の代替。
+
+    migration 005（tier-routing フェーズ2.5・ADR-25-4）で agent_tier_bandit が
+    DROP されるため直接 INSERT はできない。BANDIT_GATES 対象 gate（既定
+    "D-2.5"）の agent_outcomes イベントを success_count/failure_count 件ずつ
+    投入し、read_agent_tier_params の導出集計で
+    alpha=1+success_count, beta=1+failure_count, trials=success_count+failure_count
+    になるようにする（旧 alpha/beta/trials 直接指定の代替）。
+    """
+    from c3.db import record_agent_outcome_event  # noqa: PLC0415
+    for i in range(success_count):
+        record_agent_outcome_event(
+            role=role, complexity=complexity, tier=tier, success=True,
+            gate=gate, session_id=f"seed-{role}-{complexity}-{tier}-s{i}",
+            db_path=db_path,
         )
-        conn.commit()
-    finally:
-        conn.close()
+    for i in range(failure_count):
+        record_agent_outcome_event(
+            role=role, complexity=complexity, tier=tier, success=False,
+            gate=gate, session_id=f"seed-{role}-{complexity}-{tier}-f{i}",
+            db_path=db_path,
+        )
 
 
 def _seed_outcome(
@@ -181,8 +190,8 @@ class TestRoleGrouping:
         """developer にのみデータがある場合、developer は完全テーブル・他は「収集中」のまま。"""
         db = tmp_path / "c3.db"
         _create_c3_db(db)
-        _seed_bandit(db, role="developer", complexity="complex", tier="haiku",
-                     alpha=10.0, beta=2.0, trials=10)
+        _seed_bandit_via_outcomes(db, role="developer", complexity="complex", tier="haiku",
+                                   success_count=9, failure_count=1)
 
         rc = _run(_make_args(), db, monkeypatch)
 
@@ -200,8 +209,8 @@ class TestRoleGrouping:
         db = tmp_path / "c3.db"
         _create_c3_db(db)
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db)
-        _seed_bandit(db, role="tester", complexity="medium", tier="sonnet",
-                     alpha=3.0, beta=1.0, trials=2)
+        _seed_bandit_via_outcomes(db, role="tester", complexity="medium", tier="sonnet",
+                                   success_count=2, failure_count=0)
 
         snapshot = cli_tier._collect_snapshot(db, recent_limit=10)
 
@@ -268,8 +277,10 @@ class TestRoleGrouping:
         当該 role の mode が thompson になる。"""
         db = tmp_path / "c3.db"
         _create_c3_db(db)
-        _seed_bandit(db, role="developer", complexity="simple", tier="haiku",
-                     alpha=10.0, beta=20.0, trials=c3_db.LEARNING_THRESHOLD)
+        _seed_bandit_via_outcomes(
+            db, role="developer", complexity="simple", tier="haiku",
+            success_count=9, failure_count=c3_db.LEARNING_THRESHOLD - 9,
+        )
 
         rc = _run(_make_args(as_json=True), db, monkeypatch)
 
@@ -783,10 +794,14 @@ class TestSanitizeTerminalText:
         出力を汚染しない（＝黙って無視される）ことを検証する。"""
         db = tmp_path / "c3.db"
         _create_c3_db(db)
-        _seed_bandit(db, role="developer", complexity="\x1b[31msimple\x07",
-                     tier="haiku", alpha=2.0, beta=1.0, trials=3)
-        _seed_bandit(db, role="developer", complexity="simple",
-                     tier="sonnet", alpha=1.0, beta=1.0, trials=1)
+        _seed_bandit_via_outcomes(
+            db, role="developer", complexity="\x1b[31msimple\x07",
+            tier="haiku", success_count=2, failure_count=1,
+        )
+        _seed_bandit_via_outcomes(
+            db, role="developer", complexity="simple",
+            tier="sonnet", success_count=1, failure_count=0,
+        )
 
         rc = _run(_make_args(), db, monkeypatch)
 

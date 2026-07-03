@@ -263,7 +263,9 @@ class TestWorktreeSkipSyncNotCalled:
     """
 
     def test_sync_not_called_when_worktree(self, monkeypatch: pytest.MonkeyPatch):
-        """is_worktree=True の場合、sync_tier_bandit_cost は呼ばれない。"""
+        """is_worktree=True の場合、sync_tier_bandit_cost は呼ばれない
+        （C-3 DC-GP-003: シム削除⑤後は関数自体が存在しないため monkeypatch.setattr は
+        AttributeError になる。「関数が存在しないこと」の確認へ書き換える）。"""
         module = _load_module()
 
         stop_mock = MagicMock(run=MagicMock(return_value=0))
@@ -290,25 +292,15 @@ class TestWorktreeSkipSyncNotCalled:
             )})(),
         )
 
-        sync_called = []
-
-        # c3.db.sync_tier_bandit_cost が呼び出されないことを確認する。
-        # session_stop.py は関数内 "from c3.db import sync_tier_bandit_cost" で
-        # 取得するため、sys.modules["c3.db"] の属性を差し替えることで確実に捕捉できる。
+        # sync_tier_bandit_cost はシム削除（⑤・ADR-25-4）により c3.db から消えている。
         import c3.db  # noqa: PLC0415 — テスト時点で c3.db をロードしておく (sys.modules["c3.db"] 確定)
-
-        def tracking_sync(**kw):
-            sync_called.append(True)
-            return 0
-
-        monkeypatch.setattr(sys.modules["c3.db"], "sync_tier_bandit_cost", tracking_sync)
+        assert not hasattr(c3.db, "sync_tier_bandit_cost"), (
+            "sync_tier_bandit_cost はシム削除（⑤・ADR-25-4）により c3.db から消えているはず"
+        )
 
         result = module.main()
 
         assert result == 0
-        assert not sync_called, (
-            "worktree=True の場合、sync_tier_bandit_cost が呼ばれてはいけない"
-        )
 
 
 class TestSyncTierBanditCostCallRemoved:
@@ -321,9 +313,13 @@ class TestSyncTierBanditCostCallRemoved:
     """
 
     def test_sync_not_called_in_non_worktree_path(self, monkeypatch: pytest.MonkeyPatch):
-        """sync_tier_bandit_cost は worktree 判定に関わらず Phase 3 から呼ばれなくなる
-        （現行実装は is_worktree=False の通常経路で必ず呼ぶため Red）。
-        ingest_session は不変のため、同じ経路で引き続き呼ばれることも確認する。
+        """sync_tier_bandit_cost は worktree 判定に関わらず Phase 3 から呼ばれない。
+
+        C-3 DC-GP-003: シム削除（⑤・ADR-25-4）により関数自体が c3.db に存在しなく
+        なるため、monkeypatch.setattr による呼び出し検知は AttributeError になる。
+        「関数が存在しないこと（not hasattr）」の確認へ書き換える（raising=False で
+        誤魔化さず削除確認へ一意化）。ingest_session は不変のため、同じ経路で
+        引き続き呼ばれることも確認する。
         """
         module = _load_module()
 
@@ -351,11 +347,9 @@ class TestSyncTierBanditCostCallRemoved:
             )})(),
         )
 
-        sync_called = []
         import c3.db  # noqa: PLC0415 — sys.modules["c3.db"] を確定させる
-        monkeypatch.setattr(
-            sys.modules["c3.db"], "sync_tier_bandit_cost",
-            lambda **kw: (sync_called.append(True), 0)[1],
+        assert not hasattr(c3.db, "sync_tier_bandit_cost"), (
+            "sync_tier_bandit_cost はシム削除（⑤・ADR-25-4）により c3.db から消えているはず"
         )
 
         ingest_called = []
@@ -370,10 +364,6 @@ class TestSyncTierBanditCostCallRemoved:
         assert result == 0
         assert ingest_called, (
             "ingest_session は不変のため is_worktree=False 経路で引き続き呼ばれるはず"
-        )
-        assert not sync_called, (
-            "sync_tier_bandit_cost 呼び出しは Phase 3 から完全に削除されるべき"
-            "（ADR-4: cost 列キャッシュ廃止）"
         )
 
 

@@ -3,8 +3,8 @@
 tier-routing (Phase 2 完成) の効果計測用ダッシュボード。
 
 主な機能:
-- ``c3 tier stats``: role 別 complexity × tier の累積（agent_tier_bandit）と
-  直近 outcome（agent_outcomes）を表形式表示
+- ``c3 tier stats``: role 別 complexity × tier の bandit params（agent_outcomes からの導出集計）と
+  直近 outcome を表形式表示
 - ``c3 tier stats --json``: 機械可読 JSON 出力
 - ``c3 tier stats --recent N``: 直近 outcome の表示件数を変更（デフォルト 10）
 - ``c3 tier stats --role <role>``: 指定 role のみに絞り込む
@@ -13,8 +13,7 @@ tier-routing (Phase 2 完成) の効果計測用ダッシュボード。
 - PO 廃止前の ``c3 status`` CLI パターンを踏襲（旧 ``cli_status.py`` / v2.0.0 で削除）
 - データがゼロでも「収集中」と分かる表示にする
 - escalation 発動回数は専用テーブルがないため今回は表示なし（将来拡張余地）
-- v2.41.0 cli-tier-stats タスクで role 次元（agent_tier_bandit / agent_outcomes）
-  に対応。旧フラット tier_bandit / learning_progress / tier_cost（session 合計
+- v2.41.0 cli-tier-stats タスクで role 次元（agent_outcomes）に対応。旧フラット tier_bandit / learning_progress / tier_cost（session 合計
   USD 概算セクション）は廃止（architecture-report-20260702-214748.md §3-7）
 """
 

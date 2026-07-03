@@ -24,14 +24,16 @@ from c3.db import (
     read_agent_cost_summary,
     read_tier_cost_rate_for_complexity,
     read_tier_cost_rate_summary,
-    read_tier_failure_rate,
-    read_tier_params,
     record_agent_outcome_event,
-    record_tier_recent_outcome,
     set_ingest_offset,
-    sync_tier_bandit_cost,
-    update_tier_params,
 )
+
+# NOTE(tier-routing フェーズ2.5・C-3 DC-GP-002 対応): 旧 deprecated シム 5 関数
+# （read_tier_params / update_tier_params / record_tier_recent_outcome /
+# read_tier_failure_rate / sync_tier_bandit_cost）はトップレベル import に
+# 残していると ⑤のシム削除で ImportError となりファイル全体の collection が
+# 落ちるため、本ファイルからは意図的に import しない（TestDeprecatedFunctionsRemoved
+# が not hasattr で削除を確認する）。
 
 
 def _make_fake_db(base: Path) -> Path:
@@ -63,6 +65,16 @@ def _assert_fallback_warning(caplog: pytest.LogCaptureFixture) -> None:
         "Warning must mention 'falling back to traversal' (current db.py message). "
         "If db.py message is intentionally refined, update this assertion."
     )
+
+
+def _iso_days_ago(days: float) -> str:
+    """UTC 秒精度 ISO 文字列で `days` 日前の時刻を返す（時間窓テスト用）。"""
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def _now_iso() -> str:
+    return _iso_days_ago(0)
 
 
 def test_locate_c3_db_env_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1368,6 +1380,90 @@ class TestDbParamsReexport:
         assert _db_params.resolve_epsilon() == pytest.approx(0.2)
 
 
+class TestBanditGatesAndFailureWindowConstants:
+    """Q 群（tier-routing フェーズ2.5・ADR-25-1/25-2）:
+    `BANDIT_GATES` / `FAILURE_WINDOW_DAYS_DEFAULT` / `resolve_failure_window_days`
+    の `_db_params` 定義 + `c3.db` re-export（既存 N6 群と同じ SSOT パターン）。
+    """
+
+    def test_bandit_gates_defined_in_db_params(self) -> None:
+        """Q1: `_db_params.BANDIT_GATES` が D 系 + D-2.5-stuck の 4 要素タプル。"""
+        from c3 import _db_params  # noqa: PLC0415
+
+        assert hasattr(_db_params, "BANDIT_GATES"), "_db_params.BANDIT_GATES が未定義"
+        assert _db_params.BANDIT_GATES == ("D-2.5", "D-3", "D-5", "D-2.5-stuck")
+
+    def test_bandit_gates_reexported_from_db(self) -> None:
+        """Q2: `c3.db.BANDIT_GATES` が `_db_params.BANDIT_GATES` と同一オブジェクト。"""
+        import c3.db as db  # noqa: PLC0415
+        from c3 import _db_params  # noqa: PLC0415
+
+        assert hasattr(db, "BANDIT_GATES"), "c3.db.BANDIT_GATES が re-export されていない"
+        assert db.BANDIT_GATES is _db_params.BANDIT_GATES
+
+    def test_failure_window_days_default_reexported(self) -> None:
+        """Q3: `FAILURE_WINDOW_DAYS_DEFAULT`（14.0）が db/_db_params 両方にあり一致。"""
+        import c3.db as db  # noqa: PLC0415
+        from c3 import _db_params  # noqa: PLC0415
+
+        assert _db_params.FAILURE_WINDOW_DAYS_DEFAULT == pytest.approx(14.0)
+        assert db.FAILURE_WINDOW_DAYS_DEFAULT == pytest.approx(
+            _db_params.FAILURE_WINDOW_DAYS_DEFAULT
+        )
+
+    def test_resolve_failure_window_days_reexported_and_callable(self) -> None:
+        """Q4: `resolve_failure_window_days` が db/_db_params 両方から同一関数として呼べる。"""
+        import c3.db as db  # noqa: PLC0415
+        from c3 import _db_params  # noqa: PLC0415
+
+        assert hasattr(db, "resolve_failure_window_days")
+        assert db.resolve_failure_window_days is _db_params.resolve_failure_window_days
+
+    def test_resolve_failure_window_days_unset_returns_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Q5: 未設定 → FAILURE_WINDOW_DAYS_DEFAULT（14.0）を返す。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.delenv("C3_FAILURE_WINDOW_DAYS", raising=False)
+        assert db.resolve_failure_window_days() == pytest.approx(14.0)
+
+    def test_resolve_failure_window_days_valid_value(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Q6: "7" → 7.0・無警告。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_FAILURE_WINDOW_DAYS", "7")
+        assert db.resolve_failure_window_days() == pytest.approx(7.0)
+        assert capsys.readouterr().err == ""
+
+    def test_resolve_failure_window_days_zero_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Q7: "0" は半開区間 (0, 3650] の下限外 → default + stderr 警告。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_FAILURE_WINDOW_DAYS", "0")
+        assert db.resolve_failure_window_days() == pytest.approx(14.0)
+        assert "C3_FAILURE_WINDOW_DAYS" in capsys.readouterr().err
+
+    def test_resolve_failure_window_days_too_large_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Q8: "3651" は上限 3650 超 → default + stderr 警告。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_FAILURE_WINDOW_DAYS", "3651")
+        assert db.resolve_failure_window_days() == pytest.approx(14.0)
+        assert "C3_FAILURE_WINDOW_DAYS" in capsys.readouterr().err
+
+    def test_resolve_failure_window_days_non_numeric_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Q9: 非数値 → default + stderr 警告。"""
+        import c3.db as db  # noqa: PLC0415
+        monkeypatch.setenv("C3_FAILURE_WINDOW_DAYS", "abc")
+        assert db.resolve_failure_window_days() == pytest.approx(14.0)
+        assert "C3_FAILURE_WINDOW_DAYS" in capsys.readouterr().err
+
+
 class TestMissingTableLogsDebugNotWarning:
     """N7 群: 想定内の missing-table（sqlite3.OperationalError）は debug でログし
     WARNING を出さない（bare except 整理＝OperationalError/Exception 分類の一貫化）。
@@ -1472,7 +1568,21 @@ class TestAgentRolesConstant:
 
 
 class TestReadAgentTierParams:
-    """O1 群: read_agent_tier_params(role, complexity, *, db_path=None) のテスト。"""
+    """O1 群: read_agent_tier_params(role, complexity, *, db_path=None) のテスト。
+
+    v2.42.5（tier-routing フェーズ2.5・ADR-25-3）で agent_tier_bandit 直読みから
+    agent_outcomes の BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）導出集計へ移行。
+    旧テストは update_agent_tier_params で agent_tier_bandit を直接更新していたが、
+    同関数自体が削除されるため、agent_outcomes への record_agent_outcome_event
+    経由 seed へ全面移行する。
+    """
+
+    def _seed(self, db, *, role, complexity, tier, gate, outcomes, prefix):
+        for i, success in enumerate(outcomes):
+            record_agent_outcome_event(
+                role=role, complexity=complexity, tier=tier, success=success,
+                gate=gate, session_id=f"{prefix}-{i}", db_path=db,
+            )
 
     def test_defaults_when_no_rows(self, tmp_path: Path):
         """O1-1: 行が無い role/complexity は全 tier (1.0, 1.0, 0) で返る。"""
@@ -1487,24 +1597,64 @@ class TestReadAgentTierParams:
             "opus": (1.0, 1.0, 0),
         }
 
-    def test_reflects_updated_params(self, tmp_path: Path):
-        """O1-2: update_agent_tier_params で更新した値が読み出せる。"""
-        from c3.db import read_agent_tier_params, update_agent_tier_params  # noqa: PLC0415
+    def test_bandit_gate_events_are_aggregated(self, tmp_path: Path):
+        """O1-2（④・ADR-25-3）: BANDIT_GATES 該当 gate（D-2.5）の agent_outcomes
+        イベントが alpha/beta/trials に導出集計される。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
         db = _make_c3_db_v004(tmp_path)
 
-        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
+        self._seed(
+            db, role="developer", complexity="medium", tier="sonnet",
+            gate="D-2.5", outcomes=[True], prefix="o1-2",
+        )
 
         result = read_agent_tier_params("developer", "medium", db_path=db)
         assert result["sonnet"] == (2.0, 1.0, 1)
         # 未更新の他 tier は初期値のまま
         assert result["haiku"] == (1.0, 1.0, 0)
 
-    def test_role_isolation(self, tmp_path: Path):
-        """O1-3: role が異なれば同一 complexity/tier でも別セルとして扱われる。"""
-        from c3.db import read_agent_tier_params, update_agent_tier_params  # noqa: PLC0415
+    def test_e1_e2_symmetrically_excluded(self, tmp_path: Path):
+        """O1-3（②）: E-1/E-2 の success/failure はどちらも無視される（対称除外）。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
         db = _make_c3_db_v004(tmp_path)
 
-        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=True, gate="E-1", session_id="o1-3-e1-succ", db_path=db,
+        )
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=False, gate="E-2", session_id="o1-3-e2-fail", db_path=db,
+        )
+
+        result = read_agent_tier_params("developer", "medium", db_path=db)
+        assert result["sonnet"] == (1.0, 1.0, 0), (
+            "E-1/E-2 の success/failure はどちらも BANDIT_GATES 対象外のため "
+            "集計に反映されてはいけない"
+        )
+
+    def test_stuck_gate_counts_as_failure(self, tmp_path: Path):
+        """O1-4（ADR-25-6）: D-2.5-stuck の failure が beta に算入される。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="sonnet",
+            success=False, gate="D-2.5-stuck", session_id="o1-4-stuck", db_path=db,
+        )
+
+        result = read_agent_tier_params("developer", "medium", db_path=db)
+        assert result["sonnet"] == (1.0, 2.0, 1)
+
+    def test_role_isolation(self, tmp_path: Path):
+        """O1-5: role が異なれば同一 complexity/tier でも別セルとして扱われる。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        self._seed(
+            db, role="developer", complexity="medium", tier="sonnet",
+            gate="D-2.5", outcomes=[True], prefix="o1-5-dev",
+        )
 
         developer_result = read_agent_tier_params("developer", "medium", db_path=db)
         tester_result = read_agent_tier_params("tester", "medium", db_path=db)
@@ -1515,7 +1665,7 @@ class TestReadAgentTierParams:
         )
 
     def test_db_absent_returns_defaults(self, tmp_path: Path):
-        """O1-4: DB 不在で全 tier 初期値を返す（静かな失敗）。"""
+        """O1-6: DB 不在で全 tier 初期値を返す（静かな失敗）。"""
         from c3.db import read_agent_tier_params  # noqa: PLC0415
         absent_db = tmp_path / "no_such.db"
 
@@ -1526,92 +1676,54 @@ class TestReadAgentTierParams:
             "opus": (1.0, 1.0, 0),
         }
 
+    def test_non_developer_role_with_only_e_gates_is_uniform(self, tmp_path: Path):
+        """O1-7（C-3 DC-AS-002）: E-1/E-2 のみを seed した非 developer role
+        （code-reviewer 相当）は全 tier uniform (1.0,1.0,0) を返す。
 
-class TestUpdateAgentTierParams:
-    """O2 群: update_agent_tier_params(role, complexity, tier, *, success, db_path=None)。
-
-    【DC-GP-002】success=True → alpha+=1, success=False → beta+=1、いずれも trials+=1・
-    last_updated 更新（旧 update_tier_params と同一規則）。
-    """
-
-    def test_success_increments_alpha_and_trials(self, tmp_path: Path):
-        """O2-1: 初回 success=True で (2.0, 1.0, 1) になる。"""
-        import sqlite3  # noqa: PLC0415
-        from c3.db import update_agent_tier_params  # noqa: PLC0415
+        BANDIT_GATES は D 系 + D-2.5-stuck のみで reviewer 系 role が使う
+        E-1/E-2 を含まないため、恒久的に uniform になる（意図どおり・退行ではない）。
+        """
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
         db = _make_c3_db_v004(tmp_path)
 
-        ok = update_agent_tier_params("developer", "simple", "haiku", success=True, db_path=db)
-        assert ok is True
+        for gate, success in (("E-1", True), ("E-1", False), ("E-2", True), ("E-2", False)):
+            record_agent_outcome_event(
+                role="code-reviewer", complexity="medium", tier="sonnet",
+                success=success, gate=gate, session_id=f"o1-7-{gate}-{success}", db_path=db,
+            )
 
-        conn = sqlite3.connect(str(db))
-        row = conn.execute(
-            "SELECT alpha, beta, trials FROM agent_tier_bandit "
-            "WHERE role='developer' AND task_complexity='simple' AND tier='haiku'"
-        ).fetchone()
-        conn.close()
-        assert row == (2.0, 1.0, 1)
+        result = read_agent_tier_params("code-reviewer", "medium", db_path=db)
+        assert result == {
+            "haiku": (1.0, 1.0, 0),
+            "sonnet": (1.0, 1.0, 0),
+            "opus": (1.0, 1.0, 0),
+        }
 
-    def test_failure_increments_beta_and_trials(self, tmp_path: Path):
-        """O2-2: 初回 success=False で (1.0, 2.0, 1) になる。"""
-        import sqlite3  # noqa: PLC0415
-        from c3.db import update_agent_tier_params  # noqa: PLC0415
+    def test_gate_in_placeholder_follows_bandit_gates_length(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """O1-8（C-3 DC-GP-001）: BANDIT_GATES の長さが変わっても gate IN
+        プレースホルダが追随し、バインド個数エラーにならない。
+
+        literal '(?, ?, ?, ?)' 固定だと BANDIT_GATES を短くした際に
+        sqlite3 のバインド個数エラーになる。動的生成なら短い BANDIT_GATES でも
+        正しく集計される。
+        """
+        import c3.db as db_module  # noqa: PLC0415
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
         db = _make_c3_db_v004(tmp_path)
 
-        update_agent_tier_params("developer", "simple", "haiku", success=False, db_path=db)
+        monkeypatch.setattr(db_module, "BANDIT_GATES", ("ONLY-GATE",))
 
-        conn = sqlite3.connect(str(db))
-        row = conn.execute(
-            "SELECT alpha, beta, trials FROM agent_tier_bandit "
-            "WHERE role='developer' AND task_complexity='simple' AND tier='haiku'"
-        ).fetchone()
-        conn.close()
-        assert row == (1.0, 2.0, 1)
-
-    def test_upsert_accumulates_across_calls(self, tmp_path: Path):
-        """O2-3: 複数回呼ぶと UPSERT で加算蓄積される（success→success→failure）。"""
-        import sqlite3  # noqa: PLC0415
-        from c3.db import update_agent_tier_params  # noqa: PLC0415
-        db = _make_c3_db_v004(tmp_path)
-
-        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
-        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
-        update_agent_tier_params("developer", "medium", "sonnet", success=False, db_path=db)
-
-        conn = sqlite3.connect(str(db))
-        row = conn.execute(
-            "SELECT alpha, beta, trials FROM agent_tier_bandit "
-            "WHERE role='developer' AND task_complexity='medium' AND tier='sonnet'"
-        ).fetchone()
-        conn.close()
-        assert row == (3.0, 2.0, 3)
-
-    def test_role_pk_isolation(self, tmp_path: Path):
-        """O2-4: PK に role を含むため、同じ complexity/tier でも role が違えば別行になる。"""
-        import sqlite3  # noqa: PLC0415
-        from c3.db import update_agent_tier_params  # noqa: PLC0415
-        db = _make_c3_db_v004(tmp_path)
-
-        update_agent_tier_params("developer", "medium", "sonnet", success=True, db_path=db)
-        update_agent_tier_params("tester", "medium", "sonnet", success=True, db_path=db)
-
-        conn = sqlite3.connect(str(db))
-        rows = conn.execute(
-            "SELECT role, alpha, beta, trials FROM agent_tier_bandit "
-            "WHERE task_complexity='medium' AND tier='sonnet' ORDER BY role"
-        ).fetchall()
-        conn.close()
-        assert len(rows) == 2, "role が異なれば別行になるべき"
-        assert {r[0] for r in rows} == {"developer", "tester"}
-
-    def test_db_absent_returns_false(self, tmp_path: Path):
-        """O2-5: DB 不在で False を返す。"""
-        from c3.db import update_agent_tier_params  # noqa: PLC0415
-        absent_db = tmp_path / "no_such.db"
-
-        ok = update_agent_tier_params(
-            "developer", "simple", "haiku", success=True, db_path=absent_db
+        record_agent_outcome_event(
+            role="developer", complexity="medium", tier="haiku",
+            success=True, gate="ONLY-GATE", session_id="o1-8", db_path=db,
         )
-        assert ok is False
+
+        result = read_agent_tier_params("developer", "medium", db_path=db)
+        assert result["haiku"] == (2.0, 1.0, 1), (
+            "BANDIT_GATES を 1 要素に縮めても placeholder が追随し正しく集計されるはず"
+        )
 
 
 class TestRecordAgentOutcomeEvent:
@@ -1689,17 +1801,44 @@ class TestRecordAgentOutcomeEvent:
 
 
 class TestReadAgentFailureRate:
-    """O4 群: read_agent_failure_rate(role, complexity, tier, *, last_n=10, db_path=None)。
+    """O4 群: read_agent_failure_rate(role, complexity, tier, *, window_days=None, db_path=None)。
 
-    `_FAILURE_RATE_MIN_SAMPLES=5` を継承（旧 read_tier_failure_rate と同一規則）。
+    v2.42.5（tier-routing フェーズ2.5・ADR-25-2）で last_n（直近件数窓）から
+    window_days（時間窓）+ gate IN BANDIT_GATES フィルタへ全面移行した。
+    `_FAILURE_RATE_MIN_SAMPLES=5` は維持。イベントは BANDIT_GATES 対象 gate
+    （既定 "D-2.5"）で seed する（gate 未指定=NULL は集計対象外になるため）。
     """
 
-    def _seed_events(self, db, *, role, complexity, tier, outcomes, session_prefix):
+    def _seed_events(self, db, *, role, complexity, tier, outcomes, session_prefix, gate="D-2.5"):
         from c3.db import record_agent_outcome_event  # noqa: PLC0415
         for i, success in enumerate(outcomes):
             record_agent_outcome_event(
                 role=role, complexity=complexity, tier=tier, success=success,
-                session_id=f"{session_prefix}-{i}", db_path=db,
+                gate=gate, session_id=f"{session_prefix}-{i}", db_path=db,
+            )
+
+    def _seed_at_ts(self, db, *, role, complexity, tier, success, gate, ts, session_id):
+        import sqlite3  # noqa: PLC0415
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "INSERT INTO agent_outcomes "
+                "(role, task_complexity, tier, success, gate, session_id, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (role, complexity, tier, 1 if success else 0, gate, session_id, ts),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_signature_no_longer_accepts_last_n(self, tmp_path: Path):
+        """O4-0（ADR-25-2）: last_n キーワード引数は完全撤去され TypeError になる。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        with pytest.raises(TypeError):
+            read_agent_failure_rate(  # type: ignore[call-arg]
+                "developer", "medium", "sonnet", last_n=10, db_path=db,
             )
 
     def test_below_min_samples_returns_none(self, tmp_path: Path):
@@ -1762,6 +1901,197 @@ class TestReadAgentFailureRate:
         )
         assert rate is None
         assert count == 0
+
+    def test_table_absent_is_debug_not_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """CR-T-002: DB ファイルは存在するが agent_outcomes テーブルが無い（マイグレーション
+        未適用）経路は sqlite3.OperationalError の except 節（db.py L481-483）に入り、
+        debug ログ・(None, 0) を返し WARNING は出さない。O4-4（DB ファイル自体が不在）とは
+        別経路であり、TestMissingTableLogsDebugNotWarning.
+        test_read_tier_params_missing_table_is_debug_not_warning と対称のテスト。"""
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+
+        # マイグレーション未適用＝agent_outcomes テーブルが無い有効な空 DB
+        empty_db = tmp_path / "empty.db"
+        sqlite3.connect(str(empty_db)).close()
+
+        with caplog.at_level(logging.DEBUG, logger="c3.db"):
+            rate, count = read_agent_failure_rate(
+                "developer", "medium", "sonnet", db_path=empty_db
+            )
+
+        assert rate is None
+        assert count == 0
+        # 想定内の missing-table は WARNING を出さない
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not warnings, (
+            f"missing-table は WARNING を出すべきでない: {[r.getMessage() for r in warnings]}"
+        )
+        # debug に table 関連メッセージが出る
+        assert "table not found or inaccessible" in caplog.text
+
+    def test_gate_filter_excludes_e1_e2(self, tmp_path: Path):
+        """O4-5（②）: E-1/E-2 の failure は gate IN BANDIT_GATES で除外される。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        # E-1/E-2 failure を 5 件（BANDIT_GATES 対象外・除外されるはず）
+        for i in range(5):
+            self._seed_at_ts(
+                db, role="developer", complexity="medium", tier="sonnet",
+                success=False, gate="E-1" if i % 2 == 0 else "E-2",
+                ts=_now_iso(), session_id=f"o4-5-e-{i}",
+            )
+        # D-2.5 success を 2 件（BANDIT_GATES 対象・少数のためサンプル不足になる想定）
+        for i in range(2):
+            self._seed_at_ts(
+                db, role="developer", complexity="medium", tier="sonnet",
+                success=True, gate="D-2.5", ts=_now_iso(), session_id=f"o4-5-d-{i}",
+            )
+
+        rate, count = read_agent_failure_rate("developer", "medium", "sonnet", db_path=db)
+        assert count == 2, (
+            "E-1/E-2 の 5 件は BANDIT_GATES フィルタで除外され D-2.5 の 2 件のみ数えるはず"
+        )
+        assert rate is None  # サンプル 5 未満
+
+    def test_window_days_cutoff_excludes_old_events(self, tmp_path: Path):
+        """O4-6（③）: window_days より古い ts のイベントは cutoff で除外される。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        old_ts = _iso_days_ago(30)
+        # 窓外（30 日前）の failure を 5 件
+        for i in range(5):
+            self._seed_at_ts(
+                db, role="developer", complexity="medium", tier="sonnet",
+                success=False, gate="D-2.5", ts=old_ts, session_id=f"o4-6-old-{i}",
+            )
+        # 窓内（1 日前）の success を 2 件
+        for i in range(2):
+            self._seed_at_ts(
+                db, role="developer", complexity="medium", tier="sonnet",
+                success=True, gate="D-2.5", ts=_iso_days_ago(1), session_id=f"o4-6-new-{i}",
+            )
+
+        rate, count = read_agent_failure_rate(
+            "developer", "medium", "sonnet", window_days=14.0, db_path=db,
+        )
+        assert count == 2, "window_days=14 で 30 日前の 5 件は cutoff 外のはず"
+        assert rate is None  # サンプル 5 未満（窓内 2 件のみ）
+
+    def test_window_days_explicit_argument_overrides_default(self, tmp_path: Path):
+        """O4-7: window_days を明示指定すると env / default より優先される。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        # 10 日前のイベント 5 件（デフォルト 14 日窓なら含まれるが、window_days=5 なら除外）
+        ts_10d = _iso_days_ago(10)
+        for i in range(5):
+            self._seed_at_ts(
+                db, role="developer", complexity="medium", tier="sonnet",
+                success=False, gate="D-2.5", ts=ts_10d, session_id=f"o4-7-{i}",
+            )
+
+        rate_default, count_default = read_agent_failure_rate(
+            "developer", "medium", "sonnet", db_path=db,
+        )
+        assert count_default == 5  # デフォルト 14 日窓なら含まれる
+
+        rate_narrow, count_narrow = read_agent_failure_rate(
+            "developer", "medium", "sonnet", window_days=5.0, db_path=db,
+        )
+        assert count_narrow == 0, "window_days=5 なら 10 日前のイベントは除外されるはず"
+        assert rate_narrow is None
+
+    def test_env_override_window_days(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """O4-8: C3_FAILURE_WINDOW_DAYS env で窓長が変わる（window_days 省略時）。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        ts_10d = _iso_days_ago(10)
+        for i in range(5):
+            self._seed_at_ts(
+                db, role="developer", complexity="medium", tier="sonnet",
+                success=False, gate="D-2.5", ts=ts_10d, session_id=f"o4-8-{i}",
+            )
+
+        monkeypatch.setenv("C3_FAILURE_WINDOW_DAYS", "5")
+        rate, count = read_agent_failure_rate("developer", "medium", "sonnet", db_path=db)
+        assert count == 0, "env で 5 日窓に狭めたら 10 日前のイベントは除外されるはず"
+
+    def test_env_invalid_falls_back_to_default_window(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ):
+        """O4-9: C3_FAILURE_WINDOW_DAYS が不正値なら default（14 日）に戻り stderr 警告が出る。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        ts_10d = _iso_days_ago(10)
+        for i in range(5):
+            self._seed_at_ts(
+                db, role="developer", complexity="medium", tier="sonnet",
+                success=False, gate="D-2.5", ts=ts_10d, session_id=f"o4-9-{i}",
+            )
+
+        monkeypatch.setenv("C3_FAILURE_WINDOW_DAYS", "not-a-number")
+        rate, count = read_agent_failure_rate("developer", "medium", "sonnet", db_path=db)
+        assert count == 5, "不正値なら default 14 日窓に戻り 10 日前のイベントも含むはず"
+        err = capsys.readouterr().err
+        assert "C3_FAILURE_WINDOW_DAYS" in err
+
+
+class TestFailureRateBlockageScenario:
+    """T1-4（①閉塞シナリオの単体化・C-3 DC-AM-001）: 窓外の古い D-gate failure が
+    多数あっても窓内 BANDIT_GATES failure が 0 件ならサンプル不足で escalation
+    しないことを固定する（②③の構造的効果の単体再現）。"""
+
+    def test_stale_failures_outside_window_do_not_trigger_escalation(
+        self, tmp_path: Path,
+    ):
+        import sqlite3  # noqa: PLC0415
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        # 窓外（30 日前）の D-gate failure を多数 seed（旧ルールなら escalation を
+        # 押し上げていたが、時間窓で失効するはず）
+        old_ts = _iso_days_ago(30)
+        conn = sqlite3.connect(str(db))
+        try:
+            for i in range(8):
+                conn.execute(
+                    "INSERT INTO agent_outcomes "
+                    "(role, task_complexity, tier, success, gate, session_id, ts) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("developer", "medium", "sonnet", 0, "D-2.5", f"blockage-old-{i}", old_ts),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        rate, count = read_agent_failure_rate("developer", "medium", "sonnet", db_path=db)
+        assert rate is None, "窓内 D-gate failure が 0 件ならサンプル不足で None のはず"
+        assert count == 0
+
+        # maybe_escalate へ注入した failure_rate 経由で非昇格を確認する
+        import importlib.util  # noqa: PLC0415
+        hook_path = Path(__file__).parents[1] / ".claude" / "hooks" / "select_tier.py"
+        spec = importlib.util.spec_from_file_location("select_tier_blockage", hook_path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+
+        tier, reason = mod.maybe_escalate(
+            "medium", "sonnet",
+            failure_rate_fn=lambda c, t: read_agent_failure_rate(
+                "developer", c, t, db_path=db,
+            ),
+        )
+        assert tier == "sonnet", "窓内 failure=0 件なら sonnet のまま昇格しないはず"
+        assert reason is None
 
 
 class TestReadRecentAgentOutcomes:
@@ -1840,27 +2170,19 @@ class TestReadRecentAgentOutcomes:
 
 
 # ---------------------------------------------------------------------------
-# P 群: agent-tier-routing 学習シグナル再設計（v2.41.0 db-shims-and-cost・Red 先行）
+# P 群: agent-tier-routing 学習シグナル再設計
 #
-# architecture-report-20260702-214748.md ADR-4/ADR-5・§3-3・§5 に対応。
-#
-# P0: deprecated シム 5 関数（read_tier_params/read_tier_failure_rate/
-#     update_tier_params/record_tier_recent_outcome/sync_tier_bandit_cost）の
-#     初期値/no-op 挙動。「DB に一切触れない」ことを sqlite3.connect スパイで検証する
-#     （旧テーブル tier_bandit/tier_recent_outcomes は 004 で DROP 済みのため、
-#     現行実装は例外捕捉経由でも初期値/False を返すことがあり、戻り値だけでは
-#     shim 化の Red を検出できないケースがある。connect 未呼び出しの確認で
-#     「例外に頼った偶然の初期値返却」と「真の no-op shim」を区別する）。
-# P1: 【DC-GP-004】旧 select_tier.py / 旧 record_tier_outcome.py の実呼び出し形
-#     （位置引数・キーワード）でシムが TypeError なく呼べることの固定。
+# P0/P1（旧 TestDeprecatedShimBehavior / TestShimSignatureCompat・
+# v2.41.0 db-shims-and-cost で追加）はシム 5 関数の no-op 挙動・旧呼び出し
+# シグネチャ互換を検証していたが、tier-routing フェーズ2.5（⑤・C-3 DC-GP-002）
+# で当該シム自体が db.py から完全削除されるため、恒久的に再現不能になった。
+# シムの「no-op だった」という過去挙動を検証する意味が失われたため丸ごと削除し
+# （memory: 削除と判断したら完全に削除する）、置換として
+# TestDeprecatedFunctionsRemoved（P3 群）に「5 関数 + update_agent_tier_params
+# が c3.db に存在しない」ことを固定する新規テストを追加する。
 # P2: 【DC-GP-003】cost JOIN 差替（tier_recent_outcomes → agent_outcomes）の
-#     結果同値性・DISTINCT 二重計上なし。
-# P3: 廃止確認（read_tier_bandit_cost / 旧 read_recent_outcomes が db.py から消える）。
-#
-# NOTE(developer への引き継ぎ): 本ファイル冒頭の
-# `from c3.db import (..., read_tier_bandit_cost, ..., read_tier_cost_for_complexity, ...)`
-# は該当関数削除と同時に ImportError で本ファイル全体の collection が壊れる。
-# Green フェーズで対応が必要（詳細は test-report 参照）。
+#     結果同値性・DISTINCT 二重計上なし（旧 v2.41.0 タスクの成果・本タスクでは不変）。
+# P3: 廃止確認（旧 read_tier_bandit_cost 等 + 本タスクで削除する 6 関数）。
 # ---------------------------------------------------------------------------
 
 
@@ -1869,203 +2191,6 @@ def _make_v004_db(tmp_path: Path) -> Path:
     （004 まで migration 適用済みの c3.db を作る）。可読性のため別名で参照する。
     """
     return _make_c3_db_v004(tmp_path)
-
-
-class TestDeprecatedShimBehavior:
-    """P0 群: ADR-5 deprecated シム 5 関数の初期値/no-op 挙動 + DB 非アクセス確認。"""
-
-    def _spy_connect(self, monkeypatch: pytest.MonkeyPatch) -> list:
-        """c3.db モジュールが使う sqlite3.connect を監視するスパイを仕込む。
-
-        真の no-op shim なら DB へ一切接続しないはず。呼び出し回数のリストを返す。
-        """
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        import c3.db as db_module  # noqa: PLC0415
-
-        calls: list = []
-        real_connect = _sqlite3.connect
-
-        def _tracking_connect(*args, **kwargs):
-            calls.append((args, kwargs))
-            return real_connect(*args, **kwargs)
-
-        monkeypatch.setattr(db_module.sqlite3, "connect", _tracking_connect)
-        return calls
-
-    def test_read_tier_params_shim_all_tiers_uniform_no_db_access(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """P0-1: read_tier_params は常に全 tier (1.0,1.0,0) を返し DB に接続しない。"""
-        db = _make_v004_db(tmp_path)
-        calls = self._spy_connect(monkeypatch)
-
-        result = read_tier_params("medium", db_path=db)
-
-        assert result == {
-            "haiku": (1.0, 1.0, 0),
-            "sonnet": (1.0, 1.0, 0),
-            "opus": (1.0, 1.0, 0),
-        }
-        assert calls == [], (
-            "read_tier_params は deprecated shim として DB に一切接続してはいけない"
-        )
-
-    def test_read_tier_failure_rate_shim_returns_none_zero_no_db_access(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """P0-2: read_tier_failure_rate は常に (None, 0) を返し DB に接続しない。"""
-        db = _make_v004_db(tmp_path)
-        calls = self._spy_connect(monkeypatch)
-
-        result = read_tier_failure_rate("medium", "sonnet", db_path=db)
-
-        assert result == (None, 0)
-        assert calls == [], (
-            "read_tier_failure_rate は deprecated shim として DB に一切接続してはいけない"
-        )
-
-    def test_update_tier_params_shim_returns_true_no_db_access(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """P0-3: update_tier_params は no-op で True を返し DB に接続しない（False だと
-        旧 record_tier_outcome.py が json を保持し続け警告が毎回出る/ADR-5）。"""
-        db = _make_v004_db(tmp_path)
-        calls = self._spy_connect(monkeypatch)
-
-        ok = update_tier_params("medium", "sonnet", success=True, db_path=db)
-
-        assert ok is True
-        assert calls == [], (
-            "update_tier_params は deprecated shim として DB に一切接続してはいけない"
-        )
-
-        # agent_tier_bandit（新テーブル）が不変であることも確認する
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        conn = _sqlite3.connect(str(db))
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM agent_tier_bandit").fetchone()[0]
-        finally:
-            conn.close()
-        assert count == 0
-
-    def test_record_tier_recent_outcome_shim_returns_true_no_db_access(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """P0-4: record_tier_recent_outcome は no-op で True を返し DB に接続しない。"""
-        db = _make_v004_db(tmp_path)
-        calls = self._spy_connect(monkeypatch)
-
-        ok = record_tier_recent_outcome(
-            complexity="medium", tier="sonnet", success=True,
-            session_id="p0-4-sess", db_path=db,
-        )
-
-        assert ok is True
-        assert calls == [], (
-            "record_tier_recent_outcome は deprecated shim として DB に一切接続してはいけない"
-        )
-
-        # agent_outcomes（新テーブル）が不変であることも確認する
-        import sqlite3 as _sqlite3  # noqa: PLC0415
-        conn = _sqlite3.connect(str(db))
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM agent_outcomes").fetchone()[0]
-        finally:
-            conn.close()
-        assert count == 0
-
-    def test_sync_tier_bandit_cost_shim_no_db_access(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """P0-5: sync_tier_bandit_cost は no-op で DB に接続しない
-        （旧実装は read_tier_cost_rate_summary 経由で必ず sqlite3.connect していた）。"""
-        db = _make_v004_db(tmp_path)
-        # agent_outcomes/agent_cost_runs にデータがあっても shim なら参照しないはず
-        record_agent_outcome_event(
-            role="developer", complexity="medium", tier="sonnet",
-            success=True, session_id="p0-5-sess", db_path=db,
-        )
-        insert_agent_cost_run(
-            session_id="p0-5-sess", agent_id="agent-1", agent_type="developer",
-            description=None, model="claude-sonnet-4-6-20260101",
-            attribution_skill=None, input_tokens=100, output_tokens=50,
-            cache_read_tokens=0, cache_create_tokens=0, total_cost_usd=0.05,
-            db_path=db,
-        )
-        calls = self._spy_connect(monkeypatch)
-
-        result = sync_tier_bandit_cost(db_path=db)
-
-        assert not result, "sync_tier_bandit_cost は no-op 相当（0 件）を返すはず"
-        assert calls == [], (
-            "sync_tier_bandit_cost は deprecated shim として DB に一切接続してはいけない"
-        )
-
-
-class TestShimSignatureCompat:
-    """P1 群: 【DC-GP-004】旧 select_tier.py / 旧 record_tier_outcome.py の実呼び出し形で
-    シムが TypeError なく呼べることを固定する（シグネチャ整合）。
-
-    呼び出し形は現行コードから抽出:
-      - .claude/hooks/select_tier.py L759: c3_db.read_tier_params(complexity)
-      - .claude/hooks/select_tier.py L443: c3_db.read_tier_failure_rate(complexity, tier)
-      - .claude/skills/dev-workflow/scripts/record_tier_outcome.py L205-209:
-        c3_db.update_tier_params(complexity, tier, success=success)
-      - .claude/skills/dev-workflow/scripts/record_tier_outcome.py L217-222:
-        c3_db.record_tier_recent_outcome(complexity=..., tier=..., success=..., session_id=...)
-      - .claude/hooks/session_stop.py L107: sync_tier_bandit_cost()（引数なし）
-    """
-
-    def test_read_tier_params_positional_call(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        """P1-1: 旧 select_tier.py の呼び出し形 read_tier_params(complexity)（db_path キーワードなし）。
-
-        旧呼び出し形は db_path を渡さないため、locate_c3_db() が実 FS を探索してしまわない
-        よう C3_DB_PATH env で db を指す（呼び出し形 read_tier_params(complexity) は維持）。
-        """
-        db = _make_v004_db(tmp_path)
-        monkeypatch.setenv("C3_DB_PATH", str(db))
-
-        result = read_tier_params("medium")
-
-        assert result == {
-            "haiku": (1.0, 1.0, 0),
-            "sonnet": (1.0, 1.0, 0),
-            "opus": (1.0, 1.0, 0),
-        }
-
-    def test_read_tier_failure_rate_positional_call(self):
-        """P1-2: 旧 select_tier.py の呼び出し形 read_tier_failure_rate(complexity, tier)。"""
-        result = read_tier_failure_rate("medium", "sonnet")
-        assert result == (None, 0)
-
-    def test_update_tier_params_mixed_call(self, tmp_path: Path):
-        """P1-3: 旧 record_tier_outcome.py の呼び出し形
-        update_tier_params(complexity, tier, success=success)。"""
-        db = _make_v004_db(tmp_path)
-        ok = update_tier_params("medium", "sonnet", success=True, db_path=db)
-        assert ok is True
-
-    def test_record_tier_recent_outcome_kwargs_call(self, tmp_path: Path):
-        """P1-4: 旧 record_tier_outcome.py の呼び出し形
-        record_tier_recent_outcome(complexity=..., tier=..., success=..., session_id=...)。"""
-        db = _make_v004_db(tmp_path)
-        ok = record_tier_recent_outcome(
-            complexity="medium", tier="sonnet", success=False, session_id="p1-4-sess",
-            db_path=db,
-        )
-        assert ok is True
-
-    def test_sync_tier_bandit_cost_no_args_call(self, monkeypatch: pytest.MonkeyPatch):
-        """P1-5: 旧 session_stop.py の呼び出し形 sync_tier_bandit_cost()（引数なし）。
-
-        locate_c3_db() が実 FS を探索して None を返す環境（本テストの tmp cwd 想定）で
-        呼んでも TypeError にならないことのみを固定する（DB 内容は問わない）。
-        """
-        import c3.db as db_module  # noqa: PLC0415
-        monkeypatch.setattr(db_module, "locate_c3_db", lambda *a, **kw: None)
-
-        result = sync_tier_bandit_cost()
-        assert result == 0
 
 
 class TestCostJoinAgentOutcomes:
@@ -2242,4 +2367,67 @@ class TestDeprecatedFunctionsRemoved:
         assert not hasattr(db_module, "read_tier_cost_summary"), (
             "read_tier_cost_summary は DROP 済み tier_recent_outcomes を参照する"
             "恒久デッドコードのため削除対象（CR-Q-005）"
+        )
+
+    # -----------------------------------------------------------------------
+    # P3-5〜P3-10: tier-routing フェーズ2.5（⑤・ADR-25-4）シム 5 関数 +
+    # update_agent_tier_params の削除確認。旧 TestDeprecatedShimBehavior /
+    # TestShimSignatureCompat（no-op 挙動・旧シグネチャ互換の検証）はシム自体の
+    # 削除で恒久的に再現不能なため丸ごと削除し、本クラスへ「消えていること」の
+    # 確認として統合する。
+    # -----------------------------------------------------------------------
+
+    def test_read_tier_params_removed(self):
+        """P3-5（⑤）: read_tier_params が db.py から消えている。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "read_tier_params"), (
+            "read_tier_params はシム削除（⑤・ADR-25-4）の対象"
+        )
+
+    def test_update_tier_params_removed(self):
+        """P3-6（⑤）: update_tier_params が db.py から消えている。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "update_tier_params"), (
+            "update_tier_params はシム削除（⑤・ADR-25-4）の対象"
+        )
+
+    def test_record_tier_recent_outcome_removed(self):
+        """P3-7（⑤）: record_tier_recent_outcome が db.py から消えている。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "record_tier_recent_outcome"), (
+            "record_tier_recent_outcome はシム削除（⑤・ADR-25-4）の対象"
+        )
+
+    def test_read_tier_failure_rate_removed(self):
+        """P3-8（⑤）: read_tier_failure_rate が db.py から消えている。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "read_tier_failure_rate"), (
+            "read_tier_failure_rate はシム削除（⑤・ADR-25-4）の対象"
+        )
+
+    def test_sync_tier_bandit_cost_removed(self):
+        """P3-9（⑤・C-3 DC-GP-003）: sync_tier_bandit_cost が db.py から消えている。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "sync_tier_bandit_cost"), (
+            "sync_tier_bandit_cost はシム削除（⑤・ADR-25-4）の対象"
+        )
+
+    def test_update_agent_tier_params_removed(self):
+        """P3-10（④・ADR-25-4）: update_agent_tier_params が db.py から消えている。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert not hasattr(db_module, "update_agent_tier_params"), (
+            "update_agent_tier_params は agent_tier_bandit DROP に伴い削除対象"
+        )
+
+    def test_tier_bandit_tiers_and_min_samples_constants_retained(self):
+        """P3-11（R-5・C-3 DC-GP-002）: `_TIER_BANDIT_TIERS` /
+        `_FAILURE_RATE_MIN_SAMPLES` は誤って削除されず残置されている
+        （read_agent_tier_params の defaults 生成 / escalation の下限判定で
+        引き続き使用されるため、シム削除の巻き添えにしてはいけない）。"""
+        import c3.db as db_module  # noqa: PLC0415
+        assert hasattr(db_module, "_TIER_BANDIT_TIERS"), (
+            "_TIER_BANDIT_TIERS は read_agent_tier_params が使用中のため残置が必須"
+        )
+        assert hasattr(db_module, "_FAILURE_RATE_MIN_SAMPLES"), (
+            "_FAILURE_RATE_MIN_SAMPLES は read_agent_failure_rate が使用中のため残置が必須"
         )

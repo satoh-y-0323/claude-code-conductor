@@ -369,10 +369,12 @@ class TestInitC3Db:
         # v2.20.0+: schema_version は廃止、schema_migrations に置換
         # v2.41.0 db-foundation (migration 004・ADR-1): tier_bandit / tier_recent_outcomes は
         # DROP され、role 対応の agent_tier_bandit / agent_outcomes に置換された。
+        # tier-routing フェーズ2.5 (migration 005・ADR-25-4): read_agent_tier_params が
+        # agent_outcomes からの導出集計に置換されたため agent_tier_bandit も DROP された
+        # （下の legacy_dropped へ移動）。
         expected = {
             'schema_migrations',
             'review_decisions',
-            'agent_tier_bandit',
             'agent_outcomes',
             'agent_runs',
         }
@@ -380,9 +382,11 @@ class TestInitC3Db:
         assert not missing, f"作られていないテーブル: {missing}"
         # v2.0.0 で削除済みのテーブルが復活していないこと
         # v2.41.0 db-foundation: tier_bandit / tier_recent_outcomes も同様に廃止済み（ADR-1）
+        # tier-routing フェーズ2.5: agent_tier_bandit も migration 005 で廃止済み（ADR-25-4）
         legacy_dropped = {
             'po_results', 'po_status', 'schema_version',
             'tier_bandit', 'tier_recent_outcomes',
+            'agent_tier_bandit',
         }
         assert not (legacy_dropped & tables), (
             f"廃止済みのテーブルが残っている: {legacy_dropped & tables}"
