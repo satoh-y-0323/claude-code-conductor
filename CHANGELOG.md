@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.42.0] - 2026-07-03
+
+### 追加
+
+- **tier-routing ソフト適用（フェーズ2）**: 推奨 Tier を「表示のみ」から「適用指示」に前進させた。`select_tier.py` の additionalContext が「developer / wt_developer を Agent ツールで起動する際は `model:` を明示指定して推奨 Tier を適用すること」という親 Claude への行動指示を出す（uniform 期＝学習データ収集中も適用・fork は model 上書き不可のため対象外・tester 等の他 role と親 Claude ペルソナ role は対象外）。
+  - **学習記録の帰属整合（ADR-AS-1）**: `record_agent_outcome.py` の developer subagent 記録（`--tier` 省略時）は、frontmatter 自己解決より先に `tier_selection.json` の `tier`（→`suggested_model`）を SSOT として機械解決する。tier 値の LLM 申告をゼロに保ったまま、ソフト適用で haiku/opus を実行した探索データを正しいセルに帰属できる（frontmatter は sonnet 固定のため従来方式では表現不能だった）。非文字列ガード・`resolve_tier` 正規化・TIERS ホワイトリストの三段検証付きで、不成立時は frontmatter fallback。
+  - **並列（worktree）経路は `--tier` 明示（ADR-AS-4）**: `.claude/state/` は gitignored で worktree に複製されないため、parallel-agents の wt_developer→developer 記録は親 Claude が起動時に適用した推奨 Tier と同値を `--tier` で明示する（record スクリプトのコード変更なしで state 分離問題を経路設計で回避）。
+  - **エスケープハッチの機械条件化（ADR-AS-2）**: 「起動時に指定した `model:` が推奨 Tier と異なる場合は必ず同値を `--tier` に付す」という観測可能な二値条件に統一（旧「意図的に」という主観語を廃止）。
+  - **実機検証済み**: worktree isolation 下でも Agent 呼び出しの `model:` 上書きが有効であること（frontmatter sonnet の wt_developer が haiku で稼働）、記録 tier と実使用 tier の一致（`c3 tier stats`）を実測確認。
+
+### 変更
+
+- **レビュー指摘時の帰属語彙に tester を追加**: dev-workflow の E-1/E-2 帰属判定を `{developer|architect|planner}` から `{developer|tester|architect|planner}` に拡張し（テストコード欠陥起因の指摘は tester failure）、D-3 不合格時の記録も D-5 と同じ欠陥所在判定（tester|developer）に統一。従来はテスト起因の指摘でも developer に failure が付く誤帰属だった。
+
+### 後方互換
+
+- `tier_selection.json` が存在しない・`tier` フィールドを持たない環境では従来どおり frontmatter 自己解決に fallback する。環境変数（`C3_TIER_EPSILON` / `C3_TIER_COST_LAMBDA` / `C3_ESCALATION_THRESHOLD`）・`LEARNING_THRESHOLD=30`・cost-aware tie-break・DB スキーマ・公開 API/CLI に変更なし。**破壊的変更なし**。
+- v2.41.0 で「次リリースで削除予定」とした `src/c3/db.py` の deprecated シム（`read_tier_params` / `read_tier_failure_rate` / `update_tier_params` / `record_tier_recent_outcome` / `sync_tier_bandit_cost`）は本リリースでは削除せず残置する（本リリースは `.claude/` 側のみの変更で src/c3 に触れないため。削除は次の src/c3 改修リリースで実施）。
+
 ## [2.41.0] - 2026-07-03
 
 ### 変更
