@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.43.0] - 2026-07-03
+
+### 変更
+
+- **tier-routing 学習シグナルの客観化と bandit のイベントログ導出化（フェーズ2.5）**: v2.42.0 ソフト適用の実運用で確定した 2 つの構造問題（escalation×ソフト適用による sonnet 探索閉塞デッドロック・レビュー指摘由来の失敗シグナルがモデル能力とタスク難度と レビュワー厳しさの混合物になる問題）を解消する。
+  - **失敗シグナルの客観化**: bandit（推奨算出）と escalation の failure rate に集計されるのは `BANDIT_GATES`（D-2.5 / D-3 / D-5 / D-2.5-stuck）の客観ゲートのみになった。E-1/E-2 レビュー指摘由来の記録は**イベントログとして保存を継続**しつつ、集計からは成功・失敗とも対称に除外する（developer の仕事は「動く実装」であり「レビュワーに指摘されない実装」ではない、というシグナル哲学）。
+  - **bandit のイベントログ導出化**: `read_agent_tier_params` は `agent_outcomes` イベントログからの導出集計（gate フィルタ付き GROUP BY・placeholder は `len(BANDIT_GATES)` から動的生成）になった。シグナル定義の変更が**過去ログへ遡及適用**されるため、今後の調整で学習データのリセットが不要になる。戻り値契約は不変で select_tier.py / `c3 tier stats` は無改修。
+  - **失敗率の時間ベース窓**: `read_agent_failure_rate` の窓が「直近 N 件」から「時間ベース」（`C3_FAILURE_WINDOW_DAYS`・既定 14 日）になった。古い失敗が失効 → サンプル 5 件未満で escalation 停止 → 敗者復活が自然に働き、sonnet 閉塞が解消される（実機で `(None, 1)`・escalation 非発動を確認済み）。
+  - **stuck failure の新設**: dev-workflow D-2.5 が `debug-needed-*.md` 検出時（削除前）に `--gate D-2.5-stuck` で developer failure を記録する。「その tier が自力で完走できなかった」という最も客観的な能力シグナル。
+  - `record_agent_outcome.py` はイベント記録のみに簡素化（bandit 更新呼び出しを削除）。
+
+### 破壊的変更
+
+- **旧学習テーブル `agent_tier_bandit` を DROP**（migration 005 が `c3 update` 後の session 開始時に自動適用）。累積 α/β は `agent_outcomes` からの導出に置き換わるため**学習データ自体は失われない**（イベントログから新ルールで即再計算される）。
+- **`src/c3/db.py` の `update_agent_tier_params` を削除**（bandit は書き込み更新されず読み取り時導出になったため）。
+- **v2.41.0 で deprecated 化したシム 5 関数を削除**: `read_tier_params` / `read_tier_failure_rate` / `update_tier_params` / `record_tier_recent_outcome` / `sync_tier_bandit_cost`（予告どおりの削除。直接呼んでいるカスタマイズは移行が必要）。
+- **`read_agent_failure_rate` のシグネチャ変更**: `last_n` 引数を撤去し `window_days`（時間窓）に置換。
+
+### 後方互換
+
+- `read_agent_tier_params` の戻り値契約（`{tier: (alpha, beta, trials)}`・初期値・DB 不在フォールバック）は不変。環境変数（`C3_TIER_EPSILON` / `C3_TIER_COST_LAMBDA` / `C3_ESCALATION_THRESHOLD`）・`LEARNING_THRESHOLD=30`・cost-aware tie-break・ソフト適用（v2.42.0）のロジックは不変。新 env `C3_FAILURE_WINDOW_DAYS` は任意設定（未設定時 14 日）。
+- 集計対象 gate の限定により `c3 tier stats` の trials 表示は従来より少なくなる（正しいデータでの数え直しであり意図した挙動）。レビュワー系 role（E gate の記録しか持たない role）は bandit 上恒久 uniform 表示になる。
+
 ## [2.42.0] - 2026-07-03
 
 ### 追加
