@@ -4,9 +4,6 @@ Tests for .claude/hooks/pre_compact.py
   TestContextItemsBeforeNoneShowsNA (Low-2)
     - context_items_before キーが存在しない場合、summary に N/A が含まれること
 
-  TestSaveInstruction (AC-7)
-    - SAVE_INSTRUCTION が新仕様（「現在地」更新指示と「- [x]」チェックリスト更新を含む）を含む
-
   TestLastPrecompactCheckpointDt (T1)
     - 純粋関数 `_last_precompact_checkpoint_dt` の単体テスト（ファイル無し・
       checkpoint 無し・parse 成功/失敗・複数行からの最新行選択・非 PreCompact
@@ -17,9 +14,9 @@ Tests for .claude/hooks/pre_compact.py
 
   TestMainDebounce (T1)
     - main() の in-process 統合テスト。直近 DEBOUNCE_WINDOW_SECONDS 秒以内の
-      checkpoint がある場合は追記・stdout 出力ともにスキップされ、窓外・
-      初回起動・timestamp 破損時は従来どおり追記・出力されることを検証する
-      （ちょうど 10 秒境界での `<` 厳密比較の固定を含む）
+      checkpoint がある場合は追記がスキップされ、窓外・初回起動・timestamp 破損時は
+      従来どおり追記されることを検証する（ちょうど 10 秒境界での `<` 厳密比較の
+      固定を含む）。stdout は checkpoint 追記専念のためいずれの分岐でも常に空。
 
   TestLastPrecompactCheckpointDtLineSeparatorSanitization (FA1 / CR-NEW)
     - checkpoint body 中の特殊行区切り文字（\\x85 / U+2028 / U+2029）が
@@ -41,14 +38,17 @@ Tests for .claude/hooks/pre_compact.py
 
   TestMainFutureCheckpointDebounceGuard (FB3 / SR-V-001, fix-cycle-2)
     - 未来日時の偽 checkpoint が存在しても main() のデバウンスが恒久停止せず、
-      checkpoint 追記・additionalContext 出力が継続されることを検証する
+      checkpoint 追記が継続されることを検証する
 
   TestLastPrecompactCheckpointDtDiagnosticTruncation (FB5 / SR-R-001, fix-cycle-2)
     - parse 失敗時の stderr 診断ログに出す捕捉テキストが固定長（64文字）に
       切り詰められ、全文が出力されないことを検証する
 
-実装は 'N/A' 出力・新 SAVE_INSTRUCTION 文面・PreCompact checkpoint デバウンス機能に
-修正済み。本テスト群は将来の退行を防ぐ回帰防止テスト。
+実装は 'N/A' 出力・PreCompact checkpoint デバウンス機能に修正済み。本テスト群は
+将来の退行を防ぐ回帰防止テスト。
+
+PreCompact hook は checkpoint 追記専念（`hookSpecificOutput.additionalContext`
+の stdout 出力は行わない。公式仕様上 PreCompact hook はこれをサポートしないため）。
 """
 
 from __future__ import annotations
@@ -123,27 +123,8 @@ class TestContextItemsBeforeNoneShowsNA:
         # payload に context_items_before キーを含めない
         payload_without_key = {"trigger": "manual"}
 
-        module, sessions_dir, fake_stdout = _run_main_in_process(
+        module, sessions_dir, _ = _run_main_in_process(
             monkeypatch, tmp_path, payload_without_key
-        )
-
-        # stdout は JSON 形式のフック出力
-        stdout_text = fake_stdout.getvalue().strip()
-        assert stdout_text, (
-            "pre_compact.py の stdout が空。worktree として検出されていないか確認が必要。"
-        )
-
-        # stdout の JSON に additionalContext が含まれていることを確認
-        try:
-            output = json.loads(stdout_text)
-        except json.JSONDecodeError as exc:
-            pytest.fail(
-                f"stdout が JSON でない: {exc}\n"
-                f"stdout: {stdout_text!r}"
-            )
-
-        assert "hookSpecificOutput" in output, (
-            f"stdout JSON に hookSpecificOutput がない。keys: {list(output.keys())}"
         )
 
         # tmp セッションディレクトリに書き込まれたサマリを確認する
@@ -208,68 +189,6 @@ class TestContextItemsBeforeNoneShowsNA:
 
 
 # ---------------------------------------------------------------------------
-# TestSaveInstructionNewSpec (AC-7)
-# ---------------------------------------------------------------------------
-
-
-class TestSaveInstruction:
-    """[AC-7] SAVE_INSTRUCTION が新仕様（「更新」志向）の文面を含むこと。
-
-    architecture §5.2 に従い、SAVE_INSTRUCTION は以下の2点を必ず含む:
-    1. 「現在地:」を現フェーズ名に更新する指示（「現在地」というキーワード）
-    2. 「## 残タスク」をチェックリストとして更新する指示（「- [x]」によるチェック化指示）
-
-    旧文面（「書き出してください」という無上限追記指示）とは異なり、
-    「更新」を促す文面であること。「無上限追記」を促す文面でないこと。
-    """
-
-    def test_save_instruction_contains_genba_update_keyword(self) -> None:
-        """SAVE_INSTRUCTION に「現在地」の更新指示が含まれる（AC-7）。
-
-        architecture §5.2 で確定した新文面: 「現在地:」行を現フェーズ名に更新することを
-        明示的に促す文言が含まれること。
-        """
-        module = _load_pre_compact_module()
-        instruction = module.SAVE_INSTRUCTION
-        assert "現在地" in instruction, (
-            "[AC-7] SAVE_INSTRUCTION に「現在地」更新指示が含まれていない。\n"
-            "architecture §5.2 の新文面: 「現在地:」行を現フェーズ名に更新することを\n"
-            "明示的に含む文面に変更すること。\n"
-            f"現在の SAVE_INSTRUCTION:\n{instruction!r}"
-        )
-
-    def test_save_instruction_contains_checklist_update_keyword(self) -> None:
-        """SAVE_INSTRUCTION に「- [x]」チェックリスト更新指示が含まれる（AC-7）。
-
-        architecture §5.2 で確定した新文面: 完了タスクを「- [x]」でチェック化することを
-        明示的に促す文言（「- [x]」という文字列）が含まれること。
-        """
-        module = _load_pre_compact_module()
-        instruction = module.SAVE_INSTRUCTION
-        assert "- [x]" in instruction, (
-            "[AC-7] SAVE_INSTRUCTION に「- [x]」チェックリスト更新指示が含まれていない。\n"
-            "architecture §5.2 の新文面: 完了タスクを「- [x]」化することを\n"
-            "明示的に含む文面に変更すること。\n"
-            f"現在の SAVE_INSTRUCTION:\n{instruction!r}"
-        )
-
-    def test_save_instruction_does_not_promote_unlimited_append(self) -> None:
-        """SAVE_INSTRUCTION が「無上限追記」を促す旧文面でないこと（AC-7）。
-
-        旧文面は「書き出してください」という追記指示だった。
-        新文面は「更新」であり、追記を促さないこと（「書き出してください」が含まれないこと）。
-        """
-        module = _load_pre_compact_module()
-        instruction = module.SAVE_INSTRUCTION
-        assert "書き出してください" not in instruction, (
-            "[AC-7] SAVE_INSTRUCTION に旧文面「書き出してください」が残っている。\n"
-            "無上限追記を促す文面から「更新」を促す文面への転換が未完了。\n"
-            "architecture §5.2 の新文面に置き換えること。\n"
-            f"現在の SAVE_INSTRUCTION:\n{instruction!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
 # T1: PreCompact checkpoint デバウンス機能
 #
 # architecture-report-20260704-065052.md §4.2 準拠。in-process 方式のみを用い、
@@ -283,8 +202,10 @@ class TestSaveInstruction:
 #     が 10 であることを固定する。
 #   - TestMainDebounce: main() の in-process 統合テスト（要件④パターン1・2、
 #     および3・4の main() 経由確認）。パターン1（窓内・ちょうど10秒境界含む）は
-#     追記・stdout 出力がスキップされ、パターン2・3・4（窓外・初回起動・
-#     timestamp 破損）は従来どおり追記・出力されることを固定する。
+#     追記が発生せず、パターン2・3・4（窓外・初回起動・timestamp 破損）は
+#     従来どおり追記されることを固定する。stdout はいずれの分岐でも常に空
+#     （additionalContext 出力は公式仕様外のため撤去済み）で、判定シグナルは
+#     checkpoint ブロック数であることを固定する。
 # ---------------------------------------------------------------------------
 
 
@@ -437,7 +358,8 @@ class TestMainDebounce:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """[要件④パターン1] 10秒以内の直近 checkpoint がある場合、
-        追記ブロックは増えず・stdout に additionalContext も出ない。
+        追記ブロックは増えない（主シグナル）。stdout は元々常に空（checkpoint
+        追記専念）のため、デバウンス発火の判定はブロック数の不変で行う。
         """
         module, sessions_dir = self._setup_module(
             monkeypatch, tmp_path, {"trigger": "manual", "context_items_before": 5}
@@ -498,13 +420,16 @@ class TestMainDebounce:
             "デバウンス窓ちょうど10秒（now - last == 10.0）は `<` 比較により"
             "追記されるはず。`<=` へ変更されるとこの境界でスキップされてしまう。"
         )
-        output = json.loads(fake_stdout.getvalue().strip())
-        assert output["hookSpecificOutput"]["additionalContext"]
+        assert fake_stdout.getvalue().strip() == "", (
+            "checkpoint 追記時も stdout は出力されないはず（checkpoint 追記専念のため）。"
+        )
 
     def test_outside_window_appends_and_outputs(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """[要件④パターン2] 10秒超前の checkpoint の場合、従来どおり追記・出力される。"""
+        """[要件④パターン2] 10秒超前の checkpoint の場合、従来どおり追記される
+        （stdout 出力は行わない。checkpoint 追記専念）。
+        """
         module, sessions_dir = self._setup_module(
             monkeypatch, tmp_path, {"trigger": "manual", "context_items_before": 5}
         )
@@ -519,8 +444,9 @@ class TestMainDebounce:
 
         block_count_after = self._checkpoint_block_count(session_file)
         assert block_count_after == block_count_before + 1
-        output = json.loads(fake_stdout.getvalue().strip())
-        assert output["hookSpecificOutput"]["additionalContext"]
+        assert fake_stdout.getvalue().strip() == "", (
+            "checkpoint 追記時も stdout は出力されないはず（checkpoint 追記専念のため）。"
+        )
 
     def test_first_run_no_checkpoint_appends(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -538,8 +464,9 @@ class TestMainDebounce:
 
         assert session_file.exists()
         assert self._checkpoint_block_count(session_file) == 1
-        output = json.loads(fake_stdout.getvalue().strip())
-        assert output["hookSpecificOutput"]["additionalContext"]
+        assert fake_stdout.getvalue().strip() == "", (
+            "checkpoint 追記時も stdout は出力されないはず（checkpoint 追記専念のため）。"
+        )
 
     def test_broken_timestamp_fails_open_and_appends(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -558,8 +485,9 @@ class TestMainDebounce:
 
         block_count_after = self._checkpoint_block_count(session_file)
         assert block_count_after == block_count_before + 1
-        output = json.loads(fake_stdout.getvalue().strip())
-        assert output["hookSpecificOutput"]["additionalContext"]
+        assert fake_stdout.getvalue().strip() == "", (
+            "checkpoint 追記時も stdout は出力されないはず（checkpoint 追記専念のため）。"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -924,8 +852,8 @@ class TestMainFutureCheckpointDebounceGuard:
     """[FB3 / SR-V-001] main() の in-process 統合テスト。
 
     未来日時の偽 checkpoint（例: `9999-12-31T23:59:59+00:00`）が session_file に
-    存在しても、main() のデバウンスが恒久停止せず、checkpoint 追記・
-    additionalContext 出力が継続されること（SR-V-001 の悪用シナリオ解消）を固定する。
+    存在しても、main() のデバウンスが恒久停止せず、checkpoint 追記が
+    継続されること（SR-V-001 の悪用シナリオ解消）を固定する。
     """
 
     def _setup_module(
@@ -964,13 +892,9 @@ class TestMainFutureCheckpointDebounceGuard:
             "スキップされ続けてはならない（fail-open）。\n"
             f"追記前ブロック数: {block_count_before} / 追記後ブロック数: {block_count_after}"
         )
-        stdout_text = fake_stdout.getvalue().strip()
-        assert stdout_text, (
-            "未来日時の偽 checkpoint によりデバウンスが恒久停止し、"
-            "additionalContext 出力がスキップされてはならない。"
+        assert fake_stdout.getvalue().strip() == "", (
+            "checkpoint 追記時も stdout は出力されないはず（checkpoint 追記専念のため）。"
         )
-        output = json.loads(stdout_text)
-        assert output["hookSpecificOutput"]["additionalContext"]
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""PreCompact hook: append checkpoint marker and inject save instruction.
+"""PreCompact hook: append checkpoint marker (デバウンス付き)。
 
 直近 DEBOUNCE_WINDOW_SECONDS 秒以内に PreCompact checkpoint が既に存在する場合は、
-checkpoint の追記と additionalContext 注入の両方をスキップする（PreCompact の
-連続起動による重複追記・重複注入を防ぐデバウンス機構）。
+checkpoint の追記をスキップする（PreCompact の連続起動による重複追記を防ぐ
+デバウンス機構）。
 """
 
 import json
@@ -18,16 +18,8 @@ sys.stderr.reconfigure(encoding='utf-8')
 from session_utils import SESSION_JSON_MARKER, append_checkpoint, is_worktree, SESSIONS_DIR
 
 
-SAVE_INSTRUCTION = (
-    "コンテキスト圧縮が間もなく発生します。詳細な文脈が失われる前に、"
-    "今日のセッションファイル（.claude/memory/sessions/YYYYMMDD.tmp）を以下のとおり「更新」してください（無制限の追記はしないこと）。\n"
-    "1. 「現在地:」行を現在のフェーズ名に更新する（例: 「現在地: フェーズD 実装中」「現在地: Wave 2 実装中」）。\n"
-    "2. 「## 残タスク」をチェックリストとして更新する（完了タスクは - [x] 化し、不要になった行は整理する）。\n"
-    "CLAUDE.md の Compact Instructions（KEEP/DISCARD）に従い、雑談・解決済みエラーログ・冗長なコード断片は書かないこと。\n"
-)
-
 # デバウンス窓幅（秒）。直近の PreCompact checkpoint からこの秒数以内の再実行は
-# 追記・additionalContext 注入をスキップする（4連続起動の重複防止）。
+# 追記をスキップする（4連続起動の重複防止）。
 DEBOUNCE_WINDOW_SECONDS = 10
 
 # checkpoint 行抽出のため splitlines() に渡す前に除去する行区切り文字パターン。
@@ -63,7 +55,7 @@ MAX_CHECKPOINT_LINE_LEN = 512
 #
 # この値を大きく取り過ぎると、許容スキュー以内の未来日時 checkpoint を注入された
 # 場合に、実時刻がその timestamp に追いつくまでデバウンスが効き続け、checkpoint 追記
-# と additionalContext 注入が最大で許容秒数ぶん停止する（[SR-V-001]）。60 秒に
+# が最大で許容秒数ぶん停止する（[SR-V-001]）。60 秒に
 # 抑えることで、悪意ある注入・データ破損いずれの場合も最大デバウンス停止時間を
 # 60 秒以内に限定する。
 #
@@ -184,23 +176,27 @@ def main():
 
     last = _last_precompact_checkpoint_dt(session_file, now=now)
     if last is not None and (now - last) < timedelta(seconds=DEBOUNCE_WINDOW_SECONDS):
-        print('[PreCompact] debounce: 直近の checkpoint を検出したため追記/注入をスキップしました', file=sys.stderr)
+        print('[PreCompact] debounce: 直近の checkpoint を検出したため追記をスキップしました', file=sys.stderr)
         return
 
+    # セキュリティ非対称性の記録（fix-cycle-2, security-review-report-20260704-121824.md
+    # [SR-V-001]・情報提供・現状は対応不要）: 以下の summary（body）は
+    # session_utils.append_checkpoint の設計上 sanitize_value() 非適用で書き込まれる
+    # （複数行 Markdown を保持するための承認済み設計判断・session_utils.py L147 参照）。
+    # そのため body に埋め込む trigger（L164）は未サニタイズのまま checkpoint に書かれる。
+    # 一方 label（下の f'PreCompact: {trigger}'）は append_checkpoint 内で
+    # sanitize_value() を通るため、body と label で sanitize 適用範囲に非対称性がある。
+    # 現状 trigger は Claude Code ハーネスが設定する列挙的な値（manual/auto 等）で、
+    # 外部入力・LLM 自由記述からの直接汚染経路が無いため実害の確信度は低い。
+    # 【将来の拡張時の注意】trigger の由来をハーネス以外（プラグイン・カスタムフック
+    # 連携等）に拡張する場合は、偽 checkpoint 注入経路化を防ぐため body 側にも
+    # sanitize_value() 適用を検討すること。
     summary = (
         f"- trigger: {trigger}\n"
         f"- context_items_before: {context_items_before_str}\n"
         f"- このポイント以前の詳細な文脈は圧縮により失われます。"
     )
     append_checkpoint(session_file, f'PreCompact: {trigger}', summary)
-
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreCompact",
-            "additionalContext": SAVE_INSTRUCTION,
-        }
-    }
-    print(json.dumps(output, ensure_ascii=False))
 
     print(f'[PreCompact] セッション状態を {session_file} に保存しました', file=sys.stderr)
 

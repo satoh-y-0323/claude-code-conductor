@@ -2,7 +2,10 @@
 Tests for pre_compact.py basic runtime behavior.
 
 These tests verify that:
-  1. Normal execution outputs valid JSON containing the 'additionalContext' key.
+  1. Normal execution produces no stdout output and appends a PreCompact
+     checkpoint block to the session file (checkpoint-only responsibility;
+     PreCompact does not support hookSpecificOutput.additionalContext per the
+     official hooks spec).
   2. Worktree detection exits 0 with no stdout output.
 
 Implementation notes:
@@ -28,6 +31,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -62,57 +66,51 @@ def _run_pre_compact(cwd: Path, stdin: bytes) -> subprocess.CompletedProcess:
 
 
 # ---------------------------------------------------------------------------
-# Test Case 1: Normal execution — stdout is valid JSON with additionalContext
+# Test Case 1: Normal execution — stdout is empty, checkpoint is appended
 # ---------------------------------------------------------------------------
 
 class TestPreCompactNormalExecution:
-    """pre_compact.py in a non-worktree directory must output valid JSON.
+    """pre_compact.py in a non-worktree directory must not emit stdout output
+    and must append a PreCompact checkpoint block to the session file.
+
+    PreCompact hooks do not support `hookSpecificOutput.additionalContext`
+    per the official hooks spec, so the hook's sole responsibility during
+    normal execution is checkpoint-file bookkeeping (via
+    `session_utils.append_checkpoint`), not stdout output.
 
     [T3] in-process 隔離方式に移行済み（旧: subprocess で実 sessions dir に
     連続書き込みしていたため、デバウンス導入後に 2 本目が干渉して赤化していた）。
     """
 
-    def test_stdout_is_valid_json(
+    def test_stdout_is_empty(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """stdout must be parseable as JSON when run outside a worktree."""
+        """stdout must be empty when run outside a worktree (checkpoint-only)."""
         _, _, fake_stdout = _run_main_in_process(
             monkeypatch, tmp_path, {"trigger": "manual", "context_items_before": 10}
         )
         stdout = fake_stdout.getvalue().strip()
-        assert stdout, (
-            "stdout must not be empty during normal (non-worktree) execution"
+        assert stdout == "", (
+            "stdout must be empty during normal (non-worktree) execution "
+            f"(checkpoint-only hook). Got: {stdout!r}"
         )
-        try:
-            json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise AssertionError(
-                f"stdout is not valid JSON: {exc}\nstdout was: {stdout!r}"
-            ) from exc
 
-    def test_stdout_json_has_additional_context_key(
+    def test_checkpoint_is_appended_to_session_file(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """stdout JSON must contain hookSpecificOutput.additionalContext."""
-        _, _, fake_stdout = _run_main_in_process(
+        """A PreCompact checkpoint block must be appended to the session file."""
+        module, sessions_dir, _ = _run_main_in_process(
             monkeypatch, tmp_path, {"trigger": "manual", "context_items_before": 10}
         )
-        stdout = fake_stdout.getvalue().strip()
-        assert stdout, (
-            "stdout must not be empty during normal (non-worktree) execution"
+        today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+        session_file = sessions_dir / f"{today_str}.tmp"
+        assert session_file.exists(), (
+            f"session file must be created: {session_file}"
         )
-        output = json.loads(stdout)
-        assert "hookSpecificOutput" in output, (
-            f"stdout JSON missing 'hookSpecificOutput' key. "
-            f"Got keys: {list(output.keys())}"
-        )
-        hook_output = output["hookSpecificOutput"]
-        assert "additionalContext" in hook_output, (
-            f"hookSpecificOutput missing 'additionalContext' key. "
-            f"Got keys: {list(hook_output.keys())}"
-        )
-        assert hook_output["additionalContext"], (
-            "'additionalContext' value must not be empty"
+        content = session_file.read_text(encoding="utf-8")
+        assert "## [Checkpoint: PreCompact:" in content, (
+            "session file must contain an appended PreCompact checkpoint "
+            f"block. Actual content: {content!r}"
         )
 
 
