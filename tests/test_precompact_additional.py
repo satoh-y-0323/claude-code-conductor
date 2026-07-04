@@ -6,13 +6,21 @@ These tests verify that:
   2. Worktree detection exits 0 with no stdout output.
 
 Implementation notes:
-  - pre_compact.py is invoked via subprocess so that sys.exit() and stdout/stdin
-    behavior are tested end-to-end without mocking.
-  - The session file is written to the real .claude/memory/sessions/ directory
-    (path is derived from __file__ inside pre_compact.py, not from cwd).
-    This is acceptable for integration tests.
-  - cwd is set to tmp_path to control the is_worktree() check, which inspects
-    os.getcwd()/.git to determine whether we are inside a git worktree.
+  - TestPreCompactNormalExecution [T3, architecture-report-20260704-065052.md
+    §8-1 案 A] runs pre_compact.py's main() in-process instead of via
+    subprocess. The old subprocess approach wrote to the real
+    .claude/memory/sessions/ directory (SESSIONS_DIR is derived from
+    __file__ inside pre_compact.py, not from cwd, so subprocess execution
+    cannot redirect it to a tmp dir). After debounce was introduced, two
+    subprocess runs within the 10s window would interfere with each other
+    (2nd run gets skipped -> empty stdout -> false failure). In-process
+    execution overrides `mod.SESSIONS_DIR` per-test via monkeypatch, so each
+    test gets a fresh tmp sessions dir with no prior checkpoint and no
+    real-state writes.
+  - TestPreCompactWorktreeDetection remains subprocess-based: the worktree
+    guard runs before SESSIONS_DIR/session_file is touched, so no real state
+    is read or written, and subprocess is still valuable here for verifying
+    the actual `sys.exit(0)` process-exit behavior end-to-end.
 """
 
 from __future__ import annotations
@@ -22,13 +30,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
+import pytest
 
-WORKTREE_ROOT = Path(__file__).parent.parent
-PRE_COMPACT_PY = WORKTREE_ROOT / ".claude" / "hooks" / "pre_compact.py"
+from tests._pre_compact_helpers import (
+    PRE_COMPACT_PY,
+    _run_main_in_process,
+)
 
+# `_load_pre_compact_module` / `_run_main_in_process` は tests/_pre_compact_helpers.py
+# （CR-M-001 対応の共通モジュール）から import する。tests/test_pre_compact.py と
+# 重複定義しない。`_run_main_in_process` は `(module, sessions_dir, fake_stdout)` の
+# 3-tuple を返す。本ファイルでは fake_stdout のみ使用する。
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,16 +66,20 @@ def _run_pre_compact(cwd: Path, stdin: bytes) -> subprocess.CompletedProcess:
 # ---------------------------------------------------------------------------
 
 class TestPreCompactNormalExecution:
-    """pre_compact.py in a non-worktree directory must output valid JSON."""
+    """pre_compact.py in a non-worktree directory must output valid JSON.
 
-    def test_stdout_is_valid_json(self, tmp_path: Path) -> None:
+    [T3] in-process 隔離方式に移行済み（旧: subprocess で実 sessions dir に
+    連続書き込みしていたため、デバウンス導入後に 2 本目が干渉して赤化していた）。
+    """
+
+    def test_stdout_is_valid_json(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """stdout must be parseable as JSON when run outside a worktree."""
-        result = _run_pre_compact(tmp_path, _make_valid_input())
-        assert result.returncode == 0, (
-            f"pre_compact.py exited with code {result.returncode}.\n"
-            f"stderr: {result.stderr.decode(errors='replace')}"
+        _, _, fake_stdout = _run_main_in_process(
+            monkeypatch, tmp_path, {"trigger": "manual", "context_items_before": 10}
         )
-        stdout = result.stdout.strip()
+        stdout = fake_stdout.getvalue().strip()
         assert stdout, (
             "stdout must not be empty during normal (non-worktree) execution"
         )
@@ -74,14 +90,14 @@ class TestPreCompactNormalExecution:
                 f"stdout is not valid JSON: {exc}\nstdout was: {stdout!r}"
             ) from exc
 
-    def test_stdout_json_has_additional_context_key(self, tmp_path: Path) -> None:
+    def test_stdout_json_has_additional_context_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """stdout JSON must contain hookSpecificOutput.additionalContext."""
-        result = _run_pre_compact(tmp_path, _make_valid_input())
-        assert result.returncode == 0, (
-            f"pre_compact.py exited with code {result.returncode}.\n"
-            f"stderr: {result.stderr.decode(errors='replace')}"
+        _, _, fake_stdout = _run_main_in_process(
+            monkeypatch, tmp_path, {"trigger": "manual", "context_items_before": 10}
         )
-        stdout = result.stdout.strip()
+        stdout = fake_stdout.getvalue().strip()
         assert stdout, (
             "stdout must not be empty during normal (non-worktree) execution"
         )
