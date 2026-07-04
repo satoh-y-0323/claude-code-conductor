@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.44.0] - 2026-07-04
+
+### 修正
+
+- **PreCompact checkpoint の多重発火をデバウンスで冪等化**: Claude Code ハーネスは 1 回の `/compact` で PreCompact hook を複数回起動することがあり（実測 2〜4 回・payload 違い・公式 docs 非記載の undocumented 挙動）、セッションファイルに同一 checkpoint ブロックが堆積していた（実測で 1 日分ファイルの約 8 割がノイズ化し、翌セッション復元時の読み込みコンテキストを浪費）。`pre_compact.py` が追記前に当日セッションファイル末尾の PreCompact checkpoint timestamp を読み、10 秒以内の再起動なら追記をスキップする。timestamp 不在・parse 不能時は fail-open（従来どおり追記）。実装には ReDoS 対策（行長 512 上限・正規表現を使わない手続きパース）・未来日時 checkpoint の棄却（スキュー許容 60 秒・デバウンス恒久停止の防止）・行区切り文字サニタイズ・stderr 診断ログの切り詰め（64 字）を含む。実機 E2E で 1 compact = 1 ブロックを確認済み。
+- **PreCompact hook の仕様外 additionalContext stdout 出力を撤去**: PreCompact は公式仕様上 `hookSpecificOutput.additionalContext` をサポートしない（サポートされるのは top-level `decision: "block"` + `reason` のみ）。C3 は従来この仕様外 JSON を stdout に出力しており、現行ハーネスの `/compact` で「PreCompact hook JSON output validation failed」警告を誘発していた（additionalContext の注入自体もモデルに届いていた保証がない）。`pre_compact.py` を checkpoint 追記専念に変更し、JSON stdout 出力と `SAVE_INSTRUCTION` 定数を削除。セッションファイルの更新は運用ルール（現在地の常時更新・タスク完了ごとの更新）で担保されているため機能上の後退はない。実機で警告の消滅を確認済み。
+
+### 後方互換
+
+- `.claude/hooks/pre_compact.py` とそのテストのみの変更で `src/c3/` に変更なし。**破壊的変更なし**。`session_utils.append_checkpoint()` の契約（parallel-agents の wave checkpoint と共用）・`settings.json` の hook 登録は不変。
+
 ## [2.43.0] - 2026-07-03
 
 ### 変更
