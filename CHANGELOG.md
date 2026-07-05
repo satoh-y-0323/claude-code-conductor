@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.45.0] - 2026-07-05
+
+### 追加
+
+- **stop.py に patterns.json 肥大検知ガードを新設**: `DESCRIPTION_WARN_LENGTH = 1000` を超える description を持つ既存エントリを、毎 Stop 時に stderr で警告する（削除・切り詰めはしない警告のみ・promoted 含む全件監査）。取り込みガード `MAX_DESCRIPTION_LENGTH=500` は session.tmp 経由の正規記録経路にしか効かず、LLM が patterns.json を直接 Edit する経路の肥大を検知できなかった穴を埋める別レイヤの機械防御（配布元で実際に 1 件 2,000〜3,000 字 × 19 件 = 98KB まで肥大し init-session の Read が上限超過した事故が契機）。fail-safe 二段（防御的実装 + 呼び出し側 try/except）で Stop 処理自体は止めない。
+
+### 修正
+
+- **patterns.json に非 dict エントリが混入すると毎 Stop で永続クラッシュする問題を修正**: `update_patterns` の expiry/trust ループと新規観測 ingestion マージループがともに dict 前提で、直接 Edit・マージ事故等で文字列や null が混入すると `AttributeError`/`TypeError` で異常終了していた。クラッシュ地点が `save_patterns` より前のため不正エントリは修復されず、**以降の全 Stop 実行が毎回失敗して学習記録（新規観測・trust 再計算）が更新されない自己修復不能な障害状態**になっていた。両ループに isinstance ガードを追加し、非 dict エントリは保持スキップ（`registered_date` parse 不能時の既存慣行と対称）で完走する。
+- **肥大警告出力の id を無害化**: 直接 Edit 経路由来の id は長さ・型検証を通らないため、`_INHERIT_SANITIZE_RE`（制御文字・U+2028/U+2029 除去）+ `MAX_ID_LENGTH` 切り詰めを適用してから stderr へ出力する（ANSI エスケープ等によるターミナル出力改ざんの防止）。
+
+### 後方互換
+
+- `.claude/hooks/stop.py` とそのテストのみの変更で `src/c3/` に変更なし。**破壊的変更なし**。警告は stderr 1 行のみで patterns.json の内容・スキーマ・既存の expiry/trust/promotion_candidate 計算は不変。
+
 ## [2.44.0] - 2026-07-04
 
 ### 修正
