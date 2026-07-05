@@ -29,6 +29,9 @@ PROMOTION_THRESHOLD = 0.8
 COOLING_DAYS = 3
 MAX_ID_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 500
+# 取り込みガード(500)とは別レイヤの既存エントリ肥大検知線。直接 Edit 経路で
+# patterns.json に載った肥大 description を毎 Stop で警告するための閾値（strict greater）。
+DESCRIPTION_WARN_LENGTH = 1000
 MAX_LAST_MSG = 500
 
 # 過去セッションファイルから引き継ぐ - [ ] 行のサニタイズ用パターン。
@@ -335,6 +338,33 @@ def save_patterns(data: dict) -> None:
             os.unlink(tmp_path)
 
 
+def _warn_oversized_descriptions(patterns: list) -> None:
+    """既存エントリの description が DESCRIPTION_WARN_LENGTH を超えていたら stderr 警告する。
+
+    削除・切り詰めは行わない（警告のみ・read-only）。1 エントリ 1 行で出力する。
+    本関数は例外を出さない防御的実装だが、呼び出し側でも try/except で二重に保護する。
+    """
+    for p in patterns:
+        if not isinstance(p, dict):
+            continue
+        desc = p.get('description', '')
+        if not isinstance(desc, str):
+            continue
+        if len(desc) > DESCRIPTION_WARN_LENGTH:
+            pid = p.get('id', '(unknown)')
+            # [SR-V-001] pid は直接 Edit 経路の値で未検証のため、出力前に
+            # 制御文字/ANSI 等を除去し MAX_ID_LENGTH で切り詰めて無害化する。
+            if not isinstance(pid, str):
+                pid = str(pid)
+            pid = _INHERIT_SANITIZE_RE.sub('', pid)[:MAX_ID_LENGTH]
+            print(
+                f'[Stop] patterns.json エントリの description が肥大しています '
+                f'(id={pid}, {len(desc)}字 > {DESCRIPTION_WARN_LENGTH}字)。'
+                f'内容を見直すか、日次評価が原因の場合は .dev/changelog-evals.md へ移してください',
+                file=sys.stderr,
+            )
+
+
 def update_patterns(date_str: str) -> None:
     new_observations = extract_session_patterns(date_str)
     data = load_patterns()
@@ -347,7 +377,9 @@ def update_patterns(date_str: str) -> None:
         description = obs.get('description', '')
         if len(description) > MAX_DESCRIPTION_LENGTH:
             continue
-        existing = next((p for p in data['patterns'] if p['id'] == pid), None)
+        # isinstance ガード: 非 dict エントリは検索対象外として無視し、
+        # 該当 id なし扱いで新規パターンとして追加される（削除はしない）[CR-E-001][SR-V-001]。
+        existing = next((p for p in data['patterns'] if isinstance(p, dict) and p.get('id') == pid), None)
         if existing is None:
             data['patterns'].append({
                 "id": pid,
@@ -368,6 +400,11 @@ def update_patterns(date_str: str) -> None:
 
     active = []
     for pattern in data['patterns']:
+        if not isinstance(pattern, dict):
+            # 型が dict でないエントリは trust/expiry 計算不能。
+            # registered_date parse 不能時と同様に保持して継続（クラッシュ回避）[SR-V-001]。
+            active.append(pattern)
+            continue
         if pattern.get('promoted', False):
             active.append(pattern)
             continue
@@ -393,6 +430,12 @@ def update_patterns(date_str: str) -> None:
         active.append(pattern)
 
     data['patterns'] = active
+    # 肥大検知ガード（警告のみ・read-only）。誤動作しても Stop を止めないよう
+    # 防御的実装に加えて呼び出し側でも try/except で二重に握る（belt-and-suspenders）。
+    try:
+        _warn_oversized_descriptions(active)
+    except Exception:
+        pass
     save_patterns(data)
 
     print('[Stop] セッション終了処理が完了しました', file=sys.stderr)

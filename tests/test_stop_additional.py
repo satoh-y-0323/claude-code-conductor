@@ -1071,3 +1071,513 @@ class TestInheritBacklogNewPathOSErrorGuard:
                 "期待: 例外を伝播させず黙って return する。\n"
                 f"実際の例外: {exc}"
             ) from exc
+
+
+# ---------------------------------------------------------------------------
+# [Regression guards (originally Red-phase)] TestDescriptionBloatWarning
+# (plan-report T1: test-stop-guard / T2: impl-stop-guard)
+# ---------------------------------------------------------------------------
+
+
+class TestDescriptionBloatWarning:
+    """patterns.json description 肥大検知ガード（implemented; originally written
+    Red-first）を固定する回帰テスト。
+
+    plan-report-20260705-153010.md §2 T1 / architecture-report-20260705-152313.md
+    §4・§ADR-1〜4 に対応。対象は `_warn_oversized_descriptions` ヘルパーと
+    `DESCRIPTION_WARN_LENGTH` 定数（値 1000・strict greater・description 長のみ）。
+
+    T2（impl-stop-guard）で実装済み。Red 定義時点では、本クラスの T1/T4/T5/T6/T7 は
+    「未実装ゆえの失敗」（AssertionError: 期待する警告が出ない / AttributeError:
+    _warn_oversized_descriptions が存在しない）で落ちる設計意図だった。この経緯は
+    テスト設計の記録として残しているのみで、実装済みの現在は全テストが green で
+    回帰防止として機能する。
+
+    T2/T3 は「警告が出ないこと」を検証する境界・回帰テストで、strict-greater
+    境界（ちょうど1000字・実測最大706字）の誤警告ゼロを担保する。
+    """
+
+    def _setup(self, tmp_path: Path, tag: str) -> tuple:
+        """Create isolated temp dirs, seed a no-op session file, and return a
+        fresh stop module with overridden paths.
+
+        セッション側に新規観測は無い（_write_session_no_json）。これにより
+        update_patterns は patterns.json に既に載っている既存エントリのみを
+        再評価する経路を通る。これは architecture-report §1 が言う「直接 Edit
+        経路（MAX_DESCRIPTION_LENGTH=500 の取り込みガードが効かない穴）」を
+        シミュレートするための意図的な設計。
+        """
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        patterns_file = tmp_path / "patterns.json"
+        mod = _load_stop_module(f"_stop_bloat_{tag}_{tmp_path.name}")
+        mod.SESSIONS_DIR = str(sessions_dir)
+        mod.PATTERNS_FILE = str(patterns_file)
+        _write_session_no_json(sessions_dir, TODAY_STR)
+        return mod, sessions_dir, patterns_file
+
+    @staticmethod
+    def _entry(pid: str, description) -> dict:
+        """既存の expiry/trust ループ（registered_date/observations 必須）を安全に
+        通過できる、有効な patterns.json エントリを 1 件組み立てる。
+        description のみを可変にすることで、テスト対象を description 判定に絞る。
+        """
+        return {
+            "id": pid,
+            "description": description,
+            "registered_date": TODAY_STR,
+            "trust_score": 0.5,
+            "promotion_candidate": False,
+            "observations": [{"date": TODAY_STR}],
+            "last_updated": TODAY_STR,
+        }
+
+    # -- T1 -----------------------------------------------------------------
+
+    def test_t1_warns_when_description_exceeds_threshold(self, tmp_path, capsys):
+        """T1: description 1500字のエントリ -> stderr に [Stop] 接頭辞 + 該当 id +
+        字数を含む警告が1行出る。"""
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t1")
+        patterns_data = {"patterns": [self._entry("bloat-pat-1", "A" * 1500)]}
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        mod.update_patterns(TODAY_STR)
+
+        err = capsys.readouterr().err
+        warning_lines = [
+            ln for ln in err.splitlines() if "[Stop]" in ln and "bloat-pat-1" in ln
+        ]
+        assert len(warning_lines) == 1, (
+            f"[T1] description 1500字のエントリに対する [Stop] 警告が1行出るべき。"
+            f"Got stderr: {err!r}"
+        )
+        assert "1500" in warning_lines[0], (
+            f"[T1] 警告メッセージに字数(1500)が含まれるべき。Got: {warning_lines[0]!r}"
+        )
+
+    # -- T2 -----------------------------------------------------------------
+
+    def test_t2_no_warning_at_exact_threshold_boundary(self, tmp_path, capsys):
+        """T2: description ちょうど1000字 -> 警告なし（strict greater の境界固定）。"""
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t2")
+        patterns_data = {"patterns": [self._entry("boundary-pat", "B" * 1000)]}
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        mod.update_patterns(TODAY_STR)
+
+        err = capsys.readouterr().err
+        assert "boundary-pat" not in err, (
+            f"[T2] ちょうど1000字（strict greater 境界）では警告が出てはいけない。"
+            f"Got stderr: {err!r}"
+        )
+
+    # -- T3 -----------------------------------------------------------------
+
+    def test_t3_no_warning_for_regular_pattern_length(self, tmp_path, capsys):
+        """T3: 正規パターン実測最大長706字 -> 警告なし（誤警告ゼロの回帰防止）。"""
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t3")
+        patterns_data = {"patterns": [self._entry("regular-pat-706", "C" * 706)]}
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        mod.update_patterns(TODAY_STR)
+
+        err = capsys.readouterr().err
+        assert "regular-pat-706" not in err, (
+            "[T3] 実測最大長706字（learning_signal_attribution_verification 相当）"
+            f"では警告が出てはいけない。Got stderr: {err!r}"
+        )
+
+    # -- T4 -----------------------------------------------------------------
+
+    def test_t4_multiple_bloated_entries_each_get_own_warning_line(
+        self, tmp_path, capsys
+    ):
+        """T4: 1500字 x 2件 -> 警告2行（id ごとに個別出力）。"""
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t4")
+        patterns_data = {
+            "patterns": [
+                self._entry("bloat-pat-a", "D" * 1500),
+                self._entry("bloat-pat-b", "E" * 1500),
+            ]
+        }
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        mod.update_patterns(TODAY_STR)
+
+        err = capsys.readouterr().err
+        lines_a = [ln for ln in err.splitlines() if "[Stop]" in ln and "bloat-pat-a" in ln]
+        lines_b = [ln for ln in err.splitlines() if "[Stop]" in ln and "bloat-pat-b" in ln]
+        assert len(lines_a) == 1, (
+            f"[T4] bloat-pat-a 用の警告が1行出るべき。Got stderr: {err!r}"
+        )
+        assert len(lines_b) == 1, (
+            f"[T4] bloat-pat-b 用の警告が1行出るべき。Got stderr: {err!r}"
+        )
+
+    # -- T5 -----------------------------------------------------------------
+
+    def test_t5_warning_only_does_not_mutate_description(self, tmp_path, capsys):
+        """T5: 警告のみ・非破壊 -> update_patterns 後も対象 description が不変で残る。
+
+        警告そのものが出ることも同時に assert する。さもないと『何もしない』実装でも
+        非破壊性アサーションだけは現状既に通ってしまい、Red として機能しない。
+        """
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t5")
+        original_desc = "F" * 1500
+        patterns_data = {"patterns": [self._entry("nondestructive-pat", original_desc)]}
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        mod.update_patterns(TODAY_STR)
+
+        err = capsys.readouterr().err
+        assert "nondestructive-pat" in err, (
+            "[T5] 肥大エントリに警告が出るべき（警告そのものが出ないと非破壊性の"
+            f"検証にならない）。Got stderr: {err!r}"
+        )
+
+        data = json.loads(patterns_file.read_text(encoding="utf-8"))
+        stored = next(
+            (p for p in data["patterns"] if p["id"] == "nondestructive-pat"), None
+        )
+        assert stored is not None, "[T5] 肥大エントリは削除されず patterns.json に残るべき"
+        assert stored["description"] == original_desc, (
+            "[T5] 警告は description を変更・切り詰めしてはいけない（非破壊）。"
+            f"Got len={len(stored['description'])}, expected len={len(original_desc)}"
+        )
+
+    # -- T6 -----------------------------------------------------------------
+
+    def test_t6_fail_safe_survives_malformed_description_fields(
+        self, tmp_path, capsys
+    ):
+        """T6: description キー欠損 / 非str(None・数値) が混在しても例外を伝播させず
+        update_patterns が正常完了する。
+
+        併せて、同時に混在させた正規の肥大エントリへの警告も出ることを assert する。
+        さもないと『何もしない』実装でも fail-safe アサーションだけは現状既に通って
+        しまい、Red として機能しない。
+
+        非 dict エントリ（例: 文字列そのもの）は、fix-cycle-3 で ingestion マージ
+        ループ（stop.py L380 付近）と expiry/trust ループ（同 L400 以降）の両経路に
+        非 dict ガードが入ったことで、新規観測の有無に関わらず update_patterns
+        経由でも crash しなくなった（TestDescriptionBloatWarning の T9 / T11 回帰
+        テストでこの挙動を固定）。本テスト（T6）は対象を description 判定に絞る
+        ための意図的な選定として、引き続き description キー欠損・非 str の
+        2 パターンのみを扱う（非 dict エントリの網羅は T9 / T11 / T7 側の責務）。
+        """
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t6")
+        entry_missing_desc = {
+            "id": "nodesc-pat",
+            # description キーそのものが無い
+            "registered_date": TODAY_STR,
+            "trust_score": 0.5,
+            "promotion_candidate": False,
+            "observations": [{"date": TODAY_STR}],
+            "last_updated": TODAY_STR,
+        }
+        patterns_data = {
+            "patterns": [
+                entry_missing_desc,
+                self._entry("none-desc-pat", None),
+                self._entry("num-desc-pat", 12345),
+                self._entry("valid-bloat-pat", "G" * 1500),
+            ]
+        }
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        # 例外が伝播しないこと自体が fail-safe の核心的な検証
+        mod.update_patterns(TODAY_STR)
+
+        err = capsys.readouterr().err
+        assert "valid-bloat-pat" in err, (
+            "[T6] 混在する不正エントリに関わらず、正規の肥大エントリには警告が出る"
+            f"べき。Got stderr: {err!r}"
+        )
+
+        data = json.loads(patterns_file.read_text(encoding="utf-8"))
+        ids = {p["id"] for p in data["patterns"]}
+        assert {
+            "nodesc-pat", "none-desc-pat", "num-desc-pat", "valid-bloat-pat"
+        } <= ids, (
+            "[T6] 不正な description を持つエントリも削除されず patterns.json に"
+            f"残るべき（fail-safe は警告をスキップするだけで削除はしない）。"
+            f"Got ids: {ids!r}"
+        )
+
+    # -- T7 -----------------------------------------------------------------
+
+    def test_t7_helper_unit_threshold_and_stderr(self, tmp_path, capsys):
+        """T7（任意）: _warn_oversized_descriptions に list を直接渡し、閾値判定と
+        stderr 出力をヘルパー単体で検証する。非 dict エントリの fail-safe も
+        ここで検証する（T6 のコメント参照）。
+        """
+        mod, _sessions_dir, _patterns_file = self._setup(tmp_path, "t7")
+
+        patterns = [
+            {"id": "helper-bloat", "description": "H" * 1500},
+            {"id": "helper-ok", "description": "I" * 706},
+            "not a dict",
+            {"id": "helper-nodesc"},
+            {"id": "helper-none-desc", "description": None},
+        ]
+
+        # 例外を出さないこと自体が fail-safe の検証（非 dict エントリを含む）
+        mod._warn_oversized_descriptions(patterns)
+
+        err = capsys.readouterr().err
+        assert "helper-bloat" in err and "[Stop]" in err, (
+            f"[T7] 閾値超エントリには [Stop] 警告が出るべき。Got stderr: {err!r}"
+        )
+        assert "helper-ok" not in err, (
+            f"[T7] 706字の正規エントリには警告が出てはいけない。Got stderr: {err!r}"
+        )
+
+    # -- T8 -----------------------------------------------------------------
+
+    def test_t8_promoted_entry_still_warns(self, tmp_path, capsys):
+        """T8: promoted: true のエントリでも description 肥大なら警告される
+        （architecture-report §ADR-3: `_warn_oversized_descriptions` は promoted を
+        含む active 全件を一律監査し、promoted か否かで除外しないという設計判断の
+        回帰固定）。promoted エントリが expiry/trust 判定をスキップして無条件で
+        active に残る経路（stop.py L396-398）も本テストで自然に検証される。
+        """
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t8")
+        entry = self._entry("promoted-bloat-pat", "J" * 1500)
+        entry["promoted"] = True
+        patterns_data = {"patterns": [entry]}
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        mod.update_patterns(TODAY_STR)
+
+        err = capsys.readouterr().err
+        warning_lines = [
+            ln for ln in err.splitlines()
+            if "[Stop]" in ln and "promoted-bloat-pat" in ln
+        ]
+        assert len(warning_lines) == 1, (
+            "[T8] promoted:true でも description 肥大なら [Stop] 警告が1行出るべき"
+            f"（promoted 除外禁止の設計固定）。Got stderr: {err!r}"
+        )
+        assert "1500" in warning_lines[0], (
+            f"[T8] 警告メッセージに字数(1500)が含まれるべき。Got: {warning_lines[0]!r}"
+        )
+
+        data = json.loads(patterns_file.read_text(encoding="utf-8"))
+        stored = next(
+            (p for p in data["patterns"] if p["id"] == "promoted-bloat-pat"), None
+        )
+        assert stored is not None, (
+            "[T8] promoted エントリは active に残るべき（expiry/trust 判定スキップ経路）"
+        )
+        assert stored.get("promoted") is True, (
+            "[T8] promoted フラグ自体は変更されず維持されるべき"
+        )
+
+    # -- T9 (fix-cycle-2 / FB1, originally Red-a) ---------------------------
+
+    def test_t9_non_dict_pattern_entries_do_not_crash_and_are_retained(
+        self, tmp_path
+    ):
+        """T9 [SR-V-001 Medium / originally Red-a]: data['patterns'] 直下に非 dict エントリ
+        （文字列・None）が混在していても update_patterns が例外を伝播させず完走し、
+        正規 dict エントリの処理・save が行われることを固定する。
+
+        plan-report-20260705-162421.md の決定（非 dict エントリの扱い = 保持）に
+        従い、非 dict エントリも save 後の patterns.json に残っていることを assert
+        する（stop.py L400-404 の registered_date parse 不能時の「保持して継続」
+        慣行と対称）。
+
+        fix-cycle-2 適用前の実装では expiry/trust ループ先頭の
+        `pattern.get('promoted', False)` が非 dict エントリで
+        AttributeError（例: 'str' object has no attribute 'get'）を送出し、
+        save に到達せず update_patterns 自体が異常終了するため、originally
+        Red-first で赤だった。
+        """
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t9")
+        valid_entry = self._entry("valid-pat-t9", "normal description")
+        patterns_data = {"patterns": ["not a dict", None, valid_entry]}
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        # 例外が伝播しないこと自体が Red-a の核心的な検証
+        # （修正前の実装は 'not a dict'.get(...) の AttributeError で crash していた）。
+        mod.update_patterns(TODAY_STR)
+
+        data = json.loads(patterns_file.read_text(encoding="utf-8"))
+        stored_patterns = data["patterns"]
+
+        valid_stored = next(
+            (
+                p for p in stored_patterns
+                if isinstance(p, dict) and p.get("id") == "valid-pat-t9"
+            ),
+            None,
+        )
+        assert valid_stored is not None, (
+            "[T9] 正規 dict エントリは save 後の patterns.json に残るべき"
+            f"（save 到達確認）。Got stored_patterns: {stored_patterns!r}"
+        )
+
+        assert "not a dict" in stored_patterns, (
+            "[T9] 非 dict エントリ（文字列）は削除されず保持されるべき"
+            "（planner 決定: registered_date parse 不能時の保持慣行と対称）。"
+            f"Got stored_patterns: {stored_patterns!r}"
+        )
+        assert None in stored_patterns, (
+            "[T9] 非 dict エントリ（None）は削除されず保持されるべき。"
+            f"Got stored_patterns: {stored_patterns!r}"
+        )
+
+    # -- T10 (fix-cycle-2 / FB1, originally Red-b) ---------------------------
+
+    def test_t10_pid_control_chars_and_overlong_id_are_sanitized_in_stderr(
+        self, tmp_path, capsys
+    ):
+        """T10 [SR-V-001 Low / originally Red-b]: 肥大警告 (`_warn_oversized_descriptions`) が
+        出力する pid（id フィールド）に ANSI エスケープ・NUL・CR（制御文字）を含み
+        MAX_ID_LENGTH(64) を超える長さの場合でも、stderr 出力ではこれらが
+        `_INHERIT_SANITIZE_RE` 相当でサニタイズされ、MAX_ID_LENGTH 以内に
+        切り詰められていることを固定する。
+
+        制御文字の代表として CR (\\r, 0x0D) を用いる。LF (\\n, 0x0A) は
+        `_INHERIT_SANITIZE_RE`（FB2 で再利用が指示されている既存正規表現。
+        stop.py L41-43）の除去対象文字クラス（\\x00-\\x08, \\x0b-\\x1f, ...）の
+        範囲外であり、過去セッションの複数行バックログ引き継ぎでは意図的に
+        タブ・通常スペースと同様に温存される設計になっている。この既存正規表現を
+        そのまま再利用する前提（plan-report 明記）では LF は除去対象外のため、
+        LF を含めると FB2 の想定実装後も解消されない「偽の Red」になってしまう。
+        よってここでは確実に除去される CR を制御文字/改行系の代表として使う。
+
+        fix-cycle-2 適用前の実装は pid をサニタイズせずそのまま f-string に
+        埋め込んで出力していたため、originally Red-first で赤だった。
+        """
+        mod, _sessions_dir, patterns_file = self._setup(tmp_path, "t10")
+        ansi_escape = "\x1b[31m"
+        null_char = "\x00"
+        cr_char = "\r"
+        long_tail = "Q" * 100  # サニタイズ後も MAX_ID_LENGTH(64) 超の長さを保証する
+        dirty_id = f"{ansi_escape}BADPID{null_char}{cr_char}{long_tail}"
+
+        entry = self._entry(dirty_id, "L" * 1500)
+        entry["promoted"] = True  # expiry/trust 判定をスキップし確実に active へ入れる
+        patterns_data = {"patterns": [entry]}
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        mod.update_patterns(TODAY_STR)
+
+        err = capsys.readouterr().err
+
+        # 肥大検知自体は動く（[Stop] 警告 + 字数が出る）
+        assert "[Stop]" in err and "1500" in err, (
+            f"[T10] 肥大警告自体は出力されるべき。Got stderr: {err!r}"
+        )
+
+        # 生の ANSI エスケープ・NUL・CR が stderr に含まれない
+        assert "\x1b" not in err, (
+            "[T10] ANSI エスケープ (\\x1b) がサニタイズされず stderr に出力されている。"
+            f"Got stderr: {err!r}"
+        )
+        assert "\x00" not in err, (
+            "[T10] NUL 文字 (\\x00) がサニタイズされず stderr に出力されている。"
+            f"Got stderr: {err!r}"
+        )
+        assert "\r" not in err, (
+            "[T10] CR (\\r) がサニタイズされず stderr に出力されている。"
+            f"Got stderr: {err!r}"
+        )
+
+        # id 部分が _INHERIT_SANITIZE_RE 相当でサニタイズ済みかつ
+        # MAX_ID_LENGTH(64) 以内に切り詰められている
+        expected_sanitized_id = mod._INHERIT_SANITIZE_RE.sub("", dirty_id)[
+            : mod.MAX_ID_LENGTH
+        ]
+        assert expected_sanitized_id in err, (
+            f"[T10] サニタイズ済み id ({expected_sanitized_id!r}) が stderr に"
+            f"含まれるべき。Got stderr: {err!r}"
+        )
+        # 未サニタイズの生 pid がそのまま出力されていないこと（真の Red 確認）
+        assert dirty_id not in err, (
+            "[T10] 生の pid がサニタイズされず stderr にそのまま出力されている。"
+            f"Got stderr: {err!r}"
+        )
+
+    # -- T11 (fix-cycle-3 / FC1) ----------------------------------------------
+
+    def test_t11_new_observations_with_non_dict_patterns_do_not_crash(
+        self, tmp_path
+    ):
+        """T11 [SR-V-001 / CR-E-001 Medium]: 新規観測ありセッション（new_observations
+        が非空）+ patterns.json に非 dict エントリ混在という条件でも update_patterns
+        が例外を伝播せず完走し、正規 dict エントリ・非 dict エントリ・新規観測の
+        いずれも save 後に残ることを固定する。
+
+        T9 は `_write_session_no_json`（new_observations=[]）を使うため、ingestion
+        マージループ（stop.py L380 `existing = next((p for p in data['patterns']
+        if p['id'] == pid), None)`）自体が実行されず、この経路の残存クラッシュを
+        検出できない（security-review-report-20260705-164112.md [SR-V-001] /
+        code-review-report-20260705-164113.md [CR-E-001] で指摘された回帰テストの
+        盲点）。本テストは `_write_session_with_patterns` で新規観測を 1 件以上
+        与えることで ingestion マージループを実際に通過させ、この盲点を埋める。
+
+        fix-cycle-3 の本 Red 追加時点（stop.py 未修正）では、L380 の
+        `p['id']` が非 dict エントリ（文字列・None）への添字アクセスとなるため
+        `TypeError: string indices must be integers, not 'str'` を送出し、
+        update_patterns 自体が異常終了していた。よって本テストは、FC2 で
+        isinstance ガードが入るまで赤だった。
+        """
+        mod, sessions_dir, patterns_file = self._setup(tmp_path, "t11")
+        valid_entry = self._entry("valid-pat-t11", "normal description")
+        patterns_data = {"patterns": ["not a dict", None, valid_entry]}
+        patterns_file.write_text(json.dumps(patterns_data), encoding="utf-8")
+
+        # _setup は _write_session_no_json（new_observations=[]）でセッション
+        # ファイルを作るため、同じ日付のファイルを新規観測ありで上書きし、
+        # ingestion マージループ（L373 の for obs in new_observations:）を
+        # 実際に通過させる。
+        _write_session_with_patterns(
+            sessions_dir, TODAY_STR, [
+                {"id": "new-obs-pat-t11", "description": "newly observed pattern"}
+            ]
+        )
+
+        # 例外が伝播しないこと自体が本テストの核心的な検証
+        # （修正前の実装は ingestion マージループの p['id'] で TypeError を
+        # 送出していた）。
+        mod.update_patterns(TODAY_STR)
+
+        data = json.loads(patterns_file.read_text(encoding="utf-8"))
+        stored_patterns = data["patterns"]
+
+        valid_stored = next(
+            (
+                p for p in stored_patterns
+                if isinstance(p, dict) and p.get("id") == "valid-pat-t11"
+            ),
+            None,
+        )
+        assert valid_stored is not None, (
+            "[T11] 正規 dict エントリは save 後の patterns.json に残るべき"
+            f"（save 到達確認）。Got stored_patterns: {stored_patterns!r}"
+        )
+
+        new_obs_stored = next(
+            (
+                p for p in stored_patterns
+                if isinstance(p, dict) and p.get("id") == "new-obs-pat-t11"
+            ),
+            None,
+        )
+        assert new_obs_stored is not None, (
+            "[T11] 新規観測は ingestion マージループを通過し、save 後の "
+            "patterns.json に新規エントリとして残るべき。"
+            f"Got stored_patterns: {stored_patterns!r}"
+        )
+
+        assert "not a dict" in stored_patterns, (
+            "[T11] 非 dict エントリ（文字列）は削除されず保持されるべき"
+            "（T9 と同じ保持方針）。"
+            f"Got stored_patterns: {stored_patterns!r}"
+        )
+        assert None in stored_patterns, (
+            "[T11] 非 dict エントリ（None）は削除されず保持されるべき。"
+            f"Got stored_patterns: {stored_patterns!r}"
+        )
