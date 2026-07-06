@@ -548,6 +548,69 @@ class TestMainE2E:
 
 
 # ---------------------------------------------------------------------------
+# T2 test-record 回帰: severity 付き CR-NEW 行がヒント注入結果に影響しないこと
+# plan-report-20260706-221212.md T2 / architecture-report-20260706-213701.md §2-2 補足
+# ---------------------------------------------------------------------------
+
+
+class TestCrNewSeverityRegression:
+    """severity 付きで記録された CR-NEW 行が、ヒント注入の checklist_id 抽出
+    正規表現（CHECKLIST_ID_RE）にマッチせず、注入結果を変えないことを固定した。"""
+
+    def test_cr_new_row_with_severity_does_not_affect_hint_injection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """severity 付き CR-NEW 行が存在しても、通常 ID（CR-Q-001）へのヒント注入
+        結果は変わらず、CR-NEW 自体はどこにも現れなかった。"""
+        db_path = tmp_path / ".claude" / "state" / "c3.db"
+        db_path.parent.mkdir(parents=True)
+        _create_c3_db(db_path)
+
+        from c3 import db as c3_db
+        # 免除リテラル CR-NEW を severity 付きで記録（ヒント抽出対象外のはず）
+        c3_db.insert_review_decision(
+            checklist_id="CR-NEW",
+            finding_text="新規パターン候補",
+            decision="accepted",
+            reviewer="code-reviewer",
+            severity="high",
+            db_path=db_path,
+        )
+        # 通常の過去判断も severity 付きで記録
+        c3_db.insert_review_decision(
+            checklist_id="CR-Q-001",
+            finding_text="関数が長すぎる",
+            decision="accepted",
+            reason="既存スタイルを尊重",
+            reviewer="code-reviewer",
+            severity="medium",
+            db_path=db_path,
+        )
+
+        mod = _load_hook_module()
+        monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db_path)
+        monkeypatch.setattr(mod, "ALLOWED_REPORT_DIR", tmp_path)
+
+        report = tmp_path / "code-review-report.md"
+        report.write_text(
+            "# Code Review Report\n\n"
+            "## High\n\n"
+            "1. [CR-Q-001] 関数が長すぎる\n",
+            encoding="utf-8",
+        )
+
+        rc = mod.main([str(report)])
+        assert rc == 0
+
+        text = report.read_text(encoding="utf-8")
+        # CR-Q-001 の過去判断ヒントは従来どおり反映される
+        assert mod.HINT_HEADING in text
+        assert "既存スタイルを尊重" in text
+        # CR-NEW はヒント抽出パターンにマッチしないため注入結果に一切現れない
+        assert "CR-NEW" not in text
+
+
+# ---------------------------------------------------------------------------
 # B-2: .claude/reports/ 配下限定ガード（Green 回帰防止テスト）
 # ---------------------------------------------------------------------------
 

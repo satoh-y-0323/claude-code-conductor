@@ -12,6 +12,7 @@ G 群 (6 件): insert_agent_cost_run / read_agent_cost_summary /
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -1529,13 +1530,313 @@ class TestMissingTableLogsDebugNotWarning:
 
 
 # ---------------------------------------------------------------------------
+# T2 test-record: insert_review_decision の severity 拡張 + レガシーフォールバック
+# plan-report-20260706-221212.md T2 / architecture-report-20260706-213701.md §2-3(1)
+# ---------------------------------------------------------------------------
+
+
+def _make_legacy_review_decisions_db(tmp_path: Path) -> Path:
+    """severity 列を持たない旧スキーマ（migration 006 適用前相当）の
+    review_decisions テーブルのみを持つ DB を作った（レガシーフォールバック検証専用）。
+    """
+    import sqlite3  # noqa: PLC0415
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE review_decisions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "checklist_id TEXT NOT NULL,"
+            "finding_text TEXT NOT NULL,"
+            "decision TEXT NOT NULL,"
+            "reason TEXT,"
+            "context_summary TEXT,"
+            "decided_at TEXT NOT NULL,"
+            "reviewer TEXT NOT NULL"
+            ")"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db_path
+
+
+class TestInsertReviewDecisionSeverity:
+    """insert_review_decision の severity 列往復・省略時 NULL・レガシーフォールバックを
+    固定した（T2 test-record・architecture-report §2-3(1)）。"""
+
+    def test_insert_with_severity_roundtrip(self, tmp_path: Path) -> None:
+        """severity 付きで INSERT した値が SELECT で往復して取得できた。"""
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_c3_db(tmp_path)
+        ok = insert_review_decision(
+            checklist_id="CR-X-001",
+            finding_text="f",
+            decision="fixed",
+            reviewer="code-reviewer",
+            severity="high",
+            db_path=db_path,
+        )
+        assert ok is True
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT severity FROM review_decisions WHERE checklist_id = ?",
+                ("CR-X-001",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] == "high"
+
+    def test_insert_without_severity_is_null(self, tmp_path: Path) -> None:
+        """severity 省略時は NULL で記録された。"""
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_c3_db(tmp_path)
+        ok = insert_review_decision(
+            checklist_id="CR-X-002",
+            finding_text="f",
+            decision="fixed",
+            reviewer="code-reviewer",
+            db_path=db_path,
+        )
+        assert ok is True
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT severity FROM review_decisions WHERE checklist_id = ?",
+                ("CR-X-002",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] is None
+
+    def test_insert_legacy_schema_falls_back_to_seven_columns(self, tmp_path: Path) -> None:
+        """severity 列不在のレガシー DB では旧 7 列 INSERT に 1 回だけリトライして
+        True を返し、行が記録された。"""
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_legacy_review_decisions_db(tmp_path)
+        ok = insert_review_decision(
+            checklist_id="CR-X-003",
+            finding_text="f",
+            decision="fixed",
+            reviewer="code-reviewer",
+            severity="high",
+            db_path=db_path,
+        )
+        assert ok is True
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT checklist_id, decision FROM review_decisions WHERE checklist_id = ?",
+                ("CR-X-003",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[1] == "fixed"
+
+
+# ---------------------------------------------------------------------------
+# [item4 SR-V-001] insert_review_decision 自体の軽量検証（多層防御）
+# security-review-report-20260707-015605.md 指摘4・plan-report-20260707-020503.md
+# fc1-tester。record_review_decision.py（アプリ層）の検証は維持される前提で、
+# db 層にも二層目の検証を設けフェイルセーフ（例外を投げず False 返却/NULL
+# 化/切り詰め）で防御することを固定する。impl 前は Red だった（当時 insert_review_decision
+# は checklist_id 形式・severity 語彙・文字列長のいずれも検証しなかった）。
+# ---------------------------------------------------------------------------
+
+
+class TestInsertReviewDecisionInputValidation:
+    """insert_review_decision 自体の軽量検証（SR-V-001 item4）を固定した。"""
+
+    def test_invalid_checklist_id_format_returns_false_without_exception(
+        self, tmp_path: Path,
+    ) -> None:
+        """形式不正な checklist_id（CR-/SR-/DC- 接頭辞ですらない）は
+        例外を投げず False を返す。"""
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_c3_db(tmp_path)
+        ok = insert_review_decision(
+            checklist_id="bogus",
+            finding_text="f",
+            decision="fixed",
+            reviewer="code-reviewer",
+            db_path=db_path,
+        )
+        assert ok is False
+
+    def test_severity_outside_vocabulary_is_nulled_and_insert_succeeds(
+        self, tmp_path: Path,
+    ) -> None:
+        """語彙外 severity（例: 大文字 "Med"）は NULL 化されて INSERT が成功する
+        （例外を投げない・フェイルセーフ規律維持）。"""
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_c3_db(tmp_path)
+        ok = insert_review_decision(
+            checklist_id="CR-V-001",
+            finding_text="f",
+            decision="fixed",
+            reviewer="code-reviewer",
+            severity="Med",
+            db_path=db_path,
+        )
+        assert ok is True
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT severity FROM review_decisions WHERE checklist_id = ?",
+                ("CR-V-001",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] is None, "語彙外 severity は NULL 化されるべき"
+
+    def test_overlong_finding_text_reason_context_summary_are_truncated(
+        self, tmp_path: Path,
+    ) -> None:
+        """過長な finding_text/reason/context_summary は上限で切り詰められて
+        INSERT が成功する（例外を投げない）。"""
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_c3_db(tmp_path)
+        overlong = "x" * 10_000
+
+        ok = insert_review_decision(
+            checklist_id="CR-V-002",
+            finding_text=overlong,
+            decision="fixed",
+            reason=overlong,
+            context_summary=overlong,
+            reviewer="code-reviewer",
+            db_path=db_path,
+        )
+        assert ok is True
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT finding_text, reason, context_summary FROM review_decisions "
+                "WHERE checklist_id = ?",
+                ("CR-V-002",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert len(row[0]) < len(overlong), "finding_text が上限で切り詰められるべき"
+        assert len(row[1]) < len(overlong), "reason が上限で切り詰められるべき"
+        assert len(row[2]) < len(overlong), "context_summary が上限で切り詰められるべき"
+
+
+# ---------------------------------------------------------------------------
+# [SR新規1 SR-V-001] insert_review_decision の非 str 型入力に対するフェイルセーフ
+# security-review-report-20260707-022656.md 新規1・plan-report-20260707-023441.md
+# fd1-tester。item4 の検証コード（A: checklist_id prefix / B: severity 正規化 /
+# C: _truncate_review_text）が DB アクセスを保護する try/except の外にあり、
+# 非 str 型（None/int 等）を渡すと TypeError/AttributeError が呼び出し元へ
+# 未捕捉のまま伝播していた。本 Red は impl 前時点で、非 str 型入力に対しても
+# 例外が伝播せずフェイルセーフ（False 返却/NULL 化/素通し）になることを固定する。
+# ---------------------------------------------------------------------------
+
+
+class TestInsertReviewDecisionNonStrTypeFailSafe:
+    """insert_review_decision に非 str 型を渡しても例外が伝播しないことを固定した
+    （SR-V-001 新規1）。"""
+
+    def test_non_str_checklist_id_returns_false_without_exception(
+        self, tmp_path: Path,
+    ) -> None:
+        """checklist_id が None/int（非 str）でも例外を送出せず False を返す。"""
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_c3_db(tmp_path)
+        for bad_checklist_id in (None, 123):
+            ok = insert_review_decision(
+                checklist_id=bad_checklist_id,
+                finding_text="f",
+                decision="fixed",
+                reviewer="code-reviewer",
+                db_path=db_path,
+            )
+            assert ok is False
+
+    def test_non_str_severity_is_nulled_without_exception(
+        self, tmp_path: Path,
+    ) -> None:
+        """severity が int（非 str）でも例外を送出せず NULL 化されて
+        INSERT が成功する。"""
+        import sqlite3  # noqa: PLC0415
+
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_c3_db(tmp_path)
+        ok = insert_review_decision(
+            checklist_id="CR-X-010",
+            finding_text="f",
+            decision="fixed",
+            reviewer="code-reviewer",
+            severity=123,
+            db_path=db_path,
+        )
+        assert ok is True
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT severity FROM review_decisions WHERE checklist_id = ?",
+                ("CR-X-010",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0] is None, "非 str severity は NULL 化されるべき"
+
+    def test_non_str_finding_text_does_not_raise(self, tmp_path: Path) -> None:
+        """非 str truthy 値の finding_text（int）を渡しても例外を送出せず
+        INSERT が成功する。"""
+        from c3.db import insert_review_decision  # noqa: PLC0415
+
+        db_path = _make_c3_db(tmp_path)
+        ok = insert_review_decision(
+            checklist_id="CR-X-011",
+            finding_text=123,
+            decision="fixed",
+            reviewer="code-reviewer",
+            db_path=db_path,
+        )
+        assert ok is True
+
+
+# ---------------------------------------------------------------------------
 # O 群: agent-tier-routing 学習シグナル再設計（v2.41.0 db-foundation・Red 先行）
 #
 # architecture-report-20260702-214748.md §3-2/§3-3 に対応。新シンボル
 # （AGENT_ROLES / read_agent_tier_params / update_agent_tier_params /
 #  record_agent_outcome_event / read_agent_failure_rate / read_recent_agent_outcomes）
-# は本タスク時点で未実装のため、モジュール冒頭の import には加えず各テスト内で
-# ローカル import する（本ファイル全体の collection を壊さないため。既存 N7 群までの
+# は本タスク開始時点では未実装だったため、モジュール冒頭の import には加えず各テスト内で
+# ローカル import した（本ファイル全体の collection を壊さないため。既存 N7 群までの
 # パターンを踏襲）。
 # ---------------------------------------------------------------------------
 
@@ -2431,3 +2732,988 @@ class TestDeprecatedFunctionsRemoved:
         assert hasattr(db_module, "_FAILURE_RATE_MIN_SAMPLES"), (
             "_FAILURE_RATE_MIN_SAMPLES は read_agent_failure_rate が使用中のため残置が必須"
         )
+
+
+# ---------------------------------------------------------------------------
+# Q 群: c3 metrics 効果総括ヘルパー 6 本 + METRICS_* 定数（test-metrics・Red 先行）
+#
+# plan-report-20260706-221212.md T3 / architecture-report-20260706-213701.md
+# §2-3(2)(3) / §2-6 / §3 に対応。以下 6 ヘルパーと _db_params.METRICS_REVIEW_GATES /
+# METRICS_DEV_GATES は本タスク開始時点では未実装だったため、モジュール冒頭の import には
+# 加えず各テスト内でローカル import した（O 群までのパターンを踏襲。本ファイル
+# 全体の collection を壊さないため）:
+#   read_review_decision_matrix / fetch_prevented_findings / read_rework_trend /
+#   read_rework_role_distribution / read_session_fix_cycles /
+#   read_rework_session_cost
+# ---------------------------------------------------------------------------
+
+
+def _seed_review_decision(
+    db: Path,
+    *,
+    checklist_id: str,
+    decision: str,
+    reviewer: str,
+    severity: str | None,
+    decided_at_iso: str,
+    finding_text: str = "finding text",
+) -> None:
+    """review_decisions に任意の decided_at（ISO8601 文字列）で 1 行 INSERT した。
+
+    insert_review_decision(decided_at=...) は datetime を受け取り
+    isoformat(timespec="seconds") で保存するため、本ヘルパーは ISO 文字列を
+    datetime.fromisoformat() で変換して渡す（since 境界を厳密に制御するため）。
+    """
+    from datetime import datetime as _datetime  # noqa: PLC0415
+
+    from c3.db import insert_review_decision  # noqa: PLC0415
+
+    insert_review_decision(
+        checklist_id=checklist_id,
+        finding_text=finding_text,
+        decision=decision,
+        reviewer=reviewer,
+        severity=severity,
+        decided_at=_datetime.fromisoformat(decided_at_iso),
+        db_path=db,
+    )
+
+
+def _seed_agent_outcome_at(
+    db: Path,
+    *,
+    role: str = "developer",
+    complexity: str = "medium",
+    tier: str = "sonnet",
+    success: bool,
+    gate: str | None,
+    session_id: str | None,
+    ts_iso: str,
+) -> None:
+    """agent_outcomes に任意の ts（ISO8601 文字列）で直接 INSERT した。
+
+    record_agent_outcome_event は ts を常に datetime.now(UTC) で確定するため、
+    --since 境界を制御するテストでは raw SQL で直接挿入する。
+    """
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    conn = _sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO agent_outcomes "
+            "(role, task_complexity, tier, success, gate, note, session_id, ts) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+            (role, complexity, tier, 1 if success else 0, gate, session_id, ts_iso),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_cost_run_at(
+    db: Path,
+    *,
+    session_id: str,
+    agent_id: str,
+    agent_type: str = "developer",
+    model: str = "claude-sonnet-4-6-20260101",
+    total_cost_usd: float,
+    recorded_at_iso: str,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> None:
+    """agent_cost_runs に任意の recorded_at（ISO8601 文字列）で直接 INSERT した。
+
+    insert_agent_cost_run は recorded_at を常に datetime.now(UTC) で確定するため、
+    --since 境界を制御するテストでは raw SQL で直接挿入する。
+    """
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    conn = _sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO agent_cost_runs "
+            "(session_id, agent_id, agent_type, description, model, "
+            " attribution_skill, input_tokens, output_tokens, "
+            " cache_read_tokens, cache_create_tokens, total_cost_usd, recorded_at) "
+            "VALUES (?, ?, ?, NULL, ?, NULL, ?, ?, 0, 0, ?, ?)",
+            (
+                session_id, agent_id, agent_type, model,
+                input_tokens, output_tokens, total_cost_usd, recorded_at_iso,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestMetricsDbParamsConstants:
+    """Q0 群: _db_params.METRICS_REVIEW_GATES / METRICS_DEV_GATES（独立定義・
+    bandit 学習シグナル不干渉の絶対制約・architecture §2-3(3)）。"""
+
+    def test_metrics_review_gates_value(self):
+        """Q0-1: METRICS_REVIEW_GATES == ("E-1", "E-2", "C-3")。"""
+        from c3._db_params import METRICS_REVIEW_GATES  # noqa: PLC0415
+        assert METRICS_REVIEW_GATES == ("E-1", "E-2", "C-3")
+
+    def test_metrics_dev_gates_value(self):
+        """Q0-2: METRICS_DEV_GATES == ("D-3", "D-5")。"""
+        from c3._db_params import METRICS_DEV_GATES  # noqa: PLC0415
+        assert METRICS_DEV_GATES == ("D-3", "D-5")
+
+    def test_bandit_gates_unchanged(self):
+        """Q0-3（絶対制約）: BANDIT_GATES は本機能追加後も従来値のままであり、
+        E-1/E-2 の bandit 除外分岐に diff が生じていないことの間接確認。"""
+        from c3._db_params import BANDIT_GATES  # noqa: PLC0415
+        assert BANDIT_GATES == ("D-2.5", "D-3", "D-5", "D-2.5-stuck")
+
+    def test_metrics_gates_do_not_alias_bandit_gates(self):
+        """Q0-4: METRICS_REVIEW_GATES / METRICS_DEV_GATES は BANDIT_GATES を
+        再利用しない独立定義である（read-only 消費者の構造的ガード）。"""
+        from c3._db_params import (  # noqa: PLC0415
+            BANDIT_GATES,
+            METRICS_DEV_GATES,
+            METRICS_REVIEW_GATES,
+        )
+        assert METRICS_REVIEW_GATES != BANDIT_GATES
+        assert METRICS_DEV_GATES != BANDIT_GATES
+
+
+class TestReadReviewDecisionMatrix:
+    """Q1 群: read_review_decision_matrix(db_path=None, since=None) -> list[dict]。"""
+
+    def test_reviewer_severity_decision_counts(self, tmp_path: Path):
+        """Q1-1: reviewer×severity×decision の件数が正しく集計される。"""
+        from c3.db import read_review_decision_matrix  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-Q-001", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso=_now_iso())
+        _seed_review_decision(db, checklist_id="CR-Q-002", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso=_now_iso())
+        _seed_review_decision(db, checklist_id="SR-A-001", decision="accepted",
+                               reviewer="security-reviewer", severity="medium",
+                               decided_at_iso=_now_iso())
+
+        result = read_review_decision_matrix(db_path=db)
+
+        buckets = {(r["reviewer"], r["severity"], r["decision"]): r["count"] for r in result}
+        assert buckets[("code-reviewer", "high", "fixed")] == 2
+        assert buckets[("security-reviewer", "medium", "accepted")] == 1
+
+    def test_severity_null_becomes_unknown_bucket(self, tmp_path: Path):
+        """Q1-2: severity=NULL は "unknown" バケットに集計される。"""
+        from c3.db import read_review_decision_matrix  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-NEW", decision="fixed",
+                               reviewer="code-reviewer", severity=None,
+                               decided_at_iso=_now_iso())
+
+        result = read_review_decision_matrix(db_path=db)
+        buckets = {(r["reviewer"], r["severity"], r["decision"]): r["count"] for r in result}
+        assert buckets[("code-reviewer", "unknown", "fixed")] == 1
+
+    def test_since_filter_excludes_older_rows(self, tmp_path: Path):
+        """Q1-3: since 指定時、decided_at < since の行は除外される。"""
+        from c3.db import read_review_decision_matrix  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-OLD", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso="2020-01-01T00:00:00+00:00")
+        _seed_review_decision(db, checklist_id="CR-NEW2", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso=_now_iso())
+
+        result = read_review_decision_matrix(db_path=db, since="2025-01-01")
+        buckets = {(r["reviewer"], r["severity"], r["decision"]): r["count"] for r in result}
+        assert buckets[("code-reviewer", "high", "fixed")] == 1, (
+            "since 指定時は 2020 年の古い行が除外され新しい行のみ 1 件になるはず"
+        )
+
+    def test_fixed_unknown_bucket_matches_expected_count(self, tmp_path: Path):
+        """Q1-4（DC-AM-001）: fixed×unknown バケットの合算が CLI 層 fixed_unknown
+        導出の単一算出源として正しい件数を返す（severity 未記録の fixed 行が
+        2 件なら count=2、severity 記録済み行は混ざらない）。"""
+        from c3.db import read_review_decision_matrix  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-U1", decision="fixed",
+                               reviewer="code-reviewer", severity=None,
+                               decided_at_iso=_now_iso())
+        _seed_review_decision(db, checklist_id="CR-U2", decision="fixed",
+                               reviewer="security-reviewer", severity=None,
+                               decided_at_iso=_now_iso())
+        _seed_review_decision(db, checklist_id="CR-K1", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso=_now_iso())
+
+        result = read_review_decision_matrix(db_path=db)
+        fixed_unknown_total = sum(
+            r["count"] for r in result if r["decision"] == "fixed" and r["severity"] == "unknown"
+        )
+        assert fixed_unknown_total == 2
+
+    def test_fixed_medium_plus_breakdown_derivable_from_matrix(self, tmp_path: Path):
+        """Q1-5（DC-AM-001 round 3）: fixed×critical/high/medium 各バケットから
+        headline の内訳・fixed_medium_plus 合計が導出可能な件数で返る
+        （low は含まない）。"""
+        from c3.db import read_review_decision_matrix  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        for i, sev in enumerate(["critical", "high", "high", "medium", "low"]):
+            _seed_review_decision(
+                db, checklist_id=f"SR-X-{i:03d}", decision="fixed",
+                reviewer="security-reviewer", severity=sev, decided_at_iso=_now_iso(),
+            )
+
+        result = read_review_decision_matrix(db_path=db)
+        fixed_by_severity = {
+            r["severity"]: r["count"] for r in result if r["decision"] == "fixed"
+        }
+        assert fixed_by_severity.get("critical", 0) == 1
+        assert fixed_by_severity.get("high", 0) == 2
+        assert fixed_by_severity.get("medium", 0) == 1
+        fixed_medium_plus = (
+            fixed_by_severity.get("critical", 0)
+            + fixed_by_severity.get("high", 0)
+            + fixed_by_severity.get("medium", 0)
+        )
+        assert fixed_medium_plus == 4, "critical+high+medium の fixed 件数（low は含まない）"
+
+    def test_empty_db_returns_empty_list(self, tmp_path: Path):
+        """Q1-6: 空 DB（review_decisions 行なし）で [] を返し例外を出さない。"""
+        from c3.db import read_review_decision_matrix  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        assert read_review_decision_matrix(db_path=db) == []
+
+    def test_db_absent_returns_empty_list(self, tmp_path: Path):
+        """Q1-7: DB 不在で [] を返し例外を出さない。"""
+        from c3.db import read_review_decision_matrix  # noqa: PLC0415
+        absent_db = tmp_path / "nonexistent.db"
+        assert read_review_decision_matrix(db_path=absent_db) == []
+
+
+class TestFetchPreventedFindings:
+    """Q2 群: fetch_prevented_findings(db_path=None, limit=5, since=None) -> list[dict]。"""
+
+    def test_only_fixed_critical_high_medium_included(self, tmp_path: Path):
+        """Q2-1: decision='fixed' AND severity IN (critical,high,medium) のみ
+        対象。accepted / low / unknown(NULL) は含まれない。"""
+        from c3.db import fetch_prevented_findings  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-IN-1", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso=_now_iso())
+        _seed_review_decision(db, checklist_id="CR-OUT-1", decision="accepted",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso=_now_iso())
+        _seed_review_decision(db, checklist_id="CR-OUT-2", decision="fixed",
+                               reviewer="code-reviewer", severity="low",
+                               decided_at_iso=_now_iso())
+        _seed_review_decision(db, checklist_id="CR-OUT-3", decision="fixed",
+                               reviewer="code-reviewer", severity=None,
+                               decided_at_iso=_now_iso())
+
+        result = fetch_prevented_findings(db_path=db)
+        ids = {r["checklist_id"] for r in result}
+        assert ids == {"CR-IN-1"}
+
+    def test_ordered_by_decided_at_desc(self, tmp_path: Path):
+        """Q2-2: decided_at DESC で返る（新しい判断が先頭）。"""
+        from c3.db import fetch_prevented_findings  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-OLD-1", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso="2026-01-01T00:00:00+00:00")
+        _seed_review_decision(db, checklist_id="CR-NEW-1", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso="2026-06-01T00:00:00+00:00")
+
+        result = fetch_prevented_findings(db_path=db)
+        assert [r["checklist_id"] for r in result] == ["CR-NEW-1", "CR-OLD-1"]
+
+    def test_limit_truncates_but_matrix_keeps_full_count(self, tmp_path: Path):
+        """Q2-3（DC-AM-001）: limit で examples は打ち切られるが、matrix の
+        fixed×medium バケット件数は limit に張り付かず全件を保持する
+        （fetch_prevented_findings は実例表示専用で件数集計には使わない）。"""
+        from c3.db import fetch_prevented_findings, read_review_decision_matrix  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        for i in range(7):
+            _seed_review_decision(
+                db, checklist_id=f"CR-LIM-{i:03d}", decision="fixed",
+                reviewer="code-reviewer", severity="medium",
+                decided_at_iso=_iso_days_ago(i),
+            )
+
+        limited = fetch_prevented_findings(db_path=db, limit=5)
+        assert len(limited) == 5, "limit=5 で examples は 5 件に打ち切られる"
+
+        matrix = read_review_decision_matrix(db_path=db)
+        medium_fixed = sum(
+            r["count"] for r in matrix if r["decision"] == "fixed" and r["severity"] == "medium"
+        )
+        assert medium_fixed == 7, (
+            "matrix の fixed×medium 件数は examples の limit に張り付かず 7 のまま"
+        )
+
+    def test_since_filter(self, tmp_path: Path):
+        """Q2-4: since 指定時 decided_at < since の行は除外される。"""
+        from c3.db import fetch_prevented_findings  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-OLD-2", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso="2020-01-01T00:00:00+00:00")
+        _seed_review_decision(db, checklist_id="CR-NEW-2", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso=_now_iso())
+
+        result = fetch_prevented_findings(db_path=db, since="2025-01-01")
+        assert [r["checklist_id"] for r in result] == ["CR-NEW-2"]
+
+    def test_severity_unknown_fixed_rows_excluded(self, tmp_path: Path):
+        """Q2-5: severity=NULL(unknown) の fixed 行は examples に現れない。"""
+        from c3.db import fetch_prevented_findings  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-UNK-1", decision="fixed",
+                               reviewer="code-reviewer", severity=None,
+                               decided_at_iso=_now_iso())
+
+        assert fetch_prevented_findings(db_path=db) == []
+
+    def test_empty_db_returns_empty_list(self, tmp_path: Path):
+        """Q2-6: 空 DB で [] を返す。"""
+        from c3.db import fetch_prevented_findings  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        assert fetch_prevented_findings(db_path=db) == []
+
+    def test_db_absent_returns_empty_list(self, tmp_path: Path):
+        """Q2-7: DB 不在で [] を返す。"""
+        from c3.db import fetch_prevented_findings  # noqa: PLC0415
+        absent_db = tmp_path / "nonexistent.db"
+        assert fetch_prevented_findings(db_path=absent_db) == []
+
+
+class TestReadReworkTrend:
+    """Q3 群: read_rework_trend(db_path=None, months=12, since=None) -> list[dict]。"""
+
+    @staticmethod
+    def _current_month_str() -> str:
+        from datetime import datetime, timezone  # noqa: PLC0415
+        return datetime.now(timezone.utc).strftime("%Y-%m")
+
+    def test_calendar_month_zero_fill(self, tmp_path: Path):
+        """Q3-1（DC-AM-002）: 差し戻し 0 件の月もゼロ埋めで行として現れる
+        （欠落しない）。当月に 1 件の差し戻しを seed し、months=3 で要求すると
+        当月以外の 2 ヶ月も rework_count=0/session_count=0/per_session=0.0 で
+        現れる。"""
+        from c3.db import read_rework_trend  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(
+            db, success=False, gate="E-1", session_id="sess-trend-1", ts_iso=_now_iso(),
+        )
+
+        result = read_rework_trend(db_path=db, months=3)
+        assert len(result) == 3, "months=3 は暦月ゼロ埋めで必ず 3 行を返す"
+        months = [r["month"] for r in result]
+        assert self._current_month_str() in months
+
+        zero_rows = [r for r in result if r["rework_count"] == 0]
+        assert len(zero_rows) == 2, "データの無い 2 ヶ月がゼロ埋めで現れる"
+        for r in zero_rows:
+            assert r["session_count"] == 0
+            assert r["per_session"] == 0.0
+
+    def test_per_session_computation(self, tmp_path: Path):
+        """Q3-2: per_session = rework_count / session_count（0 除算は 0.0）。"""
+        from c3.db import read_rework_trend  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-a", ts_iso=_now_iso())
+        _seed_agent_outcome_at(db, success=False, gate="E-2", session_id="sess-a", ts_iso=_now_iso())
+
+        result = read_rework_trend(db_path=db, months=1)
+        assert len(result) == 1
+        row = result[0]
+        assert row["rework_count"] == 2
+        assert row["session_count"] == 1
+        assert row["per_session"] == pytest.approx(2.0)
+
+    def test_success_true_rows_excluded(self, tmp_path: Path):
+        """Q3-3: success=1 の行は差し戻しとしてカウントされない。"""
+        from c3.db import read_rework_trend  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=True, gate="E-1", session_id="sess-ok", ts_iso=_now_iso())
+
+        result = read_rework_trend(db_path=db, months=1)
+        assert result[0]["rework_count"] == 0
+
+    def test_gate_outside_metrics_review_gates_excluded(self, tmp_path: Path):
+        """Q3-4: gate が METRICS_REVIEW_GATES 外（D-3 等）は trend に集計されない。"""
+        from c3.db import read_rework_trend  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="D-3", session_id="sess-dev", ts_iso=_now_iso())
+
+        result = read_rework_trend(db_path=db, months=1)
+        assert result[0]["rework_count"] == 0
+
+    def test_since_filters_rows_within_zero_filled_buckets(self, tmp_path: Path):
+        """Q3-5: since 指定時、ts < since の差し戻し行はゼロ埋め済みバケットの
+        合算からも除外される（35 日前の古い行と当日行を seed し、since=当日で
+        古い行だけが除外されることを固定。月境界の日付に依存しない設計）。"""
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        from c3.db import read_rework_trend  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-old",
+                                ts_iso=_iso_days_ago(35))
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-new",
+                                ts_iso=_now_iso())
+
+        since_today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        result = read_rework_trend(db_path=db, months=2, since=since_today)
+        total_rework = sum(r["rework_count"] for r in result)
+        assert total_rework == 1, (
+            "since 指定時は 35 日前の古い行が除外され当日分の 1 件のみ集計される"
+        )
+
+    def test_months_caps_bucket_count(self, tmp_path: Path):
+        """Q3-6: months で返却バケット数の上限が制御される。"""
+        from c3.db import read_rework_trend  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        result_1 = read_rework_trend(db_path=db, months=1)
+        result_6 = read_rework_trend(db_path=db, months=6)
+        assert len(result_1) == 1
+        assert len(result_6) == 6
+
+    def test_empty_db_returns_zero_filled_months(self, tmp_path: Path):
+        """Q3-7: 空 DB でも months 個ぶんゼロ埋め行を返し例外を出さない。"""
+        from c3.db import read_rework_trend  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        result = read_rework_trend(db_path=db, months=3)
+        assert len(result) == 3
+        assert all(r["rework_count"] == 0 and r["per_session"] == 0.0 for r in result)
+
+    def test_db_absent_returns_empty_list(self, tmp_path: Path):
+        """Q3-8: DB 不在では共通規約どおり [] を返す
+        （ゼロ埋めは「schema はあるが行が無い」場合の業務ロジックであり、
+        DB 不在時の共通失敗規約より優先されない）。"""
+        from c3.db import read_rework_trend  # noqa: PLC0415
+        absent_db = tmp_path / "nonexistent.db"
+        assert read_rework_trend(db_path=absent_db) == []
+
+
+class TestReadReworkRoleDistribution:
+    """Q4 群: read_rework_role_distribution(db_path=None, since=None) -> list[dict]。"""
+
+    def test_all_gates_returned_including_uncategorized(self, tmp_path: Path):
+        """Q4-1（DC-AM-003）: METRICS_REVIEW_GATES / METRICS_DEV_GATES いずれにも
+        属さない分類外 gate（NULL 含む）も脱落せず全件返す。"""
+        from c3.db import read_rework_role_distribution  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, role="tester", success=False, gate="E-1",
+                                session_id="s1", ts_iso=_now_iso())
+        _seed_agent_outcome_at(db, role="developer", success=False, gate="D-3",
+                                session_id="s2", ts_iso=_now_iso())
+        _seed_agent_outcome_at(db, role="developer", success=False, gate="D-2.5",
+                                session_id="s3", ts_iso=_now_iso())
+        _seed_agent_outcome_at(db, role="developer", success=False, gate=None,
+                                session_id="s4", ts_iso=_now_iso())
+
+        result = read_rework_role_distribution(db_path=db)
+        gates = {r["gate"] for r in result}
+        assert "E-1" in gates
+        assert "D-3" in gates
+        assert "D-2.5" in gates, (
+            "METRICS_REVIEW_GATES/METRICS_DEV_GATES いずれにも属さない gate も脱落しない"
+        )
+        assert None in gates, "gate=NULL の行も脱落しない"
+
+    def test_role_gate_counts(self, tmp_path: Path):
+        """Q4-2: role×gate の件数集計が正しい。"""
+        from c3.db import read_rework_role_distribution  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, role="tester", success=False, gate="E-1",
+                                session_id="s1", ts_iso=_now_iso())
+        _seed_agent_outcome_at(db, role="tester", success=False, gate="E-1",
+                                session_id="s2", ts_iso=_now_iso())
+
+        result = read_rework_role_distribution(db_path=db)
+        row = next(r for r in result if r["role"] == "tester" and r["gate"] == "E-1")
+        assert row["count"] == 2
+
+    def test_success_true_excluded(self, tmp_path: Path):
+        """Q4-3: success=1 の行は集計されない。"""
+        from c3.db import read_rework_role_distribution  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, role="tester", success=True, gate="E-1",
+                                session_id="s1", ts_iso=_now_iso())
+
+        assert read_rework_role_distribution(db_path=db) == []
+
+    def test_since_filter(self, tmp_path: Path):
+        """Q4-4: since 指定時 ts < since の行は除外される。"""
+        from c3.db import read_rework_role_distribution  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, role="tester", success=False, gate="E-1",
+                                session_id="s-old", ts_iso="2020-01-01T00:00:00+00:00")
+        _seed_agent_outcome_at(db, role="tester", success=False, gate="E-1",
+                                session_id="s-new", ts_iso=_now_iso())
+
+        result = read_rework_role_distribution(db_path=db, since="2025-01-01")
+        row = next(r for r in result if r["role"] == "tester" and r["gate"] == "E-1")
+        assert row["count"] == 1
+
+    def test_empty_db_returns_empty_list(self, tmp_path: Path):
+        """Q4-5: 空 DB で [] を返す。"""
+        from c3.db import read_rework_role_distribution  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        assert read_rework_role_distribution(db_path=db) == []
+
+    def test_db_absent_returns_empty_list(self, tmp_path: Path):
+        """Q4-6: DB 不在で [] を返す。"""
+        from c3.db import read_rework_role_distribution  # noqa: PLC0415
+        absent_db = tmp_path / "nonexistent.db"
+        assert read_rework_role_distribution(db_path=absent_db) == []
+
+
+class TestReadSessionFixCycles:
+    """Q5 群: read_session_fix_cycles(db_path=None, since=None) -> dict。"""
+
+    def test_distribution_buckets_0_1_2plus(self, tmp_path: Path):
+        """Q5-1: session 単位の fix-cycle（E-1/E-2/C-3 差し戻し件数）分布が
+        0/1/2plus に振り分けられる。"""
+        from c3.db import read_session_fix_cycles  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        # sess-0: 差し戻しなし（success=1 のみ）→ 0 回
+        _seed_agent_outcome_at(db, success=True, gate="E-1", session_id="sess-0", ts_iso=_now_iso())
+        # sess-1: 差し戻し 1 回
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-1", ts_iso=_now_iso())
+        # sess-2: 差し戻し 2 回
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-2", ts_iso=_now_iso())
+        _seed_agent_outcome_at(db, success=False, gate="E-2", session_id="sess-2", ts_iso=_now_iso())
+
+        result = read_session_fix_cycles(db_path=db)
+        assert result["distribution"]["0"] == 1
+        assert result["distribution"]["1"] == 1
+        assert result["distribution"]["2plus"] == 1
+
+    def test_mean_max_total_sessions(self, tmp_path: Path):
+        """Q5-2: mean/max/total_sessions が分布と整合する。"""
+        from c3.db import read_session_fix_cycles  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-a", ts_iso=_now_iso())
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-b", ts_iso=_now_iso())
+        _seed_agent_outcome_at(db, success=False, gate="E-2", session_id="sess-b", ts_iso=_now_iso())
+
+        result = read_session_fix_cycles(db_path=db)
+        assert result["total_sessions"] == 2
+        assert result["max"] == 2
+        assert result["mean"] == pytest.approx((1 + 2) / 2)
+
+    def test_granularity_and_note_keys(self, tmp_path: Path):
+        """Q5-3: granularity == "session-approximation" と note キーが存在する。"""
+        from c3.db import read_session_fix_cycles  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        result = read_session_fix_cycles(db_path=db)
+        assert result["granularity"] == "session-approximation"
+        assert isinstance(result["note"], str)
+        assert result["note"] != ""
+
+    def test_note_conveys_gist_without_internal_terms(self, tmp_path: Path):
+        """Q5-4（DC-AM-001 round 4/5）: note は近似の趣旨キーワードを含み、
+        内部監査 finding ID パターン・DB 内部名を含まない（negative assertion の
+        スコープは note フィールド値のみ）。"""
+        from c3.db import read_session_fix_cycles  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        note = read_session_fix_cycles(db_path=db)["note"]
+
+        assert any(kw in note for kw in ("近似", "session", "セッション")), (
+            f"note に近似・session 粒度の趣旨キーワードが含まれるはず: {note!r}"
+        )
+        assert not re.search(r"\b(DC|CR|SR)-[A-Z0-9]+-\d{3,}\b", note), (
+            f"note に監査 finding ID が混入してはならない: {note!r}"
+        )
+        assert "round " not in note.lower(), f"note に内部レビューラウンド表記が混入: {note!r}"
+        for internal_term in ("agent_outcomes", "agent_cost_runs", "recorded_at"):
+            assert internal_term not in note, f"note に DB 内部名 {internal_term!r} が混入: {note!r}"
+
+    def test_since_filters_sessions(self, tmp_path: Path):
+        """Q5-5（DC-AM-003）: since 指定時 ts < since の行は fix-cycle 集計から
+        除外される（--since 適用対象 6 経路の 1 つ・fix_cycles の適用漏れを検出）。"""
+        from c3.db import read_session_fix_cycles  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-old",
+                                ts_iso="2020-01-01T00:00:00+00:00")
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-new",
+                                ts_iso=_now_iso())
+
+        result = read_session_fix_cycles(db_path=db, since="2025-01-01")
+        assert result["total_sessions"] == 1, (
+            "since 指定時は 2020 年の古い session が除外され新しい 1 session のみ集計される"
+        )
+
+    def test_empty_db_returns_zero_filled_dict(self, tmp_path: Path):
+        """Q5-6: 空 DB で 0 埋め dict を返し例外を出さない。"""
+        from c3.db import read_session_fix_cycles  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        result = read_session_fix_cycles(db_path=db)
+        assert result["distribution"] == {"0": 0, "1": 0, "2plus": 0}
+        assert result["mean"] == 0.0
+        assert result["max"] == 0
+        assert result["total_sessions"] == 0
+
+    def test_db_absent_returns_zero_filled_dict(self, tmp_path: Path):
+        """Q5-7: DB 不在で例外を出さず 0 埋め dict を返す。"""
+        from c3.db import read_session_fix_cycles  # noqa: PLC0415
+        absent_db = tmp_path / "nonexistent.db"
+        result = read_session_fix_cycles(db_path=absent_db)
+        assert result["total_sessions"] == 0
+        assert result["distribution"] == {"0": 0, "1": 0, "2plus": 0}
+
+
+class TestReadReworkSessionCost:
+    """Q6 群: read_rework_session_cost(db_path=None, since=None) -> dict。"""
+
+    def test_rework_usd_and_tokens_aggregated_for_rework_sessions(self, tmp_path: Path):
+        """Q6-1: 差し戻しあり session（success=0 AND gate IN METRICS_REVIEW_GATES）
+        の USD/トークン合算が正しい。差し戻しなしの別 session のコストは
+        分子に含まれない。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-rw",
+                                ts_iso=_now_iso())
+        _seed_cost_run_at(db, session_id="sess-rw", agent_id="agent-1",
+                           total_cost_usd=0.5, recorded_at_iso=_now_iso(),
+                           input_tokens=1000, output_tokens=500)
+        _seed_cost_run_at(db, session_id="sess-clean", agent_id="agent-2",
+                           total_cost_usd=0.3, recorded_at_iso=_now_iso(),
+                           input_tokens=100, output_tokens=50)
+
+        result = read_rework_session_cost(db_path=db)
+        assert result["rework_session_count"] == 1
+        assert result["rework_total_usd"] == pytest.approx(0.5)
+        assert result["rework_total_tokens"] == 1500
+
+    def test_overall_is_sum_over_all_cost_runs_no_limit(self, tmp_path: Path):
+        """Q6-2（DC-GP-002）: overall（分母）は agent_cost_runs 全行の SUM
+        （LIMIT なし・read_agent_cost_summary の limit=50 list 合算に依存しない）。
+        agent_type 51 種以上でも切り捨てられず overall_ratio <= 1.0 を維持する。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-rw",
+                                ts_iso=_now_iso())
+        _seed_cost_run_at(db, session_id="sess-rw", agent_id="agent-rw",
+                           total_cost_usd=0.1, recorded_at_iso=_now_iso())
+        for i in range(51):
+            _seed_cost_run_at(
+                db, session_id=f"sess-other-{i:03d}", agent_id=f"agent-{i:03d}",
+                agent_type=f"agent-type-{i:03d}",
+                total_cost_usd=1.0, recorded_at_iso=_now_iso(),
+            )
+
+        result = read_rework_session_cost(db_path=db)
+        assert result["overall_total_usd"] == pytest.approx(0.1 + 51 * 1.0)
+        assert result["overall_ratio"] <= 1.0
+
+    def test_overall_ratio_zero_division_is_zero(self, tmp_path: Path):
+        """Q6-3: overall_total_usd == 0 のとき overall_ratio は 0 除算せず 0.0。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        assert read_rework_session_cost(db_path=db)["overall_ratio"] == 0.0
+
+    def test_since_uses_recorded_at_not_ts_and_does_not_collapse_to_zero(self, tmp_path: Path):
+        """Q6-4（DC-AS-001）: --since 併用時 overall は recorded_at で例外なく
+        集計され overall_ratio が 0.0 に潰れない（agent_cost_runs に ts 列は
+        存在しないため、誤って ts を突き当てると no such column: ts が共通規約で
+        握り潰され 0.0 に静かに倒れる回帰を検出する）。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-rw",
+                                ts_iso=_now_iso())
+        _seed_cost_run_at(db, session_id="sess-rw", agent_id="agent-rw",
+                           total_cost_usd=0.2, recorded_at_iso=_now_iso())
+
+        result = read_rework_session_cost(db_path=db, since="2025-01-01")
+        assert result["overall_total_usd"] == pytest.approx(0.2), (
+            "recorded_at >= since で例外なく集計されるはず（ts 誤参照だと 0.0 に潰れる）"
+        )
+        assert result["overall_ratio"] > 0.0
+
+    def test_since_numerator_denominator_symmetric_ratio_le_1(self, tmp_path: Path):
+        """Q6-5（DC-GP-001）: --since 併用時も分子・分母が同一 recorded_at>=since
+        フィルタで対称になり overall_ratio <= 1.0 が常に成立する。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-rw",
+                                ts_iso=_now_iso())
+        _seed_cost_run_at(db, session_id="sess-rw", agent_id="agent-old",
+                           total_cost_usd=10.0, recorded_at_iso="2020-01-01T00:00:00+00:00")
+        _seed_cost_run_at(db, session_id="sess-rw", agent_id="agent-new",
+                           total_cost_usd=0.1, recorded_at_iso=_now_iso())
+        _seed_cost_run_at(db, session_id="sess-other", agent_id="agent-other",
+                           total_cost_usd=0.05, recorded_at_iso=_now_iso())
+
+        result = read_rework_session_cost(db_path=db, since="2025-01-01")
+        assert result["overall_ratio"] <= 1.0
+        assert result["rework_total_usd"] == pytest.approx(0.1), (
+            "分子は recorded_at>=since の cost 行のみ合算（2020 年の行は除外）"
+        )
+
+    def test_since_population_mismatch_reflected_in_count_and_cost(self, tmp_path: Path):
+        """Q6-6（DC-AM-002 round 3）: --since 併用時、rework 判定は ts 基準・
+        コスト合算は recorded_at 基準の別クロックで母集団が完全一致しない場合を
+        固定する。ts>=since で rework 判定された session の cost 行が全て
+        recorded_at<since なら、rework_session_count には 1 とカウントされるが
+        rework_total_usd には寄与しない。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_agent_outcome_at(db, success=False, gate="E-1", session_id="sess-mismatch",
+                                ts_iso=_now_iso())
+        _seed_cost_run_at(db, session_id="sess-mismatch", agent_id="agent-mismatch",
+                           total_cost_usd=5.0, recorded_at_iso="2020-01-01T00:00:00+00:00")
+
+        result = read_rework_session_cost(db_path=db, since="2025-01-01")
+        assert result["rework_session_count"] == 1, (
+            "ts 基準では since 以降の rework session として 1 カウントされる"
+        )
+        assert result["rework_total_usd"] == pytest.approx(0.0), (
+            "コスト行が全て recorded_at < since のため寄与は $0（母集団非対称）"
+        )
+
+    def test_granularity_and_note_keys(self, tmp_path: Path):
+        """Q6-7: granularity == "session-approximation" と note キーが存在する。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        result = read_rework_session_cost(db_path=db)
+        assert result["granularity"] == "session-approximation"
+        assert isinstance(result["note"], str)
+        assert result["note"] != ""
+
+    def test_note_conveys_population_mismatch_gist_without_internal_terms(self, tmp_path: Path):
+        """Q6-8（DC-AM-001 round 4/5）: note は母集団非一致の趣旨キーワードを
+        含み、内部監査 finding ID パターン・DB 内部名を含まない（negative
+        assertion のスコープは note フィールド値のみ。rework_session_count は
+        JSON 公開キーであって禁止語ではないため検査対象に含めない）。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        note = read_rework_session_cost(db_path=db)["note"]
+
+        assert any(kw in note for kw in ("母集団", "目安", "近似")), (
+            f"note に母集団非一致・近似の趣旨キーワードが含まれるはず: {note!r}"
+        )
+        assert not re.search(r"\b(DC|CR|SR)-[A-Z0-9]+-\d{3,}\b", note), (
+            f"note に監査 finding ID が混入してはならない: {note!r}"
+        )
+        assert "round " not in note.lower(), f"note に内部レビューラウンド表記が混入: {note!r}"
+        for internal_term in ("agent_outcomes", "agent_cost_runs", "recorded_at"):
+            assert internal_term not in note, f"note に DB 内部名 {internal_term!r} が混入: {note!r}"
+
+    def test_empty_db_returns_zero_filled_dict(self, tmp_path: Path):
+        """Q6-9: 空 DB で 0 埋め dict を返し例外を出さない。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        result = read_rework_session_cost(db_path=db)
+        assert result["rework_session_count"] == 0
+        assert result["rework_total_usd"] == 0.0
+        assert result["rework_total_tokens"] == 0
+        assert result["overall_total_usd"] == 0.0
+        assert result["overall_ratio"] == 0.0
+
+    def test_db_absent_returns_zero_filled_dict(self, tmp_path: Path):
+        """Q6-10: DB 不在で例外を出さず 0 埋め dict を返す。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        absent_db = tmp_path / "nonexistent.db"
+        result = read_rework_session_cost(db_path=absent_db)
+        assert result["rework_session_count"] == 0
+        assert result["overall_ratio"] == 0.0
+
+    def test_large_rework_session_count_survives_low_variable_number_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Q6-11（code-review-report-20260707-011501.md item6）: rework
+        セッション数が 1000 超（1200）でも動的 `IN (?,?,...)` 句がバインド
+        変数上限に抵触せず、`overall_ratio` が 0 に崩れず正しい合算を返す。
+
+        本環境の SQLite ビルド（3.45.1）の実上限は 32766 のため 1200 件では
+        自然には再現しないが、`sqlite3.Connection.setlimit` で
+        `SQLITE_LIMIT_VARIABLE_NUMBER` を 999 に強制し、旧ビルド（上限 999）
+        相当の環境をシミュレートして固定する。本タスク開始時点の実装は
+        動的 `IN` 句のプレースホルダ数がセッション数に比例して増えるため、
+        999 ビルド相当の環境では `sqlite3.OperationalError`（too many SQL
+        variables）が共通例外規約で握り潰され、`rework_session_count` /
+        `overall_ratio` が静かに 0 に崩れていた（Red）。"""
+        from c3.db import read_rework_session_cost  # noqa: PLC0415
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+
+        db = _make_c3_db(tmp_path)
+        session_count = 1200
+        ts = _now_iso()
+
+        conn = _sqlite3.connect(str(db))
+        try:
+            conn.executemany(
+                "INSERT INTO agent_outcomes "
+                "(role, task_complexity, tier, success, gate, note, session_id, ts) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+                [
+                    ("developer", "medium", "sonnet", 0, "E-1", f"sess-large-{i:04d}", ts)
+                    for i in range(session_count)
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO agent_cost_runs "
+                "(session_id, agent_id, agent_type, description, model, "
+                " attribution_skill, input_tokens, output_tokens, "
+                " cache_read_tokens, cache_create_tokens, total_cost_usd, recorded_at) "
+                "VALUES (?, ?, ?, NULL, ?, NULL, ?, ?, 0, 0, ?, ?)",
+                [
+                    (
+                        f"sess-large-{i:04d}", f"agent-large-{i:04d}", "developer",
+                        "claude-sonnet-4-6-20260101", 100, 50, 1.0, ts,
+                    )
+                    for i in range(session_count)
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        real_connect = _sqlite3.connect
+
+        def _connect_with_lowered_variable_limit(*args, **kwargs):
+            new_conn = real_connect(*args, **kwargs)
+            new_conn.setlimit(_sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+            return new_conn
+
+        monkeypatch.setattr(_sqlite3, "connect", _connect_with_lowered_variable_limit)
+
+        result = read_rework_session_cost(db_path=db)
+
+        assert result["rework_session_count"] == session_count, (
+            "999 ビルド相当の環境でも rework セッション数は 0 に崩れないはず"
+        )
+        assert result["rework_total_usd"] == pytest.approx(float(session_count)), (
+            "999 ビルド相当の環境でも rework コスト合算は 0 に崩れないはず"
+        )
+        assert result["overall_total_usd"] == pytest.approx(float(session_count))
+        assert result["overall_ratio"] == pytest.approx(1.0)
+
+
+class TestMetricsTimeFormatPrecondition:
+    """Q7 群（DC-AS-001）: 時刻比較は全行 UTC ISO8601（+00:00 秒精度）前提であり、
+    YYYY-MM-DD プレフィックス >= 比較が全行で日付順=時系列順と一致することを
+    固定する。agent_cost_runs の突き当ては recorded_at（ts 列は存在しない）
+    ことも固定する。"""
+
+    def test_decided_at_stored_as_utc_iso8601_with_offset(self, tmp_path: Path):
+        """Q7-1: insert_review_decision の decided_at が UTC ISO8601（+00:00
+        秒精度）で格納され、YYYY-MM-DD プレフィックスの since 比較が成立する。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        _seed_review_decision(db, checklist_id="CR-TS-1", decision="fixed",
+                               reviewer="code-reviewer", severity="high",
+                               decided_at_iso=_now_iso())
+
+        conn = _sqlite3.connect(str(db))
+        try:
+            row = conn.execute(
+                "SELECT decided_at FROM review_decisions WHERE checklist_id='CR-TS-1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        stored = row[0]
+        assert stored.endswith("+00:00"), f"decided_at は UTC オフセット付きであるはず: {stored!r}"
+        assert re.match(r"^\d{4}-\d{2}-\d{2}T", stored), (
+            f"YYYY-MM-DD プレフィックス比較が成立するはず: {stored!r}"
+        )
+
+    def test_ts_stored_as_utc_iso8601_with_offset(self, tmp_path: Path):
+        """Q7-2: record_agent_outcome_event の ts が UTC ISO8601（+00:00 秒精度）
+        で格納される。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        record_agent_outcome_event(role="tester", complexity="medium", tier="sonnet",
+                                    success=False, gate="E-1", session_id="s1", db_path=db)
+
+        conn = _sqlite3.connect(str(db))
+        try:
+            row = conn.execute(
+                "SELECT ts FROM agent_outcomes WHERE session_id='s1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0].endswith("+00:00"), f"ts は UTC オフセット付きであるはず: {row[0]!r}"
+
+    def test_recorded_at_stored_as_utc_iso8601_with_offset_no_ts_column(self, tmp_path: Path):
+        """Q7-3: insert_agent_cost_run の recorded_at が UTC ISO8601（+00:00
+        秒精度）で格納される。agent_cost_runs には ts 列が存在しない
+        （突き当ては recorded_at）。"""
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+        db = _make_c3_db(tmp_path)
+        insert_agent_cost_run(
+            session_id="s1", agent_id="agent-1", agent_type="developer",
+            description=None, model="claude-sonnet-4-6-20260101", attribution_skill=None,
+            input_tokens=10, output_tokens=5, cache_read_tokens=0, cache_create_tokens=0,
+            total_cost_usd=0.01, db_path=db,
+        )
+
+        conn = _sqlite3.connect(str(db))
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(agent_cost_runs)").fetchall()]
+            row = conn.execute(
+                "SELECT recorded_at FROM agent_cost_runs WHERE session_id='s1'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert "ts" not in cols, "agent_cost_runs に ts 列は存在しないはず（recorded_at のみ）"
+        assert row is not None
+        assert row[0].endswith("+00:00")
+
+
+class TestMetricsHelpersEmptyDbSmoke:
+    """Q8 群: 6 ヘルパー全てが空 DB / DB 不在で例外を出さず空値/0 埋めを
+    返すことの結合スモーク。"""
+
+    def test_all_six_helpers_no_exception_on_empty_db(self, tmp_path: Path):
+        """Q8-1: 空 DB（migration 適用済み・行なし）で 6 ヘルパー全てが
+        例外を出さない。"""
+        from c3.db import (  # noqa: PLC0415
+            fetch_prevented_findings,
+            read_review_decision_matrix,
+            read_rework_role_distribution,
+            read_rework_session_cost,
+            read_rework_trend,
+            read_session_fix_cycles,
+        )
+        db = _make_c3_db(tmp_path)
+
+        assert read_review_decision_matrix(db_path=db) == []
+        assert fetch_prevented_findings(db_path=db) == []
+        trend = read_rework_trend(db_path=db, months=3)
+        assert len(trend) == 3
+        assert read_rework_role_distribution(db_path=db) == []
+        fix_cycles = read_session_fix_cycles(db_path=db)
+        assert fix_cycles["total_sessions"] == 0
+        cost = read_rework_session_cost(db_path=db)
+        assert cost["rework_session_count"] == 0
+
+    def test_all_six_helpers_no_exception_on_absent_db(self, tmp_path: Path):
+        """Q8-2: DB ファイル自体が不在でも 6 ヘルパー全てが例外を出さない。"""
+        from c3.db import (  # noqa: PLC0415
+            fetch_prevented_findings,
+            read_review_decision_matrix,
+            read_rework_role_distribution,
+            read_rework_session_cost,
+            read_rework_trend,
+            read_session_fix_cycles,
+        )
+        absent_db = tmp_path / "nonexistent.db"
+
+        assert read_review_decision_matrix(db_path=absent_db) == []
+        assert fetch_prevented_findings(db_path=absent_db) == []
+        assert read_rework_trend(db_path=absent_db) == []
+        assert read_rework_role_distribution(db_path=absent_db) == []
+        fix_cycles = read_session_fix_cycles(db_path=absent_db)
+        assert fix_cycles["total_sessions"] == 0
+        cost = read_rework_session_cost(db_path=absent_db)
+        assert cost["rework_session_count"] == 0

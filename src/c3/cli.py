@@ -17,6 +17,7 @@ from c3 import (
     cli_doctor,
     cli_init,
     cli_list,
+    cli_metrics,
     cli_plan,
     cli_recall,
     cli_tier,
@@ -43,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     cli_doctor.register(sub)
     cli_plan.register(sub)
     cli_tier.register(sub)
+    cli_metrics.register(sub)
     cli_ask.register(sub)
     cli_recall.register(sub)
 

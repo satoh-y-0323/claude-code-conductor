@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,8 @@ from c3._db_params import (
     ESCALATION_THRESHOLD_DEFAULT as ESCALATION_THRESHOLD_DEFAULT,
     FAILURE_WINDOW_DAYS_DEFAULT as FAILURE_WINDOW_DAYS_DEFAULT,
     LEARNING_THRESHOLD as LEARNING_THRESHOLD,
+    METRICS_DEV_GATES as METRICS_DEV_GATES,
+    METRICS_REVIEW_GATES as METRICS_REVIEW_GATES,
     resolve_cost_lambda as resolve_cost_lambda,
     resolve_epsilon as resolve_epsilon,
     resolve_escalation_threshold as resolve_escalation_threshold,
@@ -163,6 +166,49 @@ def fetch_review_decisions(
         return []
 
 
+# insert_review_decision の二層目フェイルセーフ検証用（SR-V-001 item4）。
+# 正規（厳格）の検証はアプリ層 record_review_decision.py が担う
+# （CHECKLIST_ID_PATTERN=^(CR|SR|DC)-[A-Z]+-\d{3,}$ / _SEVERITY_VOCAB / _truncate）。
+# db 層は将来 record_review_decision.py を経由しない直接呼び出しに対する最終防御として
+# 「軽量」な検証のみを行う（例外は投げない・呼び出し元の挙動を変えない）:
+#   - checklist_id: 接頭辞（CR-/SR-/DC-）を持たない完全に無構造な値のみ False で弾く。
+#     アプリ層の厳格な連番形式（-\d{3,}）までは課さない。これはアプリ層の緩い ID
+#     （CR-NEW 等）や db 直接呼び出しの既存経路を壊さないための意図的な弱検証である。
+#   - severity: 語彙（critical/high/medium/low）外は NULL 化（アプリ層と同じ正規化）。
+#   - finding_text/reason/context_summary: 過長時に切り詰め（DB 肥大化防止）。
+_CHECKLIST_ID_PREFIX_RE = re.compile(r"^(CR|SR|DC)-")
+_REVIEW_SEVERITY_VOCAB = frozenset({"critical", "high", "medium", "low"})
+# db 層はフィールド差を設けない単一の緩いバックストップ上限（アプリ層より意図的に緩い）。
+# アプリ層 record_review_decision.py は MAX_FINDING_LEN=2000 / MAX_REASON_LEN=2000 /
+# MAX_CONTEXT_LEN=1000 とフィールドごとに厳しい上限を設けるが、db 層はそれをバイパスした
+# 直接呼び出しに対する最終防御のため、フィールド別ではなく単一の緩い上限で DB 肥大化のみを
+# 防ぐ。正規経路ではアプリ層上限が先に効くため、この 4000 文字に直接到達することはない。
+_MAX_REVIEW_TEXT_CHARS = 4000
+_MAX_REVIEW_TEXT_BYTES = 8 * 1024
+
+
+def _truncate_review_text(value: str | None) -> str | None:
+    """None/空文字はそのまま、超過時は文字数・UTF-8 バイト数の両上限で切り詰めた。
+
+    hooks 側 record_review_decision.py の ``_truncate`` と同型のアルゴリズム
+    （文字数超過分を切り詰め → UTF-8 バイト長超過分をさらに 1 文字ずつ削る二段）だが、
+    hooks 側は importlib 単体ロード前提の自己完結方針（import 非依存）のため共通化せず
+    意図的に重複させている（severity 語彙の相互参照方式と同型）。相違点: 本関数は固定上限・
+    無警告、record_review_decision.py の ``_truncate`` は limit/name 引数付き・超過時 stderr 警告。
+    """
+    # 非 str 型は切り詰めを通さず素通しした（呼び出し 3 箇所の isinstance 三項演算子を
+    # ここへ集約。fix-cycle-4 で導入した「非 str → 素通し」の意味論を関数内部で等価保持）。
+    if not isinstance(value, str):
+        return value
+    if not value:
+        return value
+    if len(value) > _MAX_REVIEW_TEXT_CHARS:
+        value = value[:_MAX_REVIEW_TEXT_CHARS]
+    while len(value.encode("utf-8")) > _MAX_REVIEW_TEXT_BYTES:
+        value = value[: max(1, len(value) - 1)]
+    return value
+
+
 def insert_review_decision(
     *,
     checklist_id: str,
@@ -171,6 +217,7 @@ def insert_review_decision(
     reason: str | None = None,
     context_summary: str | None = None,
     reviewer: str,
+    severity: str | None = None,
     decided_at: datetime | None = None,
     db_path: Path | None = None,
 ) -> bool:
@@ -182,13 +229,48 @@ def insert_review_decision(
         decision: 'fixed' | 'accepted' | 'deferred'。
         reason: 許容/保留時の理由（``decision='accepted'`` / ``'deferred'`` で必要）。
         context_summary: ファイル名・コミット等の補助情報。
-        reviewer: 'code-reviewer' | 'security-reviewer'。
+        reviewer: 'code-reviewer' | 'security-reviewer' | 'design-critic'。
+        severity: 'critical' | 'high' | 'medium' | 'low' | None（severity 未記録）。
+            migration 006 で追加された任意列。
         decided_at: 判断日時（UTC 推奨）。省略時は ``datetime.now(timezone.utc)``。
         db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
 
     Returns:
         INSERT 成功時 True、DB 不在 / エラー時 False。
+
+    Note:
+        severity 列不在（migration 006 未適用）のレガシー DB では
+        ``sqlite3.OperationalError``（"no such column: severity"）を捕捉し、
+        severity を除いた旧 7 列 INSERT に 1 回だけリトライして True を返した
+        （architecture-report §2-3(1) のレガシーフォールバック）。
     """
+    # 二層目フェイルセーフ検証（SR-V-001 item4）。checklist_id が接頭辞すら持たない
+    # 無構造値なら DB に蓄積させず False を返す（例外は投げない）。severity の語彙外
+    # 正規化・過長文字列の切り詰めもここで防御的に行う。
+    # 型ガードを前置し、非 str 型入力（record_review_decision.py を経由しない将来の
+    # 直接呼び出しが型契約を破った場合）でも例外を呼び出し元へ伝播させずフェイルセーフに倒す:
+    #   - checklist_id 非 str → False（無構造値と同じく DB に載せない）
+    #   - severity 非 str → None 化（語彙外と同じく NULL 化）
+    #   - finding_text/reason/context_summary 非 str → 切り詰めを通さず素通し
+    try:
+        if not isinstance(checklist_id, str) or not _CHECKLIST_ID_PREFIX_RE.match(checklist_id):
+            logger.debug(
+                "insert_review_decision: checklist_id lacks CR-/SR-/DC- prefix, skipped"
+            )
+            return False
+        if severity is not None:
+            if not isinstance(severity, str):
+                severity = None
+            else:
+                normalized = severity.strip().lower()
+                severity = normalized if normalized in _REVIEW_SEVERITY_VOCAB else None
+        finding_text = _truncate_review_text(finding_text)
+        reason = _truncate_review_text(reason)
+        context_summary = _truncate_review_text(context_summary)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("insert_review_decision: type-guard failed: %s", type(exc).__name__)
+        return False
+
     if db_path is None:
         db_path = locate_c3_db()
         if db_path is None:
@@ -204,21 +286,48 @@ def insert_review_decision(
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             _apply_busy_timeout(conn)
-            conn.execute(
-                "INSERT INTO review_decisions "
-                "(checklist_id, finding_text, decision, reason, "
-                " context_summary, decided_at, reviewer) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    checklist_id,
-                    finding_text,
-                    decision,
-                    reason,
-                    context_summary,
-                    decided_iso,
-                    reviewer,
-                ),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO review_decisions "
+                    "(checklist_id, finding_text, decision, reason, "
+                    " context_summary, decided_at, reviewer, severity) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        checklist_id,
+                        finding_text,
+                        decision,
+                        reason,
+                        context_summary,
+                        decided_iso,
+                        reviewer,
+                        severity,
+                    ),
+                )
+            except sqlite3.OperationalError as exc:
+                exc_msg = str(exc)
+                if "no such column" not in exc_msg and "has no column named" not in exc_msg:
+                    raise
+                # severity 列不在のレガシー DB: 旧 7 列 INSERT に 1 回だけリトライする。
+                logger.debug(
+                    "insert_review_decision: severity column not found, "
+                    "retrying with legacy 7-column INSERT: %s",
+                    type(exc).__name__,
+                )
+                conn.execute(
+                    "INSERT INTO review_decisions "
+                    "(checklist_id, finding_text, decision, reason, "
+                    " context_summary, decided_at, reviewer) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        checklist_id,
+                        finding_text,
+                        decision,
+                        reason,
+                        context_summary,
+                        decided_iso,
+                        reviewer,
+                    ),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -244,6 +353,554 @@ def aggregate_decisions(rows: list[dict]) -> dict:
         if d in summary:
             summary[d] += 1  # type: ignore[index]
     return summary
+
+
+# ---------------------------------------------------------------------------
+# metrics: 効果総括ヘルパー（P4 効果の総括メトリクス `c3 metrics`・architecture §2-3(2)）
+#
+# 全て read-only。agent_outcomes / agent_cost_runs へは書き込まない
+# （bandit 学習シグナル不干渉の構造的担保・絶対制約・成功条件5）。
+#
+# 共通規約: db_path=None は locate_c3_db() で解決する。DB 不在・テーブル不在・
+# その他エラー時は空値（[] または 0 埋め dict）を返し例外を投げない
+# （既存 read ヘルパーの流儀を踏襲）。
+#
+# since: str | None は "YYYY-MM-DD" 文字列で、比較対象列（decided_at / ts /
+# recorded_at。いずれも UTC ISO8601 秒精度で格納・DC-AS-001）に対する
+# ">= since" の文字列（辞書順）比較で適用する。列名は表ごとに異なる点に注意:
+# 差し戻し由来（review_decisions / agent_outcomes）は decided_at / ts、
+# コスト由来（agent_cost_runs）は recorded_at（ts 列は存在しない）。
+# ---------------------------------------------------------------------------
+
+# fix-cycle / 手戻りコストの近似注記（人間向け ※ 行・--json 双方へ素通しする
+# 単一共有文字列・architecture §2-6 確定版）。内部監査 finding ID・DB 内部名は
+# 含めない（DC-AM-001 round 4/5・ADR-006-15）。
+_FIX_CYCLE_NOTE = (
+    "fix-cycle は session 単位の E-1/E-2 差し戻し件数による近似です。resume に"
+    "よるセッション分割・1 セッション内の複数ワークフロー合算により、実際の"
+    "差し戻しラウンド数とずれる場合があります。"
+)
+
+_REWORK_COST_NOTE = (
+    "手戻りコストは session 粒度の近似です。gate/ラウンド単位のコスト帰属は"
+    "コスト記録の構造上取得できないため、按分による精緻化は行っていません。"
+    "なお `--since` 併用時は、差し戻しありセッションの件数とコスト合算とで"
+    "集計の起点となる時刻の基準が異なり、対象期間の母集団が完全一致しない"
+    "場合があるため、1 セッションあたり手戻りコストの暗算は目安としてください。"
+)
+
+
+def read_review_decision_matrix(
+    db_path: Path | None = None,
+    since: str | None = None,
+) -> list[dict]:
+    """review_decisions を reviewer×severity×decision で集計する。
+
+    severity は ``COALESCE(severity, 'unknown')`` で NULL を "unknown" バケット
+    にまとめる。headline の全カウント（fixed_medium_plus・critical/high/medium
+    内訳・fixed_unknown）は本ヘルパーの ``(decision='fixed', severity=<各バケット>)``
+    から CLI 層で導出する単一算出源であり、専用ヘルパーは設けない
+    （two sources of truth を作らない・DC-AM-001）。
+
+    Args:
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        since: "YYYY-MM-DD"。指定時 decided_at >= since の行のみ集計する。
+
+    Returns:
+        ``[{"reviewer": str, "severity": str, "decision": str, "count": int}, ...]``。
+        DB 不在 / エラー / 行なしの場合は空リスト。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    where = ""
+    params: tuple = ()
+    if since is not None:
+        where = "WHERE decided_at >= ? "
+        params = (since,)
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            _apply_busy_timeout(conn)
+            rows = conn.execute(
+                "SELECT reviewer, COALESCE(severity, 'unknown') AS severity, "
+                "       decision, COUNT(*) AS count "
+                "FROM review_decisions "
+                f"{where}"
+                "GROUP BY reviewer, COALESCE(severity, 'unknown'), decision",
+                params,
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_review_decision_matrix: table not found or inaccessible: %s", type(exc).__name__)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read_review_decision_matrix: %s", type(exc).__name__)
+        return []
+
+    return [
+        {"reviewer": reviewer, "severity": severity, "decision": decision, "count": count}
+        for reviewer, severity, decision, count in rows
+    ]
+
+
+def fetch_prevented_findings(
+    db_path: Path | None = None,
+    limit: int = 5,
+    since: str | None = None,
+) -> list[dict]:
+    """事前検出できた指摘の実例（examples 表示専用）を直近順で返す。
+
+    ``decision='fixed' AND severity IN ('critical','high','medium')`` のみ
+    対象（severity 未記録の fixed 行はここに現れない）。本ヘルパーは実例
+    リスト表示専用であり、``limit`` で打ち切られた行数を件数集計（headline）
+    に流用してはならない（DC-AM-001・単一算出源は :func:`read_review_decision_matrix`）。
+
+    Args:
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        limit: 返す最大件数（デフォルト 5）。
+        since: "YYYY-MM-DD"。指定時 decided_at >= since の行のみ対象。
+
+    Returns:
+        ``[{"checklist_id", "reviewer", "severity", "finding_text",
+        "decided_at", "context_summary"}, ...]``（decided_at DESC）。
+        DB 不在 / エラー / 該当なしの場合は空リスト。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    since_clause = ""
+    since_params: tuple = ()
+    if since is not None:
+        since_clause = "AND decided_at >= ? "
+        since_params = (since,)
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            _apply_busy_timeout(conn)
+            conn.row_factory = sqlite3.Row
+            # 相互参照: .claude/skills/dev-workflow/scripts/record_review_decision.py:_SEVERITY_VOCAB /
+            # src/c3/cli_metrics.py:_derive_headline の severity リテラル（item2）。
+            # 語彙変更時は 3 箇所同期が必要・import 共有は実行コンテキスト分離のため不可。
+            rows = conn.execute(
+                "SELECT checklist_id, reviewer, severity, finding_text, "
+                "       decided_at, context_summary "
+                "FROM review_decisions "
+                "WHERE decision = 'fixed' AND severity IN ('critical', 'high', 'medium') "
+                f"{since_clause}"
+                "ORDER BY decided_at DESC LIMIT ?",
+                (*since_params, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("fetch_prevented_findings: table not found or inaccessible: %s", type(exc).__name__)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to fetch_prevented_findings: %s", type(exc).__name__)
+        return []
+
+    return [dict(r) for r in rows]
+
+
+def _zero_filled_calendar_months(months: int, since: str | None) -> list[str]:
+    """直近 ``months`` 個の暦月（"YYYY-MM"）を昇順（古い→新しい）で返す。
+
+    月の起点は UTC 基準（:func:`datetime.now` の ``timezone.utc``）。``since``
+    指定時は、since の暦月（先頭 7 文字）より前の月をリストから間引く
+    （since 以降かつ直近 months の積集合・厳しい方が効く・architecture §2-6）。
+    """
+    from datetime import timezone as _tz  # noqa: PLC0415
+
+    now = datetime.now(_tz.utc)
+    year, month = now.year, now.month
+    result = []
+    for _ in range(months):
+        result.append(f"{year:04d}-{month:02d}")
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    result.reverse()
+    if since is not None:
+        since_month = since[:7]
+        result = [m for m in result if m >= since_month]
+    return result
+
+
+def read_rework_trend(
+    db_path: Path | None = None,
+    months: int = 12,
+    since: str | None = None,
+) -> list[dict]:
+    """月次の差し戻し傾向（暦月ゼロ埋め済み）を返す。
+
+    ``success=0 AND gate IN METRICS_REVIEW_GATES`` の行を月次バケットに集計
+    する。差し戻し 0 件の月も欠落させず ``rework_count=0`` / ``session_count=0``
+    / ``per_session=0.0`` でゼロ埋めする（暦月ゼロ埋めはヘルパー層に一本化・
+    DC-AM-002。CLI/JSON 層は本ヘルパーの返り値を素通しし追加ゼロ埋めしない）。
+
+    Args:
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        months: 直近何ヶ月分を返すか（デフォルト 12）。
+        since: "YYYY-MM-DD"。指定時 ts >= since の行のみ集計し、暦月リストも
+            since の月以降に絞る（積集合）。
+
+    Returns:
+        ``[{"month": "YYYY-MM", "rework_count": int, "session_count": int,
+        "per_session": float}, ...]``（月昇順）。per_session の 0 除算は 0.0。
+        DB 不在時は共通規約どおり空リストを返した（ゼロ埋めは「schema はあるが
+        行が無い」場合の業務ロジックであり、DB 不在時の共通失敗規約より
+        優先されない）。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    month_keys = _zero_filled_calendar_months(months, since)
+
+    gate_placeholders = ",".join("?" * len(METRICS_REVIEW_GATES))
+    where = f"WHERE success = 0 AND gate IN ({gate_placeholders}) "
+    params: tuple = (*METRICS_REVIEW_GATES,)
+    if since is not None:
+        where += "AND ts >= ? "
+        params = (*params, since)
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            _apply_busy_timeout(conn)
+            rows = conn.execute(
+                f"SELECT ts, session_id FROM agent_outcomes {where}",
+                params,
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_rework_trend: table not found or inaccessible: %s", type(exc).__name__)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read_rework_trend: %s", type(exc).__name__)
+        return []
+
+    from collections import defaultdict as _defaultdict  # noqa: PLC0415
+
+    month_rework: dict[str, int] = _defaultdict(int)
+    month_sessions: dict[str, set] = _defaultdict(set)
+    for ts, session_id in rows:
+        month = ts[:7]
+        month_rework[month] += 1
+        if session_id is not None:
+            month_sessions[month].add(session_id)
+
+    result = []
+    for month in month_keys:
+        rework_count = month_rework.get(month, 0)
+        session_count = len(month_sessions.get(month, ()))
+        per_session = (rework_count / session_count) if session_count else 0.0
+        result.append({
+            "month": month,
+            "rework_count": rework_count,
+            "session_count": session_count,
+            "per_session": per_session,
+        })
+    return result
+
+
+def read_rework_role_distribution(
+    db_path: Path | None = None,
+    since: str | None = None,
+) -> list[dict]:
+    """success=0 の行を role×gate で集計する（分類外 gate を含め全件返却）。
+
+    ``METRICS_REVIEW_GATES`` / ``METRICS_DEV_GATES`` いずれにも属さない gate
+    （別 gate のリトライ・``gate=NULL`` 等）も脱落させず全て返す。review /
+    development / other への振り分けは CLI 層の責務（DC-AM-003）。
+
+    Args:
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        since: "YYYY-MM-DD"。指定時 ts >= since の行のみ集計する。
+
+    Returns:
+        ``[{"role": str, "gate": str | None, "count": int}, ...]``。
+        DB 不在 / エラー / 行なしの場合は空リスト。
+    """
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return []
+
+    where = "WHERE success = 0 "
+    params: tuple = ()
+    if since is not None:
+        where += "AND ts >= ? "
+        params = (since,)
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            _apply_busy_timeout(conn)
+            rows = conn.execute(
+                "SELECT role, gate, COUNT(*) AS count FROM agent_outcomes "
+                f"{where}"
+                "GROUP BY role, gate",
+                params,
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_rework_role_distribution: table not found or inaccessible: %s", type(exc).__name__)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read_rework_role_distribution: %s", type(exc).__name__)
+        return []
+
+    return [{"role": role, "gate": gate, "count": count} for role, gate, count in rows]
+
+
+def read_session_fix_cycles(
+    db_path: Path | None = None,
+    since: str | None = None,
+) -> dict:
+    """session 単位の fix-cycle（E-1/E-2/C-3 差し戻し件数）分布を返す。
+
+    母集団は ``session_id IS NOT NULL`` の agent_outcomes 全行（success の
+    真偽を問わない）から得られる distinct session_id で、``since`` 指定時は
+    それも含め ``ts >= since`` で絞る（--since 適用対象 6 経路の 1 つ・
+    fix_cycles への適用漏れを作らない・DC-AM-003）。各 session について
+    ``success=0 AND gate IN METRICS_REVIEW_GATES`` の件数を差し戻し回数として
+    数え、0 回 / 1 回 / 2 回以上に分布化する。
+
+    Args:
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        since: "YYYY-MM-DD"。指定時 ts >= since の行のみ集計する。
+
+    Returns:
+        ``{"distribution": {"0": int, "1": int, "2plus": int}, "mean": float,
+        "max": int, "total_sessions": int, "granularity": "session-approximation",
+        "note": str}``。空 DB / DB 不在時は 0 埋め。
+    """
+    zero_result = {
+        "distribution": {"0": 0, "1": 0, "2plus": 0},
+        "mean": 0.0,
+        "max": 0,
+        "total_sessions": 0,
+        "granularity": "session-approximation",
+        "note": _FIX_CYCLE_NOTE,
+    }
+
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return zero_result
+
+    where = "WHERE session_id IS NOT NULL "
+    params: tuple = ()
+    if since is not None:
+        where += "AND ts >= ? "
+        params = (since,)
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            _apply_busy_timeout(conn)
+            rows = conn.execute(
+                f"SELECT session_id, success, gate FROM agent_outcomes {where}",
+                params,
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_session_fix_cycles: table not found or inaccessible: %s", type(exc).__name__)
+        return zero_result
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read_session_fix_cycles: %s", type(exc).__name__)
+        return zero_result
+
+    sessions: dict[str, int] = {}
+    for session_id, success, gate in rows:
+        sessions.setdefault(session_id, 0)
+        if not success and gate in METRICS_REVIEW_GATES:
+            sessions[session_id] += 1
+
+    total_sessions = len(sessions)
+    if total_sessions == 0:
+        return zero_result
+
+    distribution = {"0": 0, "1": 0, "2plus": 0}
+    for count in sessions.values():
+        if count == 0:
+            distribution["0"] += 1
+        elif count == 1:
+            distribution["1"] += 1
+        else:
+            distribution["2plus"] += 1
+
+    counts = list(sessions.values())
+    return {
+        "distribution": distribution,
+        "mean": sum(counts) / total_sessions,
+        "max": max(counts),
+        "total_sessions": total_sessions,
+        "granularity": "session-approximation",
+        "note": _FIX_CYCLE_NOTE,
+    }
+
+
+def read_rework_session_cost(
+    db_path: Path | None = None,
+    since: str | None = None,
+) -> dict:
+    """差し戻しありセッションの手戻りコストを session 粒度近似で集計する。
+
+    rework 判定（session 抽出）は ``agent_outcomes.ts >= since`` を基準とする。
+    コスト合算（分子・分母とも）は ``agent_cost_runs.recorded_at >= since``
+    の同一フィルタで対称化する（分子 cost 行は分母 cost 行の部分集合となり
+    ``overall_ratio <= 1.0`` が --since 併用時も常に成立・DC-GP-001）。
+
+    overall（分母）は ``SELECT SUM(total_cost_usd) FROM agent_cost_runs``
+    （LIMIT なしの専用集計。:func:`read_agent_cost_summary` の ``limit=50``
+    agent_type 別 list 合算には依存しない・DC-GP-002）。突き当て列は
+    ``recorded_at``（``agent_cost_runs`` に ``ts`` 列は存在しない・DC-AS-001）。
+
+    ``--since`` 併用時、``rework_session_count``（ts 基準の rework 判定）と
+    ``rework_total_usd``（recorded_at 基準のコスト合算）は別クロックのため
+    母集団が完全一致しない場合がある。この近似は ``note`` に平易な文言で
+    明記する（DC-AM-002 round 3・内部監査 ID / DB 内部名は note に含めない・
+    DC-AM-001 round 4/5・ADR-006-15）。
+
+    Args:
+        db_path: c3.db のパス。省略時は :func:`locate_c3_db` で探索。
+        since: "YYYY-MM-DD"。
+
+    Returns:
+        ``{"rework_session_count": int, "rework_total_usd": float,
+        "rework_total_tokens": int, "overall_total_usd": float,
+        "overall_ratio": float, "granularity": "session-approximation",
+        "has_cost_rows": bool, "note": str}``。overall_ratio の 0 除算は 0.0。
+        has_cost_rows は agent_cost_runs に紐づく行が 1 件でも存在するかを示す。
+        空 DB / DB 不在時は 0 埋め。
+    """
+    zero_result = {
+        "rework_session_count": 0,
+        "rework_total_usd": 0.0,
+        "rework_total_tokens": 0,
+        "overall_total_usd": 0.0,
+        "overall_ratio": 0.0,
+        "granularity": "session-approximation",
+        "has_cost_rows": False,
+        "note": _REWORK_COST_NOTE,
+    }
+
+    if db_path is None:
+        db_path = locate_c3_db()
+        if db_path is None:
+            return zero_result
+
+    gate_placeholders = ",".join("?" * len(METRICS_REVIEW_GATES))
+    outcome_where = (
+        f"WHERE success = 0 AND gate IN ({gate_placeholders}) "
+        "AND session_id IS NOT NULL "
+    )
+    outcome_params: tuple = (*METRICS_REVIEW_GATES,)
+    if since is not None:
+        outcome_where += "AND ts >= ? "
+        outcome_params = (*outcome_params, since)
+
+    cost_where = ""
+    cost_params: tuple = ()
+    if since is not None:
+        cost_where = "WHERE recorded_at >= ? "
+        cost_params = (since,)
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            _apply_busy_timeout(conn)
+            rework_session_ids = [
+                r[0] for r in conn.execute(
+                    f"SELECT DISTINCT session_id FROM agent_outcomes {outcome_where}",
+                    outcome_params,
+                ).fetchall()
+            ]
+
+            overall_row = conn.execute(
+                f"SELECT SUM(total_cost_usd) FROM agent_cost_runs {cost_where}",
+                cost_params,
+            ).fetchone()
+            overall_total_usd = (
+                float(overall_row[0]) if overall_row and overall_row[0] is not None else 0.0
+            )
+
+            rework_total_usd = 0.0
+            rework_total_tokens = 0
+            has_cost_rows = False
+            if rework_session_ids:
+                # SQLite バインド変数上限に依存しない設計へ変更（item6）。
+                # TEMP テーブルへ session_id を INSERT した上で JOIN で絞り込む。
+                # connection ローカルの TEMP テーブルは実 DB（c3.db）に永続的な変化を与えないため、
+                # 読み取り専用契約と矛盾しない（SQLite のセッション終了・接続クローズ時に自動削除）。
+                conn.execute("CREATE TEMP TABLE IF NOT EXISTS _rework_session_ids (session_id TEXT PRIMARY KEY)")
+                conn.execute("DELETE FROM _rework_session_ids")
+                conn.executemany(
+                    "INSERT INTO _rework_session_ids VALUES (?)",
+                    [(sid,) for sid in rework_session_ids],
+                )
+
+                # has_cost_rows を判定: agent_cost_runs に紐づく行が 1 件でも存在するか
+                has_cost_rows_row = conn.execute(
+                    "SELECT COUNT(*) > 0 FROM agent_cost_runs acr "
+                    "WHERE EXISTS (SELECT 1 FROM _rework_session_ids WHERE session_id = acr.session_id)"
+                    + (" AND acr.recorded_at >= ?" if since is not None else ""),
+                    (since,) if since is not None else (),
+                ).fetchone()
+                has_cost_rows = bool(has_cost_rows_row[0]) if has_cost_rows_row else False
+
+                # rework_total_usd / rework_total_tokens を集計
+                cost_rework_where = (
+                    "WHERE EXISTS (SELECT 1 FROM _rework_session_ids WHERE session_id = acr.session_id) "
+                )
+                cost_rework_params: tuple = ()
+                if since is not None:
+                    cost_rework_where += "AND acr.recorded_at >= ? "
+                    cost_rework_params = (since,)
+                cost_row = conn.execute(
+                    "SELECT SUM(total_cost_usd), SUM(input_tokens + output_tokens) "
+                    f"FROM agent_cost_runs acr {cost_rework_where}",
+                    cost_rework_params,
+                ).fetchone()
+                if cost_row is not None:
+                    rework_total_usd = float(cost_row[0]) if cost_row[0] is not None else 0.0
+                    rework_total_tokens = int(cost_row[1]) if cost_row[1] is not None else 0
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        logger.debug("read_rework_session_cost: table not found or inaccessible: %s", type(exc).__name__)
+        return zero_result
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to read_rework_session_cost: %s", type(exc).__name__)
+        return zero_result
+
+    overall_ratio = (rework_total_usd / overall_total_usd) if overall_total_usd else 0.0
+
+    return {
+        "rework_session_count": len(rework_session_ids),
+        "rework_total_usd": rework_total_usd,
+        "rework_total_tokens": rework_total_tokens,
+        "overall_total_usd": overall_total_usd,
+        "overall_ratio": overall_ratio,
+        "granularity": "session-approximation",
+        "has_cost_rows": has_cost_rows,
+        "note": _REWORK_COST_NOTE,
+    }
 
 
 # ---------------------------------------------------------------------------

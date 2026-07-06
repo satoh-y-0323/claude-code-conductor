@@ -180,6 +180,22 @@ class TestChecklistIdPattern:
         captured = capsys.readouterr()
         assert "checklist-id format invalid (skipped)" in captured.err
 
+    def test_main_invalid_checklist_id_message_lists_dc_prefix(self, capsys):
+        """[item4] 不正 checklist-id の診断メッセージは CR/SR に加え DC-XX-NNN も
+        案内する（CHECKLIST_ID_PATTERN が DC を受理するのに合わせ、修正案内文言も
+        3 プレフィックスを網羅すべきという固定テスト。実装は本タスク開始時点では
+        `CR-XX-NNN or SR-XX-NNN` のみを案内しており、本テストは Red だった）。"""
+        mod = _load_hook_module()
+        rc = mod.main([
+            "--checklist-id", "INVALID",
+            "--finding", "test finding",
+            "--decision", "accepted",
+            "--reviewer", "code-reviewer",
+        ])
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "CR-XX-NNN, SR-XX-NNN, or DC-XX-NNN" in captured.err
+
     def test_main_accepts_cr_new_special_value(self, monkeypatch, capsys):
         mod = _load_hook_module()
         # CR-NEW は形式検証対象外（チェックリスト追加候補として記録）
@@ -212,6 +228,161 @@ class TestChecklistIdPattern:
         captured = capsys.readouterr()
         # 形式検証エラーは出ない
         assert "format invalid" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# T2 test-record: --severity / --reviewer design-critic / DC-XX-NNN 対応
+# plan-report-20260706-221212.md T2 / architecture-report-20260706-213701.md §2-2
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_insert(monkeypatch: pytest.MonkeyPatch, return_value: bool = True) -> list[dict]:
+    """c3.db.insert_review_decision を差し替え、呼び出し kwargs を記録するリストを返した。"""
+    calls: list[dict] = []
+
+    def fake_insert(**kwargs):
+        calls.append(kwargs)
+        return return_value
+
+    if "c3" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "c3", types.ModuleType("c3"))
+    if "c3.db" not in sys.modules:
+        fake_mod = types.ModuleType("c3.db")
+        fake_mod.insert_review_decision = fake_insert
+        monkeypatch.setitem(sys.modules, "c3.db", fake_mod)
+    else:
+        monkeypatch.setattr("c3.db.insert_review_decision", fake_insert)
+    return calls
+
+
+class TestSeverityArgument:
+    """--severity の Title Case 正規化・語彙外フェイルセーフ・省略時後方互換を固定した
+    （architecture-report §2-2(c)）。"""
+
+    def test_severity_title_case_is_normalized_to_lowercase(self, monkeypatch, capsys):
+        """`--severity High` は `high` に正規化されて記録された。"""
+        mod = _load_hook_module()
+        calls = _install_fake_insert(monkeypatch)
+
+        rc = mod.main([
+            "--checklist-id", "CR-Q-001",
+            "--finding", "f",
+            "--decision", "fixed",
+            "--reviewer", "code-reviewer",
+            "--severity", "High",
+        ])
+        assert rc == 0
+        assert calls[-1]["severity"] == "high"
+        captured = capsys.readouterr()
+        assert "語彙外" not in captured.err
+
+    def test_severity_out_of_vocab_warns_and_records_with_null(self, monkeypatch, capsys):
+        """語彙外の `--severity Med` は stderr 警告のうえ severity=NULL で記録が続行され、
+        exit 0 を維持した（フェイルセーフ規律）。"""
+        mod = _load_hook_module()
+        calls = _install_fake_insert(monkeypatch)
+
+        rc = mod.main([
+            "--checklist-id", "CR-Q-002",
+            "--finding", "f",
+            "--decision", "fixed",
+            "--reviewer", "code-reviewer",
+            "--severity", "Med",
+        ])
+        assert rc == 0
+        assert calls[-1]["severity"] is None
+        captured = capsys.readouterr()
+        assert "語彙外" in captured.err
+
+    def test_severity_omitted_is_backward_compatible(self, monkeypatch, capsys):
+        """`--severity` を省略した従来呼び出しは、severity 未指定（None）・
+        警告なし・exit 0 のまま変わらなかった（後方互換）。"""
+        mod = _load_hook_module()
+        calls = _install_fake_insert(monkeypatch)
+
+        rc = mod.main([
+            "--checklist-id", "CR-Q-003",
+            "--finding", "f",
+            "--decision", "fixed",
+            "--reviewer", "code-reviewer",
+        ])
+        assert rc == 0
+        # kwargs に severity キー自体が無い場合も None 扱いになる呼び出し側実装を許容する
+        assert calls[-1].get("severity") is None
+        captured = capsys.readouterr()
+        assert "語彙外" not in captured.err
+
+
+class TestDesignCriticReviewerAndDcId:
+    """`--reviewer design-critic` と `DC-XX-NNN` checklist-id の受理・
+    不正 DC ID の skip・CR-NEW への severity 付与を固定した
+    （architecture-report §2-2(a)(b)）。"""
+
+    def test_design_critic_reviewer_with_dc_id_is_accepted(self, monkeypatch, capsys):
+        """`--reviewer design-critic` + `--checklist-id DC-AS-001` は受理され記録された。"""
+        mod = _load_hook_module()
+        calls = _install_fake_insert(monkeypatch)
+
+        rc = mod.main([
+            "--checklist-id", "DC-AS-001",
+            "--finding", "f",
+            "--decision", "fixed",
+            "--reviewer", "design-critic",
+            "--severity", "high",
+        ])
+        assert rc == 0
+        assert len(calls) == 1
+        assert calls[0]["checklist_id"] == "DC-AS-001"
+        assert calls[0]["reviewer"] == "design-critic"
+        captured = capsys.readouterr()
+        assert "format invalid" not in captured.err
+
+    def test_invalid_dc_id_is_skipped(self, monkeypatch, capsys):
+        """不正な checklist-id（`DC-NEW`）は従来どおり skip され、exit 0 を維持した
+        （checklist_id パターン検証は reviewer 種別に依らない既存挙動・設計上 Green）。"""
+        mod = _load_hook_module()
+        calls = _install_fake_insert(monkeypatch)
+
+        rc = mod.main([
+            "--checklist-id", "DC-NEW",
+            "--finding", "f",
+            "--decision", "fixed",
+            "--reviewer", "code-reviewer",
+        ])
+        assert rc == 0
+        assert calls == []
+        captured = capsys.readouterr()
+        assert "checklist-id format invalid (skipped)" in captured.err
+
+    def test_cr_new_is_recorded_with_severity(self, monkeypatch, capsys):
+        """免除リテラル `CR-NEW` は severity 付きで記録された。"""
+        mod = _load_hook_module()
+        calls = _install_fake_insert(monkeypatch)
+
+        rc = mod.main([
+            "--checklist-id", "CR-NEW",
+            "--finding", "f",
+            "--decision", "fixed",
+            "--reviewer", "code-reviewer",
+            "--severity", "high",
+        ])
+        assert rc == 0
+        assert len(calls) == 1
+        assert calls[0]["checklist_id"] == "CR-NEW"
+        assert calls[0]["severity"] == "high"
+
+    def test_unknown_reviewer_exits_2(self):
+        """語彙外の `--reviewer` は argparse choices により exit 2 のまま変わらなかった
+        （既存の choices 制約の回帰確認・設計上 Green）。"""
+        mod = _load_hook_module()
+        with pytest.raises(SystemExit) as exc_info:
+            mod.main([
+                "--checklist-id", "CR-Q-004",
+                "--finding", "f",
+                "--decision", "fixed",
+                "--reviewer", "unknown-reviewer",
+            ])
+        assert exc_info.value.code == 2
 
 
 class TestTruncateConstants:

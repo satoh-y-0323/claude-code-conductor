@@ -58,6 +58,14 @@ BANDIT_GATES: tuple[str, ...] = ("D-2.5", "D-3", "D-5", "D-2.5-stuck")
 # 本定数が SSOT（read_agent_failure_rate がここから解決する）。
 FAILURE_WINDOW_DAYS_DEFAULT = 14.0
 
+# metrics（`c3 metrics`）用 gate 定数の SSOT（P4 効果の総括メトリクス・ADR-006-5）。
+# BANDIT_GATES とは完全に独立した定義であり、値を再利用・コピーしない。
+# db.py の metrics ヘルパー群（read_review_decision_matrix 等）は agent_outcomes /
+# agent_cost_runs を read-only 消費するのみで、bandit 学習シグナル（BANDIT_GATES）
+# および E-1/E-2 の bandit 除外分岐には一切干渉しない（絶対制約・成功条件5）。
+METRICS_REVIEW_GATES: tuple[str, ...] = ("E-1", "E-2", "C-3")   # レビュー差し戻し（傾向・コスト対象）
+METRICS_DEV_GATES: tuple[str, ...] = ("D-3", "D-5")             # 開発内リトライ（役割分布で別掲）
+
 
 def _resolve_float_env(
     env_key: str,

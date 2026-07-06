@@ -20,7 +20,10 @@ _CSI_M_RE = re.compile(r"\033\[[0-9;]*m")
 # Allow newline (\n), tab (\t), carriage return (\r) but strip any other
 # C0 control or escape character (\x1b) so that ANSI/title-injection cannot
 # happen via DB-stored values such as ``current_step`` / ``error_message``.
-_DISALLOWED_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# Also strip the Unicode line/paragraph separators U+2028 / U+2029 so they
+# match the init-session SR L-2 sanitization spec (removes U+2028 / U+2029).
+# NEL (U+0085) is intentionally NOT included per that spec.
+_DISALLOWED_CONTROL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f" + chr(0x2028) + chr(0x2029) + "]")
 
 
 def supports_color() -> bool:
@@ -52,7 +55,9 @@ def sanitize_terminal_text(s: str) -> str:
 
     Used for DB-sourced strings (``current_step`` / ``error_message``) so
     they cannot inject ANSI escape sequences (title, cursor, screen clear)
-    into the terminal. Newlines / tabs are preserved.
+    into the terminal. Newlines / tabs / carriage returns are preserved.
+    The Unicode line/paragraph separators U+2028 / U+2029 are also stripped
+    (init-session SR L-2 sanitization spec); NEL (U+0085) is out of scope.
     """
     if not s:
         return s

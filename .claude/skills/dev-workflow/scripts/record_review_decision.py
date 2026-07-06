@@ -25,9 +25,18 @@ import re
 import sys
 
 
-# checklist_id 形式検証用の正規表現（[CR-XX-NNN] / [SR-XX-NNN]、連番 3 桁以上）[SR-V-001]。
-# review_hint_inject.py の CHECKLIST_ID_RE と整合（[ ] なし）。
-CHECKLIST_ID_PATTERN = re.compile(r"^(CR|SR)-[A-Z]+-\d{3,}$")
+# checklist_id 形式検証用の正規表現（[CR-XX-NNN] / [SR-XX-NNN] / [DC-XX-NNN]、
+# 連番 3 桁以上）[SR-V-001]。review_hint_inject.py の CHECKLIST_ID_RE と整合（[ ] なし）。
+# DC は design-critic の checklist_id（architecture-report §2-2(a)）。
+CHECKLIST_ID_PATTERN = re.compile(r"^(CR|SR|DC)-[A-Z]+-\d{3,}$")
+
+# --severity の許容語彙（大小文字非依存・record_review_decision の手動検証で使用）。
+# architecture-report §2-2(c): --decision / --reviewer とは非対称に argparse choices を
+# 使わず、語彙外入力でも severity=None で記録を継続する（フェイルセーフ規律）。
+# 相互参照: src/c3/db.py:fetch_prevented_findings の IN リテラル / src/c3/cli_metrics.py:_derive_headline
+# の severity リテラル（item2）。語彙変更時は 3 箇所同期が必要・import 共有は実行コンテキスト
+# 分離のため不可。
+_SEVERITY_VOCAB = {"critical", "high", "medium", "low"}
 
 
 # DB 肥大化防止のためのフィールド長上限 [SR-V-001]。
@@ -89,17 +98,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--context", default=None,
                         help=f"ファイル名・コミット等の補助情報（最大 {MAX_CONTEXT_LEN} 文字で切り詰め）")
     parser.add_argument("--reviewer", required=True,
-                        choices=["code-reviewer", "security-reviewer"],
+                        choices=["code-reviewer", "security-reviewer", "design-critic"],
                         help="どちらの reviewer の指摘か")
+    parser.add_argument("--severity", default=None,
+                        help="指摘の重要度（critical/high/medium/low。任意・大小文字非依存）")
 
     args = parser.parse_args(argv)
+
+    # --severity の手動検証（argparse choices は使わない）。
+    # 語彙外・表記ゆれ（Title Case 等）でもワークフローを止めず、
+    # 語彙外なら stderr 警告 + severity=None で記録を続行する（フェイルセーフ規律）。
+    severity = args.severity
+    if severity is not None:
+        normalized = severity.strip().lower()
+        if normalized in _SEVERITY_VOCAB:
+            severity = normalized
+        else:
+            print(
+                f"[record_review_decision] --severity 語彙外 (severity=NULL で記録続行): "
+                f"{args.severity!r} (expected: critical/high/medium/low)",
+                file=sys.stderr,
+            )
+            severity = None
 
     # checklist-id 形式検証（不正な値は DB に蓄積させず skip。CR-NEW / SR-NEW は対象外として除外）
     # [SR-V-001] 不正な ID が DB に入ると review-hint 照合が空振りするため insert を中止する
     if args.checklist_id not in ("CR-NEW", "SR-NEW") and not CHECKLIST_ID_PATTERN.match(args.checklist_id):
         print(
             f"[record_review_decision] --checklist-id format invalid (skipped): {args.checklist_id!r} "
-            f"(expected pattern: CR-XX-NNN or SR-XX-NNN)",
+            f"(expected pattern: CR-XX-NNN, SR-XX-NNN, or DC-XX-NNN)",
             file=sys.stderr,
         )
         return 0
@@ -123,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         reason=args.reason,
         context_summary=args.context,
         reviewer=args.reviewer,
+        severity=severity,
     )
     if not ok:
         # 失敗は警告のみ（DB 不在等で C3 利用先で頻繁に起きうる）

@@ -320,8 +320,22 @@ design-review-report を Read して findings の有無を確認する。design-
 }
 ```
 
+**severity 供給経路の注記**: 以下の design-critic 判断記録で渡す `--severity` は `high`/`medium`/`low` の 3 段階のみ（design-critic は `critical` を供給しない。`critical` は security-reviewer 経由でのみ記録され得る。§2-2 severity 語彙対応表）。
+
 **「全て対応する」の場合:**
-全指摘に `> **[対応予定]**` をマークしてから層別ルーティング（ステップ 4）へ。
+全指摘に `> **[対応予定]**` をマークする。
+
+**design-critic 判断記録**: マークした直後・同一ステップ内で、層別ルーティング（ステップ 4）へ進む前に、各 DC-XX-NNN について Bash で c3.db に記録する:
+```bash
+python .claude/skills/dev-workflow/scripts/record_review_decision.py \
+  --reviewer design-critic \
+  --checklist-id DC-XX-NNN \
+  --severity {high|medium|low} \
+  --decision fixed \
+  --finding "{指摘の1行要約（逐語引用せず・引用符/バッククォート/$ 等のシェルメタ文字を含めない。該当文字は置換/省略）}"
+```
+
+層別ルーティング（ステップ 4）へ。
 
 **「対応する指摘を選ぶ」の場合:**
 続けて AskUserQuestion で確認する（別ターン）:
@@ -334,7 +348,16 @@ design-review-report を Read して findings の有無を確認する。design-
 ```
 1. 対応する指摘に `> **[対応予定]**` を Edit で追記する
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-3. `[対応予定]` を付けた finding が 1 件以上あれば層別ルーティング（ステップ 4）へ。全て許容した場合はフェーズ D へ。
+3. **design-critic 判断記録**: 1・2 で disposition を Edit した直後・同一ステップ内で、各 DC-XX-NNN について Bash で c3.db に記録する（`[対応予定]`→`fixed` / `[許容]`→`accepted`）:
+   ```bash
+   python .claude/skills/dev-workflow/scripts/record_review_decision.py \
+     --reviewer design-critic \
+     --checklist-id DC-XX-NNN \
+     --severity {high|medium|low} \
+     --decision {fixed|accepted} \
+     --finding "{指摘の1行要約（逐語引用せず・引用符/バッククォート/$ 等のシェルメタ文字を含めない。該当文字は置換/省略）}"
+   ```
+4. `[対応予定]` を付けた finding が 1 件以上あれば層別ルーティング（ステップ 4）へ。全て許容した場合はフェーズ D へ。
 
 **「全て許容して進む」の場合:**
 続けて AskUserQuestion で許容理由を確認する（別ターン）:
@@ -345,7 +368,19 @@ design-review-report を Read して findings の有無を確認する。design-
   }]
 }
 ```
-全指摘の直下に `> **[許容]** {理由}` を Edit で追記してから**フェーズ D** へ。
+全指摘の直下に `> **[許容]** {理由}` を Edit で追記する。
+
+**design-critic 判断記録**: Edit した直後・同一ステップ内で、フェーズ D へ進む前に、各 DC-XX-NNN について Bash で c3.db に記録する:
+```bash
+python .claude/skills/dev-workflow/scripts/record_review_decision.py \
+  --reviewer design-critic \
+  --checklist-id DC-XX-NNN \
+  --severity {high|medium|low} \
+  --decision accepted \
+  --finding "{指摘の1行要約（逐語引用せず・引用符/バッククォート/$ 等のシェルメタ文字を含めない。該当文字は置換/省略）}"
+```
+
+フェーズ D へ。
 
 **「否認・再監査を依頼する」の場合:**
 続けて AskUserQuestion でフィードバックを確認してからステップ 2（design-critic 再起動）へ。
@@ -677,6 +712,16 @@ python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 **「全て対応する」の場合:**
 全指摘に `> **[対応予定]**` をマークし、セッションファイルの `- [ ] code-review` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズC 計画中（レビュー差し戻し）` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
 
+**review-hint 判断記録**: tier-routing 記録の前に、全指摘（`[CR-NEW]` 含む）について Bash で c3.db に記録する:
+```bash
+python .claude/skills/dev-workflow/scripts/record_review_decision.py \
+  --checklist-id {CR-XX-NNN または CR-NEW} \
+  --finding "{指摘の1行要約（逐語引用せず・引用符/バッククォート/$ 等のシェルメタ文字を含めない。該当文字は置換/省略）}" \
+  --decision fixed \
+  --severity {レポートの重要度を小文字で（high/medium/low）} \
+  --reviewer code-reviewer
+```
+
 **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（frontmatter/tier_selection から自己解決）、architect/planner の場合は `--tier` も明記する）:
 ```bash
 python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
@@ -698,12 +743,13 @@ python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 ```
 1. 対応する指摘に `> **[対応予定]**` を追記する
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-3. **review-hint 判断記録**: 各指摘について Bash で c3.db に記録する（`[CR-XX-NNN]` を含むもののみ。`[CR-NEW]` は記録対象外、チェックリスト追加候補として別途扱う）:
+3. **review-hint 判断記録**: 各指摘について Bash で c3.db に記録する（`[CR-XX-NNN]`/`[CR-NEW]` を含むもの。`[CR-NEW]` も checklist-id にそのまま渡して記録する。チェックリスト追加候補としての扱いは従来どおり別途）:
    ```bash
    python .claude/skills/dev-workflow/scripts/record_review_decision.py \
      --checklist-id CR-Q-001 \
-     --finding "{指摘本文を 1 行で}" \
+     --finding "{指摘の1行要約（逐語引用せず・引用符/バッククォート/$ 等のシェルメタ文字を含めない。該当文字は置換/省略）}" \
      --decision {fixed|accepted} \
+     --severity {レポートの重要度を小文字で（high/medium/low）} \
      --reason "{許容理由（accepted の時のみ）}" \
      --reviewer code-reviewer
    ```
@@ -729,7 +775,7 @@ AskUserQuestion で許容理由を確認する:
 }
 ```
 1. 全指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-2. **review-hint 判断記録**: 全 `[CR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
+2. **review-hint 判断記録**: `[CR-NEW]` 含む全指摘を `record_review_decision.py --decision accepted --severity {レポートの重要度を小文字で（high/medium/low）}` で記録する
 3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 4. セッションファイルの `- [ ] code-review` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズE レビュー中 / 次: security-review` に Edit して E-2 へ。
 5. **tier-routing 結果記録**:
@@ -807,6 +853,16 @@ python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 **「全て対応する」の場合:**
 全指摘に `> **[対応予定]**` をマークし、セッションファイルの `- [ ] security-review` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズC 計画中（レビュー差し戻し）` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
 
+**review-hint 判断記録**: tier-routing 記録の前に、全指摘（`[SR-NEW]` 含む）について Bash で c3.db に記録する:
+```bash
+python .claude/skills/dev-workflow/scripts/record_review_decision.py \
+  --checklist-id {SR-XX-NNN または SR-NEW} \
+  --finding "{指摘の1行要約（逐語引用せず・引用符/バッククォート/$ 等のシェルメタ文字を含めない。該当文字は置換/省略）}" \
+  --decision fixed \
+  --severity {レポートの重要度を小文字で（critical/high/medium/low）} \
+  --reviewer security-reviewer
+```
+
 **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（frontmatter/tier_selection から自己解決）、architect/planner の場合は `--tier` も明記する）:
 ```bash
 python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
@@ -828,12 +884,13 @@ python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 ```
 1. 対応する指摘に `> **[対応予定]**` を追記する
 2. 許容する指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-3. **review-hint 判断記録**: 各指摘について Bash で c3.db に記録する（`[SR-XX-NNN]` を含むもののみ。`[SR-NEW]` は記録対象外、チェックリスト追加候補として別途扱う）:
+3. **review-hint 判断記録**: 各指摘について Bash で c3.db に記録する（`[SR-XX-NNN]`/`[SR-NEW]` を含むもの。`[SR-NEW]` も checklist-id にそのまま渡して記録する。チェックリスト追加候補としての扱いは従来どおり別途）:
    ```bash
    python .claude/skills/dev-workflow/scripts/record_review_decision.py \
      --checklist-id SR-K-002 \
-     --finding "{指摘本文を 1 行で}" \
+     --finding "{指摘の1行要約（逐語引用せず・引用符/バッククォート/$ 等のシェルメタ文字を含めない。該当文字は置換/省略）}" \
      --decision {fixed|accepted} \
+     --severity {レポートの重要度を小文字で（critical/high/medium/low）} \
      --reason "{許容理由（accepted の時のみ）}" \
      --reviewer security-reviewer
    ```
@@ -859,7 +916,7 @@ AskUserQuestion で許容理由を確認する:
 }
 ```
 1. 全指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-2. **review-hint 判断記録**: 全 `[SR-XX-NNN]` 指摘について `record_review_decision.py --decision accepted` で記録する
+2. **review-hint 判断記録**: `[SR-NEW]` 含む全指摘を `record_review_decision.py --decision accepted --severity {レポートの重要度を小文字で（critical/high/medium/low）}` で記録する
 3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 4. セッションファイルの `- [ ] security-review` を `- [x]` に Edit し、`現在地:` を `現在地: 完了` に Edit する。続けて **「引き継ぎバックログの照合」**（後述の共通ステップ）を実行してからコミットを提案する。
 5. **tier-routing 結果記録**: 全許容で完了するのも「成功」としてカウント:
