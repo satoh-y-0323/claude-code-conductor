@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.46.0] - 2026-07-07
+
+### 追加
+
+- **`c3 metrics` コマンドを新設（効果の総括メトリクス）**: 「C3 を使うと何がどれだけ良かったか」を横断で確認する CLI。①事前検出実績（レビューが出荷前に捕捉した指摘の深刻度付きヘッドライン `fixed かつ Medium 以上 N 件`・reviewer×severity×decision マトリクス・直近実例。severity 未記録は `unknown` として併記されヘッドラインが下限値であることを明示）②差し戻しの月次傾向（暦月ゼロ埋め・1セッションあたり件数）・fix-cycle 近似分布・帰属 role 分布（review/development/other 別掲）③手戻りコスト概況（session 粒度近似・注記付き・`overall_ratio ≤ 1.0` 保証）。`--json` / `--since` / `--months`（上限 120）/ `--examples` 対応。集計は `agent_outcomes` / `agent_cost_runs` / `review_decisions` の read-only 消費で、**tier-routing の bandit 学習シグナル（`BANDIT_GATES`・E-1/E-2 除外）には一切干渉しない**。DB 由来文字列は `_sanitize_tree` で人間向け・`--json` 両経路とも一律サニタイズ。
+- **migration 006: `review_decisions` に `severity` 列を追加**（nullable TEXT・additive。既存行は NULL のまま保持され `c3 update` 後のセッション開始時に自動適用）。
+- **`record_review_decision.py` の拡張**: `--severity`（critical/high/medium/low・大小文字非依存・語彙外は警告＋NULL で記録続行の フェイルセーフ）、`--reviewer design-critic`、`DC-XX-NNN` 形式の checklist-id を受理。`insert_review_decision` にはレガシースキーマ（severity 列不在）への旧 7 列 INSERT フォールバックと二層目の軽量検証（接頭辞・語彙・長さ・型ガード）を追加。
+- **`sanitize_terminal_text` が U+2028/U+2029（Unicode 行区切り）も除去対象に**（init-session の SR L-2 サニタイズ仕様と整合）。
+
+### 変更
+
+- **dev-workflow の判断記録カバレッジを拡大（運用変更・forward-only）**: E-1/E-2 の「全て対応する」パス（従来は記録なし＝fixed 実績の最大の欠測経路）と C-3（design-critic 指摘）に severity 付きの `record_review_decision.py` 記録ステップを新設。`[CR-NEW]`/`[SR-NEW]` も記録対象になった（従来は運用指示で記録対象外）。`--finding` には指摘本文を逐語引用せずシェルメタ文字を含まない短い要約を書く（`--note` と同じ規律）。
+- severity の供給経路: `critical` は security-reviewer のみが供給し得る（code-reviewer / design-critic は high/medium/low の3段階）。ヘッドラインの critical 内訳が 0 のままでも異常ではない。
+
+### 後方互換
+
+- DDL は additive のみ・新引数は全て optional・`--severity` 省略の従来コマンドは無警告 exit 0 で完全後方互換・review-hint 注入（`review_hint_inject.py`）は不変。**破壊的変更なし**（記録カバレッジの拡大は運用変更であり、既存インターフェース・保存済みデータ・ヒント注入はすべて従来どおり動作する）。
+
 ## [2.45.0] - 2026-07-05
 
 ### 追加
