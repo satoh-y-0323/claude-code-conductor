@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -3525,6 +3526,13 @@ class TestReadReworkSessionCost:
         assert result["rework_session_count"] == 0
         assert result["overall_ratio"] == 0.0
 
+    @pytest.mark.skipif(
+        sys.version_info < (3, 11),
+        reason="sqlite3.Connection.setlimit は Python 3.11 で追加されたため"
+               "（v2.46.0 CI の Python 3.10 ジョブで AttributeError となった。"
+               "プロダクト実装の TEMP テーブル方式は setlimit 非依存で、"
+               "本テストのシミュレーション手法のみが 3.11+ を要する）",
+    )
     def test_large_rework_session_count_survives_low_variable_number_limit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
