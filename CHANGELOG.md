@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.47.0] - 2026-07-07
+
+### 追加
+
+- **tier-routing 機械適用（フェーズ3）**: 新規 PreToolUse hook `tier_autoapply.py`（matcher: Agent の2本目）が、`model:` 無指定の developer / wt_developer 起動に推奨 Tier を `hookSpecificOutput.updatedInput` で**自動注入**する。従来のソフト適用（additionalContext で親に `model:` 明示を指示する honor system）が持っていた「サイレント非遵守」リスクを構造的に解消。**明示指定は尊重**（無指定時のみ注入・fork は対象外）。注入の有無に関わらず hook が実適用値を `.claude/state/tier_autoapply.jsonl` に機械記録し（**適用者=記録 SSOT**）、`record_agent_outcome.py` の tier 解決はこの applied-state を優先2として読む（LLM の tier 申告を排除。tier_selection.json は優先3に降格・併存）。kill-switch: 環境変数 `C3_TIER_AUTOAPPLY_DISABLE=1`。fail-safe: 全例外で素通り・ワークフローを止めない。実装は T0 実機検証（tool_input への model 出現・updatedInput の実効・permissionDecision 省略形の成立）を経て確定
+- **学習記録の欠落検知（P3）**: 新規 `tier_gap_check.py` が Stop（session_stop の Phase 4）で「Agent 起動 N 件 vs outcome 記録 M 件」を突合し、欠落の可能性を stderr 1行で警告する（**警告のみ・副作用なし**）。突合は developer のみ（tester は起動と記録のカーディナリティが契約上不一致のため対象外）・session_id が取れた行のみ・`K' = N − M − Z_role`（session 内 NULL 記録の減算・恒久抑止しない）・直近5分の起動は中間状態として除外。honor system＋機械検知の二段構え
+
+### 修正
+
+- **`select_tier.py` の prompt_prefix マスク順序を是正（pre-existing）**: 切り詰め→マスクの順だったため、200字境界をまたぐ PEM ブロック等の閉じタグ必須パターンで秘密情報が `tier_selection.json` にすり抜けて保存され得た。マスク→切り詰めの順に修正（レビューの横展開点検で発見・実証済み）
+
+### 変更
+
+- dev-workflow / parallel-agents SKILL.md から developer 起動時の手動 `model:` 指定手順と ADR-AS-2 のエスケープハッチ（指定≠推奨なら `--tier` 付与）を撤去（hook が自動適用・記録するため不要化）。`[tier-routing 推奨]` の表示文言も「hook が自動適用・変えたい時のみ明示」に更新（推奨 Tier の表示自体は維持）
+- 並列経路（parallel-agents）の record `--tier` 明示ルール（ADR-AS-4）は当面維持（applied-state とのタスク突合精度を実データで確認後、後続リリースで一本化予定）
+
+### 後方互換
+
+- 全て additive（新規 hook 2本＋settings.json への登録追加・既存 `check_agent_invocation.py` は不変）。kill-switch で従来のソフト適用相当（frontmatter/明示指定）へ即時復帰可能。`tier_selection.json` の役割・スキーマは不変。applied-state（`tier_autoapply.jsonl`）は gitignore/配布除外済みの state ディレクトリ配下で wheel に混入しない。**破壊的変更なし**
+
 ## [2.46.0] - 2026-07-07
 
 ### 追加
