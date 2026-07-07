@@ -936,4 +936,61 @@ class TestTsTypeInvalidRowsSkipped:
 
         captured = fake_stderr.getvalue()
         assert "developer" in captured
+
+
+# ---------------------------------------------------------------------------
+# T8: task_id フィールド追加後も N カウントが不変であることの回帰ロック（architecture §10-4）
+# ---------------------------------------------------------------------------
+
+
+class TestTaskIdFieldDoesNotAffectLaunchCount:
+    """jsonl 行に task_id フィールド（T8・additive）が追加されても N カウントが不変であることを固定した。
+
+    tier_gap_check.py は task_id を一切参照しない設計（architecture §10-4）
+    のため、本テストは無改修でも緑のはず（TestTaskIdExtraction の抽出系
+    Red とは異なり、本テストは回帰ロックであり Green を期待する）。
+    """
+
+    def test_task_id_field_present_does_not_change_warning_outcome(
+        self,
+        gap_mod: types.ModuleType,
+        monkeypatch: pytest.MonkeyPatch,
+        jsonl_path: Path,
+        db_path: Path,
+        absent_tier_selection_path: Path,
+    ) -> None:
+        """task_id 付き jsonl 行（N=1・M=0）でも task_id 無し行と同じく K'=1>0 で developer 欠落を警告したことを確認した。"""
+        _patch_paths(
+            gap_mod,
+            monkeypatch,
+            jsonl_path=jsonl_path,
+            db_path=db_path,
+            tier_selection_path=absent_tier_selection_path,
+        )
+        old_ts = _prod_ts(datetime.now(timezone.utc) - timedelta(hours=1))
+        jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        with jsonl_path.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "ts": old_ts,
+                        "session_id": "sess-t8-taskid",
+                        "subagent_type": "developer",
+                        "role_recorded": "developer",
+                        "model_applied": "sonnet",
+                        "source": "injected",
+                        "prompt_prefix": "",
+                        "task_id": "dev-login",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        # agent_outcomes には記録なし（M=0）。task_id の有無に関わらず N=1・M=0 で K'=1>0 のはず。
+
+        fake_stderr = _capture_stderr(monkeypatch)
+        gap_mod.run({"session_id": "sess-t8-taskid"})
+
+        captured = fake_stderr.getvalue()
+        assert "developer" in captured
         assert "可能性" in captured

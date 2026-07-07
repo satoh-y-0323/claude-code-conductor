@@ -715,3 +715,153 @@ class TestPromptPrefix:
         prefix = lines[0]["prompt_prefix"]
         for forbidden in ("\r", "\n", "\t", _LS, _PS):
             assert forbidden not in prefix, f"制御文字 {forbidden!r} が残存していた"
+
+
+# ---------------------------------------------------------------------------
+# TestTaskIdExtraction: C3_TASK_ID マーカー抽出（T8・Red フェーズ）
+# ---------------------------------------------------------------------------
+#
+# `_extract_task_id` と row の `task_id` フィールドは本 Red フェーズ時点で
+# 未実装だった（architecture-report-20260707-163654.md §3/§4）。当時の row は
+# 7 フィールドのみで `task_id` キーを持たなかったため、以下は全て
+# `KeyError`（"task_id" が row に存在しない）または `AssertionError`
+# （値が期待と異なる）のいずれかで失敗するのが正しい Red 挙動だった。
+
+
+class TestTaskIdExtraction:
+    """起動プロンプトの `C3_TASK_ID:` マーカーから task_id を抽出し jsonl に
+    載せる契約を固定した（architecture §3-1〜§3-6・plan test-t1 (a)〜(i)）。
+    """
+
+    def test_marker_present_extracts_exact_task_id(self) -> None:
+        """(a) 正常マーカー `C3_TASK_ID: dev-login` → task_id が正確値 "dev-login" で記録された。"""
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload("developer", session_id=sid, prompt="C3_TASK_ID: dev-login")
+        )
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert "task_id" in lines[0], "task_id キーが row に存在しなかった（未実装）"
+        assert lines[0]["task_id"] == "dev-login"
+
+    def test_marker_absent_task_id_key_present_and_null(self) -> None:
+        """(b) マーカー不在（逐次経路相当）→ task_id キーは常時出力され値は null（ADR-T8-3）。"""
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload(
+                "developer", session_id=sid, prompt="通常のタスク本文（マーカーなし）"
+            )
+        )
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert "task_id" in lines[0], "task_id キーが row に存在しなかった（未実装）"
+        assert lines[0]["task_id"] is None
+
+    def test_marker_not_at_line_start_is_ignored(self) -> None:
+        """(c) 行頭以外に出現する偽マーカー `... C3_TASK_ID: fake ...` → 非マッチで null。"""
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload(
+                "developer",
+                session_id=sid,
+                prompt="本文中に ... C3_TASK_ID: fake ... という記述がある",
+            )
+        )
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert "task_id" in lines[0], "task_id キーが row に存在しなかった（未実装）"
+        assert lines[0]["task_id"] is None
+
+    def test_overlong_task_id_201_chars_is_non_matching(self) -> None:
+        """(d) 過長（201字＝`{1,200}` 上限超）の id → 非マッチで null。"""
+        overlong_id = "a" * 201
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload(
+                "developer", session_id=sid, prompt=f"C3_TASK_ID: {overlong_id}"
+            )
+        )
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert "task_id" in lines[0], "task_id キーが row に存在しなかった（未実装）"
+        assert lines[0]["task_id"] is None
+
+    def test_disallowed_characters_are_non_matching(self) -> None:
+        """(e) 許容外文字（空白・`=`・日本語）を含む id → いずれも非マッチで null。"""
+        disallowed_prompts = [
+            "C3_TASK_ID: dev login",  # 空白混入
+            "C3_TASK_ID: dev=login",  # '=' 混入
+            "C3_TASK_ID: 日本語タスク",  # 日本語
+        ]
+        for prompt in disallowed_prompts:
+            sid = _new_session_id()
+            result = _run_hook(_agent_payload("developer", session_id=sid, prompt=prompt))
+            assert result.returncode == 0
+
+            lines = _read_jsonl_lines()
+            assert "task_id" in lines[-1], "task_id キーが row に存在しなかった（未実装）"
+            assert lines[-1]["task_id"] is None, f"許容外文字で誤マッチした: {prompt!r}"
+
+    def test_multiple_markers_only_first_is_adopted(self) -> None:
+        """(f) 複数行・複数マーカー → 最初の 1 個のみ採用される（re.search first-match）。"""
+        sid = _new_session_id()
+        prompt = "C3_TASK_ID: task-one\nC3_TASK_ID: task-two\n本文"
+        result = _run_hook(_agent_payload("developer", session_id=sid, prompt=prompt))
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert "task_id" in lines[0], "task_id キーが row に存在しなかった（未実装）"
+        assert lines[0]["task_id"] == "task-one"
+
+    def test_delimiter_variance_is_non_matching(self) -> None:
+        """(g) 区切りゆらぎ（タブ・スペース2個・全角コロン）→ いずれも非マッチで null。"""
+        variant_prompts = [
+            "C3_TASK_ID:\ttask-x",  # タブ区切り
+            "C3_TASK_ID:  task-x",  # スペース2個
+            "C3_TASK_ID：task-x",  # 全角コロン（U+FF1A）
+        ]
+        for prompt in variant_prompts:
+            sid = _new_session_id()
+            result = _run_hook(_agent_payload("developer", session_id=sid, prompt=prompt))
+            assert result.returncode == 0
+
+            lines = _read_jsonl_lines()
+            assert "task_id" in lines[-1], "task_id キーが row に存在しなかった（未実装）"
+            assert lines[-1]["task_id"] is None, f"区切りゆらぎで誤マッチした: {prompt!r}"
+
+    def test_secret_pattern_in_prompt_does_not_contaminate_task_id(self) -> None:
+        """(h) `token=...` 等の秘密パターンを含む prompt でも task_id が汚染されない。"""
+        sid = _new_session_id()
+        prompt = "C3_TASK_ID: dev-login\ntoken=sk-ABCDEFGHIJKLMNOP1234567890"
+        result = _run_hook(_agent_payload("developer", session_id=sid, prompt=prompt))
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert "task_id" in lines[0], "task_id キーが row に存在しなかった（未実装）"
+        assert lines[0]["task_id"] == "dev-login"
+        assert "token" not in lines[0]["task_id"]
+        assert "sk-" not in lines[0]["task_id"]
+
+    def test_tester_role_also_gets_task_id_in_row(self) -> None:
+        """(i) LAUNCH_LOG_ROLES の tester でも row に task_id が載る（抽出は全記録 role 共通・§3-5）。"""
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload("tester", session_id=sid, prompt="C3_TASK_ID: qa-check")
+        )
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["role_recorded"] == "tester"
+        assert "task_id" in lines[0], "task_id キーが row に存在しなかった（未実装）"
+        assert lines[0]["task_id"] == "qa-check"

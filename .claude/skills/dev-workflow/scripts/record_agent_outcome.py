@@ -20,11 +20,21 @@ Usage:
 
     | 優先 | ソース                                            | 対象                          |
     |----|--------------------------------------------------|-------------------------------|
-    | 1  | --tier（明示・TIERS 検証）                        | 全 role（並列/worktree 経路は常用申告） |
-    | 2  | applied-state（tier_autoapply.jsonl・session_id 一致の最新行） | _SOFT_APPLY_ROLES（developer） |
+    | 1  | --tier（明示・TIERS 検証）                        | 全 role（escape hatch・優先1 存続） |
+    | 2a | applied-state（session_id + role + task_id 全一致の最新行） | _SOFT_APPLY_ROLES（developer）かつ --task 指定時（T8・並列経路の task 突合） |
+    | 2b | applied-state（session_id + role 一致の最新行）     | 同上・2a が 0 件 or --task 未指定時（現行の優先2＝呼称のみ細分化） |
     | 3  | tier_selection.json の tier→suggested_model       | 同上・優先2 不成立時（フォールバック A 互換） |
     | 4  | agents/{role}.md frontmatter model:               | developer 以外、および 2・3 が不成立の developer |
     | 5  | 解決不能                                          | 記録スキップ（stderr 警告 + exit 0） |
+
+  T8（architecture §5）: 並列経路（wt_developer→developer）は起動プロンプトの
+  ``C3_TASK_ID:`` マーカーを tier_autoapply.py が jsonl の task_id に載せ、record は
+  ``--task`` 値と (session_id, role, task_id) 突合で実適用 tier を機械解決する（優先2a）。
+  これにより同一 session_id の複数 wt_developer を task 単位で一意分離し `--tier` 明示を
+  不要化した（ADR-AS-4 解消）。逐次経路は ``--task`` を渡すがマーカー未注入で全行
+  task_id=null のため優先2b で従来どおり解決する（挙動不変）。task 突合 0 件かつ当該
+  session/role に task_id 非 null 行が存在するとき（マーカー運用中の突合失敗）は record が
+  stderr へ 1 行警告する（§5-7・戻り値/exit code 不変の「警告のみ」）。
 
   --execution=subagent かつ role が _SOFT_APPLY_ROLES に含まれる場合（現状
   developer のみ）、--tier 省略時はまず applied-state を読む（優先2）。
@@ -42,9 +52,9 @@ Usage:
   推奨 Tier と異なる場合は必ず --tier に実際の tier を付す運用を dev-workflow
   SKILL.md 側が担う（本スクリプトは優先 1 で受けるのみでコード変更は無い）。
   並列（worktree isolation）経路は wt_developer→developer の記録を親 Claude
-  が main リポジトリで実行し、tier_selection.json を読まず常に --tier を
-  明示する（ADR-AS-4）。そのため本スクリプトは並列経路向けの追加コードを
-  持たず、優先 1（--tier 明示）を共用するだけで足りる。
+  が main リポジトリで実行するが、T8 以降は --tier を明示せず C3_TASK_ID:
+  マーカー由来の task_id を --task と (session_id, role, task_id) 突合して
+  優先2a で機械解決する（上記 L27-37 の新記述に一本化。ADR-AS-4 解消済み）。
   --execution=persona は --tier 省略時、frontmatter へも tier_selection.json
   へも fallback せず常に tier="unknown" 固定でイベントログのみ記録する
   （frontmatter/tier_selection は subagent の実使用 tier であり、persona の
@@ -379,26 +389,48 @@ def _iter_applied_state_capped_lines(path: str):
             yield raw.decode("utf-8", errors="replace")
 
 
-def _read_applied_tier(session_id: str | None, role: str, c3_pricing) -> str | None:
-    """applied-state（tier_autoapply.jsonl）から実適用 tier を解決する（優先2・§4-2）。
+def _read_applied_tier(
+    session_id: str | None, role: str, c3_pricing, task: str | None = None
+) -> str | None:
+    """applied-state（tier_autoapply.jsonl）から実適用 tier を解決する（優先2・§5）。
 
     フェーズ3で PreToolUse hook（tier_autoapply.py）が Agent 起動時の実適用値を
     session_id・role_recorded 付きで JSONL 追記する。record はこれを session_id
     一致で読むことで「適用者=記録 SSOT」を成立させる（tier_selection.json の
     推奨値を読む優先3 より優先する）。
 
+    優先2 の内部細分（T8・architecture §5-4。優先1/3/4 の体系は不変）:
+    - 優先2a（task-exact）: ``task`` 指定時、(session_id, role_recorded, task_id)
+      全一致の最新行を優先する。並列 wave（parallel-agents）で同一 session_id の
+      複数 wt_developer を task_id で一意分離し、`--tier` 明示なしに実適用 tier を
+      機械解決する（ADR-AS-4 解消）。task_id は起動プロンプトの ``C3_TASK_ID:``
+      マーカーを tier_autoapply.py が抽出して jsonl に載せた値。
+    - 優先2b（session-latest）: 優先2a が 0 件、または ``task`` 未指定（task=None）の
+      とき、(session_id, role_recorded) 一致の最新行（現行ロジックそのもの）を採用する。
+    - 後方互換: ``task=None`` では優先2a 候補が常に None のまま → 現行と bit 一致。
+      逐次経路は ``--task {plan タスクID}`` を渡すが ``C3_TASK_ID:`` マーカーを注入
+      しないため jsonl 全行が task_id=null で、優先2b で従来どおり解決される（挙動不変）。
+
     突合規則（_read_selection() と同じ防御思想）:
     - APPLIED_STATE_PATH 不在なら None。
     - session_id が None なら None（突合不能・§0-4 の NULL 制約。session_id
       NULL の行同士を突き合わせない）。
     - 行単位で json.loads し、壊れ行は skip（try/except continue）。
-    - session_id 一致 かつ role_recorded == role の行を収集し、最新
-      （末尾側／ts 最大）の model_applied を採用する。
+    - session_id 一致 かつ role_recorded == role の行を 1 パスで走査し、優先2b
+      候補（session+role 最新）と優先2a 候補（task 一致の最新）を同時収集する。
     - model_applied 非文字列（int/list/dict 等）は skip（resolve_tier の
       内部 .lower() による AttributeError 防止。soft-apply 側 L566-574 と同理由）。
       source=frontmatter-default（model_applied=null）の行は tier を持たない
       ため自然に skip される。
     - resolve_tier で正規化し _VALID_TIERS に含まれれば返す。
+
+    §5-7 additive 警告ガード（ADR-T8-9・C-3 R2 反映: DC-T8-AS-003）:
+    - ``task`` 指定・優先2a 0 件・かつ当該 (session_id, role) に task_id 非 null 行が
+      1 件以上存在する（``saw_task_id_row`` 真＝マーカー運用中）ときのみ、stderr へ
+      1 行の英語警告を出す（マーカー未注入 or task 表記ゆれ or tier 未注入による真の
+      突合失敗の可視化）。全行 task_id=null（＝マーカー未運用の純逐次）や task=None
+      では発火しない（逐次 crying-wolf 回避）。
+    - 警告のみで戻り値・exit code・chosen の決定式は一切変えない（fail-safe 不変）。
 
     Returns:
         解決できた正規化 tier 文字列、または解決不能なら None。
@@ -414,8 +446,12 @@ def _read_applied_tier(session_id: str | None, role: str, c3_pricing) -> str | N
         or os.path.islink(APPLIED_STATE_PATH)
     ):
         return None
-    latest_model: str | None = None
-    latest_ts: str | None = None
+    # 1 パス 2 候補収集（architecture §5-2・GP-003: 既存ループを土台に候補を 2 本化）。
+    latest_session_model: str | None = None  # 優先2b（session+role 最新・現行ロジック）
+    latest_session_ts: str | None = None
+    latest_task_model: str | None = None  # 優先2a（session+role+task 全一致の最新）
+    latest_task_ts: str | None = None
+    saw_task_id_row = False  # 当該 (session_id, role) に task_id 非 null 行が存在するか（§5-7）
     try:
         # item5(SR-NEW): 末尾優先で最大 5MB のみ走査する（_iter_applied_state_capped_lines）。
         for line in _iter_applied_state_capped_lines(APPLIED_STATE_PATH):
@@ -432,6 +468,11 @@ def _read_applied_tier(session_id: str | None, role: str, c3_pricing) -> str | N
                 continue
             if row.get("role_recorded") != role:
                 continue
+            # §5-7: マーカー運用中の検出。model_applied 非文字列ガードより前に判定
+            # する（frontmatter-default 行〈model_applied=null〉でも task_id が
+            # 非 null なら運用中と見なす。追加走査コストゼロ）。
+            if row.get("task_id") is not None:
+                saw_task_id_row = True
             model_applied = row.get("model_applied")
             if not isinstance(model_applied, str):
                 continue
@@ -440,18 +481,48 @@ def _read_applied_tier(session_id: str | None, role: str, c3_pricing) -> str | N
             # 最新（ts 最大）を採用。ts 同値/欠落時は後勝ち（末尾側）で
             # 上書きするため >= で比較する。ts プロファイルは
             # tier_autoapply.py と同一 UTC 秒精度 ISO8601（辞書順＝時系列）。
-            if latest_ts is None or ts_key >= latest_ts:
-                latest_ts = ts_key
-                latest_model = model_applied
+            # 優先2b 候補（session+role 最新）＝現行ロジックそのもの。
+            if latest_session_ts is None or ts_key >= latest_session_ts:
+                latest_session_ts = ts_key
+                latest_session_model = model_applied
+            # 優先2a 候補（task 指定時のみ・session+role+task 全一致の最新）。
+            if task is not None and row.get("task_id") == task:
+                if latest_task_ts is None or ts_key >= latest_task_ts:
+                    latest_task_ts = ts_key
+                    latest_task_model = model_applied
     except OSError as exc:
         print(
             f"[record_agent_outcome] failed to read applied-state: {exc}",
             file=sys.stderr,
         )
         return None
-    if latest_model is None:
+    # 決定: task-exact（優先2a）を優先し、0 件なら session-latest（優先2b）へ。
+    chosen = latest_task_model if latest_task_model is not None else latest_session_model
+    # §5-7 additive 警告: task 指定・優先2a 0 件・かつマーカー運用中（saw_task_id_row 真）
+    # のときのみ 1 行警告する（戻り値/exit code/chosen は不変・fail-safe 不変）。
+    # 安全性根拠（SR-K-003 解消）: --task 値（task 変数）自体は allowlist 検証を受けない。
+    # allowlist（[A-Za-z0-9._\-]）が適用されるのは tier_autoapply.py の task_id 抽出
+    # 経路のみで、--task CLI 引数経路には存在しない（_truncate は文字数/バイト数の
+    # 切り詰めのみで文字種検証はしない）。この警告文の安全性は下記の二段で担保する:
+    # (1) _mask_secrets(task) で既知の秘密パターン（token=/api_key=/Bearer/PEM 等）を
+    #     *** に潰す（allowlist 非検証の --task に秘密様文字列が混入しても stderr へ
+    #     生の秘密を出さない・display-only）。
+    # (2) その結果を {...!r} で repr エスケープする（制御文字・改行・引用符混入時も
+    #     1 行維持・インジェクション不成立）。
+    # マスクは警告表示だけに閉じる（chosen 決定・突合・DB note は生の task を使う）。
+    # 将来 !r を !s 等へ変更する／_mask_secrets 適用を外すリファクタが入るとこの前提
+    # （二段防御）が崩れるため、_mask_secrets(task) + !r 依存であることに留意する。
+    if task is not None and latest_task_model is None and saw_task_id_row:
+        print(
+            f"[record_agent_outcome] --task {_mask_secrets(task)!r} specified but no matching "
+            "(session,role,task) row in applied-state though task_id rows exist "
+            "for this session/role; falling back to session-latest (priority 2b). "
+            "marker not injected or task mismatch?",
+            file=sys.stderr,
+        )
+    if chosen is None:
         return None
-    resolved = c3_pricing.resolve_tier(latest_model)
+    resolved = c3_pricing.resolve_tier(chosen)
     if resolved in _VALID_TIERS:
         return resolved
     return None
@@ -698,14 +769,18 @@ def main(argv: list[str] | None = None) -> int:
         # 一致で読む。role が soft-apply 対象のときのみ突合する（tester 等は
         # _SOFT_APPLY_ROLES 外なので applied-state を読まない・role gating）。
         if role in _SOFT_APPLY_ROLES:
-            tier = _read_applied_tier(session_id, role, c3_pricing)
+            # T8: 切り詰め済み task を突合キーとして配線（優先2a）。task=None の
+            # 従来呼び出し・逐次経路（マーカー未注入）は優先2b で従来どおり解決。
+            tier = _read_applied_tier(session_id, role, c3_pricing, task=task)
         # 優先 3（降格・旧優先2）: role が soft-apply 対象（_SOFT_APPLY_ROLES）なら
         # tier_selection.json の tier（無ければ suggested_model）を
         # resolve_tier で正規化し、_VALID_TIERS に含まれれば採用する。
         # 優先2（applied-state）が不成立のとき（applied-state 不在／session_id
         # 不一致／kill-switch で jsonl に行が無い等）のフォールバック A 互換。
-        # 逐次経路（worktree なし）のみが対象。並列（worktree）経路は親が
-        # --tier を明示するため優先 1 で解決され、ここには来ない（ADR-AS-4）。
+        # 逐次経路（worktree なし）はマーカー未注入で優先2b により解決される。
+        # 並列（worktree）経路は T8 以降 --tier を渡さないため、task_id 突合
+        # （優先2a/2b）が不成立の場合はこの優先3フォールバックに到達しうる
+        # （ADR-AS-4 解消後は「ここには来ない」という言い切りは成立しない）。
         if tier is None and role in _SOFT_APPLY_ROLES and selection is not None:
             soft_apply_raw = selection.get("tier") or selection.get("suggested_model")
             # 非文字列ガード: resolve_tier() は内部で無条件に model.lower() を

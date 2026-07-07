@@ -2634,3 +2634,538 @@ class TestAppliedStatePathResolution:
             "record と tier_autoapply.py（hook）が計算する applied-state の"
             "絶対パスが一致しなかった（_CLAUDE_DIR 機構の遡り段数不一致の疑い）"
         )
+
+
+# ---------------------------------------------------------------------------
+# Group 12 追加（T8-T2・plan-report-20260707-164606.md test-t2・
+# architecture-report-20260707-163654.md §5/§5-7/§10-2）
+#
+# 対象: _read_applied_tier() の task 突合（優先2a=task-exact／優先2b=
+# session-latest）と §5-7 additive 警告ガード（saw_task_id_row）。
+#
+# 現行実装（本ファイル対象・T2 未実施）は _read_applied_tier(session_id,
+# role, c3_pricing) の 3 引数シグネチャのままで task キーワード引数を
+# 持たず、main() の L700-701 も --task の値を _read_applied_tier へ配線
+# していない（`task=task` が渡らない）。そのため以下の (a) task-exact
+# 優先を要求するケースと (e) 警告発火ケースは「機能未実装」を理由に Red
+# で落ちるのが正しい（テスト側のタイポ・記法崩れによる赤ではない）。
+# (b)(c)(d)(f)(g) と GP-004 劣化固定ケースは、現行の session-latest
+# フォールバックと警告未実装（＝常時非発火）という現状の挙動と一致する
+# ため緑のまま通る（将来実装後も不変であるべき回帰固定ケース）。
+#
+# 既存 Group12 の row 定義（ts/session_id/subagent_type/role_recorded/
+# model_applied/source/prompt_prefix の 7 フィールド）はここでも変更せず、
+# task_id キーのみ additive に追加した行を新規に書く（既存クラス側の row
+# 定義・テスト本体は一切変更していない＝後方互換）。
+# ---------------------------------------------------------------------------
+
+
+class TestTaskMatchPriority:
+    """優先2a（task-exact）の実効性: 同一 session・role で異なる task_id・
+    異なる tier の 2 行がある場合、--task 指定で該当 task の tier が
+    session-latest（優先2b）ではなく task-exact 行から採用される。"""
+
+    def test_task_exact_row_wins_over_session_latest_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-t2-priority")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-priority",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "opus",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-x",
+            },
+            {
+                # session-latest（ts 最大）だが task_id が異なる行。task-exact
+                # 突合（優先2a）が実装されていれば採用されてはならない。
+                "ts": "2026-07-07T09:00:00+00:00",
+                "session_id": "sess-t2-priority",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-y",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_task_match_priority")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "dev-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "opus") is not None, (
+            "task-exact（優先2a）行の model_applied=opus が採用されなかった"
+            "（_read_applied_tier に task 突合が未実装の Red 想定挙動）"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is None, (
+            "task 不一致の session-latest 行（優先2b 相当）が誤って優先2a"
+            "より優先された"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is None, (
+            "task-exact 行が存在するのに frontmatter（優先4）へ落ちている"
+        )
+
+
+class TestTaskMatchFallback:
+    """優先2a 0 件（task 不一致）→ 優先2b（session-latest）へフォールバック。"""
+
+    def test_task_mismatch_falls_back_to_session_latest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-t2-fallback")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-fallback",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-other",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: opus")
+        mod = _load_hook_module("rao_task_match_fallback")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "dev-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None, (
+            "task 不一致（優先2a 0 件）で優先2b（session-latest）へ"
+            "フォールバックしていない"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "opus") is None
+
+
+class TestTaskNoneRegression:
+    """task=None 回帰: --task 未指定なら現行と bit 一致（優先2b のみ）。
+    既存 developer subagent テスト（TestAppliedStateLatestRowSelection 等）
+    が緑のままであることの後方互換の要。"""
+
+    def test_task_none_ignores_task_id_and_uses_session_latest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-t2-none")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-none",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "opus",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-x",
+            },
+            {
+                "ts": "2026-07-07T09:00:00+00:00",
+                "session_id": "sess-t2-none",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-y",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_task_none_regression")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None, (
+            "--task 未指定で session-latest（優先2b・ts 最大）行が"
+            "採用されなかった（task=None 回帰）"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "opus") is None
+
+
+class TestTaskMatchGuardsPreserved:
+    """壊れ行 skip・非文字列 model_applied ガード・ts 最大採用が task 突合
+    （優先2a）の走査でも維持される。"""
+
+    def test_broken_and_nonstring_rows_skipped_under_task_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-t2-guards")
+        nonstring_row = json.dumps(
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-guards",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": 123,
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-x",
+            },
+            ensure_ascii=False,
+        )
+        valid_task_row = json.dumps(
+            {
+                "ts": "2026-07-07T08:01:00+00:00",
+                "session_id": "sess-t2-guards",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "opus",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-x",
+            },
+            ensure_ascii=False,
+        )
+        other_task_latest_row = json.dumps(
+            {
+                "ts": "2026-07-07T09:00:00+00:00",
+                "session_id": "sess-t2-guards",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-y",
+            },
+            ensure_ascii=False,
+        )
+        _write_applied_state_raw_lines(
+            applied_path,
+            ["{not valid json,,,", nonstring_row, valid_task_row, other_task_latest_row],
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_task_match_guards")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "dev-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "opus") is not None, (
+            "task-exact 行の中で壊れ行・非文字列 model_applied を skip し、"
+            "ts 最大の有効行（opus）が採用されなかった"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is None, (
+            "task 不一致の session-latest 行（haiku）が誤って優先2a より"
+            "優先された"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is None
+
+
+class TestTaskMatchWarningGuard:
+    """§5-7 additive 警告ガード（ADR-T8-9・C-3 R2 反映: DC-T8-AS-003 是正後）:
+    task 指定・優先2a 0 件・かつ当該 session/role に task_id 非 null 行が
+    存在する（saw_task_id_row 真）ときのみ stderr へ 1 行警告する。§10-2 の
+    3 象限（(e) 発火／(f) 逐次相当・非発火／(g) task=None 非発火）を capsys
+    で固定する。"""
+
+    def test_warning_fires_when_task_id_rows_exist_but_task_mismatches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """(e) 発火ケース: マーカー運用中（task_id 非 null 行あり）だが
+        --task 指定値に一致する行が無い（優先2a 0 件）→ stderr に正準文言
+        （§5-7）の一部（substring）が出る。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-t2-warn-fire")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-warn-fire",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-other",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: opus")
+        mod = _load_hook_module("rao_task_warn_fire")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "dev-x",
+        ])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "though task_id rows exist" in err, (
+            "saw_task_id_row=True かつ優先2a 0 件で発火すべき警告（正準文言"
+            "の一部 'though task_id rows exist'）が stderr に出ていない"
+            "（§5-7 未実装の Red 想定挙動）"
+        )
+        assert "falling back to session-latest (priority 2b)" in err, (
+            "警告文言に正準文言の一部 'falling back to session-latest "
+            "(priority 2b)' が含まれていない"
+        )
+        # fail-safe 不変: 警告のみで tier 解決結果（優先2b）は変わらない
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None
+
+    def test_warning_silent_when_all_rows_task_id_null_with_task_specified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """(f) 逐次相当・非発火ケース（必須・AS-003 是正の中核）: 当該
+        session/role の全行が task_id=null（マーカー未注入＝逐次
+        dev-workflow が per-task ゲートで `--task` を渡す状況相当）で
+        --task 指定 → saw_task_id_row=False のため警告は出ない
+        （crying-wolf 回避）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(
+            sel_path, tier="sonnet", session_id="sess-t2-warn-silent-seq"
+        )
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-warn-silent-seq",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": None,
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: opus")
+        mod = _load_hook_module("rao_task_warn_silent_seq")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "plan-task-id",
+        ])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "though task_id rows exist" not in err, (
+            "全行 task_id=null（逐次相当）で --task 指定時に警告が誤発火した"
+            "（逐次 dev-workflow の crying-wolf 回帰・AS-003 是正の中核）"
+        )
+        # 優先2b で従来どおり解決される（逐次経路無影響）
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None
+
+    def test_warning_silent_when_task_not_specified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """(g) task=None・非発火ケース: --task 未指定では発火条件の第1項が
+        不成立のため警告は出ない。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(
+            sel_path, tier="sonnet", session_id="sess-t2-warn-silent-none"
+        )
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-warn-silent-none",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-other",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: opus")
+        mod = _load_hook_module("rao_task_warn_silent_none")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "though task_id rows exist" not in err, (
+            "--task 未指定（task=None）で警告が誤発火した"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None
+
+    def test_warning_masks_secret_like_task_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        """(SR-K-003) 発火時の秘密マスク: マーカー運用中（task_id 非 null 行あり）
+        で --task に秘密様文字列（token=deadbeef）を含む値を渡し優先2a 0 件で
+        §5-7 警告が発火するとき、stderr の --task 値は _mask_secrets により
+        token=*** へ伏せられ、生の token=deadbeef は出力されなかった。正準
+        substring（though task_id rows exist）は不変で literal テンプレートが
+        壊れていないことも固定した。突合は生の task 値で行われ tier 解決は
+        優先2b（haiku）のまま fail-safe 不変だった。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(
+            sel_path, tier="sonnet", session_id="sess-t2-warn-mask"
+        )
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-warn-mask",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": "dev-other",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: opus")
+        mod = _load_hook_module("rao_task_warn_mask")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "dev-x token=deadbeef",
+        ])
+        assert rc == 0
+        err = capsys.readouterr().err
+        # 発火していること（正準 literal は不変）
+        assert "though task_id rows exist" in err, (
+            "秘密様 --task 値でも saw_task_id_row=True かつ優先2a 0 件なら"
+            "§5-7 警告が発火すべき（正準 substring 不変）"
+        )
+        # 秘密パターンの値はマスクされる
+        assert "token=***" in err, (
+            "警告 print の --task 値に _mask_secrets が適用されず token=*** に"
+            "マスクされていない（SR-K-003 未修正の Red 想定挙動）"
+        )
+        # 生の秘密値は出力されない
+        assert "deadbeef" not in err, (
+            "生の秘密値 'deadbeef' が stderr にマスクなしで出力された"
+            "（SR-K-003 情報漏洩）"
+        )
+        # fail-safe 不変: 突合は生 task 値で行われ tier 解決は優先2b（haiku）
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None
+
+
+class TestTaskMatchGp004DegradationFixed:
+    """GP-004 劣化固定（frontmatter test-t2 の (a)〜(g) とは別立ての追加
+    ケース・C-3 R2 反映で警告発火期待は撤回済み）: --task 指定・当該
+    session の developer 行が全て task_id=null（マーカー未注入）で、その
+    うちに別 tier の developer 行が併存する場合、優先2a は 0 件（X 不一致）
+    で優先2b が session 最新行（別 tier）の tier を拾う劣化が仕様として
+    意図された挙動であることを固定する。全行 task_id=null ゆえ (f) と同様
+    に警告は非発火（R2 で警告発火期待は撤回）。"""
+
+    def test_all_null_task_id_rows_falls_back_to_session_latest_tier_without_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path, capsys: pytest.CaptureFixture,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-t2-gp004")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-t2-gp004",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "opus",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": None,
+            },
+            {
+                # 別 tier・session 最新行（マーカー未注入で task_id=null のまま）
+                "ts": "2026-07-07T09:00:00+00:00",
+                "session_id": "sess-t2-gp004",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+                "task_id": None,
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_task_gp004_degradation")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "dev-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None, (
+            "GP-004 劣化固定: 全行 task_id=null のとき優先2b が session"
+            "最新行（別 tier）を拾う挙動が崩れている"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "opus") is None
+        err = capsys.readouterr().err
+        assert "though task_id rows exist" not in err, (
+            "GP-004 劣化ケース（全行 task_id=null）で警告が誤発火した"
+            "（C-3 R2 で警告発火期待は撤回済み）"
+        )
