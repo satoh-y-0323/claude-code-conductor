@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.48.0] - 2026-07-07
+
+### 追加
+
+- **並列経路の record `--tier` 明示を不要化（T8・ADR-AS-4 解消）**: applied-state（`.claude/state/tier_autoapply.jsonl`）に `task_id` フィールドを追加し、`record_agent_outcome.py` が `(session_id, role, task_id)` の全一致で実適用 tier を一意解決できるようにした（優先2a）。並列 wave 内の複数 wt_developer が同一 session_id でも task 単位で分離される。task 一致行が 0 件なら従来の「session 最新行」（優先2b）へフォールバックし後方互換（task 未指定の逐次経路は挙動 bit 一致）。`--tier` 明示は優先1 の escape hatch として存続
+- **`C3_TASK_ID:` マーカー**: parallel-agents skill の起動プロンプトに機械可読マーカー行（`C3_TASK_ID: {task_id}`）を必須注入し、`tier_autoapply.py` が行頭アンカー＋厳格書式（`[A-Za-z0-9._-]{1,200}`・first-match）で抽出して jsonl に記録する。allowlist が制御文字・秘密情報パターンを構造的に排除（誤抽出・秘密混入・ReDoS 耐性を security-review で確認済み）。マーカー不在（逐次経路等）は `task_id: null` で従来挙動
+- **2b フォールバック警告（additive）**: record が `--task` 指定かつ task 一致 0 件かつ当該 session/role に task_id 非 null 行が存在する場合のみ、stderr に 1 行警告（マーカー運用中の真の突合失敗に限定・純逐次 0 回・並列正常 0 回の発火設計・警告のみで戻り値/exit code 不変・task 値は `_mask_secrets`＋repr の二段防御で表示）
+
+### 変更
+
+- parallel-agents SKILL.md: 2-E / 2-F-4 の wt_developer 向け `--tier` 付与ルールと bash 例を撤去し「applied-state task 突合で機械解決・`--task` は突合の必須キー」に一本化。2-C にマーカー注入手順（三者一致責務: 親 Claude が同一 task_id 変数から description / マーカー / `--task` へ転記）と不均質 wave でのマーカー必須性を明記。wt_tester の「`--tier` を付けない」は不変
+- 旧 ADR-AS-4 注記（「worktree state 分離で session_id 一致でも読めないことがある」）は E2E 実測（並列 wt_developer×2）で反証し解消形に更新: hook の書き込み先は cwd リーク下でも `__file__` 基準で常に main の `.claude/state/`（worktree 側 jsonl 0 件を実測確認）
+
+### 後方互換
+
+- 全て additive（jsonl はキー追加のみ・既存 7 フィールド不変・読者 `tier_gap_check.py` は無改修で耐性確認済み・record は task 未指定経路が bit 一致・DB migration なし）。既存 fail-safe（kill-switch `C3_TIER_AUTOAPPLY_DISABLE`・全例外 exit 0・壊れ行 skip・5MB 上限・symlink 防御）は不変。**破壊的変更なし**
+
 ## [2.47.0] - 2026-07-07
 
 ### 追加
