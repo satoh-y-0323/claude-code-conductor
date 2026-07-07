@@ -35,11 +35,11 @@ user-invocable: false
 - `--note` は指摘本文を逐語引用せず、シェルメタ文字（引用符・バッククォート・`$` 等）を含まない短い要約で書く（コマンドライン展開事故・シェルインジェクションを避けるため。record_agent_outcome.py 側で長さ上限と秘密情報マスクも適用されるが、そもそも逐語引用しないことが第一防御）
 - 全エラー exit 0 のため呼び出しが失敗してもワークフローは止めない（記録漏れの可能性はあるが後続フェーズはブロックしない）
 
-**ソフト適用（推奨 Tier の `model:` 指定・ADR-AS-1/ADR-AS-2）:**
+**機械適用（推奨 Tier の `model:` 自動注入・ADR-AS-1・フェーズ3）:**
 
-- developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）では、`[tier-routing 推奨]` が指示した推奨 Tier を Agent 呼び出しの `model:` に明示指定する（ソフト適用・学習データ収集中の期間も含め常に適用する。fork は model 上書き不可のため対象外）。**tester / systematic-debugger は対象外**で従来どおり frontmatter 任せとする。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
+- developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）では、PreToolUse hook（`tier_autoapply.py`）が `[tier-routing 推奨]` の推奨 Tier を Agent 呼び出しの `model:` に自動適用する（機械適用・学習データ収集中の期間も含め常に適用する。親 Claude が `model:` を転記する必要はない。fork は model 上書き不可のため対象外）。推奨と異なる Tier を使いたい場合のみ Agent 呼び出しで `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。**tester / systematic-debugger は対象外**で従来どおり frontmatter 任せとする。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
 - **推奨 Tier の SSOT**: 「推奨 Tier」の唯一のソースは `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、`[tier-routing 推奨]` の additionalContext テキストはその値を人間可読に射影した派生表示で SSOT ではない。この値は kickoff プロンプトの UserPromptSubmit で select_tier が 1 度だけ書き、E-2 の `--final` で削除されるまで wave/ゲートをまたいで安定する（承認応答は UserPromptSubmit を発火しないため途中で上書きされない）。
-- developer の record ブロックは**原則 `--tier` を付けない**（record_agent_outcome.py が tier_selection.json から実適用 tier を機械解決する。tier 値の LLM 申告を行わない）。**例外（機械条件・ADR-AS-2）**: developer 起動時に指定した `model:` が推奨 Tier（tier_selection.json.tier）と**異なる値だった場合は、必ずその実際に指定した値を `--tier {実 model の tier}` に付けて**実態を記録する（「指定 model: ≠ 推奨 Tier なら必ず付与」という観測可能な二値条件で判定する）。
+- developer の record ブロックは**`--tier` を付けない**（tier_autoapply.py が実適用 model を `.claude/state/tier_autoapply.jsonl` に記録し、record_agent_outcome.py が applied-state を session_id 一致で読んで実適用 tier を機械解決する＝適用者=記録 SSOT。tier 値の LLM 申告を行わない。明示指定で推奨と異なる Tier を使った場合も、その実適用値が applied-state に記録されるため `--tier` の付与は不要）。
 
 **集計注記**（DC-AS-002 / ADR-25-3）:
 
@@ -521,7 +521,7 @@ Agent ツールで `tester` エージェントを起動する。→ 失敗する
 
 ### D-2: developer（Green フェーズ）
 
-Agent ツールで `developer` エージェントを起動する（`model:` に推奨 Tier を指定・上記「tier-routing 結果記録の運用」節参照）。→ テストが通る実装を行う。
+Agent ツールで `developer` エージェントを起動する（`model:` は tier_autoapply hook が推奨 Tier を自動適用・上記「tier-routing 結果記録の運用」節参照）。→ テストが通る実装を行う。
 
 ### D-2.5: Stuck チェック
 
@@ -537,7 +537,7 @@ Glob で `.claude/reports/debug-needed-*.md` の最新を確認する。
    ```
 1. Agent ツールで `systematic-debugger` を起動する。プロンプトに debug-needed ファイルのパスのみを含め、内容は agent 側で Read させる（プロンプトに直接展開しない）[SR-AI-001]
 2. 生成された `.claude/reports/debug-analysis-*.md` を Glob で取得してパスのみコンテキストに保持する（内容は次段で agent に Read させる）
-3. D-2 の developer を再実行する（`model:` に推奨 Tier を指定・上記「tier-routing 結果記録の運用」節参照）。プロンプトに debug-analysis の**ファイルパスのみ**を含め、内容は agent 側で Read させる（プロンプトに展開しない）[SR-AI-001]
+3. D-2 の developer を再実行する（`model:` は tier_autoapply hook が推奨 Tier を自動適用・上記「tier-routing 結果記録の運用」節参照）。プロンプトに debug-analysis の**ファイルパスのみ**を含め、内容は agent 側で Read させる（プロンプトに展開しない）[SR-AI-001]
 4. debug-needed ファイルを削除する
 
 **ファイルが存在しない場合:** そのまま次へ進む
@@ -606,7 +606,7 @@ python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 
 ### D-4: developer（Refactor フェーズ）
 
-Agent ツールで `developer` エージェントを起動する（`model:` に推奨 Tier を指定・上記「tier-routing 結果記録の運用」節参照）。→ テストを壊さずにコードを整理する。
+Agent ツールで `developer` エージェントを起動する（`model:` は tier_autoapply hook が推奨 Tier を自動適用・上記「tier-routing 結果記録の運用」節参照）。→ テストを壊さずにコードを整理する。
 
 完了後 → セッションファイルの `- [ ] developer: Refactor フェーズ` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズD 実装中 / 次ゲート: tester 最終確認` に Edit する。
 
@@ -722,13 +722,13 @@ python .claude/skills/dev-workflow/scripts/record_review_decision.py \
   --reviewer code-reviewer
 ```
 
-**tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（frontmatter/tier_selection から自己解決）、architect/planner の場合は `--tier` も明記する）:
+**tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する）:
 ```bash
 python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role {developer|tester|architect|planner（帰属判定）} --outcome failure --gate E-1 \
   --execution {developer・tester=subagent / architect・planner=persona} \
   --complexity {セッションファイルの tier-routing複雑度: 行の値} \
-  --tier {developer・tester は省略（frontmatter/tier_selection から自己解決） / architect・planner は親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown} \
+  --tier {developer・tester は省略（applied-state/tier_selection/frontmatter から自己解決） / architect・planner は親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown} \
   --note "{帰属理由を1行で（コード断片の逐語引用禁止）}"
 ```
 
@@ -755,13 +755,13 @@ python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
    ```
 4. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 5. セッションファイルの `- [ ] code-review` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズC 計画中（レビュー差し戻し）` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
-6. **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（frontmatter/tier_selection から自己解決）、architect/planner の場合は `--tier` も明記する）:
+6. **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する）:
    ```bash
    python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
      --role {developer|tester|architect|planner（帰属判定）} --outcome failure --gate E-1 \
      --execution {developer・tester=subagent / architect・planner=persona} \
      --complexity {セッションファイルの tier-routing複雑度: 行の値} \
-     --tier {developer・tester は省略（frontmatter/tier_selection から自己解決） / architect・planner は親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown} \
+     --tier {developer・tester は省略（applied-state/tier_selection/frontmatter から自己解決） / architect・planner は親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown} \
      --note "{帰属理由を1行で（コード断片の逐語引用禁止）}"
    ```
 
@@ -863,13 +863,13 @@ python .claude/skills/dev-workflow/scripts/record_review_decision.py \
   --reviewer security-reviewer
 ```
 
-**tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（frontmatter/tier_selection から自己解決）、architect/planner の場合は `--tier` も明記する）:
+**tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する）:
 ```bash
 python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role {developer|tester|architect|planner（帰属判定）} --outcome failure --gate E-2 \
   --execution {developer・tester=subagent / architect・planner=persona} \
   --complexity {セッションファイルの tier-routing複雑度: 行の値} \
-  --tier {developer・tester は省略（frontmatter/tier_selection から自己解決） / architect・planner は親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown} \
+  --tier {developer・tester は省略（applied-state/tier_selection/frontmatter から自己解決） / architect・planner は親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown} \
   --note "{帰属理由を1行で（コード断片の逐語引用禁止）}"
 ```
 
@@ -896,13 +896,13 @@ python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
    ```
 4. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 5. セッションファイルの `- [ ] security-review` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズC 計画中（レビュー差し戻し）` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
-6. **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（frontmatter/tier_selection から自己解決）、architect/planner の場合は `--tier` も明記する）:
+6. **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する）:
    ```bash
    python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
      --role {developer|tester|architect|planner（帰属判定）} --outcome failure --gate E-2 \
      --execution {developer・tester=subagent / architect・planner=persona} \
      --complexity {セッションファイルの tier-routing複雑度: 行の値} \
-     --tier {developer・tester は省略（frontmatter/tier_selection から自己解決） / architect・planner は親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown} \
+     --tier {developer・tester は省略（applied-state/tier_selection/frontmatter から自己解決） / architect・planner は親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown} \
      --note "{帰属理由を1行で（コード断片の逐語引用禁止）}"
    ```
 

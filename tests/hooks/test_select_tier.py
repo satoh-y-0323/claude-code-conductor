@@ -209,17 +209,19 @@ class TestContextAndStateFile:
 
 
 # ---------------------------------------------------------------------------
-# [v2.41.0 select-tier-hook Phase 0] build_additional_context の誤り文言修正
+# [tier-routing 機械適用（フェーズ3）] build_additional_context の文言
 #
-# 旧文言「エージェント定義の frontmatter 指定が優先される」は事実誤りだった
-# （実際には frontmatter はデフォルトに過ぎず、Agent 呼び出し時に model: を
-# 明示指定すれば上書きできる。fork のみ例外。architecture-report §3-5 / ADR-3）。
-# 新文言は developer セル固定の推奨であることも明示する。
+# フェーズ3で PreToolUse hook（tier_autoapply）が推奨 Tier を model: へ機械適用する
+# ようになったため、additionalContext は「親が model: を明示指定して適用せよ」という
+# 指示形（フェーズ2ソフト適用）から「hook が自動適用する・推奨と異なる Tier を
+# 使いたい時のみ model: を明示指定する（明示は尊重される）」へ移行した。
+# developer 基準の推奨表示・fork 除外・role gating は維持した。
+# architecture-report-20260707-065043.md §6（本実装分岐）。
 # ---------------------------------------------------------------------------
 
 
 class TestPhase0BuildAdditionalContextWording:
-    """build_additional_context の Phase 0 文言修正テスト。"""
+    """build_additional_context の機械適用文言テスト。"""
 
     def _params(self) -> dict:
         return {
@@ -229,59 +231,53 @@ class TestPhase0BuildAdditionalContextWording:
         }
 
     def test_old_incorrect_wording_removed(self) -> None:
-        """旧文言「frontmatter 指定が優先される」（事実誤り）が含まれないこと。"""
+        """旧文言「frontmatter 指定が優先される」（事実誤り）が含まれなかった。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "sonnet", "thompson", self._params())
         assert "frontmatter 指定が優先される" not in text
         assert "frontmatter 指定" not in text
 
     def test_new_wording_mentions_developer_baseline(self) -> None:
-        """新文言に「developer 基準」が含まれること（ADR-3: 推奨は developer セル固定）。"""
+        """新文言に「developer 基準」が含まれた（ADR-3: 推奨は developer セル固定）。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "sonnet", "thompson", self._params())
         assert "developer 基準" in text
 
     def test_new_wording_explains_override_via_explicit_model(self) -> None:
-        """新文言に「Agent 呼び出し時に model: を明示指定すれば上書きできます（fork を除く）」
-        相当の正確な説明が含まれること。"""
+        """新文言に「推奨と異なる Tier を使いたい場合のみ model: を明示指定する・
+        明示指定は尊重され hook に上書きされない（fork は対象外）」相当の説明が含まれていた。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "sonnet", "thompson", self._params())
         assert "model:" in text
-        assert "上書きできます" in text
-        assert "fork を除く" in text
+        assert "明示指定" in text
+        assert "尊重" in text
+        assert "fork" in text
 
-    def test_new_wording_mentions_frontmatter_as_default_not_priority(self) -> None:
-        """frontmatter は「デフォルト」であって「優先される」ものではないという
-        正確なニュアンスが文言に反映されていること。"""
+    def test_new_wording_mentions_hook_autoapply(self) -> None:
+        """機械適用（tier_autoapply hook が推奨 Tier を model: へ自動適用する）が
+        文言に反映されていた（フェーズ3・本実装分岐）。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "sonnet", "thompson", self._params())
-        assert "frontmatter" in text
-        assert "デフォルト" in text
+        assert "自動適用" in text
+        assert "tier_autoapply" in text
 
 
 # ---------------------------------------------------------------------------
-# [tier-routing 自動適用（フェーズ2）] build_additional_context 指示形文言
-# （architecture-report-20260703-081149.md §3-2・plan-report-20260703-082727.md
-# B1・design-review-report-20260703-084500.md DC-AM-002 反映）
+# [tier-routing 機械適用（フェーズ3）] build_additional_context 機械適用文言
+# （architecture-report-20260707-065043.md §6 本実装分岐・
+# plan-report-20260707-065732.md T5 反映）
 #
-# ソフト適用（developer / wt_developer の Agent 呼び出し model: に推奨 Tier を
-# 明示指定させる指示）を additionalContext に追加する。現行実装（Phase 0 文言・
-# 上記 TestPhase0BuildAdditionalContextWording が検証する文言）は推奨の提示に
-# 留まり、末尾は「コスト最適化したい場合は手動指定してください。」という
-# 手動判断に委ねる弱い文言のままである。本セクションの新規アサーションは
-# いずれも現行実装に対して赤（新規指示テキストが存在しないため）。
-#
-# 設計メモ（developer への申し送り）: 上記 TestPhase0BuildAdditionalContextWording
-# の既存アサーション（developer 基準・frontmatter・デフォルト・上書きできます・
-# fork を除く）はここでは意図的に変更していない。新指示ブロックは既存文言の
-# 「コスト最適化したい場合は手動指定してください。」の部分のみを置換／削除する
-# 加算的な変更として実装すれば、新旧アサーション双方を同時に満たせる
-# （test-report 側で実行結果と合わせて詳細を記載）。
+# フェーズ2 のソフト適用（親が model: を明示指定して適用する指示形）を、
+# フェーズ3 の機械適用（PreToolUse hook tier_autoapply が推奨 Tier を model: へ
+# 自動注入する）へ移行した。additionalContext は「hook が自動適用する・推奨と
+# 異なる Tier を使いたい時のみ model: を明示指定する（明示は尊重される）」旨へ
+# 書き換えた。fork 除外・role gating（developer/wt_developer 限定）・推奨 Tier の
+# 表示は維持した。
 # ---------------------------------------------------------------------------
 
 
 class TestSoftApplyDirectiveWording:
-    """新 additionalContext 文言（指示形・ソフト適用対象明記）のアサーション。"""
+    """機械適用 additionalContext 文言（自動適用・対象明記）のアサーション。"""
 
     def _params(self) -> dict:
         return {
@@ -299,38 +295,38 @@ class TestSoftApplyDirectiveWording:
 
     def test_old_manual_opt_in_phrase_removed(self) -> None:
         """旧文言「コスト最適化したい場合は手動指定してください」（手動判断に
-        委ねる弱い提示）は除去されていること。"""
+        委ねる弱い提示）は除去されていた。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
         assert "コスト最適化したい場合は手動指定してください" not in text
 
-    def test_directive_form_present(self) -> None:
-        """指示形（「〜すること」の命令形）で developer/wt_developer への適用を
-        明記すること。「指示:」マーカーと「適用すること」を含む。"""
+    def test_hook_autoapply_directive_present(self) -> None:
+        """hook（tier_autoapply）が推奨 Tier を model: へ自動適用する旨が
+        明記されていた（フェーズ3・機械適用）。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
-        assert "指示:" in text
-        assert "適用すること" in text
+        assert "自動適用" in text
+        assert "tier_autoapply" in text
 
-    def test_model_tier_instruction_uses_effective_tier(self) -> None:
-        """model: {tier} の形で実効 tier（引数の tier。main() からは
-        effective_tier が渡される）を指示に含めること。"""
+    def test_recommended_tier_shown_in_display(self) -> None:
+        """推奨 Tier: {tier} の形で実効 tier（引数の tier。main() からは
+        effective_tier が渡される）が推奨表示に含まれていた。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
-        assert "model: haiku" in text
+        assert "推奨 Tier: haiku" in text
 
         text_opus = mod.build_additional_context("complex", "opus", "thompson", self._params())
-        assert "model: opus" in text_opus
+        assert "推奨 Tier: opus" in text_opus
 
     def test_developer_and_wt_developer_both_named(self) -> None:
-        """developer と wt_developer の両方が適用対象として明記されること。"""
+        """developer と wt_developer の両方が適用対象として明記されていた。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
         assert "developer" in text
         assert "wt_developer" in text
 
     def test_fork_excluded_from_application(self) -> None:
-        """fork は model 上書き不可のため対象外であることが明記されること。"""
+        """fork は model 上書き不可のため対象外であることが明記されていた。"""
         mod = _load_hook_module()
         text = mod.build_additional_context("medium", "haiku", "thompson", self._params())
         assert "fork" in text
@@ -339,8 +335,8 @@ class TestSoftApplyDirectiveWording:
         assert text.count("対象外") >= 2
 
     def test_applies_during_uniform_period_too(self) -> None:
-        """学習データ収集中（uniform モード）でも常に適用する旨が明記される
-        こと（mode に関わらず指示テキストが出ること）。"""
+        """学習データ収集中（uniform モード）でも常に自動適用する旨が明記され
+        ていた（mode に関わらず機械適用テキストが出た）。"""
         mod = _load_hook_module()
         text_thompson = mod.build_additional_context(
             "medium", "haiku", "thompson", self._params(),
@@ -349,9 +345,9 @@ class TestSoftApplyDirectiveWording:
             "simple", "haiku", "uniform", self._uniform_params(),
         )
         for text in (text_thompson, text_uniform):
-            assert "指示:" in text
-            assert "model: haiku" in text
-        assert "常に適用する" in text_uniform
+            assert "自動適用" in text
+            assert "推奨 Tier: haiku" in text
+        assert "常に適用" in text_uniform
 
     def test_tester_and_persona_roles_noted_as_out_of_scope(self) -> None:
         """tester 等の他 role、および親 Claude ペルソナで動かす role
@@ -661,12 +657,53 @@ class TestMaskSecrets:
 
 
 # ---------------------------------------------------------------------------
+# SR-K-003 (fix-cycle-4 FD1): _prompt_prefix_and_hash のマスク順序 Red テスト
+# ---------------------------------------------------------------------------
+
+
+class TestSelectTierMaskOrder:
+    """SR-K-003: _prompt_prefix_and_hash のマスク順序（切り詰め→マスク vs マスク→切り詰め）を検証した。
+
+    [Red] 追加当時の実装は `_mask_secrets(prompt[:_PROMPT_PREFIX_MAX])`（切り詰め→マスク）の順だった。
+    PEM ブロックのように開始/終了タグの両方が対象文字列内に存在しないとマッチしない非貪欲
+    パターンでは、終了タグが `_PROMPT_PREFIX_MAX`（200字）より後方にある場合、切り詰め後の
+    文字列に終了タグが存在せず PEM パターンが不成立となり、鍵本体（base64 データ）が無修正の
+    まま prefix に残存していた（security-review-report-20260707-122227.md SR-K-003・実証済み）。
+    """
+
+    @pytest.fixture
+    def mod(self):
+        return _load_hook_module()
+
+    def test_prompt_prefix_and_hash_masks_pem_with_late_end_tag(self, mod) -> None:
+        """終了タグが200字より後方にある PEM ブロックでも鍵本体がマスクされることを要求した（Red）。
+
+        終了タグは 349 文字目付近（200字境界より後方）に位置するよう構築した。
+        追加当時の実装（切り詰め→マスク）ではこのケースで鍵本体が prefix に残存していたため、
+        このテストは Red（失敗）だった。
+        """
+        secret_body = "SECRETBASE64DATA"
+        prompt = (
+            "-----BEGIN PRIVATE KEY-----\n"
+            + secret_body * 20
+            + "\n-----END PRIVATE KEY-----\nrest of prompt"
+        )
+        # 終了タグが 200 字境界より後方にあることを前提として確認した
+        end_tag_pos = prompt.index("-----END PRIVATE KEY-----")
+        assert end_tag_pos > mod._PROMPT_PREFIX_MAX
+
+        prefix, _ = mod._prompt_prefix_and_hash(prompt)
+
+        assert secret_body not in prefix
+
+
+# ---------------------------------------------------------------------------
 # T3: session_id 記録（AC-3 / AC-9）
 # ---------------------------------------------------------------------------
 
 
 class TestSessionIdRecording:
-    """write_tier_selection / main の session_id 記録を検証する。"""
+    """write_tier_selection / main の session_id 記録を検証した。"""
 
     def test_write_tier_selection_with_session_id(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1175,7 +1212,7 @@ class TestMainCostMapIntegration:
         """cost_tiebreak が発動する状況で main 経由の tier_selection.json に cost_tiebreak=true が出る（AC-2）。
 
         c3_db.read_tier_cost_rate_for_complexity をモックして measured を注入し、
-        拮抗する params + 安い tier が選ばれるケースを検証する。
+        拮抗する params + 安い tier が選ばれるケースを検証した。
         """
         mod = _load_hook_module()
         target = tmp_path / "tier_selection.json"
@@ -1297,7 +1334,7 @@ class TestMainCostMapIntegration:
 
         read_tier_cost_rate_for_complexity が haiku=6.0 USD/MTok を返す場合、
         cost_map['haiku'] は 6.0 になる（tier_reference_cost('haiku')=6.0 の静的値と同次元）。
-        単位混在が解消されており crash なく rc=0 で完了することを確認。
+        単位混在が解消されており crash なく rc=0 で完了した。
 
         NOTE: cost_tiebreak の発動 assert は
         ``test_main_cost_tiebreak_appears_in_json_when_triggered`` で担保。
@@ -1470,7 +1507,7 @@ class TestEpsilonKwarg:
         """select_tier_detailed に epsilon を明示すると contenders が変わる（AC B-(1)）。
 
         決定論的方式: _cost_tiebreak に固定サンプル値を直接渡し、
-        epsilon の大小で contenders 幅が変わることを検証する。
+        epsilon の大小で contenders 幅が変わることを検証した。
         test_larger_epsilon_widens_contenders と同じアプローチ。
         """
         mod = _load_hook_module()

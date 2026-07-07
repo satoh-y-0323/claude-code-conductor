@@ -106,6 +106,13 @@ def main() -> int:
     except Exception as e:
         print(f"[session_stop:usage_ingester] failed: {type(e).__name__}", file=sys.stderr)
 
+    # Phase 4: tier_gap_check — 起動ログ vs outcome 記録の欠落検針（警告のみ・副作用なし）
+    try:
+        gap_module = _load_module("tier_gap_check")
+        gap_module.run(payload)
+    except Exception as e:
+        print(f"[session_stop:tier_gap_check] failed: {type(e).__name__}", file=sys.stderr)
+
     return 0
 
 

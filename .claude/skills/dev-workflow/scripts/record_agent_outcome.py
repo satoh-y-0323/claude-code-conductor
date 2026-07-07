@@ -14,22 +14,30 @@ Usage:
   ``required=True``（``SystemExit(2)``）ではなく ``required=False`` + main() 内
   チェックで stderr 警告 + ``return 0``（記録スキップ）とする
   （「全エラー exit 0 流儀」を貫くため。呼び出し元の dev-workflow を止めない）。
-- --tier 省略時の tier 解決優先順位（architecture-report-20260703-081149.md
-  §3-1・ADR-AS-1〜AS-4。tier-routing 自動適用フェーズ2・ソフト適用）:
+- --tier 省略時の tier 解決優先順位（architecture-report-20260707-065043.md
+  §4・フェーズ3。旧 §3-1・ADR-AS-1〜AS-4 を踏襲しつつ applied-state を優先2
+  として新規挿入し、tier_selection.json を優先3へ降格した）:
 
     | 優先 | ソース                                            | 対象                          |
     |----|--------------------------------------------------|-------------------------------|
     | 1  | --tier（明示・TIERS 検証）                        | 全 role（並列/worktree 経路は常用申告） |
-    | 2  | tier_selection.json の tier→suggested_model       | _SOFT_APPLY_ROLES（developer）・逐次経路のみ |
-    | 3  | agents/{role}.md frontmatter model:               | developer 以外、および 2 が不成立の developer |
-    | 4  | 解決不能                                          | 記録スキップ（stderr 警告 + exit 0） |
+    | 2  | applied-state（tier_autoapply.jsonl・session_id 一致の最新行） | _SOFT_APPLY_ROLES（developer） |
+    | 3  | tier_selection.json の tier→suggested_model       | 同上・優先2 不成立時（フォールバック A 互換） |
+    | 4  | agents/{role}.md frontmatter model:               | developer 以外、および 2・3 が不成立の developer |
+    | 5  | 解決不能                                          | 記録スキップ（stderr 警告 + exit 0） |
 
   --execution=subagent かつ role が _SOFT_APPLY_ROLES に含まれる場合（現状
-  developer のみ）、--tier 省略時は tier_selection.json（select_tier.py が
+  developer のみ）、--tier 省略時はまず applied-state を読む（優先2）。
+  フェーズ3で PreToolUse hook（tier_autoapply.py）が Agent 起動時の実適用
+  tier を session_id・role_recorded 付きで tier_autoapply.jsonl に追記する
+  ため、record はそれを session_id 一致の最新行で読む（＝適用者=記録 SSOT）。
+  applied-state が不在／session_id 不一致／kill-switch で行が無い等で優先2 が
+  不成立のときは、優先3 として tier_selection.json（select_tier.py が
   UserPromptSubmit で書く推奨/実効 tier の SSOT）の `tier`（無ければ
-  `suggested_model`）を ``pricing.resolve_tier`` で正規化し優先 2 として
-  採用する。tier_selection.json が無い・値が不正（正規化不能）・role が
-  対象外（tester 等）のときは優先 3（frontmatter 自己解決）へ fallback する。
+  `suggested_model`）を ``pricing.resolve_tier`` で正規化し採用する
+  （フォールバック A 互換のため温存・削除しない）。tier_selection.json も
+  無い・値が不正（正規化不能）・role が対象外（tester 等）のときは優先 4
+  （frontmatter 自己解決）へ fallback する。
   逸脱時の是正エスケープハッチ（ADR-AS-2）: 親が起動時に指定した model: が
   推奨 Tier と異なる場合は必ず --tier に実際の tier を付す運用を dev-workflow
   SKILL.md 側が担う（本スクリプトは優先 1 で受けるのみでコード変更は無い）。
@@ -96,6 +104,11 @@ if not (_CLAUDE_DIR.endswith(os.sep + ".claude") or _CLAUDE_DIR.endswith("/.clau
     )
 
 TIER_SELECTION_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_selection.json")
+# フェーズ3（T3）: PreToolUse hook（tier_autoapply.py）が Agent 起動時の実適用
+# tier を 1 行 JSONL で追記する applied-state。tier_autoapply.py と同一の
+# _CLAUDE_DIR 機構（あちらは hooks/ からの 1 階層遡り・こちらは scripts/ からの
+# 3 階層遡り）で同一絶対パスに解決する（DC-AS-003）。
+APPLIED_STATE_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_autoapply.jsonl")
 PROMPT_HISTORY_PATH = os.path.join(_CLAUDE_DIR, "logs", "prompt-history.jsonl")
 # ADR-2 DC-AS-002/003: --tier 省略時に自己解決する frontmatter の探索先。
 AGENTS_DIR = os.path.join(_CLAUDE_DIR, "agents")
@@ -165,8 +178,12 @@ def _truncate(value: str | None, limit: int, name: str) -> str | None:
     return value
 
 
-# Round4 [SR-V-001]: --note 中の秘密情報マスクパターン。select_tier.py の
-# _MASK_PATTERNS と同期（select_tier.py 側を変更した場合はこちらも合わせる）。
+# Round4 [SR-V-001]: --note 中の秘密情報マスクパターン。
+# [CR-NEW1] _mask_secrets / _MASK_PATTERNS は以下の3ファイルに同型複製が存在した（パターン本体はバイト一致）。
+# 語彙・パターンを変更する際は3ファイル全てを同期する（共通モジュール化は本サイクル未実施）:
+#   - .claude/hooks/select_tier.py
+#   - .claude/hooks/tier_autoapply.py
+#   - .claude/skills/dev-workflow/scripts/record_agent_outcome.py
 _MASK_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r'(password=)\S+', re.IGNORECASE),
     re.compile(r'(api[_-]?key=)\S+', re.IGNORECASE),
@@ -181,8 +198,8 @@ _MASK_PATTERNS: list[re.Pattern[str]] = [
 def _mask_secrets(text: str) -> str:
     """秘密情報パターンにマッチする値部分を *** に置換して返す。
 
-    select_tier.py の _mask_secrets() と同期（select_tier.py 側を変更した
-    場合はこちらも合わせる）。キー名やプレフィックスは残し、値のみを置換する。
+    3ファイル同型複製（複製先は _MASK_PATTERNS 上の [CR-NEW1] コメント参照）。
+    キー名やプレフィックスは残し、値のみを置換する。
     PEM ブロックは開始タグ + *** + 終了タグ に置換する。
     """
     result = text
@@ -326,6 +343,118 @@ def _read_selection() -> dict | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+# item5(SR-NEW・Low): applied-state 読み取り側のサイズ上限（DoS 抑止）。
+# tier_autoapply.py::_rotate_if_needed（1MB・追記側のみ発火）とは別レイヤの
+# 読み取り防御で、超過時は末尾優先（tail-priority）で最大 5MB のみ走査する
+# （tier_gap_check.py::_iter_capped_lines と同型の自己完結実装）。tier_autoapply.jsonl
+# は末尾ほど新しく _read_applied_tier は最新行を採用するため、先頭を犠牲にしても
+# 直近の適用 tier を優先解決できる。打ち切りは fail-safe（解決不能=None）に倒れる。
+_APPLIED_STATE_MAX_READ_BYTES = 5 * 1024 * 1024
+
+
+def _iter_applied_state_capped_lines(path: str):
+    """applied-state jsonl を末尾優先で最大 5MB だけ読み、行文字列を yield した。
+
+    上限超過時は末尾へ seek し、seek 後の最初の（途中で切れた）部分行を捨ててから
+    完全行のみを返す（tail-priority）。上限以下なら先頭から全行を返す。
+
+    [CR-NEW2] 同型の自己完結複製が
+    tier_gap_check.py::_iter_capped_lines（定数 _MAX_READ_BYTES）にも存在した。
+    一方を変更する際は他方も同期する。
+    """
+    with open(path, "rb") as f:
+        try:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+        except OSError:
+            size = 0
+        if size > _APPLIED_STATE_MAX_READ_BYTES:
+            f.seek(size - _APPLIED_STATE_MAX_READ_BYTES)
+            f.readline()  # 途中で切れた先頭部分行を捨てる
+        else:
+            f.seek(0)
+        for raw in f:
+            yield raw.decode("utf-8", errors="replace")
+
+
+def _read_applied_tier(session_id: str | None, role: str, c3_pricing) -> str | None:
+    """applied-state（tier_autoapply.jsonl）から実適用 tier を解決する（優先2・§4-2）。
+
+    フェーズ3で PreToolUse hook（tier_autoapply.py）が Agent 起動時の実適用値を
+    session_id・role_recorded 付きで JSONL 追記する。record はこれを session_id
+    一致で読むことで「適用者=記録 SSOT」を成立させる（tier_selection.json の
+    推奨値を読む優先3 より優先する）。
+
+    突合規則（_read_selection() と同じ防御思想）:
+    - APPLIED_STATE_PATH 不在なら None。
+    - session_id が None なら None（突合不能・§0-4 の NULL 制約。session_id
+      NULL の行同士を突き合わせない）。
+    - 行単位で json.loads し、壊れ行は skip（try/except continue）。
+    - session_id 一致 かつ role_recorded == role の行を収集し、最新
+      （末尾側／ts 最大）の model_applied を採用する。
+    - model_applied 非文字列（int/list/dict 等）は skip（resolve_tier の
+      内部 .lower() による AttributeError 防止。soft-apply 側 L566-574 と同理由）。
+      source=frontmatter-default（model_applied=null）の行は tier を持たない
+      ため自然に skip される。
+    - resolve_tier で正規化し _VALID_TIERS に含まれれば返す。
+
+    Returns:
+        解決できた正規化 tier 文字列、または解決不能なら None。
+    """
+    if session_id is None or c3_pricing is None:
+        return None
+    # item2(SR-V-002): symlink 経由の読み取りは不在扱いで skip（tier_gap_check.py /
+    # tier_autoapply.py の islink 検証と同型。os.path.isfile は symlink 先が実ファイル
+    # なら True を返すため islink を併せて検証する）。
+    if (
+        not APPLIED_STATE_PATH
+        or not os.path.isfile(APPLIED_STATE_PATH)
+        or os.path.islink(APPLIED_STATE_PATH)
+    ):
+        return None
+    latest_model: str | None = None
+    latest_ts: str | None = None
+    try:
+        # item5(SR-NEW): 末尾優先で最大 5MB のみ走査する（_iter_applied_state_capped_lines）。
+        for line in _iter_applied_state_capped_lines(APPLIED_STATE_PATH):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            if row.get("session_id") != session_id:
+                continue
+            if row.get("role_recorded") != role:
+                continue
+            model_applied = row.get("model_applied")
+            if not isinstance(model_applied, str):
+                continue
+            ts = row.get("ts")
+            ts_key = ts if isinstance(ts, str) else ""
+            # 最新（ts 最大）を採用。ts 同値/欠落時は後勝ち（末尾側）で
+            # 上書きするため >= で比較する。ts プロファイルは
+            # tier_autoapply.py と同一 UTC 秒精度 ISO8601（辞書順＝時系列）。
+            if latest_ts is None or ts_key >= latest_ts:
+                latest_ts = ts_key
+                latest_model = model_applied
+    except OSError as exc:
+        print(
+            f"[record_agent_outcome] failed to read applied-state: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    if latest_model is None:
+        return None
+    resolved = c3_pricing.resolve_tier(latest_model)
+    if resolved in _VALID_TIERS:
+        return resolved
+    return None
 
 
 def _delete_selection() -> None:
@@ -535,6 +664,13 @@ def main(argv: list[str] | None = None) -> int:
     # 1 度だけ行う（session_id 用読み取りと共用・二重 open 回避）。
     selection = _read_selection()
 
+    # §0-3/§4-2 項1: session_id は tier 解決（優先2 の applied-state 突合）で
+    # 使うため、tier 解決より前に hoist する（selection を再利用・二重 open なし）。
+    # session_id は tier_selection.json 由来のため、tier_selection 不在
+    # （--final 削除後含む）／session_id 欠落時は None（§0-4(b)）。この None は
+    # applied-state 突合を不能にし、DB 記録時も NULL となる。
+    session_id = selection.get("session_id") if selection else None
+
     if tier_override is not None:
         if tier_override in _VALID_TIERS:
             tier = tier_override
@@ -556,12 +692,21 @@ def main(argv: list[str] | None = None) -> int:
         tier = "unknown"
     else:
         tier = None
-        # ADR-AS-1 優先 2: role が soft-apply 対象（_SOFT_APPLY_ROLES）なら
+        # §4-2 優先 2（新規）: applied-state（適用者=記録 SSOT）。フェーズ3で
+        # PreToolUse hook（tier_autoapply.py）が Agent 起動時の実適用値を
+        # session_id 付きで JSONL 記録するため、record はそれを session_id
+        # 一致で読む。role が soft-apply 対象のときのみ突合する（tester 等は
+        # _SOFT_APPLY_ROLES 外なので applied-state を読まない・role gating）。
+        if role in _SOFT_APPLY_ROLES:
+            tier = _read_applied_tier(session_id, role, c3_pricing)
+        # 優先 3（降格・旧優先2）: role が soft-apply 対象（_SOFT_APPLY_ROLES）なら
         # tier_selection.json の tier（無ければ suggested_model）を
         # resolve_tier で正規化し、_VALID_TIERS に含まれれば採用する。
+        # 優先2（applied-state）が不成立のとき（applied-state 不在／session_id
+        # 不一致／kill-switch で jsonl に行が無い等）のフォールバック A 互換。
         # 逐次経路（worktree なし）のみが対象。並列（worktree）経路は親が
         # --tier を明示するため優先 1 で解決され、ここには来ない（ADR-AS-4）。
-        if role in _SOFT_APPLY_ROLES and selection is not None:
+        if tier is None and role in _SOFT_APPLY_ROLES and selection is not None:
             soft_apply_raw = selection.get("tier") or selection.get("suggested_model")
             # 非文字列ガード: resolve_tier() は内部で無条件に model.lower() を
             # 呼ぶため、tier_selection.json の破損・レース等で tier/
@@ -577,7 +722,7 @@ def main(argv: list[str] | None = None) -> int:
                 if resolved in _VALID_TIERS:
                     tier = resolved
         if tier is None:
-            # 優先 3: frontmatter 自己解決（非対象 role、または soft-apply が
+            # 優先 4: frontmatter 自己解決（非対象 role、または優先2・3 が
             # 不成立だった developer の fallback）。
             tier = _resolve_tier_from_frontmatter(role, c3_pricing)
         if tier is None:
@@ -597,8 +742,6 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         db_path = None
-
-    session_id = selection.get("session_id") if selection else None
 
     if session_id is not None:
         try:

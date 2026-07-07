@@ -367,6 +367,53 @@ class TestSyncTierBanditCostCallRemoved:
         )
 
 
+class TestPhase4GapCheckFailureIsolation:
+    """Phase 4（tier_gap_check）が例外を投げても Phase 1-3 が完走し exit 0 を
+    維持することを固定する回帰テストだった（architecture-report-20260707-065043.md
+    §5-1・plan-report-20260707-065732.md test-gap-check）。
+
+    tier_gap_check.py の Phase 4 統合は本 Red フェーズ時点で未実装であり、
+    session_stop.py の main() は "tier_gap_check" 名で `_load_module` を
+    呼ばない。したがって本テストは gap_mock.run が一度も呼ばれないこと
+    （Phase 4 統合が存在しないこと）を理由に失敗した。Phase 1-3 完走・
+    exit 0 自体は Phase 4 の有無と無関係に元々満たされていたため、判別点は
+    `gap_mock.run.assert_called_once()` に絞った。
+    """
+
+    def test_phase4_exception_does_not_block_phase1_to_3(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Phase 4 が例外を投げても Phase 1-3 が完走し main() が exit 0 を返したことを確認した。"""
+        module = _load_module()
+
+        stop_mock = MagicMock(run=MagicMock(return_value=0))
+        consolidate_mock = MagicMock(run_sync=MagicMock(return_value=0))
+        gap_mock = MagicMock()
+        gap_mock.run = MagicMock(side_effect=RuntimeError("gap check boom"))
+
+        def _fake_load(name: str):
+            if name == "stop":
+                return stop_mock
+            if name == "consolidate_memory":
+                return consolidate_mock
+            if name == "tier_gap_check":
+                return gap_mock
+            raise ValueError(f"unexpected module: {name}")
+
+        monkeypatch.setattr(module, "_load_module", _fake_load)
+        monkeypatch.setattr(
+            "sys.stdin",
+            type("S", (), {"read": staticmethod(lambda: '{"session_id": "sess-x"}')})(),
+        )
+
+        result = module.main()
+
+        assert result == 0
+        stop_mock.run.assert_called_once()
+        consolidate_mock.run_sync.assert_called_once()
+        gap_mock.run.assert_called_once()
+
+
 class TestSubprocessE2E:
     """subprocess で session_stop.py を起動して全体の挙動を確認する.
 

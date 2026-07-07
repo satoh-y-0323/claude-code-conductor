@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sqlite3
 import types
 from pathlib import Path
@@ -233,6 +234,7 @@ def _patch_common(
     agents_dir: Path,
     sel_path: Path | None = None,
     history_path: Path | None = None,
+    applied_state_path: Path | None = None,
 ) -> None:
     from c3 import db as c3_db
 
@@ -242,6 +244,12 @@ def _patch_common(
         monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(sel_path))
     if history_path is not None:
         monkeypatch.setattr(mod, "PROMPT_HISTORY_PATH", str(history_path))
+    if applied_state_path is not None:
+        # T3（フェーズ3）未実装の現行実装は APPLIED_STATE_PATH 属性を持たない
+        # ため、この monkeypatch.setattr 自体が AttributeError を送出した
+        # （Red フェーズの正しい失敗理由。機能未実装が原因でありテスト側の
+        # 誤記ではない）。
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(applied_state_path))
 
 
 # ---------------------------------------------------------------------------
@@ -2220,3 +2228,409 @@ class TestStuckAndD25Coexist:
         assert _count_agent_outcomes(
             db_path, role="developer", gate="D-2.5-stuck",
         ) == 1
+
+
+# ---------------------------------------------------------------------------
+# Group 12（フェーズ3・T3・plan-report-20260707-065732.md test-record-priority・
+# architecture-report-20260707-065043.md §4・§7-2）
+#
+# 対象: tier_autoapply.py（T1・実装済み）が書く applied-state
+# （.claude/state/tier_autoapply.jsonl）の実適用値（model_applied）を、
+# record の tier 解決で新・優先2として採用した。旧・優先2（tier_selection.json
+# の tier→suggested_model）は優先3へ降格した（§4-1）。
+#
+# 現行実装（本ファイル対象の record_agent_outcome.py・T3 未実施）は
+# APPLIED_STATE_PATH モジュール属性も _read_applied_tier() 関数も持たない。
+# 本 Group のテストはいずれも _patch_common(..., applied_state_path=...) 内の
+# monkeypatch.setattr(mod, "APPLIED_STATE_PATH", ...) が AttributeError を
+# 送出して赤になった、または（TestAppliedStatePathResolution のみ）
+# mod.APPLIED_STATE_PATH への直接アクセスが AttributeError を送出して赤に
+# なった（いずれも T3 未実装＝機能未実装が単一の原因であり、テスト側の
+# タイポ・記法崩れによる赤ではない）。
+# ---------------------------------------------------------------------------
+
+
+def _write_applied_state(path: Path, *rows: dict) -> None:
+    """applied-state（tier_autoapply.jsonl 相当）へ複数行を書き込んだ（テスト用）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(row, ensure_ascii=False) for row in rows]
+    content = "\n".join(lines)
+    if lines:
+        content += "\n"
+    path.write_text(content, encoding="utf-8")
+
+
+def _write_applied_state_raw_lines(path: Path, lines: list[str]) -> None:
+    """生テキスト行（壊れ行を含む）をそのまま applied-state へ書き込んだ（テスト用）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestAppliedStatePriority:
+    """優先2（新規・§4-1）: developer + tier_selection.json あり + applied-state
+    （同一 session_id・role_recorded 一致の行）あり → applied-state の
+    model_applied を採用し、tier_selection.json（優先3へ降格）は採用され
+    なかった（適用者=記録 SSOT）。"""
+
+    def test_applied_state_wins_over_tier_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-applied-1")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-applied-1",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_applied_state_wins")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None, (
+            "applied-state 未実装のため tier_selection.json の sonnet が"
+            "採用された（Red フェーズの想定挙動）"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is None, (
+            "applied-state（新優先2）より tier_selection.json（優先3へ降格"
+            "したはず）が優先されている"
+        )
+
+
+class TestAppliedStateLatestRowSelection:
+    """同一 session_id×role_recorded の複数行がある場合は最新（ts 最大・末尾側）の
+    model_applied を採用し、別 session の行は突合対象から無視した。"""
+
+    def test_latest_row_among_multiple_same_session_rows_wins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-applied-latest")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-applied-latest",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "opus",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+            {
+                "ts": "2026-07-07T08:05:00+00:00",
+                "session_id": "sess-applied-latest",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_applied_state_latest_row")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None, (
+            "複数行中、最新行（ts 最大）の model_applied=haiku が採用されなかった"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "opus") is None, (
+            "先頭の古い行（opus）が誤って採用された"
+        )
+
+    def test_different_session_rows_ignored_falls_back_to_tier_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-applied-current")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-applied-other",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: opus")
+        mod = _load_hook_module("rao_applied_state_other_session")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is None, (
+            "別 session_id の applied-state 行が誤って突合された"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None, (
+            "別 session 行が無視された後、優先3（tier_selection.json）へ"
+            "落ちていない"
+        )
+
+
+class TestAppliedStateBrokenRowsAndTypeGuard:
+    """壊れ行（JSON パース不能）は skip し、model_applied が非文字列の行も
+    resolve_tier の内部 .lower() でクラッシュせず skip した
+    （_read_selection() の非文字列ガードと同じ防御思想）。"""
+
+    def test_broken_json_line_skipped_valid_row_still_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-applied-broken")
+        valid_row = json.dumps(
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-applied-broken",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+            ensure_ascii=False,
+        )
+        _write_applied_state_raw_lines(applied_path, ["{not valid json,,,", valid_row])
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_applied_state_broken_row")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None, (
+            "壊れ行の直後にある正常行が skip された、または例外で処理全体が"
+            "落ちた疑いがある"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is None
+
+    def test_non_string_model_applied_row_skipped_falls_back_to_tier_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="sonnet", session_id="sess-applied-nonstr")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-applied-nonstr",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": 123,
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: opus")
+        mod = _load_hook_module("rao_applied_state_nonstring_model")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None, (
+            "model_applied(int) の非文字列ガードが無いため例外で落ちたか、"
+            "誤って frontmatter（opus）へ落ちた疑いがある"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "opus") is None
+
+
+class TestKillSwitchFallback:
+    """DC-GP-003: applied-state 不在（kill-switch で tier_autoapply.py が
+    jsonl に行を書かない状態相当）のとき、record の優先2 が不成立となり
+    優先3（tier_selection.json）へ正しく落ちた（旧来動作への完全復帰・
+    要件 §④安全弁）。既存挙動（フェーズ2 のソフト適用）への回帰確認を兼ねる。"""
+
+    def test_applied_state_file_absent_falls_back_to_tier_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(sel_path, tier="haiku", session_id="sess-killswitch-1")
+        _write_agent_frontmatter(agents_dir, "developer", "model: opus")
+        mod = _load_hook_module("rao_kill_switch_fallback")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+            applied_state_path=tmp_path / "state" / "tier_autoapply_absent.jsonl",
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is not None, (
+            "applied-state 不在時に優先3（tier_selection.json）へ落ちておらず、"
+            "旧来動作へ復帰していない"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "opus") is None
+
+
+class TestAppliedStateSessionIdNoneSkipsToFrontmatter:
+    """session_id が None（tier_selection.json 不在・--final 削除後相当）の
+    場合、applied-state 側に session_id 付きの行があっても NULL 同士を
+    突き合わせず、優先3（tier_selection 不在のため不成立）を経て優先4
+    （frontmatter）へ落ちた（§0-4(b)・§4-2 項1）。"""
+
+    def test_session_id_none_does_not_match_applied_state_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-should-not-match",
+                "subagent_type": "developer",
+                "role_recorded": "developer",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_applied_state_session_none")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "nonexistent.json",
+            applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "sonnet") is not None, (
+            "session_id=None のとき applied-state の session_id 付き行に"
+            "誤って突合し frontmatter へ落ちていない"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is None
+
+
+class TestAppliedStateTesterRoleGating:
+    """tester は _SOFT_APPLY_ROLES（developer のみ）に含まれないため、
+    applied-state に tester 向けの行があっても読まず、従来どおり
+    frontmatter で解決した（role gating の維持）。"""
+
+    def test_tester_role_ignores_applied_state_and_resolves_frontmatter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, tier="haiku", session_id="sess-tester-applied")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-07T08:00:00+00:00",
+                "session_id": "sess-tester-applied",
+                "subagent_type": "tester",
+                "role_recorded": "tester",
+                "model_applied": "opus",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module("rao_tester_applied_state_gating")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "tester", "--outcome", "success", "--gate", "D-3",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "tester", "medium", "sonnet") is not None, (
+            "tester は frontmatter 解決のままであるべきだが崩れている"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "opus") is None, (
+            "tester が applied-state の model_applied=opus を読んでしまっている"
+            "（role gating の欠陥）"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "haiku") is None, (
+            "tester が tier_selection.json の tier=haiku も読んでしまっている"
+        )
+
+
+class TestAppliedStatePathResolution:
+    """DC-AS-003: record が計算する applied-state の絶対パスが、
+    tier_autoapply.py（T1・.claude/hooks/ 配置・1階層遡り）が計算する
+    APPLIED_STATE_PATH と一致した（T1 TestPathResolution と対称）。"""
+
+    def test_applied_state_path_matches_tier_autoapply_hook_path(self) -> None:
+        mod = _load_hook_module("rao_path_resolution")
+        hook_path = (
+            WORKTREE_ROOT / ".claude" / "hooks" / "tier_autoapply.py"
+        )
+        assert hook_path.is_file(), (
+            "tier_autoapply.py（T1）が見つからずパス一致を比較できなかった"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "tier_autoapply_path_check", hook_path
+        )
+        assert spec is not None and spec.loader is not None
+        hook_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook_mod)  # type: ignore[attr-defined]
+
+        assert os.path.abspath(mod.APPLIED_STATE_PATH) == os.path.abspath(
+            hook_mod.APPLIED_STATE_PATH
+        ), (
+            "record と tier_autoapply.py（hook）が計算する applied-state の"
+            "絶対パスが一致しなかった（_CLAUDE_DIR 機構の遡り段数不一致の疑い）"
+        )
