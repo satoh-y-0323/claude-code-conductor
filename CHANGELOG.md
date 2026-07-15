@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.48.1] - 2026-07-15
+
+### 修正
+
+- **Claude Code v2.1.210 以降の起動時警告を解消**: `settings.json` の permission allow ルールから no-op だった `Glob(**)` / `Write(...)` 系 11 件を削除した。Claude Code の permission チェックでファイル系ルールとして有効なのは `Read(path)`（Read / Grep / Glob 等の読み取り系をカバー）と `Edit(path)`（Edit / Write / NotebookEdit 等の編集系をカバー）のみで、削除したルールは元から効いていなかったが、Claude Code v2.1.210 で起動時に deprecation 警告が表示されるようになったため整理した。あわせて対応漏れだった `Edit(.claude/tmp/**)` を追加（旧 `Write(.claude/tmp/**)` の意図を有効な形で引き継ぎ）
+
+### 後方互換
+
+- 許可の実挙動は不変（削除したのは permission チェックに参照されないルールのみ）。**破壊的変更なし**
+
 ## [2.48.0] - 2026-07-07
 
 ### 追加
