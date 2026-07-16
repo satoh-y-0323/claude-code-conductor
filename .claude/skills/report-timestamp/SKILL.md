@@ -21,3 +21,13 @@ python "${CLAUDE_SKILL_DIR}/scripts/get_timestamp.py"
 
 - PowerShell・bash の date コマンドは使わない（時刻部分が 000000 になる場合がある）
 - python コマンドが使えない場合のみ `python3` にフォールバックする
+
+## Bash を持たないエージェントの場合（親がタイムスタンプを渡す）
+
+architect / planner / design-critic 等、tools に Bash を含まないエージェントは本スクリプトを実行できない。
+その場合は**サブエージェントを起動する親 Claude が本 skill でタイムスタンプを取得し、
+出力先レポートのファイル名を確定させた形で起動プロンプトに含める**こと（例: 「レポートは
+`.claude/reports/architecture-report-20260714-213000.md` に Write。このファイル名を厳守」）。
+エージェント側でのタイムスタンプの手採番（推測・連番）は禁止する。
+（Bash を持たないエージェントに Bash を追加する対処は採らない: レポート role の最小権限を崩し、
+allow 済み git コマンド経由で「非可逆操作は人間の関所」を迂回する経路が開くため）

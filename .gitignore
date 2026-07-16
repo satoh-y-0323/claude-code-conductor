@@ -83,6 +83,7 @@ site/
 # v2.1.0: tdd-develop / worktree-tdd-workflow 廃止後の復活防止
 .claude/agents/tdd-develop.md
 .claude/skills/worktree-tdd-workflow/
+.claude/skills/autonomous-mode/
 
 # Personal Claude Code overrides (per-user / per-worktree, never committed)
 # wheel からは _excludes.py / hatch_build.py で既に除外済み。git でも tracking しない方針。

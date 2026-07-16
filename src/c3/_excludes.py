@@ -57,6 +57,8 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     # v2.1.0: tdd-develop / worktree-tdd-workflow 廃止（planner が TDD を 3-wave に分解する設計に統一）
     "agents/tdd-develop.md",
     "skills/worktree-tdd-workflow/*",
+    # autonomous-mode skill を配布除外での熟成・配布切替は本行削除で往復可
+    "skills/autonomous-mode/*",
 )
 
 KEEP_PATTERNS: tuple[str, ...] = (

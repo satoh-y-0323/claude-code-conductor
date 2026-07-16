@@ -24,6 +24,21 @@ user-invocable: false
 
 ---
 
+**運転モードによるゲート挙動の切替（既定は HITL・非破壊）**: 各フェーズの承認ゲート
+（**A-4 / B-3 / C-1 / C-2 / C-3 / D-2.5 / D-3 / D-5 / E-1 / E-2 の 10 個**。D-0 は AskUserQuestion を
+持たない実行モード判別ステップのため承認ゲートに含めない＝DC-AS-003）に到達したら、まず
+session.tmp の `モード:` 行を確認する。**有効な自律宣言**（§3-3）でなければ**以下の各ゲートを
+記載どおり AskUserQuestion で実行する（従来動作）**。有効な自律宣言のときのみ、
+`.claude/skills/autonomous-mode/SKILL.md` の「ゲート対応表」に従って承認ゲートを客観収束条件に
+付け替える。**非可逆操作の関所・情報不足の質問・重量フェーズ着手前の usage 確認は常に人間**
+（自律でも停止して確認する＝人間の 3 関所・§4-1 / requirements §7）。
+
+> **skill 未 Read でも『モード行を見て skill を Read せよ』の 1 段で復帰できる** — develop / review-phase を「直接開始」した場合（init-session を経ない起動）、autonomous-mode skill の明示 Read が挟まらない可能性がある。ただし本ブロックが
+> 各ゲートで `モード:` 行の確認を要求するため、skill 未 Read でも「モード行を見て skill を Read せよ」
+> の 1 段で復帰できる（`.claude/skills/autonomous-mode/SKILL.md` 参照・復元の単一障害点を作らない）。
+
+---
+
 ## tier-routing 結果記録の運用
 
 各フェーズの承認ゲート・タスク単位で `record_agent_outcome.py` を呼び、role 別に実際に使われた tier の成功/失敗を記録する（architecture-report-20260702-214748.md §3-4）。全記録ブロック共通のルール:
