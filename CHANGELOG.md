@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.49.0] - 2026-07-17
+
+### 追加
+
+- **運転モード切替の接続点（autonomous-mode 対応・既定 HITL・非破壊）**: dev-workflow に「運転モードによるゲート挙動の切替」集中参照ブロックを 1 つ追加（既存 10 承認ゲート本文は無改変）。session.tmp の `モード:` 行が有効な自律宣言のときのみ `.claude/skills/autonomous-mode/SKILL.md` のゲート対応表へ委譲する。**自律モード skill 本体は配布対象外**（配布元でのドッグフーディング熟成中・利用先には存在しないためモード行検証が常に無効＝完全従来動作で挙動変化ゼロ）
+- **init-session のモード行復元導線**: Step 1/3/5 に `モード:` 行の読込・サマリ表示（`運転モード:`）・自律復帰分岐を追加。plan-path は表示用 SR L-2 とは別の**パス用封じ込め型防御**（改行/NUL 除去→realpath 正規化→許可ルート `~/.claude/plans/` のみへの封じ込め→実在確認）を機械実行（`mode_line.py` へのパイプ渡し・目視代替禁止・スクリプト不在時は無効=HITL の fail-closed）で検証する。無効時は「HITL で継続」を明示表示
+- **配布除外の 3 ファイル同期＋機械検査**: `_excludes.py` / `hatch_build.py` に `skills/autonomous-mode/*`、`.gitignore` に `.claude/skills/autonomous-mode/` を追加（配布切替は 3 行削除で往復可）。`tests/test_excludes.py` に 3 ファイル同期の同一性検査（importlib＋正規表現フォールバック）・除外パターン検査・モード行有効性判定テスト（空白パス・symlink/junction 偽装・CLI 契約）計 12 件を追加
+
+### 変更
+
+- `agents/architect.md`・`agents/planner.md` の tools に `Edit` を追加、`skills/report-timestamp/SKILL.md` に「Bash 非保持エージェントは親がタイムスタンプを取得しファイル名確定済みで渡す（手採番禁止・Bash 追加は最小権限維持のため採らない）」節を追記（2026-07-14 の設計監査で確定した運用契約の明文化）
+
+### 後方互換
+
+- `モード:` 行が無い session.tmp では全ゲートが従来どおり AskUserQuestion で動作（機械検証で担保）。wheel の `_template/` 一覧は本リリース前後で増減なし（HEAD 基準ビルドとの全数比較で確認）。**破壊的変更なし**
+
 ## [2.48.1] - 2026-07-15
 
 ### 修正
