@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.50.0] - 2026-07-17
+
+### 修正
+
+- **MCP 設定の `command` を `sys.executable` 絶対パス化（Codex / Cursor adapter）**: 生成される `.codex/config.toml` / `.cursor/mcp.json` の `command` が `"python"` ハードコードだったため、無印 `python` が存在しない環境（macOS 12.3 以降の標準 / Homebrew）・pipx / venv 隔離（`No module named c3`）・GUI 起動の Codex（シェル PATH 非継承）で MCP サーバーが起動時エラーになり `c3_ask_user_question` が使えなかった問題を修正。`c3 init` / `c3 update --platform` を実行した Python の絶対パスを埋め込む（TOML は既存 `_toml_escape` でエスケープ）。X 上の実利用報告「Claude Code だと動くが Codex だと起動時にエラーで読み込まれない」が起点
+
+### 追加
+
+- **`c3 doctor` の MCP 起動自己診断**: 生成済み config（`.codex/config.toml` / `.cursor/mcp.json`）から `command` を読み取り、(a) 実行可能性 (b) `<command> -c "import c3"` の成否を検証する。失敗時は WARN と `c3 update --platform <p>` での再生成を案内。この種の環境起因の起動失敗を利用者が一発で自己診断できるようにした
+
+### 変更
+
+- `.claude/docs/platform-adapters.md` の「既知の制限」に、Codex の trust 要件（未 trust プロジェクトの `.codex/config.toml` は**エラーなしで無視**される・trust 手順）・`command` 絶対パス化の理由・adapter 生成物のマシン固有性（チームで共有せず各マシンで `c3 init/update --platform` 再生成する運用）を追記
+
+### 後方互換
+
+- 既存の生成済み config は次回 `c3 update --platform` 実行まで従来のまま。再生成すると `command` が実行環境の絶対パスに変わる（マシン固有・意図された挙動。チーム共有リポジトリでは各メンバーが自マシンで再生成する）。**破壊的変更なし**
+
 ## [2.49.0] - 2026-07-17
 
 ### 追加
