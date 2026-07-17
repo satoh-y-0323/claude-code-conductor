@@ -59,6 +59,48 @@ def test_toml_multiline_escape_keeps_newlines():
 
 
 # ----------------------------------------------------------------------
+# MCP `command` resolution — absolute sys.executable, not bare "python"
+# ----------------------------------------------------------------------
+
+
+def test_codex_config_section_uses_absolute_sys_executable(monkeypatch):
+    monkeypatch.setattr(adapters.sys, "executable", r"C:\Python312\python.exe")
+
+    section = adapters._codex_config_section()
+
+    assert 'command = "C:\\\\Python312\\\\python.exe"' in section
+    assert 'command = "python"' not in section
+
+
+def test_codex_config_section_escapes_plain_posix_executable(monkeypatch):
+    monkeypatch.setattr(adapters.sys, "executable", "/usr/bin/python3")
+
+    section = adapters._codex_config_section()
+
+    assert 'command = "/usr/bin/python3"' in section
+
+
+def test_write_codex_config_writes_absolute_windows_command(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(adapters.sys, "executable", r"C:\Users\dev\venv\Scripts\python.exe")
+
+    adapters._write_codex_config(tmp_path, dry_run=False)
+
+    config_text = (tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert 'command = "C:\\\\Users\\\\dev\\\\venv\\\\Scripts\\\\python.exe"' in config_text
+
+
+def test_write_cursor_mcp_uses_absolute_sys_executable(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(adapters.sys, "executable", r"C:\Python312\python.exe")
+
+    adapters._write_cursor_mcp(tmp_path, dry_run=False)
+
+    payload = json.loads((tmp_path / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
+    command = payload["mcpServers"]["c3"]["command"]
+    assert command == r"C:\Python312\python.exe"
+    assert Path(command).is_absolute()
+
+
+# ----------------------------------------------------------------------
 # _convert_skill
 # ----------------------------------------------------------------------
 
@@ -178,7 +220,8 @@ def test_write_cursor_mcp_creates_file_when_missing(tmp_path: Path):
     actions = _write_cursor_mcp(target, dry_run=False)
     assert any(a.action == "add" for a in actions)
     payload = json.loads((target / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
-    assert payload["mcpServers"]["c3"]["command"] == "python"
+    assert payload["mcpServers"]["c3"]["command"] == sys.executable
+    assert Path(payload["mcpServers"]["c3"]["command"]).is_absolute()
 
 
 def test_write_cursor_mcp_rejects_invalid_json(tmp_path: Path):

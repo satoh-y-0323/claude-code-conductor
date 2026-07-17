@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 from c3._terminal import supports_color as _supports_color
@@ -14,6 +16,8 @@ from c3.platforms import PLATFORM_CHOICES, expand_platforms
 _OK = "OK"
 _WARN = "WARN"
 _ERR = "ERR"
+
+_MCP_STARTUP_TIMEOUT_SEC = 10
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -111,6 +115,9 @@ def _check_codex_adapter() -> list[tuple[str, str, str]]:
     findings.append(_dir_or_warn(".agents/skills", skills, "run `c3 init --platform codex`"))
     findings.append(_file_or_warn(".codex/config.toml", config, "run `c3 init --platform codex`"))
     findings.append(_dir_or_warn(".codex/agents", custom_agents, "run `c3 init --platform codex`"))
+    if config.is_file():
+        command = _extract_codex_mcp_command(config.read_text(encoding="utf-8"))
+        findings.append(_check_mcp_command_startup("codex MCP startup", command, "codex"))
     codex = shutil.which("codex")
     if codex is None:
         findings.append((_WARN, "codex binary", "not on PATH; install Codex CLI to use the adapter"))
@@ -147,12 +154,82 @@ def _check_cursor_adapter() -> list[tuple[str, str, str]]:
     mcp = root / ".cursor" / "mcp.json"
     findings.append(_file_or_warn(".cursor/rules/c3-core.mdc", rule, "run `c3 init --platform cursor`"))
     findings.append(_file_or_warn(".cursor/mcp.json", mcp, "run `c3 init --platform cursor`"))
+    if mcp.is_file():
+        command = _extract_cursor_mcp_command(mcp.read_text(encoding="utf-8"))
+        findings.append(_check_mcp_command_startup("cursor MCP startup", command, "cursor"))
     cursor = shutil.which("cursor-agent") or shutil.which("cursor")
     if cursor is None:
         findings.append((_WARN, "cursor binary", "not on PATH; install Cursor CLI/editor to use the adapter"))
     else:
         findings.append((_OK, "cursor binary", cursor))
     return findings
+
+
+def _extract_codex_mcp_command(config_text: str) -> str | None:
+    """Read the ``command`` value from the ``[mcp_servers.c3]`` table.
+
+    Uses a targeted regex rather than a full TOML parser: ``tomllib`` is only
+    available from Python 3.11 while C3 supports 3.10+, and the generated
+    config is always a single-line ``key = "value"`` pair under the section.
+    """
+    match = re.search(
+        r'(?ms)^\[mcp_servers\.c3\]\s*$.*?^command\s*=\s*"((?:[^"\\]|\\.)*)"',
+        config_text,
+    )
+    if match is None:
+        return None
+    return match.group(1).replace('\\"', '"').replace("\\\\", "\\")
+
+
+def _extract_cursor_mcp_command(mcp_json_text: str) -> str | None:
+    try:
+        payload = json.loads(mcp_json_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    servers = payload.get("mcpServers")
+    if not isinstance(servers, dict):
+        return None
+    c3 = servers.get("c3")
+    if not isinstance(c3, dict):
+        return None
+    command = c3.get("command")
+    return command if isinstance(command, str) else None
+
+
+def _check_mcp_command_startup(
+    label: str, command: str | None, platform: str
+) -> tuple[str, str, str]:
+    """Verify that the generated MCP ``command`` can actually launch and import c3."""
+    hint = f"run `c3 update --platform {platform}` to regenerate"
+    if not command:
+        return _WARN, label, f"command not found in generated config; {hint}"
+
+    resolvable = (Path(command).is_absolute() and Path(command).is_file()) or (
+        shutil.which(command) is not None
+    )
+    if not resolvable:
+        return _WARN, label, f"command not executable: {command}; {hint}"
+
+    try:
+        result = subprocess.run(
+            [command, "-c", "import c3"],
+            capture_output=True,
+            text=True,
+            timeout=_MCP_STARTUP_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _WARN, label, f"failed to launch {command}: {exc}; {hint}"
+
+    if result.returncode != 0:
+        detail = next(
+            (line for line in reversed(result.stderr.strip().splitlines()) if line.strip()),
+            "import c3 failed",
+        )
+        return _WARN, label, f'`{command} -c "import c3"` failed: {detail}; {hint}'
+
+    return _OK, label, f"{command} -c \"import c3\" succeeded"
 
 
 def _file_or_warn(label: str, path: Path, hint: str) -> tuple[str, str, str]:

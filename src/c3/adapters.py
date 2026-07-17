@@ -223,7 +223,7 @@ def _write_cursor_mcp(target_root: Path, *, dry_run: bool) -> list[AdapterAction
     if pythonpath is not None:
         env["PYTHONPATH"] = str(pythonpath)
     servers["c3"] = {
-        "command": "python",
+        "command": sys.executable,
         "args": ["-m", "c3.mcp_server"],
         "env": env,
     }
@@ -331,7 +331,7 @@ tool, read the matching generated Codex skill from `.agents/skills/<name>/SKILL.
 def _codex_config_section() -> str:
     lines = [
         "[mcp_servers.c3]",
-        'command = "python"',
+        f'command = "{_toml_escape(sys.executable)}"',
         'args = ["-m", "c3.mcp_server"]',
         "startup_timeout_sec = 10",
         "tool_timeout_sec = 600",
