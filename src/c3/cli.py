@@ -4,6 +4,11 @@ Each subcommand registers its parser through ``register(subparsers)`` and
 exposes a ``handle(args) -> int`` function. Keeping each subcommand in its own
 module (``cli_*.py``) keeps the dispatch table small and isolates the
 implementation details.
+
+The one exception is ``run``: because it must forward every token (including
+``--``) to the launched script untouched, ``main`` dispatches it through a
+dedicated branch that bypasses argparse and calls ``cli_run.handle`` directly,
+rather than routing through the shared ``register``/``handle`` table.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from c3 import (
     cli_metrics,
     cli_plan,
     cli_recall,
+    cli_run,
     cli_tier,
     cli_update,
 )
@@ -47,14 +53,31 @@ def build_parser() -> argparse.ArgumentParser:
     cli_metrics.register(sub)
     cli_ask.register(sub)
     cli_recall.register(sub)
+    cli_run.register(sub)
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_streams()
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # Special handling for "run" subcommand: bypass argparse to preserve tokens
+    # like "--" that argparse would otherwise consume. ``cli_run`` is imported at
+    # module top-level, so we call ``cli_run.handle`` directly with the full argv
+    # stashed on ``_raw_argv`` (see cli_run.handle).
+    if argv and argv[0] == "run":
+        args = argparse.Namespace()
+        args._raw_argv = argv
+        return cli_run.handle(args)
+
+    # Normal argparse flow for other subcommands.
     parser = build_parser()
-    args = parser.parse_args(_rewrite_recall_shortcut(argv))
+    rewritten = _rewrite_recall_shortcut(argv)
+    args = parser.parse_args(rewritten)
+    # Store raw argv for subcommands that need to parse tokens themselves.
+    args._raw_argv = argv
     return args.handler(args)
 
 

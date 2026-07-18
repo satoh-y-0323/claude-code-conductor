@@ -86,15 +86,15 @@ class TestRepoSettingsAgentMatcherRegistersBothHooks:
             "tier_autoapply.py の登録が未実装だった"
         )
         scripts = [_hook_script_args(hook) for hook in hooks]
-        assert [CHECK_AGENT_INVOCATION_ARG] == scripts[0], (
+        assert ["run", CHECK_AGENT_INVOCATION_ARG] == scripts[0], (
             "1本目の hook が check_agent_invocation.py ではなかった"
         )
-        assert [TIER_AUTOAPPLY_ARG] == scripts[1], (
+        assert ["run", TIER_AUTOAPPLY_ARG] == scripts[1], (
             "2本目の hook が tier_autoapply.py ではなかった（未登録または順序違反）"
         )
 
     def test_tier_autoapply_hook_shape_matches_existing_convention(self) -> None:
-        """新規登録エントリが既存 hook と同型の command/args 構造だった。"""
+        """新規登録エントリが既存 hook と同型の command/args 構造だった（c3 run 形式）。"""
         settings = _load_settings(REPO_SETTINGS)
         hooks = _agent_matcher_hooks(settings)
         tier_hooks = [
@@ -107,8 +107,8 @@ class TestRepoSettingsAgentMatcherRegistersBothHooks:
         )
         hook = tier_hooks[0]
         assert hook.get("type") == "command"
-        assert hook.get("command") == "python"
-        assert hook.get("args") == [TIER_AUTOAPPLY_ARG]
+        assert hook.get("command") == "c3"
+        assert hook.get("args") == ["run", TIER_AUTOAPPLY_ARG]
 
 
 class TestTemplateSettingsSyncedWithRepo:
@@ -135,8 +135,8 @@ class TestTemplateSettingsSyncedWithRepo:
             f"（現状 {len(hooks)} 本）: repo との同期が取れていなかった"
         )
         scripts = [_hook_script_args(hook) for hook in hooks]
-        assert [CHECK_AGENT_INVOCATION_ARG] == scripts[0]
-        assert [TIER_AUTOAPPLY_ARG] == scripts[1]
+        assert ["run", CHECK_AGENT_INVOCATION_ARG] == scripts[0]
+        assert ["run", TIER_AUTOAPPLY_ARG] == scripts[1]
 
     def test_template_and_repo_agent_matcher_are_identical(self) -> None:
         """repo と _template の Agent matcher エントリが完全一致していた（3ファイル同期規律）。"""

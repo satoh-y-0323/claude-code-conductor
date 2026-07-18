@@ -176,7 +176,7 @@ AskUserQuestion ツール:
     "question": "サーバーの接続方式（transport）を選んでください",
     "header": "transport",
     "options": [
-      { "label": "stdio", "description": "コマンドとして起動するサーバー（node / python / バイナリ等）" },
+      { "label": "stdio", "description": "コマンドとして起動するサーバー（node / python / バイナリ等。実行ファイルは絶対パス推奨。v2.50.0 で C3 自身の MCP 起動子も sys.executable の絶対パスに統一）" },
       { "label": "SSE", "description": "Server-Sent Events で接続（http://... の URL）" },
       { "label": "HTTP", "description": "Streamable HTTP で接続（http://... の URL）" }
     ]
@@ -192,7 +192,7 @@ AskUserQuestion でコマンドを確認する:
 ```json
 {
   "questions": [{
-    "question": "実行コマンドを入力してください（例: node, python, /usr/local/bin/mcp-server）"
+    "question": "実行コマンドを入力してください（絶対パス推奨。例: /usr/local/bin/node, /usr/bin/python3, /usr/local/bin/mcp-server）"
   }]
 }
 ```

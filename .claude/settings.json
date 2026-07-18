@@ -1,17 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python .claude/hooks/stop.py*)",
-      "Bash(python .claude/hooks/pre_tool.py*)",
-      "Bash(python .claude/hooks/pre_compact.py*)",
-      "Bash(python .claude/hooks/restore_session.py*)",
-      "Bash(python .claude/hooks/permission_handler.py*)",
-      "Bash(python .claude/hooks/statusline.py*)",
-      "Bash(python .claude/hooks/recall_autorebuild.py*)",
-      "Bash(python .claude/skills/dev-workflow/scripts/review_hint_inject.py*)",
-      "Bash(python .claude/skills/dev-workflow/scripts/record_review_decision.py*)",
-      "Bash(python .claude/skills/dev-workflow/scripts/record_agent_outcome.py*)",
-      "Bash(python .claude/skills/init-session/scripts/session_guard.py*)",
+      "Bash(c3 run .claude/hooks/stop.py*)",
+      "Bash(c3 run .claude/hooks/pre_tool.py*)",
+      "Bash(c3 run .claude/hooks/pre_compact.py*)",
+      "Bash(c3 run .claude/hooks/restore_session.py*)",
+      "Bash(c3 run .claude/hooks/permission_handler.py*)",
+      "Bash(c3 run .claude/hooks/statusline.py*)",
+      "Bash(c3 run .claude/hooks/recall_autorebuild.py*)",
+      "Bash(c3 run .claude/skills/dev-workflow/scripts/review_hint_inject.py*)",
+      "Bash(c3 run .claude/skills/dev-workflow/scripts/record_review_decision.py*)",
+      "Bash(c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py*)",
+      "Bash(c3 run .claude/skills/init-session/scripts/session_guard.py*)",
       "Read(**)",
       "Grep(**)",
       "Edit(.claude/reports/**)",
@@ -58,7 +58,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/statusline.py\""
+    "command": "c3 run \"${CLAUDE_PROJECT_DIR}/.claude/hooks/statusline.py\""
   },
   "hooks": {
     "PreToolUse": [
@@ -67,8 +67,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_tool.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_tool.py"]
           }
         ]
       },
@@ -77,8 +77,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
           }
         ]
       },
@@ -87,8 +87,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
           }
         ]
       },
@@ -97,13 +97,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/check_agent_invocation.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/check_agent_invocation.py"]
           },
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/tier_autoapply.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/tier_autoapply.py"]
           }
         ]
       }
@@ -114,13 +114,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post_tool.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/post_tool.py"]
           },
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
           }
         ]
       },
@@ -129,13 +129,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post_tool.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/post_tool.py"]
           },
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
           }
         ]
       }
@@ -146,8 +146,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/permission_handler.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/permission_handler.py"]
           }
         ]
       }
@@ -158,13 +158,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/select_tier.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/select_tier.py"]
           },
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/recall_inject.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/recall_inject.py"]
           }
         ]
       }
@@ -175,8 +175,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/restore_session.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/restore_session.py"]
           }
         ]
       },
@@ -185,8 +185,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session_start.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/session_start.py"]
           }
         ]
       }
@@ -197,8 +197,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_compact.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_compact.py"]
           }
         ]
       }
@@ -209,13 +209,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session_stop.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/session_stop.py"]
           },
           {
             "type": "command",
-            "command": "python",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/recall_autorebuild.py"]
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/recall_autorebuild.py"]
           }
         ]
       }

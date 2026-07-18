@@ -12,7 +12,7 @@ user-invocable: false
 レポートファイル名が必要になったら、以下を実行してその出力をファイル名に使用する:
 
 ```bash
-python "${CLAUDE_SKILL_DIR}/scripts/get_timestamp.py"
+c3 run "${CLAUDE_SKILL_DIR}/scripts/get_timestamp.py"
 ```
 
 出力形式: `YYYYMMDD-HHMMSS`（例: `20260504-143022`）
@@ -20,7 +20,7 @@ python "${CLAUDE_SKILL_DIR}/scripts/get_timestamp.py"
 ## 注意
 
 - PowerShell・bash の date コマンドは使わない（時刻部分が 000000 になる場合がある）
-- python コマンドが使えない場合のみ `python3` にフォールバックする
+- c3 run を第一とする。c3 が解決できない環境（venv 未 activate 等）では python3（無ければ python）で直接実行して退避し、あわせて c3 doctor で環境を確認する（この実行は許可プロンプトが出ます）
 
 ## Bash を持たないエージェントの場合（親がタイムスタンプを渡す）
 

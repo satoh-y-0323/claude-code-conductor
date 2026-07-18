@@ -5,7 +5,7 @@ tier-routing 学習シグナル再設計（architecture-report-20260702-214748.m
 ADR-2〜ADR-7）に基づく後継スクリプト。旧 record_tier_outcome.py を置き換える。
 
 Usage:
-    python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \\
+    c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \\
         --role developer --outcome success --gate D-2.5 \\
         --execution subagent --complexity medium
 

@@ -18,6 +18,7 @@ _WARN = "WARN"
 _ERR = "ERR"
 
 _MCP_STARTUP_TIMEOUT_SEC = 10
+_LAUNCHER_PROBE_TIMEOUT_SEC = 10
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -48,6 +49,7 @@ def handle(args: argparse.Namespace) -> int:
     if "claude" in platforms:
         findings.append(_check_settings_json())
         findings.append(_check_claude_binary())
+        findings.extend(_check_hook_launchers())
     if "codex" in platforms:
         findings.extend(_check_codex_adapter())
     if "cursor" in platforms:
@@ -87,7 +89,15 @@ def _check_settings_json() -> tuple[str, str, str]:
     try:
         json.loads(settings.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
+        # User-authored JSON syntax error: actionable, must surface as ERR so
+        # `c3 doctor` exits non-zero (regression fix for Round 2, where this
+        # was collateral-downgraded to WARN by the SR-V-001 resilience patch).
         return _ERR, "settings.json", f"invalid JSON: {exc}"
+    except (OSError, RecursionError, MemoryError, UnicodeDecodeError) as exc:
+        # Resource / environment failures (deep nesting -> RecursionError,
+        # gigantic file -> MemoryError, IO error -> OSError, non-UTF-8 bytes ->
+        # UnicodeDecodeError): degrade gracefully to WARN, do not crash doctor.
+        return _WARN, "settings.json", f"skipped (could not parse settings.json: {exc})"
     return _OK, "settings.json", str(settings)
 
 
@@ -100,6 +110,184 @@ def _check_claude_binary() -> tuple[str, str, str]:
             "not on PATH; install Claude Code CLI before invoking c3 skills",
         )
     return _OK, "claude binary", path
+
+
+def _check_hook_launchers() -> list[tuple[str, str, str]]:
+    """Verify that every hook / statusLine launcher token in settings.json can
+    actually be launched in the current shell PATH (architecture §2-4).
+
+    Judgement (``shutil.which``) and the ``--version`` probe run once per UNIQUE
+    launcher token, not once per settings.json entry.
+    """
+    findings: list[tuple[str, str, str]] = []
+
+    # Scope-limitation disclaimer: this diagnoses the current shell's PATH, not
+    # the harness's hook-spawn context (architecture §2-4).
+    findings.append(
+        (
+            _OK,
+            "hook launcher scope",
+            "本検証は doctor を実行している現在のシェル PATH に対するもので、"
+            "ハーネスの hook 起動文脈の完全な再現ではありません",
+        )
+    )
+
+    root = claude_root_for(Path.cwd())
+    if root is None:
+        findings.append((_WARN, "hook launchers", "skipped (.claude/ not found)"))
+        return findings
+
+    settings = root / ".claude" / "settings.json"
+    if not settings.is_file():
+        findings.append(
+            (_WARN, "hook launchers", f"skipped (settings.json missing at {settings})")
+        )
+        return findings
+
+    try:
+        payload = json.loads(settings.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        # Match _check_settings_json(): a genuine JSON syntax error is an
+        # actionable user mistake and must surface as ERR ("align to the
+        # stronger side" to resolve the prior asymmetry between the two checks).
+        findings.append(
+            (_ERR, "hook launchers", f"invalid JSON: {exc}")
+        )
+        return findings
+    except (OSError, RecursionError, MemoryError, UnicodeDecodeError) as exc:
+        # Resource / environment failures degrade gracefully to WARN.
+        findings.append(
+            (_WARN, "hook launchers", f"skipped (could not parse settings.json: {exc})")
+        )
+        return findings
+
+    tokens = _extract_launcher_tokens(payload)
+    if not tokens:
+        findings.append(
+            (_WARN, "hook launchers", "no hook / statusLine launchers found in settings.json")
+        )
+        return findings
+
+    for token in tokens:  # already deduped + order-preserving
+        findings.append(_judge_launcher_token(token))
+    return findings
+
+
+def _extract_launcher_tokens(payload: object) -> list[str]:
+    """Collect the unique launcher tokens (first whitespace token of each
+    ``command``) across every hooks entry and the statusLine, preserving order.
+    """
+    tokens: list[str] = []
+    seen: set[str] = set()
+
+    def add(command: object) -> None:
+        if not isinstance(command, str):
+            return
+        parts = command.split()
+        if not parts:
+            return
+        token = parts[0]
+        if token not in seen:
+            seen.add(token)
+            tokens.append(token)
+
+    if not isinstance(payload, dict):
+        return tokens
+
+    hooks = payload.get("hooks")
+    if isinstance(hooks, dict):
+        for event_groups in hooks.values():
+            if not isinstance(event_groups, list):
+                continue
+            for group in event_groups:
+                if not isinstance(group, dict):
+                    continue
+                entries = group.get("hooks")
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        add(entry.get("command"))
+
+    status_line = payload.get("statusLine")
+    if isinstance(status_line, dict):
+        add(status_line.get("command"))
+
+    return tokens
+
+
+def _judge_launcher_token(token: str) -> tuple[str, str, str]:
+    """Judge a single unique launcher token (which resolution + optional probe).
+
+    3 branches per architecture §2-4: c3 / python(legacy) / catch-all unknown.
+    """
+    label = f"hook launcher ({token})"
+    resolved = shutil.which(token)
+
+    if token == "c3":
+        if resolved is None:
+            return (
+                _ERR,
+                label,
+                "c3 が PATH で解決できません。pip インストール環境の PATH を確認"
+                "してください（venv 未 activate 等）",
+            )
+        if not _probe_version_ok(resolved):
+            return (
+                _ERR,
+                label,
+                f"{resolved} は PATH で解決できましたが、`--version` プローブに失敗しました。"
+                "この環境では全 hook が起動していません（c3 が実際には起動できない状態）。"
+                "`pip install --force-reinstall claude-code-conductor` 等で c3 を"
+                "再インストールしてください（壊れた c3 自身に依存する `c3 update` は"
+                "この状況では使えません）",
+            )
+        return _OK, label, f"{resolved}（`--version` プローブ成功）"
+
+    if token == "python":
+        if resolved is None:
+            return (
+                _ERR,
+                label,
+                "この環境では全 hook が起動していません（python が PATH で解決できません）。"
+                "`c3 update` で修復してください",
+            )
+        return (
+            _WARN,
+            label,
+            f"旧形式の python 起動子です（{resolved}）。`c3 update` で c3 run 形式へ"
+            "更新することを推奨します",
+        )
+
+    # catch-all: any other unknown launcher token (architecture §2-4).
+    if resolved is None:
+        return (
+            _ERR,
+            label,
+            f"{token} が PATH で解決できず、該当 hook が起動しません。"
+            "`c3 update` で settings.json を再生成してください",
+        )
+    return (
+        _OK,
+        label,
+        f"カスタム起動子として通知: {token} -> {resolved}",
+    )
+
+
+def _probe_version_ok(resolved: str) -> bool:
+    """Run ``<resolved> --version`` and report whether it exited cleanly."""
+    try:
+        result = subprocess.run(
+            [resolved, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_LAUNCHER_PROBE_TIMEOUT_SEC,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def _check_codex_adapter() -> list[tuple[str, str, str]]:
@@ -217,6 +405,8 @@ def _check_mcp_command_startup(
             [command, "-c", "import c3"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_MCP_STARTUP_TIMEOUT_SEC,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

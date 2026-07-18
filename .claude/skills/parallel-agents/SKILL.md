@@ -229,13 +229,13 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 
 ```bash
 # wt_developer→developer（tier フラグは付けない・applied-state task 突合で機械解決）
-python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role developer --outcome failure --gate 2-E \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
   --task {task_id}   # ← 2-C の C3_TASK_ID マーカーと完全一致・突合の必須キー
 
 # wt_tester→tester（tier フラグは付けない・frontmatter 解決）
-python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role tester --outcome failure --gate 2-E \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
   --task {task_id}
@@ -315,15 +315,35 @@ git branch -D worktree-agent-{id}
   - Wave N 成功時: `現在地: Wave {N} 完了 / 次: Wave {N+1}`
   - 最終 Wave 完了時: `現在地: 完了`（レビューへ遷移する場合は `現在地: フェーズE レビュー中`）
   - Wave をスキップした時: `現在地: Wave {N} skipped / 次: Wave {N+1}`
-- `session_utils.append_checkpoint()` を呼び出して checkpoint ブロックを追記:
+- `session_utils.append_checkpoint()` を呼び出して checkpoint ブロックを追記。自由記述サマリ（`{要約}`）を Python 文字列リテラルにも bash heredoc にも直接埋め込まない。**親 Claude が `Write` ツールでサマリ本文を固定パス `<ROOT>/.claude/tmp/wave-checkpoint-summary.txt` へ書き込み**、bash 側は固定コード + 固定ファイルパス引数で `append_checkpoint` を呼ぶだけにする。`Write` ツールはテキストをそのまま書き込むだけで bash/heredoc のような区切り子解釈（終端行衝突・変数展開・コマンド置換）を持たないため、この注入クラスを構造的に排除できる。さらに固定パス方式により、**bash に可変内容（パス文字列の置換）を渡さないため、クォート脱出トリガ文字（`'` や `"` など）の混入を完全に無効化できる**（周回5 SR-INJ-002 指摘の構造的対処）。同一リポで複数の親 Claude セッションを並行させた場合、サマリが上書きされうるが、上書きで起きるのは checkpoint 本文の取り違え（コマンド実行には至らない）に限られ、C3 の想定運用（1 リポ 1 親セッション）では発生しないため許容：
 
-  ```bash
-  # bash
-  (cd .claude/hooks && python -c "from session_utils import append_checkpoint, SESSIONS_DIR; import os; \
-    append_checkpoint(os.path.join(SESSIONS_DIR, '{YYYYMMDD}.tmp'), \
-      'Wave {N} success', \
-      '- 成功タスク: {M}件\n- 残 wave: {K}/{TOTAL}\n- 成果物: {要約}')")
-  ```
+  1. **親 Claude が `Write` ツール**でサマリ本文を **`<ROOT>/.claude/tmp/wave-checkpoint-summary.txt`** へ書き込む。本文例:
+     ```
+     - 成功タスク: {M}件
+     - 残 wave: {K}/{TOTAL}
+     - 成果物: {要約}
+     ```
+     `.claude/tmp/` は既存の一時ファイル置き場であり、`Write` ツールは親ディレクトリを自動作成する。
+  2. **bash は固定コード + 固定ファイルパス引数で `append_checkpoint` を呼ぶだけ**（bash 側にサマリ本文を一切渡さない）。可変内容（パス置換）をプレースホルダー経由で bash に渡さず、ファイルパスは固定リテラルにする（クォート脱出クラスを構造的に排除）。cwd が `.claude/hooks` のため相対パス `../tmp/wave-checkpoint-summary.txt` で解決:
+     ```bash
+     (cd .claude/hooks && c3 run -c "
+import sys
+import os
+from session_utils import append_checkpoint, SESSIONS_DIR
+
+summary_file = '../tmp/wave-checkpoint-summary.txt'
+if os.path.isfile(summary_file):
+    with open(summary_file, 'r', encoding='utf-8') as f:
+        summary = f.read()
+else:
+    summary = '[summary file not found]'
+
+append_checkpoint(os.path.join(SESSIONS_DIR, '{YYYYMMDD}.tmp'),
+  'Wave {N} success', summary)
+" "../tmp/wave-checkpoint-summary.txt")
+     ```
+  3. `{要約}` の内容（サマリ本文）を bash コマンドのどの位置にも直接埋め込んではならない（heredoc の復元・固定コード文字列の改変・パス引数位置への本文貼り付けは禁止）。本文は必ず `Write` ツールでファイルへ書き、bash には固定リテラルのコードとパス引数のみを渡す。NG 例: `append_checkpoint(..., 'Wave {N} success', '{要約の本文をここに貼る}')`、`c3 run -c "..."` の固定コード部分の変更・パス引数の変更。
+  4. 記録後、一時ファイルは不要なら削除してよい（`rm -f .claude/tmp/wave-checkpoint-summary.txt`）。
 
 **tier-routing 結果記録（成功タスクのみ）**: この wave で成功した各タスクのうち `wt_developer`/`wt_tester` で起動したものについて、1 タスク = 1 記録で success を記録する（`wt_developer`→`--role developer`、`wt_tester`→`--role tester`。`--execution subagent`）。`code-reviewer`/`security-reviewer`/`wt_systematic-debugger` のタスクは記録対象外（`--complexity` は dev-workflow 開始時の `[tier-routing 推奨]` 表示の複雑度をそのまま渡す）。この記録は親 Claude が **main リポジトリ（2-F-0 の `cd <ROOT>` 後）で実行**する。
 
@@ -331,13 +351,13 @@ git branch -D worktree-agent-{id}
 
 ```bash
 # wt_developer→developer（tier フラグは付けない・applied-state task 突合で機械解決）
-python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role developer --outcome success --gate 2-D \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
   --task {task_id}   # ← 2-C の C3_TASK_ID マーカーと完全一致・突合の必須キー
 
 # wt_tester→tester（tier フラグは付けない・frontmatter 解決）
-python .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role tester --outcome success --gate 2-D \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
   --task {task_id}
