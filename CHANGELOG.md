@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.51.0] - 2026-07-18
+
+### 追加
+
+- **`c3 run` サブコマンド新設（python 呼び出し口）**: `c3 run <script> [args...]` / `c3 run -c <code>` / `c3 run -m <module>` の 3 形式で、c3 をインストールした Python インタープリタ（`sys.executable` と同一プロセス・runpy ベース）でスクリプトを実行する。素の macOS 12.3+ や `python` エイリアスの無い Linux で無印 `python` 起動子が解決できず**全 hook が沈黙する**問題（v2.50.0 の MCP バグと同型）の構造解。`--` を含む全トークンを無加工で `sys.argv` へ転送（`cli.main` の専用ディスパッチ）・`-c`/`-m` は CPython と同じ cwd インポート挙動・実行後に `sys.argv`/`sys.path` を復元
+- **`c3 doctor` の hook 起動子検証**: 配布 `settings.json` の hooks / statusLine の起動子トークンを検証し、無印 `python` 形式は WARN（`c3 update` での移行案内）・`c3` が PATH 解決不能または `--version` プローブ失敗は **FAIL**（全 hook 沈黙の帰結と、壊れた c3 に依存しない `pip install --force-reinstall claude-code-conductor` 等の復旧手段を案内）
+- **無印 python 起動子の lint テスト**: 配布物（settings.json・skills・agents・hooks docstring）に素の `python` 起動形が混入したら赤になる検査を追加。行頭・パイプ後に加え `&&`・`;`・バッククォート・`$(`・単独 `&` 直後の複合コマンド形も検出
+
+### 変更
+
+- **配布 `settings.json` の hook 起動子 29 箇所を `c3 run` 語彙へ全面置換**（hooks 18 本＋statusLine）。`${CLAUDE_PROJECT_DIR}` 変数展開の経路は不変
+- **parallel-agents SKILL.md の checkpoint 記録手順を注入耐性の高い方式へ刷新**: 自由記述サマリの `c3 run -c` 文字列直接埋め込み（二重コンテキスト注入面）→ heredoc 方式（E レビューで終端行衝突の任意コマンド実行を実機実証）→ **親 Claude が Write ツールで固定パス `.claude/tmp/wave-checkpoint-summary.txt` へ直書きし、bash は固定コード＋固定パス引数のみを実行する方式**（bash に可変内容を一切渡さない構造でクォート脱出クラスまで排除）へ段階的に是正。禁止事項（heredoc 復元・固定コード改変・本文貼り付け）を NG 例付きで明記
+- `.claude/docs/config-policy.md` 落とし穴6 の誤記載 2 件を是正（`worktree_guard.py` は Write/Edit 専用で Bash 経由の本落とし穴には無関係・実装に存在しない「`c3 update --dry-run` の warning」案内を削除）
+- `record_agent_outcome.py` ほか配布 skill/docs 内の実行例を `c3 run` 語彙へ更新
+
+### 修正
+
+- `c3 doctor` の `_check_settings_json()` / `_check_hook_launchers()` の例外処理を分岐: `json.JSONDecodeError`（ユーザー起因の設定ミス）は **ERR（exit 1）**・`OSError`/`RecursionError`/`MemoryError`/`UnicodeDecodeError`（環境・リソース要因）は WARN。不正 UTF-8 の settings.json で未捕捉クラッシュしていた問題も解消
+
+### 破壊的変更
+
+- **配布 `settings.json` の hook / statusLine 起動子が `python` から `c3 run` 前提に変わる**。利用先は `c3 update` で settings.json が新形式に更新される（`c3` は pip インストール済みなら PATH 解決可能）。**settings.json を直接カスタムしている場合**は `c3 update --dry-run` で差分を確認し、カスタムは `settings.local.json` へ移してから update すること。旧（python 語彙）のままでも従来どおり動作する環境では即時の実害はないが、doctor が WARN で移行を案内する
+
+### 後方互換
+
+- `c3 run` 追加による既存サブコマンドへの影響なし（`run` のみ `cli.main` 直接ディスパッチの明示的例外・docstring 記載）。`c3 update` の枠組み・レポート/state の場所は不変
+
 ## [2.50.0] - 2026-07-17
 
 ### 修正

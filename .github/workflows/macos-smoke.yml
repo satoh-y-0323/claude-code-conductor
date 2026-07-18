@@ -1,0 +1,53 @@
+name: macos-smoke
+
+# v2.51.0 リリース前の単発クロス OS 起動スモーク（plan-report-20260718-114716.md §3-6・DC-GP-005）。
+# 3 ケース: (a) wheel インストール + c3 run -c (b) 配布 hook スクリプトの c3 run 起動
+# (c) statusLine 文字列形式の POSIX sh 実行（stdin に最小 JSON・ハングせず正常終了で緑）。
+# CI 3OS マトリクスの本格導入は追随タスク（本 workflow は手動トリガーの単発検証）。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel
+        run: |
+          python3 -m pip install build
+          python3 -m build --wheel
+
+      - name: (a) Install wheel and probe c3 run -c
+        run: |
+          python3 -m pip install dist/*.whl
+          OUT="$(c3 run -c "print('ok')")"
+          echo "probe output: $OUT"
+          test "$OUT" = "ok"
+
+      - name: Prepare c3 project (c3 init)
+        run: |
+          mkdir -p /tmp/c3-smoke && cd /tmp/c3-smoke
+          c3 init
+          test -f .claude/settings.json
+          # 配布 settings.json に無印 python 起動子が残っていないこと（lint の実機再確認）
+          ! grep -E '"python ' .claude/settings.json
+
+      - name: (b) Run one distributed hook script via c3 run
+        run: |
+          cd /tmp/c3-smoke
+          echo '{"hook_event_name": "SessionStart", "source": "startup"}' \
+            | c3 run "/tmp/c3-smoke/.claude/hooks/session_start.py"
+
+      - name: (c) statusLine string via POSIX sh with stdin JSON
+        # ハング検知は job の timeout-minutes に委ねる（macOS に GNU timeout が無いため）。
+        # stdin の最小 JSON 供給が必須（statusline.py はブロッキング read・§3-6 サイクル3 DC-AS-001）
+        run: |
+          cd /tmp/c3-smoke
+          echo '{}' | sh -c 'c3 run "/tmp/c3-smoke/.claude/hooks/statusline.py"'
