@@ -90,13 +90,19 @@ def test_write_codex_config_writes_absolute_windows_command(tmp_path: Path, monk
 
 
 def test_write_cursor_mcp_uses_absolute_sys_executable(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(adapters.sys, "executable", r"C:\Python312\python.exe")
+    # Use an OS-native absolute path so ``Path(command).is_absolute()`` holds on
+    # both platforms: a Windows-style literal is not absolute under PosixPath
+    # (Linux CI), and a POSIX path is not absolute under WindowsPath.
+    fake_executable = (
+        r"C:\Python312\python.exe" if os.name == "nt" else "/usr/local/bin/python3.12"
+    )
+    monkeypatch.setattr(adapters.sys, "executable", fake_executable)
 
     adapters._write_cursor_mcp(tmp_path, dry_run=False)
 
     payload = json.loads((tmp_path / ".cursor" / "mcp.json").read_text(encoding="utf-8"))
     command = payload["mcpServers"]["c3"]["command"]
-    assert command == r"C:\Python312\python.exe"
+    assert command == fake_executable
     assert Path(command).is_absolute()
 
 

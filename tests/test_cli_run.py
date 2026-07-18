@@ -272,11 +272,34 @@ def test_run_via_c3_entrypoint_without_python_on_path(tmp_path: Path) -> None:
     """
     c3_exe = shutil.which("c3")
     assert c3_exe is not None, "c3 console-script entry point must be on PATH for this test"
-    c3_dir = str(Path(c3_exe).parent)
-    system_root = os.environ.get("SystemRoot", r"C:\Windows")
-    constrained_path = os.pathsep.join(
-        [c3_dir, os.path.join(system_root, "System32"), system_root]
-    )
+
+    # Build a PATH that resolves ``c3`` but NOT ``python``/``python3``. On POSIX
+    # the console script and the python interpreter live side-by-side in the same
+    # ``bin/`` directory, so we cannot simply put ``c3``'s own directory on PATH
+    # (that would drag python in too, which broke this test on Linux CI). Instead
+    # we place ONLY the c3 launcher into an isolated tmp bin directory and point
+    # PATH there. The launcher still works without python on PATH because its
+    # shebang / embedded interpreter path is absolute — which is exactly the
+    # feature under test.
+    tmpbin = tmp_path / "isolated_bin"
+    tmpbin.mkdir()
+    if os.name == "nt":
+        # On Windows the launcher is a self-contained ``.exe`` whose embedded
+        # interpreter path is absolute; copying it is sufficient.
+        launcher = tmpbin / Path(c3_exe).name
+        shutil.copy2(c3_exe, launcher)
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        path_entries = [str(tmpbin), os.path.join(system_root, "System32"), system_root]
+        env_extra = {"SYSTEMROOT": system_root}
+    else:
+        # On POSIX the launcher is a text script with an absolute shebang; a
+        # symlink preserves that shebang so it runs without python on PATH.
+        launcher = tmpbin / "c3"
+        os.symlink(c3_exe, launcher)
+        path_entries = [str(tmpbin)]
+        env_extra = {}
+    c3_launcher = str(launcher)
+    constrained_path = os.pathsep.join(path_entries)
 
     # Sanity-check the simulated environment truly lacks plain python before
     # trusting the subprocess result below.
@@ -286,12 +309,12 @@ def test_run_via_c3_entrypoint_without_python_on_path(tmp_path: Path) -> None:
     env = {
         "PATH": constrained_path,
         "PYTHONPATH": str(REPO_SRC),
-        "SYSTEMROOT": system_root,
+        **env_extra,
     }
     script = _write_script(tmp_path, "no_python_on_path.py", "import sys\nsys.exit(0)\n")
 
     result = subprocess.run(
-        [c3_exe, "run", str(script)],
+        [c3_launcher, "run", str(script)],
         env=env,
         capture_output=True,
         text=True,
