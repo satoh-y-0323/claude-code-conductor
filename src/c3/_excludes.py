@@ -43,6 +43,7 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "docs/grill-me機能を実装する際の考慮点とC3との相性や超えるべき壁.md",
     "docs/C3のconfig_policyとversion_upgradeの考慮点と超えるべき壁.md",
     "docs/model_settings.md",
+    "docs/環境条件別c3の問題点.md",
     "docs/codex対応/*",
     "hooks/subagent_log.py",
     "settings.local.json",
