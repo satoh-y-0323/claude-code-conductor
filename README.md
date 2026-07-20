@@ -157,7 +157,7 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | コマンド | 役割 |
 |---|---|
 | `c3 init` | 利用先プロジェクトに `.claude/` を展開する |
-| `c3 init --platform codex|cursor|opencode|all` | `.claude/` を canonical source にしたまま Codex/Cursor/OpenCode adapter を追加 |
+| `c3 init --platform codex\|cursor\|opencode\|all` | `.claude/` を canonical source にしたまま Codex/Cursor/OpenCode adapter を追加 |
 | `c3 update` | `.claude/` をパッケージ最新版へ更新する（個人ファイルはスキップ） |
 | `c3 list-agents` / `list-skills` | 設置済みアセットを一覧表示 |
 | `c3 doctor` | 環境診断（`.claude/`・settings.json・claude バイナリ・adapter 生成物） |
