@@ -12,6 +12,7 @@ C3 のスラッシュコマンドはすべてスキル（`.claude/skills/{name}/
 | `/develop` | TDD フェーズ（D）から直接開始 |
 | `/review-phase` | レビューフェーズ（E）から直接開始（code-reviewer + security-reviewer） |
 | `/promote-pattern` | 蓄積されたパターンを `rules/promoted/` または `skills/promoted-*/` に昇格 |
+| `/pattern-status` | `patterns.json` の現状（信用度・昇格候補・期限残・既昇格）を表形式で可視化する読み取り専用コマンド。`/promote-pattern` の前段に使う |
 
 ## ユーティリティ系
 
@@ -22,6 +23,7 @@ C3 のスラッシュコマンドはすべてスキル（`.claude/skills/{name}/
 | `/extract-lib` | 複数プロジェクトのコードを横断解析し、共通処理をライブラリとして設計・生成 |
 | `/recall` | 過去のセッション・レポート・パターンから類似情報を意味検索で取得（v2.10.0+ / numpy ベクトル検索 + 多言語 embedding） |
 | `/brainstorm` | 仕事・設計の相談を、資料（PDF/画像）を読み込んだ上で気軽に発散・壁打ち。視点・選択肢・論点を増やす方向で結論を急がない（grill＝詰めるとは逆）。Excel は PDF に書き出して渡す（v2.29.0+） |
+| `/codex-review` | Codex CLI に `.codex/agents/` の定義を読み込ませ、code-reviewer / security-reviewer ペルソナでレビューを実行。単一ファイルモードとワークフローモード（git diff 全体の並走レビュー）があり、レポート契約（`[CR-XX-NNN]` / `[SR-XX-NNN]`）は C3 と共通。Codex adapter（`c3 init --platform codex`）セットアップ済み環境のみ有効 |
 
 ## 内部参照スキル（`/start` などから自動呼び出し）
 
@@ -63,26 +65,34 @@ v2.0.0 以降、外部の parallel-orchestra プロセスは不要で、Claude C
 | interviewer | sonnet | requirements-report | 親 Claude がペルソナ採用 |
 | architect | opus | architecture-report | 親 Claude がペルソナ採用 |
 | planner | opus | plan-report | 親 Claude がペルソナ採用 |
+| design-critic | opus | design-review-report | Agent ツールで起動（フェーズ C 承認後の任意監査） |
 | developer | sonnet | 実装コード | Agent ツールで起動 |
 | tester | sonnet | テスト・test-report | Agent ツールで起動 |
 | code-reviewer | sonnet | code-review-report | Agent ツールで起動 |
 | security-reviewer | sonnet | security-review-report | Agent ツールで起動 |
-| doc-writer | sonnet | ドキュメント各種 | Agent ツールで起動 |
+| doc-writer | opus | ドキュメント各種 | Agent ツールで起動 |
 | systematic-debugger | sonnet | debug-analysis-report | Agent ツールで起動（行き詰まり時） |
+| project-setup | opus | `rules/` 規約ファイル | Agent ツールで起動（`/setup` 時） |
+| wt_developer / wt_tester / wt_systematic-debugger | sonnet | task_id ベースのレポート | parallel-agents skill が isolation:worktree 付きで起動 |
 
 インタラクティブな対話が必要なエージェント（interviewer・architect・planner）は親 Claude がペルソナを採用して動作します。実装・検証系エージェントはサブエージェントとして起動されます。
+
+model 列は既定値です。developer / wt_developer は tier-routing（タスク複雑度に応じた Haiku/Sonnet/Opus の自動選択）の hook が起動時に model を自動適用するため、実際の使用 model は複雑度と学習データに応じて変わります。
 
 ## SKILL.md の場所
 
 各スキルの実体は GitHub リポジトリの以下を参照してください。
 
 - [skills/init-session/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/init-session/SKILL.md)
+- [skills/setup/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/setup/SKILL.md)
 - [skills/start/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/start/SKILL.md)
 - [skills/dev-workflow/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/dev-workflow/SKILL.md)
 - [skills/review-phase/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/review-phase/SKILL.md)
 - [skills/develop/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/develop/SKILL.md)
 - [skills/promote-pattern/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/promote-pattern/SKILL.md)
 - [skills/brainstorm/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/brainstorm/SKILL.md)
+- [skills/pattern-status/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/pattern-status/SKILL.md)
+- [skills/codex-review/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/codex-review/SKILL.md)
 
 ## 次に読むページ
 

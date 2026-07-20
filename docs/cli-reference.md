@@ -75,6 +75,22 @@ c3 ask --json '{"questions":[...]}' --response 1,3
 | `--response` | 非対話実行用。ラベルまたは 1 始まりの番号を指定。複数質問は `;` で区切る |
 | `--pretty` | JSON 出力を整形 |
 
+## `c3 run` — 配布スクリプトの共通起動口 (v2.51.0+)
+
+`.claude/` の hooks・skills スクリプトを、無印 `python` の代わりに起動するクロス OS の呼び出し口。`c3` は pip が全 OS で PATH 保証する唯一のランチャーであり、`c3 run` 経由なら interpreter の探索や、マシン固有の絶対パスが git 共有される `settings.json` に混入する問題が発生しない。
+
+```bash
+c3 run <script.py> [args...]   # スクリプト実行（python parity）
+c3 run -m <module> [args...]   # モジュール実行
+c3 run -c <code> [args...]     # コード片実行
+```
+
+実行セマンティクスは `python` と同等:
+
+- 残りのトークンはすべてスクリプトへそのまま転送される（`--` も透過）
+- スクリプトの `SystemExit` はそのまま exit code になる（Claude Code hook の exit 0/2 語彙を保持）
+- 未捕捉例外は traceback を stderr に出して **exit 1**（exit 2 は script が明示要求した場合のみ。クラッシュが hook の「ブロック」と誤認されない）
+
 ## `c3 plan` — plan-report 検証 / wave 分解
 
 YAML フロントマター付き `plan-report-*.md` の検証と wave 分解を行う。`parallel-agents` skill が内部で利用する純粋ユーティリティ。
@@ -175,7 +191,7 @@ c3 metrics --examples N             # 事前検出実例の表示件数上限（
 
 以下は Claude Code 内（スラッシュコマンド）で扱う領域:
 
-- `/init-session` / `/setup` / `/start` / `/develop` / `/review-phase` / `/promote-pattern` / `/doc` / `/mcp-config` / `/extract-lib` / `/recall`
+- `/init-session` / `/setup` / `/start` / `/develop` / `/review-phase` / `/promote-pattern` / `/pattern-status` / `/doc` / `/mcp-config` / `/extract-lib` / `/recall` / `/brainstorm` / `/codex-review`
 - 詳細は [スキル一覧](skills.md) を参照
 
 Codex では `.agents/skills/` に生成された `$start` などの skills と `.codex/agents/` の custom agents を使う。Cursor では `.cursor/rules/c3-core.mdc` が `.claude/skills/` と `.claude/agents/` を参照する。OpenCode では `.opencode/agents/` の `@c3-*`（agent）と `@c3-skill-*`（skill）を `@mention` で起動する。

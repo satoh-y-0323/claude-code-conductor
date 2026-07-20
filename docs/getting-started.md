@@ -115,7 +115,7 @@ Codex/Cursor adapter は、C3 の `AskUserQuestion` JSON を MCP tool `c3_ask_us
 フェーズ B: 設計          architecture-report を生成
     ↓ 承認
 フェーズ C: 計画          plan-report を生成
-    ↓ 承認（自動遷移）
+    ↓ 承認（任意で design-critic が設計・計画を監査 → design-review-report）
 フェーズ D: TDD           tester → developer → tester のサイクル
     ↓ 承認（自動遷移）
 フェーズ E: レビュー      code-reviewer → security-reviewer
