@@ -101,7 +101,7 @@ def _tail(text: str, n: int) -> str:
         仕様として明記・固定する。
     """
     lines = text.splitlines()
-    return '\n'.join(lines[-n:]) if len(lines) > n else text
+    return '\n'.join(lines[-n:]) if len(lines) > n else text  # nul-boundary: allow(末尾 N 行を人間可読テキストへ戻す。呼び出し元は表示のため再 splitlines するだけ)
 
 
 def _sanitize_genba(value: str) -> str:
@@ -175,23 +175,23 @@ def main():
     # ③残タスク（- [ ] 行のみ・0件ならセクション省略）
     if pending_todos:
         lines.append('\n## 残タスク')
-        lines.append('\n'.join(pending_todos))
+        lines.append('\n'.join(pending_todos))  # nul-boundary: allow(stdout へ出す復元メッセージの残タスク段落。表示専用)
 
     # ④うまくいったアプローチ（末尾 N 行に切り詰め・行単位でサニタイズ）（SR M-2）
     if successes:
         lines.append('\n## うまくいったアプローチ')
         tail_text = _tail(successes, APPROACH_TAIL_LINES)
         sanitized_lines = [_sanitize(line) for line in tail_text.splitlines()]
-        lines.append('\n'.join(sanitized_lines))
+        lines.append('\n'.join(sanitized_lines))  # nul-boundary: allow(stdout へ出す復元メッセージの成功アプローチ段落。表示専用)
 
     # ⑤試みたが失敗したアプローチ（末尾 N 行に切り詰め・行単位でサニタイズ）（SR M-2）
     if failures:
         lines.append('\n## 試みたが失敗したアプローチ')
         tail_text = _tail(failures, APPROACH_TAIL_LINES)
         sanitized_lines = [_sanitize(line) for line in tail_text.splitlines()]
-        lines.append('\n'.join(sanitized_lines))
+        lines.append('\n'.join(sanitized_lines))  # nul-boundary: allow(stdout へ出す復元メッセージの失敗アプローチ段落。表示専用)
 
-    print('\n'.join(lines))
+    print('\n'.join(lines))  # nul-boundary: allow(stdout へ出力する復元メッセージ全体。読み手は Claude Code の表示でリポジトリ内に split 側がない)
 
 
 if __name__ == '__main__':

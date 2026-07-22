@@ -198,7 +198,7 @@ def _check_r4_writes_conflicts(tasks: list) -> list[str]:
         if _all_pairs_transitively_ordered(claim_ids, ancestors):
             continue
         # claim_ids は task id の生 join のため、特殊文字を repr で逃がして安全に出力する
-        joined = ", ".join(repr(cid) for cid in sorted(claim_ids))
+        joined = ", ".join(repr(cid) for cid in sorted(claim_ids))  # nul-boundary: allow(stderr へ出す人間可読な警告文に埋め込む列挙。機械可読な行集合ではない)
         violations.append(
             f"R4: writes {path!r} を複数 task ({joined}) "
             "が宣言していますが depends_on で順序付けされていません。"
@@ -272,7 +272,7 @@ def main() -> None:
     if warnings:
         # 検出されたルール名（R2/R4/R6）を抽出してデバッグログに記録
         detected_rules = sorted({m.split(":")[0] for m in warnings if ":" in m})
-        write_debug_log(DEBUG_LOG_PATH, f"{basename} WARN {','.join(detected_rules)}")
+        write_debug_log(DEBUG_LOG_PATH, f"{basename} WARN {','.join(detected_rules)}")  # nul-boundary: allow(デバッグログ 1 行に載せる検出ルール名の列挙。人間が読む log で再パースしない)
         # 経路1: stderr に人間向けメッセージ（ターミナル表示用）
         print("[PlannerCheck WARN] plan-report の検査で違反を検出しました:",
               file=sys.stderr)
@@ -285,7 +285,7 @@ def main() -> None:
         # LLM のコンテキストウィンドウに挿入する（公式仕様）
         additional_context = (
             "[PlannerCheck WARN] plan-report の検査で違反を検出しました:\n"
-            + "\n".join(f"  - {msg}" for msg in sanitized_warnings)
+            + "\n".join(f"  - {msg}" for msg in sanitized_warnings)  # nul-boundary: allow(LLM へ注入する人間可読メッセージ本文。表示専用で行集合として再パースしない)
             + "\n\n"
             + "ルールの詳細は .claude/skills/dev-workflow/references/plan-design-guidelines.md を参照。"
             + "意図的に許容する場合はユーザーに確認を取ること。"

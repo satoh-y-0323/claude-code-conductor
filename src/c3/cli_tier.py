@@ -77,7 +77,7 @@ def handle_stats(args: argparse.Namespace) -> int:
             f"--role の値が不正です: {role_filter!r}"
             f"（有効な値: {', '.join(c3_db.AGENT_ROLES)}）",
             file=sys.stderr,
-        )
+        )  # nul-boundary: allow(stderr へ出すエラーメッセージ内の有効値の列挙。表示専用)
         return 1
 
     db_path = c3_db.locate_c3_db()

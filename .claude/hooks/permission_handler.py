@@ -106,7 +106,7 @@ def _glob_to_regex(pattern: str) -> str:
     # ** を一時プレースホルダーに退避してから * と ** を別々に処理する
     parts = pattern.split('**')
     escaped = [re.escape(p).replace(r'\*', '[^/]*') for p in parts]
-    return '.*'.join(escaped)
+    return '.*'.join(escaped)  # nul-boundary: allow(glob を正規表現へ変換する組み立て。区切り .* は正規表現の文法で固定)
 
 
 def _match_file_path(raw: str, p_arg: str) -> bool:

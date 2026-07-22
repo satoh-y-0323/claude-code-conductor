@@ -567,7 +567,7 @@ def read_rework_trend(
 
     month_keys = _zero_filled_calendar_months(months, since)
 
-    gate_placeholders = ",".join("?" * len(METRICS_REVIEW_GATES))
+    gate_placeholders = ",".join("?" * len(METRICS_REVIEW_GATES))  # nul-boundary: allow(SQL の IN プレースホルダ生成。区切りは SQL の文法で固定)
     where = f"WHERE success = 0 AND gate IN ({gate_placeholders}) "
     params: tuple = (*METRICS_REVIEW_GATES,)
     if since is not None:
@@ -805,7 +805,7 @@ def read_rework_session_cost(
         if db_path is None:
             return zero_result
 
-    gate_placeholders = ",".join("?" * len(METRICS_REVIEW_GATES))
+    gate_placeholders = ",".join("?" * len(METRICS_REVIEW_GATES))  # nul-boundary: allow(SQL の IN プレースホルダ生成。区切りは SQL の文法で固定)
     outcome_where = (
         f"WHERE success = 0 AND gate IN ({gate_placeholders}) "
         "AND session_id IS NOT NULL "
@@ -969,7 +969,7 @@ def read_agent_tier_params(
 
     # gate IN の placeholder は BANDIT_GATES 長から動的生成する（DC-GP-001）。
     # literal '(?, ?, ?, ?)' 写経は将来 BANDIT_GATES 増減でバインド個数エラーを招く。
-    gate_placeholders = ",".join("?" * len(BANDIT_GATES))
+    gate_placeholders = ",".join("?" * len(BANDIT_GATES))  # nul-boundary: allow(SQL の IN プレースホルダ生成。区切りは SQL の文法で固定)
 
     try:
         conn = sqlite3.connect(str(db_path))
@@ -1119,7 +1119,7 @@ def read_agent_failure_rate(
     ).isoformat(timespec="seconds")
 
     # gate IN の placeholder は BANDIT_GATES 長から動的生成する（DC-GP-001）。
-    gate_placeholders = ",".join("?" * len(BANDIT_GATES))
+    gate_placeholders = ",".join("?" * len(BANDIT_GATES))  # nul-boundary: allow(SQL の IN プレースホルダ生成。区切りは SQL の文法で固定)
 
     try:
         conn = sqlite3.connect(str(db_path))

@@ -205,7 +205,7 @@ def build_summary_markdown(
             lines.append("_該当エントリなし_")
         lines.append("")
 
-    return "\n".join(lines).rstrip() + "\n"
+    return "\n".join(lines).rstrip() + "\n"  # nul-boundary: allow(Markdown 文書の行組み立て。行そのものが文書構造で split 対象ではない)
 
 
 def write_summary(
@@ -361,7 +361,7 @@ def build_promotion_candidates_section(
         lines.append(f"_候補数: 0 / 最終確認: {today_str}_")
         lines.append("")
         lines.append("_該当エントリなし_")
-        return "\n".join(lines), candidates
+        return "\n".join(lines), candidates  # nul-boundary: allow(consolidated_summary.md の昇格候補セクション本文。人間が読む Markdown で機械パースしない)
 
     lines.append(
         f"_候補数: {len(candidates)} / 最終確認: {today_str} / "
@@ -376,7 +376,7 @@ def build_promotion_candidates_section(
         except (TypeError, ValueError):
             trust_str = "?"
         lines.append(f"- `{cid}` (trust {trust_str})")
-    return "\n".join(lines), candidates
+    return "\n".join(lines), candidates  # nul-boundary: allow(consolidated_summary.md の昇格候補一覧本文。人間が読む Markdown で機械パースしない)
 
 
 def _extract_candidate_fields(c: dict) -> dict:
@@ -479,7 +479,7 @@ def write_promotion_candidates_log(
             lines.append(f"- {safe_desc}")
             lines.append("")
 
-    payload = "\n".join(lines).rstrip() + "\n"
+    payload = "\n".join(lines).rstrip() + "\n"  # nul-boundary: allow(promotion-candidates.md の昇格候補一覧本文。人間が読む Markdown で機械パースしない・"毎回上書き"のため後方互換制約はない)
     return _atomic_write(output_path, payload)
 
 

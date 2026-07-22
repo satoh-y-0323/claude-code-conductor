@@ -147,7 +147,7 @@ def format_additional_context(hits: Iterable[dict], *, stale: bool = False) -> s
         lines.append(f"  [{i}] score={score_str}  {path}  :: {label}")
         if snippet:
             lines.append(f"      {snippet}")
-    return "\n".join(lines)
+    return "\n".join(lines)  # nul-boundary: allow(LLM コンテキストへ注入する人間可読テキスト。表示専用で再パースしない)
 
 
 def find_repo_root() -> Path | None:

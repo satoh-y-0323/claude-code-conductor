@@ -127,9 +127,9 @@ def render_output(raw: str) -> None:
 
     output_parts: list[str] = []
     if header:
-        output_parts.append(' '.join(header))
+        output_parts.append(' '.join(header))  # nul-boundary: allow(ステータスライン先頭部の表示文字列。読み手は Claude Code の表示でリポジトリ内に split 側がない)
     output_parts.extend(metrics)
-    sys.stdout.write(' | '.join(output_parts) + '\n')
+    sys.stdout.write(' | '.join(output_parts) + '\n')  # nul-boundary: allow(ステータスライン 1 行の区切り表示。区切り文字が表示書式そのもの)
     sys.stdout.flush()
 
 

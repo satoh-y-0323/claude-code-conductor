@@ -162,7 +162,7 @@ def build_hint_section(
             summary_parts.append(f"許容 {accepted}")
         if deferred:
             summary_parts.append(f"保留 {deferred}")
-        lines.append(f"- 過去 {total} 件: " + " / ".join(summary_parts))
+        lines.append(f"- 過去 {total} 件: " + " / ".join(summary_parts))  # nul-boundary: allow(人間可読なサマリ表示の断片。機械可読な行集合ではない)
 
         # 直近の判断
         latest = rows[0]
@@ -185,7 +185,7 @@ def build_hint_section(
             lines.append(f"- `{cid}` は code-reviewer と security-reviewer の両方で指摘されています")
         lines.append("")
 
-    return "\n".join(lines).rstrip() + "\n"
+    return "\n".join(lines).rstrip() + "\n"  # nul-boundary: allow(レポート末尾へ追記する Markdown 本文。文書形式で再パースしない)
 
 
 def append_hints_to_report(

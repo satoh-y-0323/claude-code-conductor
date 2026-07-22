@@ -113,7 +113,7 @@ def _inherit_backlog_from_latest_session(
     except OSError:
         return
 
-    inheritance_block = '\n'.join(pending_tasks) + '\n'
+    inheritance_block = '\n'.join(pending_tasks) + '\n'  # nul-boundary: allow(セッション .tmp の残タスクセクションへ書く行。利用先に旧形式が既に存在する永続形式で後方互換が要る)
     updated = new_content.replace(
         '## 残タスク\n',
         f'## 残タスク\n{inheritance_block}',
@@ -180,7 +180,7 @@ def _apply_session_updates(path: str, content: str, message: str = '') -> None:
     # 古い応答は積極的に上書きしてよい。古い `not in updated` ガードは「最初の応答が
     # 一日中残る」問題を引き起こしていた。
     if message:
-        single_line = ' '.join(message.split())
+        single_line = ' '.join(message.split())  # nul-boundary: allow(最終応答を単一行へ平坦化する空白正規化。そもそも行集合ではない)
         # サロゲート文字など UTF-8 非互換文字を除去（JSON デコード時に生成される場合がある）
         single_line = single_line.encode('utf-8', errors='replace').decode('utf-8')
         truncated = single_line[:MAX_LAST_MSG]

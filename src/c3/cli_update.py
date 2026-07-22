@@ -915,7 +915,7 @@ def _format_deletion_report(result: dict[str, Any], *, dry_run: bool, assume_yes
                 for w in warnings:
                     lines.append(f"    - {w}")
 
-    return "\n".join(lines)
+    return "\n".join(lines)  # nul-boundary: allow(c3 update のサマリ表示テキスト。表示専用で再パースしない)
 
 
 def _walk_diff(template: Path, dest: Path):

@@ -79,7 +79,7 @@ def _sanitize_for_managed_block(content: str) -> str:
         if line.startswith("@"):
             continue
         clean_lines.append(line)
-    return "\n".join(clean_lines)
+    return "\n".join(clean_lines)  # nul-boundary: allow(AGENTS.md 管理ブロック本文を行単位で復元する。Markdown 文書形式そのもの)
 
 
 @dataclass(frozen=True)
@@ -342,7 +342,7 @@ def _codex_config_section() -> str:
     pythonpath = _dev_source_pythonpath()
     if pythonpath is not None:
         lines.append(f'PYTHONPATH = "{_toml_escape(str(pythonpath))}"')
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n"  # nul-boundary: allow(Codex 設定の TOML 本文。区切りは TOML の文法で固定されており NUL 化すると設定が壊れる)
 
 
 def _cursor_core_rule() -> str:
@@ -427,7 +427,7 @@ def _collect_rules_for_opencode(claude_root: Path) -> str:
         content = f.read_text(encoding="utf-8").strip()
         if content:
             parts.append(f"### {f.stem}\n\n{content}")
-    return "\n\n".join(parts)
+    return "\n\n".join(parts)  # nul-boundary: allow(Cursor/OpenCode へ埋め込む Markdown セクションの段落結合。文書形式で再パースしない)
 
 
 def _opencode_agents_section(rules: str, claude_md: str) -> str:
