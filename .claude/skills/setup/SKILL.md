@@ -1,12 +1,16 @@
 ---
 description: 技術スタックと独自規約をヒアリングして project-setup エージェントに coding-standards.md と project-conventions.md を生成させる。プロジェクト開始時に使用する。
-disable-model-invocation: true
 ---
 
 # setup
 
 プロジェクトのコーディング規約を設定する。
 ヒアリングは親 Claude が担当し、収集後に project-setup エージェントを起動する。
+
+> **起動経路の制約**: 本 skill の起動は (a) ユーザーの `/setup` 明示呼び出し、
+> (b) `init-session` ガード G-2 が `SETUP_NEEDED` を検出した際のチェーン起動、の 2 経路のみ。
+> それ以外の場面で LLM の判断により自発的に起動してはならない
+> （frontmatter で model invocation を禁止しない理由は G-2 チェーン起動を許可するため。v2.38.0 設計）。
 
 ---
 

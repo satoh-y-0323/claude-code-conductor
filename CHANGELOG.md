@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.51.1] - 2026-07-22
+
+### 修正
+
+- **setup skill が Skill ツール（AI）から起動できず、init-session の自動チェーン（G-2）が機能しない defect を修正**: `setup/SKILL.md` の frontmatter `disable-model-invocation: true`（2026-05-03 の commands→skills 移行時に付与）が、v2.38.0 で導入した /start→/init-session→/setup 自動チェーン設計と矛盾していた。利用先の初回導入（`SETUP_NEEDED` 検出時）でチェーン起動がブロックされ、手動での `/setup` 実行を強いられていた（利用先プロジェクトで実地確認）。frontmatter からフラグを削除し、代わりに本文へ起動経路の制約（ユーザーの `/setup` 明示呼び出し・init-session G-2 チェーンの 2 経路のみ。それ以外の自発起動は禁止）を明記した
+
+### 後方互換
+
+- 既存利用先への影響なし。setup 実施済みプロジェクト（`setup_done.flag` あり）では G-2 が発火しないため挙動不変。破壊的変更なし
+
 ## [2.51.0] - 2026-07-18
 
 ### 追加
