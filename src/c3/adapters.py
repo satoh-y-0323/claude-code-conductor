@@ -342,7 +342,7 @@ def _codex_config_section() -> str:
     pythonpath = _dev_source_pythonpath()
     if pythonpath is not None:
         lines.append(f'PYTHONPATH = "{_toml_escape(str(pythonpath))}"')
-    return "\n".join(lines) + "\n"  # nul-boundary: allow(Codex 設定の TOML 本文。区切りは TOML の文法で固定されており NUL 化すると設定が壊れる)
+    return "\n".join(lines) + "\n"  # nul-boundary: allow(Codex 設定の TOML 本文。区切りは TOML の文法で固定されており NUL 化すると設定が壊れる。要素側は _toml_escape が str.splitlines の行境界 10 文字を封じることを保証する)
 
 
 def _cursor_core_rule() -> str:
@@ -668,12 +668,110 @@ Claude Code, Codex, and Cursor remain compatible.
     )
 
 
+# Escape map for TOML basic strings. Maps character codes to their escape sequences:
+# - C0 control characters (0x00–0x1F): \uXXXX format, except short forms for
+#   Backspace (0x08→\b), Tab (0x09→\t), Newline (0x0A→\n), Form feed (0x0C→\f),
+#   Carriage return (0x0D→\r)
+# - Delete (0x7F), C1 control characters (0x80–0x9F): \uXXXX format
+# - Line separator (0x2028) and Paragraph separator (0x2029): \uXXXX format
+# - Backslash (\) and double quote ("): require escaping in TOML basic strings
+_TOML_ESCAPE_MAP: dict[int, str] = {
+    0x00: "\\u0000", 0x01: "\\u0001", 0x02: "\\u0002", 0x03: "\\u0003",
+    0x04: "\\u0004", 0x05: "\\u0005", 0x06: "\\u0006", 0x07: "\\u0007",
+    0x08: "\\b", 0x09: "\\t", 0x0A: "\\n", 0x0B: "\\u000b", 0x0C: "\\f",
+    0x0D: "\\r", 0x0E: "\\u000e", 0x0F: "\\u000f", 0x10: "\\u0010",
+    0x11: "\\u0011", 0x12: "\\u0012", 0x13: "\\u0013", 0x14: "\\u0014",
+    0x15: "\\u0015", 0x16: "\\u0016", 0x17: "\\u0017", 0x18: "\\u0018",
+    0x19: "\\u0019", 0x1A: "\\u001a", 0x1B: "\\u001b", 0x1C: "\\u001c",
+    0x1D: "\\u001d", 0x1E: "\\u001e", 0x1F: "\\u001f", 0x7F: "\\u007f",
+    0x80: "\\u0080", 0x81: "\\u0081", 0x82: "\\u0082", 0x83: "\\u0083",
+    0x84: "\\u0084", 0x85: "\\u0085", 0x86: "\\u0086", 0x87: "\\u0087",
+    0x88: "\\u0088", 0x89: "\\u0089", 0x8A: "\\u008a", 0x8B: "\\u008b",
+    0x8C: "\\u008c", 0x8D: "\\u008d", 0x8E: "\\u008e", 0x8F: "\\u008f",
+    0x90: "\\u0090", 0x91: "\\u0091", 0x92: "\\u0092", 0x93: "\\u0093",
+    0x94: "\\u0094", 0x95: "\\u0095", 0x96: "\\u0096", 0x97: "\\u0097",
+    0x98: "\\u0098", 0x99: "\\u0099", 0x9A: "\\u009a", 0x9B: "\\u009b",
+    0x9C: "\\u009c", 0x9D: "\\u009d", 0x9E: "\\u009e", 0x9F: "\\u009f",
+    0x2028: "\\u2028", 0x2029: "\\u2029",
+    ord("\\"): "\\\\", ord('"'): '\\"',
+}
+
+# Escape map for TOML multi-line basic strings. DERIVED from _TOML_ESCAPE_MAP
+# (never hand-copied): a hand-written duplicate previously lost VT (0x0B) while
+# removing the neighbouring Tab/Newline entries, emitting invalid TOML. Deriving
+# it makes that class of single-codepoint omission structurally impossible and
+# keeps both maps in sync when the escaped set is extended.
+# Exactly three codepoints are excluded, and no others:
+# - 0x09 Tab / 0x0A Newline: kept literal, since multi-line strings are their
+#   natural home (readability of the generated instructions block)
+# - 0x22 double quote: not escaped unconditionally here. Multi-line strings only
+#   need quotes escaped in runs that could break the `"""` delimiter, which
+#   _escape_toml_quote_runs handles separately.
+_TOML_MULTILINE_ESCAPE_MAP: dict[int, str] = {
+    k: v for k, v in _TOML_ESCAPE_MAP.items() if k not in (0x09, 0x0A, 0x22)
+}
+
+
+def _escape_toml_quote_runs(value: str) -> str:
+    """Escape quote sequences in TOML multi-line string values.
+
+    Prevents the value from breaking out of a multi-line basic string when
+    delimited by triple quotes. A run of quotes is escaped in full when it is
+    3 or more characters long, or when it touches the end of the value (a
+    trailing run merges with the closing ``\"\"\"`` delimiter, so even a single
+    trailing quote would produce four in a row).
+
+    Scans the input exactly once and never re-reads its own output: the two
+    conditions are OR-ed within a single pass on purpose. A two-stage variant
+    (escape long runs, then re-scan for trailing quotes) misreads the ``"`` of
+    an already-emitted ``\\"`` as an unescaped quote and inserts a second
+    backslash, corrupting values whose trailing run is 3 or more quotes long.
+    Every decision here is made from the ORIGINAL string: the run length and
+    whether the run ends at ``len(value)``.
+    """
+    if not value:
+        return value
+    result: list[str] = []
+    i = 0
+    while i < len(value):
+        if value[i] == '"':
+            start = i
+            while i < len(value) and value[i] == '"':
+                i += 1
+            run_length = i - start
+            touches_end = i == len(value)
+            if run_length >= 3 or touches_end:
+                result.append('\\"' * run_length)
+            else:
+                result.append('"' * run_length)
+        else:
+            result.append(value[i])
+            i += 1
+    return "".join(result)
+
+
 def _toml_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    """Escape a string for use as a TOML basic string literal value.
+
+    Encodes all C0 control characters (including LF and TAB), DEL, C1 control
+    characters, line/paragraph separators, and the special characters backslash
+    and double-quote. Ensures the result fits on a single line with no embedded
+    line breaks, preserving the TOML key-value syntax.
+    """
+    return value.translate(_TOML_ESCAPE_MAP)
 
 
 def _toml_multiline_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+    """Escape a string for use as a TOML multi-line basic string literal value.
+
+    Encodes control characters except LF and TAB (which are preserved for
+    readability) using _TOML_MULTILINE_ESCAPE_MAP, which is derived from
+    _TOML_ESCAPE_MAP by excluding exactly those two plus the double quote, then
+    prevents quote sequences from breaking the triple-quote delimiter in a
+    single left-to-right pass. Does not guarantee line isolation; callers must
+    manage their own line structure within the multi-line string.
+    """
+    return _escape_toml_quote_runs(value.translate(_TOML_MULTILINE_ESCAPE_MAP))
 
 
 def _dev_source_pythonpath() -> Path | None:

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
-from c3 import adapters
+from c3 import adapters, cli_doctor
 import yaml
 
 from c3.adapters import (
@@ -854,3 +855,641 @@ def test_opencode_agents_section_strips_codex_markers():
         assert MANAGED_CODEX_END not in line, (
             f"MANAGED_CODEX_END leaked into opencode section: {repr(line)}"
         )
+
+
+# ============================================================================
+# NEW (B1 — TOML エスケープの制御文字対応): Red フェーズ (TDD)
+#
+# plan-report-20260723-193847.md T1 / architecture-report-20260723-193422.md
+# 参照。以下は「Red であるべき群」「Red フェーズでも緑であるべき群」の 2 系統が
+# 混在する。区別は test-report を参照（各群の一覧・件数を分けて記載）。
+# ============================================================================
+
+
+# ----------------------------------------------------------------------
+# NEW: _toml_escape — control-character escaping (S-1, ADR-2)
+# ----------------------------------------------------------------------
+
+
+def test_toml_escape_escapes_lf():
+    assert _toml_escape("a\nb") == "a\\nb"
+
+
+def test_toml_escape_escapes_cr():
+    assert _toml_escape("a\rb") == "a\\rb"
+
+
+def test_toml_escape_escapes_tab():
+    assert _toml_escape("a\tb") == "a\\tb"
+
+
+def test_toml_escape_escapes_nul():
+    assert _toml_escape("a\x00b") == "a\\u0000b"
+
+
+def test_toml_escape_escapes_backspace_and_formfeed():
+    assert _toml_escape("\x08") == "\\b"
+    assert _toml_escape("\x0c") == "\\f"
+
+
+def test_toml_escape_escapes_other_c0_control_chars():
+    assert _toml_escape("\x01") == "\\u0001"
+    assert _toml_escape("\x1f") == "\\u001f"
+
+
+def test_toml_escape_escapes_del():
+    assert _toml_escape("\x7f") == "\\u007f"
+
+
+def test_toml_escape_escapes_nel():
+    # U+0085 NEL is a C1 control char and one of str.splitlines()'s 10
+    # line-boundary characters (architecture F-3).
+    assert _toml_escape("\x85") == "\\u0085"
+
+
+def test_toml_escape_escapes_line_and_paragraph_separators():
+    assert _toml_escape(" ") == "\\u2028"
+    assert _toml_escape(" ") == "\\u2029"
+
+
+def test_toml_escape_leaves_plain_japanese_text_untouched():
+    # Identity case (DC-AM-001): this may already pass under the current
+    # implementation — that is expected, not an anomaly. It documents that
+    # C1 range handling does not corrupt ordinary non-ASCII text (K-4).
+    assert _toml_escape("日本語 path/to/x") == "日本語 path/to/x"
+
+
+def test_toml_escape_handles_empty_string():
+    # Identity case (DC-AM-001): may already pass under the current
+    # implementation.
+    assert _toml_escape("") == ""
+
+
+def test_toml_escape_handles_mixed_control_quote_backslash():
+    """Control chars, a quote, and a backslash in one value must all be
+    escaped correctly with no ordering mishap (str.translate is single-pass,
+    architecture §4)."""
+    mixed = 'a\x00"b\\c\x1f d'
+    assert _toml_escape(mixed) == 'a\\u0000\\"b\\\\c\\u001f d'
+
+
+def test_toml_escape_escapes_all_ten_line_boundary_chars():
+    """N-1a direct verification: every character str.splitlines() treats as
+    a line boundary (architecture F-3 / §0 — LF, VT, FF, CR, FS, GS, RS, NEL,
+    LS, PS) must be neutralised so the escaped output is always one line."""
+    boundary_chars = "\n\x0b\x0c\r\x1c\x1d\x1e\x85  "
+    value = "x".join(boundary_chars)
+    escaped = _toml_escape(value)
+    assert len(escaped.splitlines()) == 1, (
+        f"escaped value still splits into multiple lines: {escaped.splitlines()!r}"
+    )
+
+
+# ----------------------------------------------------------------------
+# NEW: _toml_multiline_escape — control-character escaping (S-2, ADR-3)
+# ----------------------------------------------------------------------
+
+
+def test_toml_multiline_escape_keeps_tab():
+    # LF is already covered by the existing
+    # test_toml_multiline_escape_keeps_newlines. TAB is the other character
+    # ADR-3 intentionally leaves raw.
+    assert _toml_multiline_escape("a\tb") == "a\tb"
+
+
+def test_toml_multiline_escape_escapes_isolated_cr():
+    assert _toml_multiline_escape("a\rb") == "a\\rb"
+
+
+def test_toml_multiline_escape_escapes_various_control_chars():
+    cases = {
+        "\x00": "\\u0000",
+        "\x1f": "\\u001f",
+        "\x7f": "\\u007f",
+        "\x85": "\\u0085",
+        " ": "\\u2028",
+    }
+    for raw, escaped in cases.items():
+        value = f"a{raw}b"
+        result = _toml_multiline_escape(value)
+        assert result == f"a{escaped}b", f"char {raw!r} not escaped as expected: {result!r}"
+
+
+def test_toml_multiline_escape_quote_runs_of_one_or_two_mid_value_are_untouched():
+    """TOML allows 1-2 consecutive quotes inside a multiline literal.
+
+    DC-AM-001: samples must NOT end in a quote (that is a different case,
+    covered separately below) and must not reuse the basic-string test's
+    ``say "hi"`` sample (tests/test_adapters.py:43), to avoid conflating the
+    two independent contracts.
+    """
+    assert _toml_multiline_escape('say "hi" ok') == 'say "hi" ok'
+    assert _toml_multiline_escape('a""b') == 'a""b'
+
+
+def test_toml_multiline_escape_escapes_four_consecutive_quotes():
+    # Existing test_toml_multiline_escape_protects_triple_quote covers the
+    # 3-quote case. 4+ is the documented gap (ADR-4 / current bug).
+    assert _toml_multiline_escape('a"""" b') == 'a\\"\\"\\"\\" b'
+
+
+def test_toml_multiline_escape_escapes_trailing_single_quote():
+    # Documented gap: a value ending in a single `"` would otherwise merge
+    # with the closing ``"""`` delimiter (ADR-4 / U-3).
+    assert _toml_multiline_escape('abc"') == 'abc\\"'
+
+
+def test_toml_multiline_escape_escapes_trailing_double_quote():
+    assert _toml_multiline_escape('abc""') == 'abc\\"\\"'
+
+
+# ----------------------------------------------------------------------
+# NEW: _escape_toml_quote_runs — private helper introduced by T2 (ADR-5)
+#
+# DC-AM-004 / K-7: at the time this section was added (Red phase), this
+# symbol did not yet exist in the implementation. It was deliberately NOT
+# added to the module-level import list at the top of this file at that
+# time — doing so would have raised ImportError at collection time and
+# taken down every test in this file (including the snapshot tests below,
+# which needed to remain executable during the Red phase). Each test below
+# imports it locally instead; the local-import style is kept for
+# consistency now that the symbol exists in the implementation.
+# ----------------------------------------------------------------------
+
+
+def test_escape_toml_quote_runs_single_run_mid_value_is_untouched():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('a"b') == 'a"b'
+
+
+def test_escape_toml_quote_runs_double_run_mid_value_is_untouched():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('a""b') == 'a""b'
+
+
+def test_escape_toml_quote_runs_triple_run_is_escaped():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('a"""b') == 'a\\"\\"\\"b'
+
+
+def test_escape_toml_quote_runs_quadruple_run_is_escaped():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('a""""b') == 'a\\"\\"\\"\\"b'
+
+
+def test_escape_toml_quote_runs_leading_single_quote_is_untouched():
+    # U-A boundary: a run at the very start of the value is neither a 3+ run
+    # nor a trailing run, so it must be left alone.
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('"abc') == '"abc'
+
+
+def test_escape_toml_quote_runs_trailing_single_quote_is_escaped():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('abc"') == 'abc\\"'
+
+
+def test_escape_toml_quote_runs_trailing_double_quote_is_escaped():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('abc""') == 'abc\\"\\"'
+
+
+def test_escape_toml_quote_runs_empty_string_returns_empty():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs("") == ""
+
+
+# ----------------------------------------------------------------------
+# NEW: backward-compat snapshots (C-2 / K-1 / K-6)
+#
+# Captured from the PRE-REFACTOR (current, buggy) implementation on
+# 2026-07-23 during the Red phase — see test-report for the exact capture
+# method. These must stay GREEN throughout Red and after the Green/Refactor
+# phases: a control-char-free, quote-run-free input must produce byte-for-
+# byte identical output before and after the fix.
+#
+# Both ``sys.executable`` AND ``_dev_source_pythonpath`` are monkeypatched
+# (DC-AS-002) so the snapshot does not depend on the local dev checkout path
+# (which would make CI, running from a different absolute path, red).
+# ----------------------------------------------------------------------
+
+
+def test_codex_config_section_snapshot_with_pythonpath(monkeypatch):
+    monkeypatch.setattr(adapters.sys, "executable", "/tmp/py/python")
+    monkeypatch.setattr(adapters, "_dev_source_pythonpath", lambda: PurePosixPath("/repo/src"))
+
+    section = adapters._codex_config_section()
+
+    assert section == (
+        '[mcp_servers.c3]\n'
+        'command = "/tmp/py/python"\n'
+        'args = ["-m", "c3.mcp_server"]\n'
+        'startup_timeout_sec = 10\n'
+        'tool_timeout_sec = 600\n'
+        '\n'
+        '[mcp_servers.c3.env]\n'
+        'C3_PROJECT_ROOT = "."\n'
+        'PYTHONPATH = "/repo/src"\n'
+    )
+
+
+def test_codex_config_section_snapshot_without_pythonpath(monkeypatch):
+    monkeypatch.setattr(adapters.sys, "executable", "/tmp/py/python")
+    monkeypatch.setattr(adapters, "_dev_source_pythonpath", lambda: None)
+
+    section = adapters._codex_config_section()
+
+    assert section == (
+        '[mcp_servers.c3]\n'
+        'command = "/tmp/py/python"\n'
+        'args = ["-m", "c3.mcp_server"]\n'
+        'startup_timeout_sec = 10\n'
+        'tool_timeout_sec = 600\n'
+        '\n'
+        '[mcp_servers.c3.env]\n'
+        'C3_PROJECT_ROOT = "."\n'
+    )
+
+
+def test_codex_agent_toml_snapshot_dummy_body_with_quotes():
+    # DC-AM-003: input is a dummy body defined inline (NOT a real
+    # .claude/agents/*.md file), so future edits to real agent files cannot
+    # make this snapshot go permanently red.
+    result = adapters._codex_agent_toml(
+        "dummyagent",
+        'a "b" c',
+        '---\ndescription: a "b" c\n---\n\n# dummy\n\nbody with "quotes" here\n',
+    )
+
+    assert result == (
+        'name = "dummyagent"\n'
+        'description = "a \\"b\\" c"\n'
+        'developer_instructions = """Generated from `.claude/agents/dummyagent.md`.\n'
+        '\n'
+        'Use `.claude/` as the C3 state root. Preserve C3 report and memory paths so\n'
+        'Claude Code, Codex, and Cursor remain compatible.\n'
+        '\n'
+        '---\n'
+        'description: a "b" c\n'
+        '---\n'
+        '\n'
+        '# dummy\n'
+        '\n'
+        'body with "quotes" here\n'
+        '"""\n'
+    )
+
+
+# ----------------------------------------------------------------------
+# NEW: 14-agent invariant guard (C-2 / DC-AS-001)
+#
+# Machine-checked backward-compat guard over the real distributed agent
+# definitions. The forbidden character set is DIFFERENT per field/function
+# (architecture ADR-2 table) — mixing them up makes this test permanently
+# unsatisfiable regardless of the implementation (K-8):
+#   - name / description  -> _toml_escape (basic string): C0 in full,
+#     INCLUDING LF/TAB, + DEL + C1 + U+2028/U+2029
+#   - full .md source text -> _toml_multiline_escape (multiline string):
+#     same set MINUS TAB and LF (ADR-3 keeps those raw on purpose), plus a
+#     "no 3+ consecutive double-quotes" check (ADR-4)
+# ----------------------------------------------------------------------
+
+
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / ".claude" / "agents"
+
+
+def _basic_string_forbidden_codepoints(s: str) -> list[int]:
+    """Codepoints forbidden in a value routed through ``_toml_escape``."""
+    forbidden = []
+    for ch in s:
+        cp = ord(ch)
+        if cp <= 0x1F or cp == 0x7F or 0x80 <= cp <= 0x9F or cp in (0x2028, 0x2029):
+            forbidden.append(cp)
+    return forbidden
+
+
+def _multiline_string_forbidden_codepoints(s: str) -> list[int]:
+    """Same as above but TAB (0x09) and LF (0x0A) are allowed — the
+    ``_toml_multiline_escape`` contract keeps those raw on purpose."""
+    return [cp for cp in _basic_string_forbidden_codepoints(s) if cp not in (0x09, 0x0A)]
+
+
+def test_agents_dir_glob_is_not_empty():
+    """Guard against a typo'd glob path silently making the invariant tests
+    below a no-op (DC-AS-001 / pattern established in
+    tests/test_nul_boundary_lint.py:458-474,482)."""
+    files = sorted(_AGENTS_DIR.glob("*.md"))
+    assert files, f"{_AGENTS_DIR} に *.md が1件も見つかりません（走査対象パスの確認が必要）"
+    assert len(files) >= 14, (
+        f"配布元 agent 定義は現在 14 件の想定（実測 {len(files)} 件）。"
+        "件数が減っている場合は走査対象パスを確認すること。"
+    )
+
+
+def test_agent_name_and_description_have_no_basic_string_forbidden_chars():
+    files = sorted(_AGENTS_DIR.glob("*.md"))
+    assert files
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        metadata, body = adapters._split_frontmatter(text)
+        name = f.stem
+        description = str(metadata.get("description") or adapters._first_heading(body) or name)
+        bad_name = _basic_string_forbidden_codepoints(name)
+        bad_desc = _basic_string_forbidden_codepoints(description)
+        assert not bad_name, f"{f.name}: name contains forbidden codepoints {bad_name!r}"
+        assert not bad_desc, f"{f.name}: description contains forbidden codepoints {bad_desc!r}"
+
+
+def test_agent_source_text_has_no_multiline_forbidden_chars_or_long_quote_runs():
+    files = sorted(_AGENTS_DIR.glob("*.md"))
+    assert files
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        bad_body = _multiline_string_forbidden_codepoints(text)
+        assert not bad_body, f"{f.name}: source text contains forbidden codepoints {bad_body!r}"
+        quote_runs = re.findall(r'"{3,}', text)
+        assert not quote_runs, (
+            f"{f.name}: source text contains 3+ consecutive double-quotes {quote_runs!r}"
+        )
+
+
+# ----------------------------------------------------------------------
+# NEW: integration — _codex_config_section() line-structure safety (S-5, N-1a)
+# ----------------------------------------------------------------------
+
+
+def test_codex_config_section_command_line_stays_single_physical_line(monkeypatch):
+    monkeypatch.setattr(adapters.sys, "executable", "/tmp/py\nlab/python")
+    monkeypatch.setattr(adapters, "_dev_source_pythonpath", lambda: None)
+
+    section = adapters._codex_config_section()
+
+    command_lines = [line for line in section.splitlines() if line.startswith('command = "')]
+    assert len(command_lines) == 1, (
+        f"expected exactly one physical line starting with 'command = \"', got {command_lines!r}"
+    )
+    assert command_lines[0].endswith('"'), (
+        "command line does not close on the same physical line (a raw newline "
+        f"leaked into the value): {command_lines[0]!r}"
+    )
+
+
+def test_codex_config_section_extracted_command_has_no_raw_newline(monkeypatch):
+    monkeypatch.setattr(adapters.sys, "executable", "/tmp/py\nlab/python")
+    monkeypatch.setattr(adapters, "_dev_source_pythonpath", lambda: None)
+
+    section = adapters._codex_config_section()
+    extracted = cli_doctor._extract_codex_mcp_command(section)
+
+    assert extracted is not None
+    # S-5 (confirmed definition): decoding is NOT required here — the reader
+    # (cli_doctor.py:369) only decodes `\"` and `\\`. `\n` must survive as the
+    # two-character escape sequence; what matters for security is that a RAW
+    # newline never leaks into the extracted value (that would forge a fake
+    # config line / section header).
+    assert "\n" not in extracted, (
+        f"extracted command contains a raw newline (line-structure forgery): {extracted!r}"
+    )
+    assert "\\n" in extracted, (
+        f"expected the escaped '\\n' sequence to survive un-decoded: {extracted!r}"
+    )
+
+
+def test_codex_config_section_parses_as_valid_toml_with_injected_newline(monkeypatch):
+    tomllib = pytest.importorskip("tomllib")
+    monkeypatch.setattr(adapters.sys, "executable", "/tmp/py\nlab/python")
+    monkeypatch.setattr(adapters, "_dev_source_pythonpath", lambda: None)
+
+    section = adapters._codex_config_section()
+    parsed = tomllib.loads(section)
+
+    # N-2 / DC-AM-002: unlike the extraction check above, a full TOML parser
+    # DOES decode `\n`, so the parsed value equals the ORIGINAL (unescaped)
+    # executable path — this is the deliberate contrast documented in the
+    # test-report (S-5's confirmed definition).
+    assert parsed["mcp_servers"]["c3"]["command"] == "/tmp/py\nlab/python"
+
+
+# ----------------------------------------------------------------------
+# NEW: integration — _codex_agent_toml() multiline description (S-4, N-1b)
+# ----------------------------------------------------------------------
+
+
+def test_codex_agent_toml_multiline_description_round_trips_via_tomllib():
+    tomllib = pytest.importorskip("tomllib")
+    description = 'line1\nline2 with "quotes"'
+
+    result = _codex_agent_toml("x", description, "body")
+    parsed = tomllib.loads(result)
+
+    assert parsed["description"] == description
+
+
+def test_write_codex_agents_end_to_end_preserves_multiline_description_via_toml(tmp_path: Path):
+    """S-4 acceptance test (DC-AM-001): a real agent definition with a
+    multiline ``description`` (via YAML literal block scalar) must produce a
+    ``.codex/agents/*.toml`` that a TOML parser can read back, with the
+    description value equal to the original."""
+    tomllib = pytest.importorskip("tomllib")
+    agents_dir = tmp_path / ".claude" / "agents"
+    agents_dir.mkdir(parents=True)
+    md = (
+        "---\n"
+        "description: |\n"
+        "  line one\n"
+        "  line two\n"
+        "---\n\n"
+        "# x\n\n"
+        "body text here\n"
+    )
+    (agents_dir / "x.md").write_text(md, encoding="utf-8")
+    metadata, _ = adapters._split_frontmatter(md)
+    expected_description = metadata["description"]
+    assert "\n" in expected_description, "precondition: description must contain a newline"
+
+    adapters._write_codex_agents(tmp_path, dry_run=False)
+
+    toml_path = tmp_path / ".codex" / "agents" / "x.toml"
+    parsed = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    assert parsed["description"] == expected_description
+
+
+# ============================================================================
+# NEW (B1 — E 周回 1 差し戻し): Red フェーズ (TDD, T6)
+#
+# plan-report-20260723-193847.md §2-B T6 参照。フェーズ E で code-reviewer /
+# security-reviewer が実装コードを実際に実行して発見した実装バグ 2 件
+# （CR-NEW-1 ／ SR-NEW Finding 1 の末尾クォート二重処理・CR-NEW-2 の
+# `_TOML_MULTILINE_ESCAPE_MAP` からの VT 脱落）に対する境界値テストを追加する。
+# design-critic 3 サイクル・T1〜T5 のケース表はいずれも「末尾かつ 3 連以上」
+# という条件の交差ケースを 1 件もカバーしておらず、素通りした（K-9）。
+# 本セクションは追加時点では全て「Red であるべき群」だった（当時の実装では
+# 失敗し、T7 の修正後に緑になる想定）。全件、T7 で予定されていた修正
+# （ADR-6 の派生生成 ＋ ADR-7 の 1 パス化）を適用すると緑になることを
+# Red フェーズの時点で事前に検証済み（test-report 参照）。T7 は本 diff に
+# 既に適用済みであり、現在は全件 green である。
+# ============================================================================
+
+
+# ----------------------------------------------------------------------
+# NEW: _escape_toml_quote_runs — trailing run of 3+ quotes
+# (CR-T-001 / SR-NEW Finding 2)。
+#
+# 等値比較のみ（DC-AS-001・原理的な制約）: このヘルパーはクォートしか
+# 処理しないため、バックスラッシュや制御文字を含む値を直接渡すと、それら
+# が未処理のまま TOML に渡り、tomllib 往復は「クォート連バグ」とは無関係の
+# 理由で失敗してしまう。末尾クォート連の tomllib 往復は choke point
+# （`_toml_multiline_escape`）側のテスト群（このすぐ下）が担当する。
+# ----------------------------------------------------------------------
+
+
+def test_escape_toml_quote_runs_trailing_triple_run_is_escaped():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('abc"""') == 'abc\\"\\"\\"'
+
+
+def test_escape_toml_quote_runs_trailing_quadruple_run_is_escaped():
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('abc""""') == 'abc\\"\\"\\"\\"'
+
+
+def test_escape_toml_quote_runs_value_is_entirely_quotes_is_escaped():
+    # The whole value is a single run that is simultaneously leading,
+    # trailing, AND 3+ in length -- confirms neither condition needs to be
+    # exclusive of the other for the escape to apply.
+    from c3.adapters import _escape_toml_quote_runs
+
+    assert _escape_toml_quote_runs('"""""') == '\\"\\"\\"\\"\\"'
+
+
+# ----------------------------------------------------------------------
+# NEW: _toml_multiline_escape (choke point) — tomllib round trip for a
+# trailing run of 3+ quotes (CR-NEW-1 / SR-NEW Finding 1).
+#
+# This is the S-8 (requirements §5) acceptance test body for the
+# trailing-run case: unlike the equality tests above, this goes through the
+# actual choke point used by `_codex_agent_toml()` and asserts that the
+# DECODED value equals the original input, not merely that the escaped text
+# has some expected shape. It is deliberately symmetric with the existing
+# mid-value / short-run quote tests at tests/test_adapters.py:990,996,1002
+# (DC-GP-003) but targets the combination those omitted: "3+ AND trailing".
+# ----------------------------------------------------------------------
+
+
+def test_toml_multiline_escape_round_trips_trailing_triple_quote_run():
+    tomllib = pytest.importorskip("tomllib")
+    value = 'abc"""'
+    escaped = _toml_multiline_escape(value)
+    parsed = tomllib.loads('x = """' + escaped + '"""\n')
+    assert parsed["x"] == value
+
+
+def test_toml_multiline_escape_round_trips_trailing_quadruple_quote_run():
+    tomllib = pytest.importorskip("tomllib")
+    value = 'abc""""'
+    escaped = _toml_multiline_escape(value)
+    parsed = tomllib.loads('x = """' + escaped + '"""\n')
+    assert parsed["x"] == value
+
+
+def test_toml_multiline_escape_round_trips_value_that_is_entirely_quotes():
+    tomllib = pytest.importorskip("tomllib")
+    value = '"""""'
+    escaped = _toml_multiline_escape(value)
+    parsed = tomllib.loads('x = """' + escaped + '"""\n')
+    assert parsed["x"] == value
+
+
+def test_toml_multiline_escape_round_trips_trailing_run_preceded_by_backslash():
+    # Mixed case (plan T6 手順 2-(ii)): a backslash immediately before the
+    # trailing quote run. Only reachable through the choke point, because
+    # `translate()` must turn the backslash into `\\` BEFORE the quote-run
+    # pass runs -- the equality-only helper tests above cannot exercise
+    # this interaction.
+    tomllib = pytest.importorskip("tomllib")
+    value = 'a\\b"""'
+    escaped = _toml_multiline_escape(value)
+    parsed = tomllib.loads('x = """' + escaped + '"""\n')
+    assert parsed["x"] == value
+
+
+def test_toml_multiline_escape_round_trips_trailing_run_preceded_by_control_char():
+    tomllib = pytest.importorskip("tomllib")
+    value = "a\x00b\"\"\""
+    escaped = _toml_multiline_escape(value)
+    parsed = tomllib.loads('x = """' + escaped + '"""\n')
+    assert parsed["x"] == value
+
+
+# ----------------------------------------------------------------------
+# NEW: _toml_multiline_escape — line-boundary coverage excluding LF
+# (CR-NEW-2 / CR-T-001-2).
+#
+# "Symmetry" with test_toml_escape_escapes_all_ten_line_boundary_chars
+# (tests/test_adapters.py:936) means coverage PARITY over the 10
+# architecture-F-3 boundary characters, NOT the same assert shape
+# (DC-AM-001): `len(escaped.splitlines()) == 1` cannot hold on the
+# multiline side because LF is intentionally left raw (ADR-3). Each of the
+# remaining 9 characters is instead injected individually and compared
+# against its expected escape sequence. VT (U+000B) is the character
+# CR-NEW-2 found missing from `_TOML_MULTILINE_ESCAPE_MAP`; the other 8 are
+# included for coverage parity, not because they were individually
+# suspected buggy. Short-form vs \uXXXX choice matches _TOML_ESCAPE_MAP
+# (FF -> \f, CR -> \r); the CR expectation must not contradict the existing
+# test_toml_multiline_escape_escapes_isolated_cr (tests/test_adapters.py:960).
+# TAB staying raw is a SEPARATE, non-line-boundary requirement (ADR-3)
+# already covered by the existing test_toml_multiline_escape_keeps_tab
+# (tests/test_adapters.py:953) -- not duplicated here.
+# ----------------------------------------------------------------------
+
+
+def test_toml_multiline_escape_escapes_nine_line_boundary_chars_excluding_lf():
+    cases = {
+        "\x0b": "\\u000b",  # VT -- CR-NEW-2's missing entry
+        "\x0c": "\\f",  # FF (existing short form; must not regress)
+        "\r": "\\r",  # CR (matches tests/test_adapters.py:960/961)
+        "\x1c": "\\u001c",  # FS
+        "\x1d": "\\u001d",  # GS
+        "\x1e": "\\u001e",  # RS
+        "\x85": "\\u0085",  # NEL
+        " ": "\\u2028",  # LS
+        " ": "\\u2029",  # PS
+    }
+    for raw, escaped in cases.items():
+        value = f"a{raw}b"
+        result = _toml_multiline_escape(value)
+        assert result == f"a{escaped}b", (
+            f"char {raw!r} not escaped as expected: {result!r}"
+        )
+
+
+# ----------------------------------------------------------------------
+# NEW: 2-map symmetry (CR-M-001 / ADR-6).
+#
+# Full dict equality, not a key-set comparison (DC-AM-002): a key-set-only
+# check would miss a key that survives with the WRONG value (e.g. 0x0D
+# re-written as "\\u000d" instead of the short form "\\r", silently
+# changing existing output for CR). Once `_TOML_MULTILINE_ESCAPE_MAP` is a
+# derived dict comprehension over `_TOML_ESCAPE_MAP` (ADR-6), this equality
+# holds unconditionally and VT-type single-codepoint omissions become
+# structurally impossible to reintroduce.
+# ----------------------------------------------------------------------
+
+
+def test_toml_multiline_escape_map_is_derived_from_basic_escape_map():
+    from c3.adapters import _TOML_ESCAPE_MAP, _TOML_MULTILINE_ESCAPE_MAP
+
+    expected = {
+        k: v for k, v in _TOML_ESCAPE_MAP.items() if k not in (0x09, 0x0A, 0x22)
+    }
+    assert _TOML_MULTILINE_ESCAPE_MAP == expected
