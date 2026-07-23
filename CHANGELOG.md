@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.52.0] - 2026-07-23
+
+### 追加
+
+- **NUL 境界原則の機械検査を追加**: `tests/test_nul_boundary_lint.py` を新設し、AST で `str.join` の呼び出しを全件検出したうえで、宣言マーカー `# nul-boundary: allow(<理由>)`（`tokenize.COMMENT` 限定・理由 5 文字以上）が付いていない使用を違反として検出する。外部由来文字列による境界偽装（改行結合した行集合を機械パースする箇所で発生しうる）を、レビューの目視ではなくテストで恒久的に塞ぐ
+- **`.claude/docs/nul-boundary.md` を新設（配布対象）**: 「機械可読な行集合の区切りは NUL・改行は人間可読出力のみ」という NUL 境界原則と、`allow` 宣言の書式・判断基準をまとめた規約文書
+
+### 変更
+
+- **配布 hook 8 本・`src/c3` 4 本の `join` 使用箇所に `allow` 宣言コメントを追記**（追跡対象 29 件）。`consolidate_memory.py` / `permission_handler.py` / `planner_check.py` / `recall_inject.py` / `restore_session.py` / `statusline.py` / `stop.py` / `dev-workflow/scripts/review_hint_inject.py`、`adapters.py` / `cli_tier.py` / `cli_update.py` / `db.py` が対象。**いずれもコメント追記のみでロジック変更はなく、原則に照らした是正が必要な箇所は 0 件だった**（既存の join は全て人間可読出力向けと確認）
+- **dev-workflow の「運転モードによるゲート挙動の切替」ブロックの記述を更新**: 自律モード時にも常に人間が判断する関所を「非可逆操作・情報不足の質問・重量フェーズ着手前の usage 確認」の 3 類型から、**「非可逆操作・情報不足の質問」の 2 類型**へ縮退した。あわせて、`autonomous-mode` skill は配布元限定で配布物に含まれないこと・**利用先では自律宣言が常に無効（＝ HITL で動作）** であることを本文に明記した（配布元での自律モード規約改訂に伴う、配布物側の記述整合）
+
+### 後方互換
+
+- **破壊的変更なし**。`autonomous-mode` skill は wheel 非収録で利用先には存在せず、自律モードそのものを起動できない。今回の dev-workflow の変更は「有効な自律宣言があるときの説明文」に閉じており、既定の HITL 動作（各ゲートを AskUserQuestion で実行）は無変更のため、利用先の実挙動は変わらない
+- NUL 境界 lint は配布物に対する追加検査であり、既存 hook / CLI の動作は不変（コメント追記のみ）
+
 ## [2.51.1] - 2026-07-22
 
 ### 修正
