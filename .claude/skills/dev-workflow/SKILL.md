@@ -30,8 +30,8 @@ user-invocable: false
 session.tmp の `モード:` 行を確認する。**有効な自律宣言**（§3-3）でなければ**以下の各ゲートを
 記載どおり AskUserQuestion で実行する（従来動作）**。有効な自律宣言のときのみ、
 `.claude/skills/autonomous-mode/SKILL.md` の「ゲート対応表」に従って承認ゲートを客観収束条件に
-付け替える。**非可逆操作の関所・情報不足の質問・重量フェーズ着手前の usage 確認は常に人間**
-（自律でも停止して確認する＝人間の 3 関所・§4-1 / requirements §7）。
+付け替える。**非可逆操作の関所・情報不足の質問の 2 類型は常に人間**（自律でも停止して確認する）。なお
+`autonomous-mode` skill は配布元限定のため配布物には含まれず、**利用先では自律宣言は常に無効**＝HITL で動作する。
 
 > **skill 未 Read でも『モード行を見て skill を Read せよ』の 1 段で復帰できる** — develop / review-phase を「直接開始」した場合（init-session を経ない起動）、autonomous-mode skill の明示 Read が挟まらない可能性がある。ただし本ブロックが
 > 各ゲートで `モード:` 行の確認を要求するため、skill 未 Read でも「モード行を見て skill を Read せよ」
