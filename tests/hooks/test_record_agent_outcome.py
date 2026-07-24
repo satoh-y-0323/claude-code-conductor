@@ -2608,6 +2608,249 @@ class TestAppliedStateTesterRoleGating:
         )
 
 
+class TestTesterRedTaskGating:
+    """architecture-report-20260724-184435.md §2-5 改訂 3/6/7・親起因の是正:
+    tester の soft-apply は `--task` が `test-` プレフィックスの記録に限定する
+    （routing キーは --task 値であってフェーズ名ではない）。非 test-/--task 無しの
+    tester 記録は優先4（frontmatter 自己解決）へ直行する。
+    さらに tester は「2a → 4」の 2 段（改訂 6/7・CR-Medium2）: 優先2b
+    （session-latest）と優先3（roles.tester）を使わず、優先2a 不成立時は決定的で
+    検証可能な優先4（frontmatter）へ直行する（別タスク tier の誤帰属を防ぐ）。
+    """
+
+    def test_positive_d3_success_test_task_resolves_via_applied_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """正例: D-3 タイミングで発行する success 記録（--task test-x・gate D-1）が
+        優先2a で D-1 注入行の tier（haiku）に解決され、frontmatter sonnet に
+        落ちない。gate=D-1・タイミングが D-3 でも、routing キーは --task 値で
+        あるため Red 注入 tier に帰属する。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, session_id="sess-red-1")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-24T08:00:00+00:00",
+                "session_id": "sess-red-1",
+                "subagent_type": "tester",
+                "role_recorded": "tester",
+                "task_id": "test-x",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module("rao_red_test_task_applied")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "tester", "--outcome", "success", "--gate", "D-1",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "test-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "tester", "medium", "haiku") is not None, (
+            "test- タスクの tester 記録が優先2a で Red 注入 tier(haiku) に解決されていない"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "sonnet") is None, (
+            "test- タスクなのに frontmatter sonnet へ落ちている（gating の欠陥）"
+        )
+
+    def test_negative_confirm_task_resolves_frontmatter_not_injected_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """負例: confirm-x 記録（--task confirm-x）は、直前の test- 注入行が
+        applied-state に存在しても、優先2/3 を迂回して frontmatter sonnet に
+        解決される（優先2b session-latest が test- 注入行を誤帰属する経路を封じる）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, session_id="sess-red-2")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-24T08:00:00+00:00",
+                "session_id": "sess-red-2",
+                "subagent_type": "tester",
+                "role_recorded": "tester",
+                "task_id": "test-x",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module("rao_confirm_task_frontmatter")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "tester", "--outcome", "success", "--gate", "2-D",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "confirm-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "tester", "medium", "sonnet") is not None, (
+            "confirm- タスクは frontmatter sonnet 解決のままであるべき"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "haiku") is None, (
+            "confirm- タスクが直前の test- 注入 tier(haiku) を優先2b で誤帰属している"
+        )
+
+    def test_negative_other_test_task_row_only_resolves_frontmatter_not_2b(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """負例2（改訂 6・CR-Medium2）: 同一セッションに別タスク（test-y）の注入行
+        のみが存在する状態で --task test-x を記録した場合、tester は優先2b
+        （session-latest）へ落ちず frontmatter sonnet に解決される（別タスク tier
+        の誤帰属禁止の機械固定・_bandit_row(..., "sonnet") not None・"haiku" is None）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        _write_tier_selection(sel_path, session_id="sess-neg2")
+        _write_applied_state(
+            applied_path,
+            {
+                "ts": "2026-07-24T08:00:00+00:00",
+                "session_id": "sess-neg2",
+                "subagent_type": "tester",
+                "role_recorded": "tester",
+                "task_id": "test-y",
+                "model_applied": "haiku",
+                "source": "injected",
+                "prompt_prefix": "",
+            },
+        )
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module("rao_red_other_task_only")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+
+        rc = mod.main([
+            "--role", "tester", "--outcome", "success", "--gate", "D-1",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "test-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "tester", "medium", "sonnet") is not None, (
+            "別タスク test-y の注入行しか無いのに frontmatter sonnet へ解決されていない"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "haiku") is None, (
+            "別タスク test-y の注入 tier(haiku) を優先2b で誤帰属している（2a → 4 化の欠陥）"
+        )
+
+    def test_tester_no_priority3_falls_to_frontmatter_when_applied_state_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """「2a → 4」2 段化（改訂 6/7・CR-Medium2）: applied-state 不成立（不在）
+        かつ --task test-x のとき、tester は優先3（roles.tester.tier=haiku）を
+        使わず frontmatter（sonnet）へ直行する。roles.tester＝記録時点の最新
+        推奨値は launch 時点の注入値と一致する保証が無く投機的回復になるため、
+        挙動が決定的で検証可能な優先4を選ぶ（test_priority4_... と同型）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, session_id="sess-red-3",
+            roles={"tester": {"tier": "haiku", "mode": "uniform"}},
+        )
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module("rao_roles_tester_priority3")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+            applied_state_path=tmp_path / "state" / "tier_autoapply_absent.jsonl",
+        )
+
+        rc = mod.main([
+            "--role", "tester", "--outcome", "success", "--gate", "D-1",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "test-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "tester", "medium", "sonnet") is not None, (
+            "2a → 4 化後は applied-state 不在で frontmatter sonnet へ直行すべき"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "haiku") is None, (
+            "優先3（roles.tester.tier=haiku）を撤去したのに採用されている"
+        )
+
+    def test_priority4_confirm_task_ignores_roles_and_top_level_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """優先4 不変: --task が非 test-（confirm-x）なら、roles.tester.tier や
+        トップレベル tier があっても全て無視して frontmatter へ直行する。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, session_id="sess-red-4", tier="opus",
+            roles={"tester": {"tier": "haiku", "mode": "uniform"}},
+        )
+        _write_agent_frontmatter(agents_dir, "tester", "model: sonnet")
+        mod = _load_hook_module("rao_confirm_priority4")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+            applied_state_path=tmp_path / "state" / "tier_autoapply_absent.jsonl",
+        )
+
+        rc = mod.main([
+            "--role", "tester", "--outcome", "success", "--gate", "2-D",
+            "--execution", "subagent", "--complexity", "medium",
+            "--task", "confirm-x",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "tester", "medium", "sonnet") is not None, (
+            "confirm- タスクは frontmatter sonnet へ直行すべき"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "haiku") is None, (
+            "confirm- タスクが roles.tester.tier(haiku) を読んでしまっている"
+        )
+        assert _bandit_row(db_path, "tester", "medium", "opus") is None, (
+            "confirm- タスクがトップレベル tier(opus) を読んでしまっている"
+        )
+
+    def test_developer_reads_top_level_tier_not_roles_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """developer は additive roles キーが有っても現行どおりトップレベル tier
+        （opus）を読む（bit 不変・roles.tester は tester 専用）。"""
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        _write_tier_selection(
+            sel_path, session_id="sess-red-5", tier="opus",
+            roles={"tester": {"tier": "haiku", "mode": "uniform"}},
+        )
+        _write_agent_frontmatter(agents_dir, "developer", "model: sonnet")
+        mod = _load_hook_module("rao_developer_top_level_tier")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path,
+            applied_state_path=tmp_path / "state" / "tier_autoapply_absent.jsonl",
+        )
+
+        rc = mod.main([
+            "--role", "developer", "--outcome", "success", "--gate", "D-2.5",
+            "--execution", "subagent", "--complexity", "medium",
+        ])
+        assert rc == 0
+        assert _bandit_row(db_path, "developer", "medium", "opus") is not None, (
+            "developer がトップレベル tier(opus) を読めていない（bit 不変の破壊）"
+        )
+        assert _bandit_row(db_path, "developer", "medium", "haiku") is None, (
+            "developer が roles.tester.tier(haiku) を誤って読んでいる"
+        )
+
+
 class TestAppliedStatePathResolution:
     """DC-AS-003: record が計算する applied-state の絶対パスが、
     tier_autoapply.py（T1・.claude/hooks/ 配置・1階層遡り）が計算する

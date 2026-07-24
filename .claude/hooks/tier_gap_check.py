@@ -44,9 +44,10 @@ TIER_SELECTION_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_selection.json")
 
 # roll 対象: developer のみ（tester は除外）。
 # 理由: tier_autoapply.py LAUNCH_LOG_ROLES に tester を含めて起動ログは記録するが、
-# dev-workflow の記録契約上 tester の outcome 記録（D-5）は成功時 1 回が上限。
-# tester の起動（Red フェーズでの テスト実行・confirm 起動など）は複数回のため、
-# 起動 N >> 記録 M となり常時 K' > 0 で誤警告が発火する（カーディナリティ不一致）。
+# dev-workflow の記録契約上 tester の outcome 記録は D-1（Red 限定・条件 1〜4）と
+# D-5（最終確認）に限られ、tester の起動回数（Red フェーズでのテスト実行・confirm
+# 起動・D-3 など複数回）には遠く及ばない。したがって起動 N >> 記録 M となり常時
+# K' > 0 で誤警告が発火する（カーディナリティ不一致）ため tester は依然除外する。
 # CR F-1 で構造的誤検知として developer のみに限定した（起動ログ記録は維持）。
 _EVALUATED_ROLES = frozenset({"developer"})
 # 直近5分は中間状態として除外

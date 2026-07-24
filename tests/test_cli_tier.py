@@ -209,8 +209,11 @@ class TestRoleGrouping:
         db = tmp_path / "c3.db"
         _create_c3_db(db)
         monkeypatch.setattr(c3_db, "locate_c3_db", lambda start=None: db)
+        # tester の bandit gate は D-1 に限定された（ADR-1・tester Red セル）。
+        # 既定 gate="D-2.5" の seed は read_agent_tier_params("tester", ...) の
+        # 集計対象外になり trials=0 化するため、D-1 を明示指定する（T1 棚卸し #12）。
         _seed_bandit_via_outcomes(db, role="tester", complexity="medium", tier="sonnet",
-                                   success_count=2, failure_count=0)
+                                   success_count=2, failure_count=0, gate="D-1")
 
         snapshot = cli_tier._collect_snapshot(db, recent_limit=10)
 

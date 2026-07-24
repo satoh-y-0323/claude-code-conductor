@@ -52,13 +52,14 @@ session.tmp の `モード:` 行を確認する。**有効な自律宣言**（§
 
 **機械適用（推奨 Tier の `model:` 自動注入・ADR-AS-1・フェーズ3）:**
 
-- developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）では、PreToolUse hook（`tier_autoapply.py`）が `[tier-routing 推奨]` の推奨 Tier を Agent 呼び出しの `model:` に自動適用する（機械適用・学習データ収集中の期間も含め常に適用する。親 Claude が `model:` を転記する必要はない。fork は model 上書き不可のため対象外）。推奨と異なる Tier を使いたい場合のみ Agent 呼び出しで `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。**tester / systematic-debugger は対象外**で従来どおり frontmatter 任せとする。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
+- developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）では、PreToolUse hook（`tier_autoapply.py`）が `[tier-routing 推奨]` の推奨 Tier を Agent 呼び出しの `model:` に自動適用する（機械適用・学習データ収集中の期間も含め常に適用する。親 Claude が `model:` を転記する必要はない。fork は model 上書き不可のため対象外）。推奨と異なる Tier を使いたい場合のみ Agent 呼び出しで `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。**tester は Red 起動（D-1 のマーカー付き `test-` タスク）のみ機械適用対象**（RED_APPLY_ROLES・Red 限定注入）で、D-3/D-5 等の非 Red 起動と systematic-debugger は対象外＝従来どおり frontmatter 任せとする。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
+- **opus 固定不変則（ADR-6）**: 機械適用（`model:` 自動注入）の対象に追加してよいのは frontmatter が `model: sonnet` の role（developer / wt_developer / tester / wt_tester）のみで、opus 5 体（architect / planner / design-critic / doc-writer / project-setup）は恒久的に注入対象外とする（強 model 固定の設計判断・機械検査で保護）。
 - **推奨 Tier の SSOT**: 「推奨 Tier」の唯一のソースは `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、`[tier-routing 推奨]` の additionalContext テキストはその値を人間可読に射影した派生表示で SSOT ではない。この値は kickoff プロンプトの UserPromptSubmit で select_tier が 1 度だけ書き、E-2 の `--final` で削除されるまで wave/ゲートをまたいで安定する（承認応答は UserPromptSubmit を発火しないため途中で上書きされない）。
 - developer の record ブロックは**`--tier` を付けない**（tier_autoapply.py が実適用 model を `.claude/state/tier_autoapply.jsonl` に記録し、record_agent_outcome.py が applied-state を session_id 一致で読んで実適用 tier を機械解決する＝適用者=記録 SSOT。tier 値の LLM 申告を行わない。明示指定で推奨と異なる Tier を使った場合も、その実適用値が applied-state に記録されるため `--tier` の付与は不要）。
 
 **集計注記**（DC-AS-002 / ADR-25-3）:
 
-- E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、bandit params・escalation 判定の集計対象は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）のみ**である。E-1/E-2 の成否は個別の集計から除外される（意図どおり・read-side フィルタで実現）。
+- bandit params・escalation 判定の**集計対象 gate は role 別（`BANDIT_GATES_BY_ROLE`）**である: developer 等の既定 role は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）**、**tester は D-1 のみ**（D-3/D-5 の tester 記録はイベントログとして残るが集計対象外）。E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、その成否は従来どおり個別の集計から除外される（意図どおり・read-side フィルタで実現）。
 - **reviewer role（code-reviewer/security-reviewer・および E-gate のみの role）は BANDIT_GATES に該当 gate を持たないため、`c3 tier stats` 等の表示で当該 role の bandit は常に uniform（全 tier `(1.0,1.0,0)`・0 trials）になる**。これは設計意図の帰結であり退行ではない。tier 選択の実消費者は `select_tier`（developer role 固定）のみで、reviewer role の bandit が uniform でも tier 選択ロジックには影響しない。
 
 ---
@@ -532,7 +533,30 @@ legacy TDD モードまたは parallel-agents モードで実装される。
 
 Agent ツールで `tester` エージェントを起動する。→ 失敗するテストを先に作成する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**
 
+**Red 起動プロンプトのマーカー規約（必須）**: tester を Agent ツールで起動するプロンプトの**1 行目（文字列先頭）**に、以下の機械可読マーカー行を**必須**で 1 行含める（省略可能な推奨ではない・parallel 経路の同型マーカーの逐次版）。`tier_autoapply.py` の抽出正規表現は文字列先頭アンカー `\A` のため、2 行目以降・本文中・フェンス内に置くと抽出されず注入されない（SR-AI-001）:
+
+```
+C3_TASK_ID: test-{plan タスクID}
+```
+
+- `{plan タスクID}` は plan-report の当該 Red タスク ID（英数と `.` `_` `-` のみ・200 字以内）。値は下記の failure 記録・D-3 の success/failure 記録の `--task test-{plan タスクID}` と**完全一致**させる。plan タスク ID を持たない bug-fix モードでは D-1 自体がスキップされるため対象外。
+- この行を PreToolUse hook（`tier_autoapply.py`）が抽出し、`test-` プレフィックス条件を満たす tester 起動にのみ推奨 Tier を `model:` へ自動適用する（Red 限定注入・RED_APPLY_ROLES）。record はこのマーカー由来の applied-state を `--task` と突合して実適用 tier を機械解決する。
+- **不変則（D-3/D-5 マーカー付与禁止）**: D-3 / D-5 の tester 起動プロンプトには `C3_TASK_ID: test-...` マーカーを**付与しない**（注入条件はフェーズではなくマーカー値のみをキーにするため、D-3/D-5 に付与すると確認フェーズへ Red 注入が誤発火する）。D-3/D-5 の起動プロンプトに `C3_TASK_ID:` を書く必要がある場合は `confirm-` 等の非 test- 値とする。
+- **マーカー欠落の検知導線**: record 実行時に applied-state 突合失敗の stderr 警告（"marker not injected or task mismatch?"）が出た場合は、マーカー欠落による tier 記録欠損として**セッションファイルの `## 試みたが失敗したアプローチ` へ 1 行記録する**（自律運転中はあわせて gaps 台帳へも記録する）。
+
 完了後 → セッションファイルの `- [ ] tester: Red フェーズ` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズD 実装中 / 次: developer Green` に Edit する。
+
+**D-1 完了時の成否判定（成否 4 条件のうち条件 1・2）**: Red 成果物の帰属先は Red を書いた tier（gate `D-1`）に統一する。
+
+- **条件 1（Red の失敗理由が意図と違う）** / **条件 2（ベースライン破壊＝既存の緑テストを赤化させた）**: いずれかに該当する場合はその場で failure を記録する:
+  ```bash
+  c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+    --role tester --outcome failure --gate D-1 \
+    --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
+    --task test-{plan タスクID}
+  ```
+- **条件 1・2 とも該当なし**: この時点では**記録しない**（成功の確定は D-3 全合格時＝条件 4）。
+- 条件 3（Green 中のテスト側修正の所在判定）・条件 4（success）は D-3 で扱う。
 
 ### D-2: developer（Green フェーズ）
 
@@ -611,13 +635,32 @@ AskUserQuestion で確認する:
 
 不合格の場合: D-2（developer）に戻る。合格するまで繰り返す。
 
-**tier-routing 結果記録（不合格時のみ・D-2.5 と重複回避のため全合格時は記録しない・欠陥の所在で判定）**: D-5 否認ブロックと同型で、テストコード欠陥は `tester` failure、プロダクトコード欠陥は `developer` failure、両方または判別不能な場合は `developer` のみ記録する:
+**tier-routing 結果記録（全合格時・条件 4 = Red 成果物の生存確定）**: 全テスト合格＝Red が要求した挙動が実装で満たされ Red 成果物が生存した確定点なので、Red の tier に success を帰属する（gate `D-1`）:
 ```bash
 c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
-  --role {tester|developer（欠陥の所在で判定・テストコード欠陥=tester／プロダクトコード欠陥=developer／両方または判別不能=developer）} --outcome failure --gate D-3 \
+  --role tester --outcome success --gate D-1 \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
-  --task {plan タスクID}
+  --task test-{plan タスクID}
 ```
+
+**tier-routing 結果記録（不合格時のみ・D-2.5 と重複回避のため全合格時はこの failure ブロックを記録しない・欠陥の所在で判定）**: 欠陥の所在で role・gate を分岐する。
+
+- **テストコード欠陥（条件 3・Red 成果物への帰属）**: `tester` failure を gate `D-1` で記録する（`--gate D-3` ではなく `--gate D-1` に統一・Red 成果物への帰属）:
+  ```bash
+  c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+    --role tester --outcome failure --gate D-1 \
+    --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
+    --task test-{plan タスクID}
+  ```
+  - **除外境界（条件 3）**: テスト側修正を「仕様変更追随」として failure 記録から除外できるのは、**その裁定がセッションファイルに記録されている場合のみ**とする（裁定記録が無ければ既定で failure を記録する）。
+  - **所在判定チェック観点**: テストコード欠陥かを判定する際、source（プロダクトコード）が誤アサーションへ追従（over-fit）していないかを併せて確認する（over-fit していれば source 側の欠陥＝developer 帰属）。
+- **プロダクトコード欠陥／両方または判別不能**: `developer` failure を gate `D-3` で記録する（developer の bandit gate は現行どおり）:
+  ```bash
+  c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+    --role developer --outcome failure --gate D-3 \
+    --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
+    --task {plan タスクID}
+  ```
 
 ### D-4: developer（Refactor フェーズ）
 

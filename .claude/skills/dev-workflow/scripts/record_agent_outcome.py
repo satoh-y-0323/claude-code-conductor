@@ -21,10 +21,10 @@ Usage:
     | 優先 | ソース                                            | 対象                          |
     |----|--------------------------------------------------|-------------------------------|
     | 1  | --tier（明示・TIERS 検証）                        | 全 role（escape hatch・優先1 存続） |
-    | 2a | applied-state（session_id + role + task_id 全一致の最新行） | _SOFT_APPLY_ROLES（developer）かつ --task 指定時（T8・並列経路の task 突合） |
+    | 2a | applied-state（session_id + role + task_id 全一致の最新行） | soft-apply 適格（developer は無条件／tester は --task が test- 開始）かつ --task 指定時（並列経路の task 突合） |
     | 2b | applied-state（session_id + role 一致の最新行）     | 同上・2a が 0 件 or --task 未指定時（現行の優先2＝呼称のみ細分化） |
-    | 3  | tier_selection.json の tier→suggested_model       | 同上・優先2 不成立時（フォールバック A 互換） |
-    | 4  | agents/{role}.md frontmatter model:               | developer 以外、および 2・3 が不成立の developer |
+    | 3  | tier_selection.json（developer のみ・トップ tier→suggested_model） | soft-apply 適格 developer・優先2 不成立時（フォールバック A 互換）。tester は使わない（「2a → 4」の2段・L48-54 参照） |
+    | 4  | agents/{role}.md frontmatter model:               | soft-apply 非適格 role（tester の非 test- 記録含む）、および 2・3 が不成立の developer |
     | 5  | 解決不能                                          | 記録スキップ（stderr 警告 + exit 0） |
 
   T8（architecture §5）: 並列経路（wt_developer→developer）は起動プロンプトの
@@ -42,12 +42,16 @@ Usage:
   tier を session_id・role_recorded 付きで tier_autoapply.jsonl に追記する
   ため、record はそれを session_id 一致の最新行で読む（＝適用者=記録 SSOT）。
   applied-state が不在／session_id 不一致／kill-switch で行が無い等で優先2 が
-  不成立のときは、優先3 として tier_selection.json（select_tier.py が
-  UserPromptSubmit で書く推奨/実効 tier の SSOT）の `tier`（無ければ
+  不成立のとき、developer は優先3 として tier_selection.json（select_tier.py が
+  UserPromptSubmit で書く推奨/実効 tier の SSOT）のトップレベル `tier`（無ければ
   `suggested_model`）を ``pricing.resolve_tier`` で正規化し採用する
-  （フォールバック A 互換のため温存・削除しない）。tier_selection.json も
-  無い・値が不正（正規化不能）・role が対象外（tester 等）のときは優先 4
-  （frontmatter 自己解決）へ fallback する。
+  （フォールバック A 互換のため温存・削除しない）。**tester は優先3/優先2b を
+  使わず「2a → 4」の 2 段**（§2-5 改訂 6/7・CR-Medium2）: roles.tester＝記録時点の
+  最新推奨値は launch 時点の注入値と一致する保証が無く、優先2b は同一セッションの
+  別タスク注入 tier を誤帰属するため、tester は優先2a 不成立時に決定的で検証可能な
+  優先4（frontmatter 自己解決）へ直行する。tier_selection.json も無い・値が不正
+  （正規化不能）・soft-apply 非適格（非対象 role、または tester の非 test-/--task
+  無し記録）のときも優先 4（frontmatter 自己解決）へ fallback する。
   逸脱時の是正エスケープハッチ（ADR-AS-2）: 親が起動時に指定した model: が
   推奨 Tier と異なる場合は必ず --tier に実際の tier を付す運用を dev-workflow
   SKILL.md 側が担う（本スクリプトは優先 1 で受けるのみでコード変更は無い）。
@@ -132,9 +136,20 @@ _VALID_COMPLEXITIES = ("simple", "medium", "complex")
 _VALID_TIERS = ("haiku", "sonnet", "opus")
 # architecture-report-20260703-081149.md §3-1 / ADR-AS-1: tier_selection.json
 # を tier 解決の SSOT として読む role の一覧（ソフト適用対象）。将来 role を
-# 追加する場合はこのタプルを拡張するだけでよい（SSOT）。tester 等はここに
-# 含めず frontmatter 自己解決のまま（role gating）。
-_SOFT_APPLY_ROLES = ("developer",)
+# 追加する場合はこのタプルを拡張するだけでよい（SSOT）。
+# tester 追加（architecture-report-20260724-184435.md §2-5・ADR-2）: tester は
+# Red 限定注入（tier_autoapply.py の RED_APPLY_ROLES）に対応する記録側 role で、
+# soft-apply の適格判定を --task の test- プレフィックスで gating する
+# （_RED_GATED_SOFT_APPLY_ROLES・_soft_apply_eligible 参照）。
+_SOFT_APPLY_ROLES = ("developer", "tester")
+# soft-apply 対象のうち、--tier 省略時の soft-apply（applied-state 優先2 /
+# tier_selection 優先3）を --task が test- プレフィックスの記録に限定する role。
+# developer は全起動が注入対象（無条件 soft-apply）だが、tester は Red 起動
+# （test- タスク）のみが注入対象で、非 test-/--task 無しの tester 記録は優先4
+# （frontmatter 自己解決）へ直行させる（§2-5 改訂 3・親起因の是正: routing キーは
+# --task 値であってフェーズ名ではない。優先2b session-latest フォールバックが
+# 直近の test- 注入行を誤帰属する経路を封じる）。
+_RED_GATED_SOFT_APPLY_ROLES = ("tester",)
 # Round1 CR-NEW: dedupe キーへ --task を組み込むため、agent_outcomes への
 # task 列追加（migration）はせず note フィールドの先頭にマーカーを埋め込んで
 # 表現する。
@@ -355,6 +370,48 @@ def _read_selection() -> dict | None:
     return data
 
 
+def _soft_apply_eligible(role: str, task: str | None) -> bool:
+    """--tier 省略時に soft-apply（applied-state 優先2 / tier_selection 優先3）を
+    試みてよい (role, task) の組かを返す（§2-5 改訂 3・親起因の是正）。
+
+    - developer: 全起動が注入対象のため task に依らず True（現行どおり）。
+    - tester（_RED_GATED_SOFT_APPLY_ROLES）: Red 起動＝--task が ``test-``
+      プレフィックスの記録に限定して True。非 test-/--task 無しの tester 記録は
+      False で優先4（frontmatter 自己解決）へ直行する（優先2b session-latest
+      フォールバックが直近の test- 注入行を誤帰属する経路を封じる）。
+    - _SOFT_APPLY_ROLES 外の role: 常に False。
+
+    routing キーは厳密に --task 値（test- プレフィックスか否か）であり、フェーズ名
+    ではない（D-3 タイミングで発行される Red success 記録も --task test-{ID} なら
+    True になり優先2a で Red 注入 tier に帰属する）。
+    """
+    if role not in _SOFT_APPLY_ROLES:
+        return False
+    if role in _RED_GATED_SOFT_APPLY_ROLES:
+        return isinstance(task, str) and task.startswith("test-")
+    return True
+
+
+def _selection_tier_for_role(role: str, selection: dict):
+    """優先3（tier_selection.json）で読む tier 値を role 別に返す（ADR-3・CR-Q-005）。
+
+    developer のみがこの関数を呼び出す（呼び出し側でガード・L874-879）。
+    tester は優先 3 を使わず「2a → 4」の 2 段直行のため、この関数に到達しない
+    （red-gated role の除外は呼び出し側ガードと本関数の両層で防御・
+    外側ガード削除時の退行防止）。
+
+    developer の正規呼び出し元: トップレベル ``tier``（無ければ
+    ``suggested_model``）を返す。
+
+    Returns:
+        tier 候補（未検証の生値。呼び出し側で resolve_tier + _VALID_TIERS 検証）、
+        または解決不能なら None。
+    """
+    # tester は呼び出し側ガード（role not in _RED_GATED_SOFT_APPLY_ROLES）で
+    # 到達不能。developer のみがこの関数に到達する（§2-5 改訂 6/7・CR-Q-005）。
+    return selection.get("tier") or selection.get("suggested_model")
+
+
 # item5(SR-NEW・Low): applied-state 読み取り側のサイズ上限（DoS 抑止）。
 # tier_autoapply.py::_rotate_if_needed（1MB・追記側のみ発火）とは別レイヤの
 # 読み取り防御で、超過時は末尾優先（tail-priority）で最大 5MB のみ走査する
@@ -496,8 +553,18 @@ def _read_applied_tier(
             file=sys.stderr,
         )
         return None
-    # 決定: task-exact（優先2a）を優先し、0 件なら session-latest（優先2b）へ。
-    chosen = latest_task_model if latest_task_model is not None else latest_session_model
+    # 決定（role で分岐・§2-5 改訂 6/7）:
+    # - developer 等（非 RED gated）: task-exact（優先2a）を優先し、0 件なら
+    #   session-latest（優先2b）へフォールバックする（現行どおり）。
+    # - tester（_RED_GATED_SOFT_APPLY_ROLES）: 「2a → 4」の 2 段。優先2b
+    #   （session-latest）を使わない。2b は同一セッションの別タスクの注入 tier を
+    #   返すため tester では常に不正確で、別タスクの誤帰属を招く（CR-Medium2）。
+    #   2a 不成立なら None を返し、呼び出し側で優先4（frontmatter 自己解決）へ
+    #   直行させる（優先3=roles.tester も main 側で tester では使わない）。
+    if role in _RED_GATED_SOFT_APPLY_ROLES:
+        chosen = latest_task_model
+    else:
+        chosen = latest_task_model if latest_task_model is not None else latest_session_model
     # §5-7 additive 警告: task 指定・優先2a 0 件・かつマーカー運用中（saw_task_id_row 真）
     # のときのみ 1 行警告する（戻り値/exit code/chosen は不変・fail-safe 不変）。
     # 安全性根拠（SR-K-003 解消）: --task 値（task 変数）自体は allowlist 検証を受けない。
@@ -513,10 +580,18 @@ def _read_applied_tier(
     # 将来 !r を !s 等へ変更する／_mask_secrets 適用を外すリファクタが入るとこの前提
     # （二段防御）が崩れるため、_mask_secrets(task) + !r 依存であることに留意する。
     if task is not None and latest_task_model is None and saw_task_id_row:
+        # tester（RED gated）は優先2b を使わないため fallback 先は frontmatter
+        # （優先4）。developer 等は従来どおり session-latest（優先2b）。文言を
+        # 実際の fallback 経路に一致させる（誤解を招くログを出さない）。
+        fallback_note = (
+            "falling back to frontmatter (priority 4)"
+            if role in _RED_GATED_SOFT_APPLY_ROLES
+            else "falling back to session-latest (priority 2b)"
+        )
         print(
             f"[record_agent_outcome] --task {_mask_secrets(task)!r} specified but no matching "
             "(session,role,task) row in applied-state though task_id rows exist "
-            "for this session/role; falling back to session-latest (priority 2b). "
+            f"for this session/role; {fallback_note}. "
             "marker not injected or task mismatch?",
             file=sys.stderr,
         )
@@ -763,26 +838,42 @@ def main(argv: list[str] | None = None) -> int:
         tier = "unknown"
     else:
         tier = None
+        # soft-apply 適格判定（§2-5 改訂 3・親起因の是正）: developer は全起動が
+        # 対象（無条件）。tester（RED gated）は --task が test- プレフィックスの
+        # 記録に限定する（routing キーは --task 値であってフェーズ名ではない）。
+        # 非 test-/--task 無しの tester 記録は優先2/3 を迂回し優先4（frontmatter
+        # 自己解決）へ直行する（優先2b session-latest フォールバックが直近の
+        # test- 注入行を誤帰属する経路を封じる）。
+        soft_apply = _soft_apply_eligible(role, task)
         # §4-2 優先 2（新規）: applied-state（適用者=記録 SSOT）。フェーズ3で
         # PreToolUse hook（tier_autoapply.py）が Agent 起動時の実適用値を
         # session_id 付きで JSONL 記録するため、record はそれを session_id
-        # 一致で読む。role が soft-apply 対象のときのみ突合する（tester 等は
-        # _SOFT_APPLY_ROLES 外なので applied-state を読まない・role gating）。
-        if role in _SOFT_APPLY_ROLES:
+        # 一致で読む。soft-apply 適格のときのみ突合する（非適格 role・非 test-
+        # の tester 記録は applied-state を読まない・§2-5 の gating）。
+        if soft_apply:
             # T8: 切り詰め済み task を突合キーとして配線（優先2a）。task=None の
             # 従来呼び出し・逐次経路（マーカー未注入）は優先2b で従来どおり解決。
             tier = _read_applied_tier(session_id, role, c3_pricing, task=task)
-        # 優先 3（降格・旧優先2）: role が soft-apply 対象（_SOFT_APPLY_ROLES）なら
-        # tier_selection.json の tier（無ければ suggested_model）を
-        # resolve_tier で正規化し、_VALID_TIERS に含まれれば採用する。
+        # 優先 3（降格・旧優先2）: soft-apply 適格なら tier_selection.json の tier
+        # （developer=トップ tier→suggested_model）を resolve_tier で正規化し、
+        # _VALID_TIERS に含まれれば採用する。
         # 優先2（applied-state）が不成立のとき（applied-state 不在／session_id
         # 不一致／kill-switch で jsonl に行が無い等）のフォールバック A 互換。
         # 逐次経路（worktree なし）はマーカー未注入で優先2b により解決される。
         # 並列（worktree）経路は T8 以降 --tier を渡さないため、task_id 突合
         # （優先2a/2b）が不成立の場合はこの優先3フォールバックに到達しうる
         # （ADR-AS-4 解消後は「ここには来ない」という言い切りは成立しない）。
-        if tier is None and role in _SOFT_APPLY_ROLES and selection is not None:
-            soft_apply_raw = selection.get("tier") or selection.get("suggested_model")
+        # tester（_RED_GATED_SOFT_APPLY_ROLES）は優先3を使わない（「2a → 4」の
+        # 2 段・§2-5 改訂 6/7）。roles.tester＝記録時点の最新推奨値は launch 時点の
+        # 注入値と一致する保証が無く投機的回復になるため、挙動が決定的で検証可能な
+        # 優先4（frontmatter 自己解決）へ直行させる。
+        if (
+            tier is None
+            and soft_apply
+            and selection is not None
+            and role not in _RED_GATED_SOFT_APPLY_ROLES
+        ):
+            soft_apply_raw = _selection_tier_for_role(role, selection)
             # 非文字列ガード: resolve_tier() は内部で無条件に model.lower() を
             # 呼ぶため、tier_selection.json の破損・レース等で tier/
             # suggested_model が非文字列（int/list/dict 等）だと AttributeError

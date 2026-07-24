@@ -53,6 +53,38 @@ AGENT_ROLES: tuple[str, ...] = ("interviewer", "architect", "planner", "develope
 # （record 側は全 gate を無条件記録するため参照不要）。
 BANDIT_GATES: tuple[str, ...] = ("D-2.5", "D-3", "D-5", "D-2.5-stuck")
 
+# role 別 bandit gate 集合（tester Red 限定 tier-routing 拡張・ADR-1）。
+# 既定は BANDIT_GATES（developer 等の「動く実装」を測る D 系 gate）。
+# tester のみ Red 成果物の生存を測る "D-1" に限定し、D-3/D-5 の tester 記録は
+# 集計対象から外す（Red セルの意味論を gate=D-1 だけで完結させる・FR-3）。
+# read_agent_tier_params / read_agent_failure_rate が read-side でのみ参照する
+# （record 側は全 gate を無条件記録するため参照不要）。
+# **"wt_tester" キーは置かない（統合方式・ADR-1 / architecture §2-1）**:
+# parallel 経路の wt_tester 記録は既存規約どおり --role tester へ正規化され tester
+# セルへ自動合流するため、bandit_gates_for_role("wt_tester") が呼ばれる経路自体が
+# 存在しない（AGENT_ROLES にも wt_* は含まれない）。
+BANDIT_GATES_BY_ROLE: dict[str, tuple[str, ...]] = {
+    "tester": ("D-1",),
+}
+
+
+def bandit_gates_for_role(role: str) -> tuple[str, ...]:
+    """role の bandit 集計対象 gate 集合を返す（read-side フィルタの SSOT）。
+
+    ``BANDIT_GATES_BY_ROLE`` に role の明示エントリがあればそれを返し、無ければ
+    既定の ``BANDIT_GATES`` を返す。未知 role も既定集合で fail-safe に集計する
+    （新 role 追加時に集計が空になって静かに壊れることを避ける）。
+
+    Args:
+        role: '_db_params.AGENT_ROLES' のいずれか（未知値も可・既定集合に落ちる）。
+
+    Returns:
+        当該 role の bandit gate タプル。tester なら ``("D-1",)``、それ以外は
+        ``BANDIT_GATES``。
+    """
+    return BANDIT_GATES_BY_ROLE.get(role, BANDIT_GATES)
+
+
 # escalation failure_rate 計算の時間窓デフォルト（日数・フェーズ2.5・ADR-25-2）。
 # C3_FAILURE_WINDOW_DAYS 環境変数で上書き可。妥当域は半開区間 (0, 3650]（0 拒否・上限 10 年）。
 # 本定数が SSOT（read_agent_failure_rate がここから解決する）。

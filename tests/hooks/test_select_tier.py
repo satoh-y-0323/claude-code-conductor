@@ -380,6 +380,10 @@ class TestDataSourceSwitchToAgentTierParams:
 
         mock は read_agent_tier_params のみ持ち、旧 read_tier_params は持たない。
         旧実装のままなら AttributeError が発生し Red になる。
+
+        v2.4x: main() は developer に加えて tester(Red) 推奨も算出するため
+        read_agent_tier_params は developer / tester の 2 回呼ばれる（architecture §2-4）。
+        本テストは developer 呼び出しに絞って検証する。
         """
         mod = _load_hook_module()
         monkeypatch.setattr(
@@ -404,10 +408,15 @@ class TestDataSourceSwitchToAgentTierParams:
 
         rc = mod.main()
         assert rc == 0
-        assert len(calls) == 1, "read_agent_tier_params が呼ばれていない（旧 API のままの可能性）"
-        role, complexity = calls[0]
+        dev_calls = [c for c in calls if c[0] == "developer"]
+        assert len(dev_calls) == 1, "read_agent_tier_params が developer で呼ばれていない（旧 API のままの可能性）"
+        role, complexity = dev_calls[0]
         assert role == "developer"
         assert complexity == "medium"
+        # tester(Red) 推奨も算出される（additive・architecture §2-4）
+        tester_calls = [c for c in calls if c[0] == "tester"]
+        assert len(tester_calls) == 1
+        assert tester_calls[0][1] == "medium"
 
     def test_main_works_without_legacy_read_tier_params_attribute(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -489,6 +498,138 @@ class TestEscalationDataSourceSwitch:
         rate, samples = mod._db_failure_rate("medium", "haiku")
         assert rate is None
         assert samples == 0
+
+
+# ---------------------------------------------------------------------------
+# [tester Red 拡張] additive roles.tester + tester escalation（ADR-3/ADR-5・
+# test-report §2-3）。write_tier_selection の roles 引数は他の任意 kw と同型の
+# 「渡されなければ省略」パターン（additive-omit）。
+# ---------------------------------------------------------------------------
+
+
+class TestRolesTesterAdditive:
+    """main() / write_tier_selection の additive roles.tester キーを検証した。"""
+
+    def test_write_tier_selection_roles_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """roles を渡すと tier_selection.json に roles キーがそのまま入る。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+        roles = {"tester": {"tier": "sonnet", "mode": "thompson"}}
+        mod.write_tier_selection("medium", "haiku", "thompson", roles=roles)
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert data["roles"] == roles
+
+    def test_write_tier_selection_roles_omitted_when_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """roles を渡さない（None）ときは roles キー自体が出ない（additive-omit）。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+        mod.write_tier_selection("complex", "opus", "thompson")
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert "roles" not in data
+
+    def test_main_writes_roles_tester_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """main() 実行後の tier_selection.json に roles.tester={tier,mode} が入る。
+
+        トップレベル tier/mode は developer 推奨で bit 一致（roles は additive）。
+        """
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        params = {t: (1.0, 1.0, 0) for t in mod.TIERS}
+        mock_c3_db = types.SimpleNamespace(
+            read_agent_tier_params=lambda role, complexity, **kw: params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+            read_agent_failure_rate=lambda role, complexity, tier, **kw: (None, 0),
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "テスト"})))
+
+        rc = mod.main()
+        assert rc == 0
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert "roles" in data
+        assert "tester" in data["roles"]
+        entry = data["roles"]["tester"]
+        assert isinstance(entry["tier"], str)
+        assert isinstance(entry["mode"], str)
+        assert data["tier"] == data["suggested_model"]
+
+    def test_db_failure_rate_accepts_role_arg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_db_failure_rate は role 引数（既定 developer）を read_agent_failure_rate に透過する。"""
+        mod = _load_hook_module()
+        calls: list[tuple] = []
+
+        def _spy(role, complexity, tier, **kw):
+            calls.append((role, complexity, tier))
+            return (0.7, 10)
+
+        mock_c3_db = types.SimpleNamespace(read_agent_failure_rate=_spy)
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+
+        mod._db_failure_rate("medium", "haiku")  # 既定 developer
+        assert calls[-1] == ("developer", "medium", "haiku")
+        mod._db_failure_rate("complex", "sonnet", "tester")  # 明示 tester
+        assert calls[-1] == ("tester", "complex", "sonnet")
+
+    def test_maybe_escalate_routes_role_to_default_fn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """maybe_escalate(role="tester") は既定 _db_failure_rate に role を透過する。"""
+        mod = _load_hook_module()
+        calls: list[tuple] = []
+
+        def _spy_db_failure_rate(complexity, tier, role="developer"):
+            calls.append((complexity, tier, role))
+            return (None, 0)
+
+        monkeypatch.setattr(mod, "_db_failure_rate", _spy_db_failure_rate)
+        mod.maybe_escalate("medium", "haiku", role="tester")
+        assert calls[-1] == ("medium", "haiku", "tester")
+
+    def test_main_tester_escalation_uses_tester_role(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """main() の tester 推奨 escalation で read_agent_failure_rate("tester", ...) が呼ばれる。"""
+        mod = _load_hook_module()
+        target = tmp_path / "tier_selection.json"
+        monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+
+        # trials>=LEARNING_THRESHOLD で thompson 経路に入れ、opus は実質選ばれない
+        # ように歪めて chosen を haiku/sonnet に寄せ、escalation 評価を確実に走らせる。
+        params = {
+            "haiku": (5.0, 5.0, 20),
+            "sonnet": (5.0, 5.0, 20),
+            "opus": (0.01, 100.0, 20),
+        }
+        fr_roles: list[str] = []
+
+        def _spy_fr(role, complexity, tier, **kw):
+            fr_roles.append(role)
+            return (None, 0)
+
+        mock_c3_db = types.SimpleNamespace(
+            read_agent_tier_params=lambda role, complexity, **kw: params,
+            read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+            read_agent_failure_rate=_spy_fr,
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock_c3_db)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": "テスト"})))
+
+        rc = mod.main()
+        assert rc == 0
+        assert "developer" in fr_roles
+        assert "tester" in fr_roles
 
 
 # ---------------------------------------------------------------------------

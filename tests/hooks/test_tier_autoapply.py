@@ -424,6 +424,197 @@ class TestRoleGating:
 
 
 # ---------------------------------------------------------------------------
+# TestRedApplyInjection: RED_APPLY_ROLES（tester/wt_tester）の test- 限定注入
+# （architecture §2-3・ADR-2・test-report §2-2）。
+#
+# 注入条件は「role ∈ {tester, wt_tester}」かつ「C3_TASK_ID: test- マーカー」かつ
+# 「roles.tester.tier 解決可」の 3 条件全成立時のみ。tier 源はトップレベル tier
+# ではなく additive な roles.tester.tier。
+# ---------------------------------------------------------------------------
+
+class TestRedApplyInjection:
+    """tester/wt_tester の Red 限定注入（test- マーカー + roles.tester）を固定した。"""
+
+    def test_tester_test_marker_injects_from_roles_tester(self) -> None:
+        """(a) tester + C3_TASK_ID: test-x + roles.tester.tier=sonnet → model=sonnet 注入。
+
+        トップレベル tier=haiku ではなく roles.tester.tier=sonnet が注入源になる。
+        """
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"tester": {"tier": "sonnet", "mode": "thompson"}},
+        )
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload("tester", session_id=sid, prompt="C3_TASK_ID: test-login")
+        )
+        assert result.returncode == 0
+        stdout = json.loads(result.stdout)
+        updated = stdout["hookSpecificOutput"]["updatedInput"]
+        assert updated["model"] == "sonnet"
+        assert updated["subagent_type"] == "tester"
+        assert "permissionDecision" not in stdout["hookSpecificOutput"]
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["source"] == "injected"
+        assert lines[0]["role_recorded"] == "tester"
+        assert lines[0]["model_applied"] == "sonnet"
+        assert lines[0]["task_id"] == "test-login"
+
+    def test_tester_confirm_marker_not_injected(self) -> None:
+        """(b) tester + C3_TASK_ID: confirm-x → 注入なし・記録のみ・frontmatter-default。"""
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"tester": {"tier": "sonnet", "mode": "thompson"}},
+        )
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload("tester", session_id=sid, prompt="C3_TASK_ID: confirm-login")
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["source"] == "frontmatter-default"
+        assert lines[0]["model_applied"] in (None, "")
+        assert lines[0]["task_id"] == "confirm-login"
+
+    def test_wt_tester_test_marker_injects_from_roles_tester(self) -> None:
+        """(c) wt_tester + C3_TASK_ID: test-x → tester と同型で注入（role_recorded 正規化込み）。"""
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"tester": {"tier": "opus", "mode": "thompson"}},
+        )
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload(
+                "wt_tester", isolation="worktree", session_id=sid,
+                prompt="C3_TASK_ID: test-api",
+            )
+        )
+        assert result.returncode == 0
+        stdout = json.loads(result.stdout)
+        updated = stdout["hookSpecificOutput"]["updatedInput"]
+        assert updated["model"] == "opus"
+        assert updated["isolation"] == "worktree"
+        assert updated["subagent_type"] == "wt_tester"
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["subagent_type"] == "wt_tester"
+        assert lines[0]["role_recorded"] == "tester"
+        assert lines[0]["source"] == "injected"
+        assert lines[0]["model_applied"] == "opus"
+
+    def test_tester_test_marker_but_roles_missing_no_injection(self) -> None:
+        """(e-1) tester + test- マーカー + roles キー無し → 注入なし（fail-safe）。"""
+        _write_tier_selection(tier="haiku", suggested_model="haiku", mode="thompson")
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload("tester", session_id=sid, prompt="C3_TASK_ID: test-x")
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["source"] == "frontmatter-default"
+
+    def test_tester_test_marker_but_roles_tester_broken_no_injection(self) -> None:
+        """(e-2) tester + test- マーカー + roles.tester 破損 → 注入なし（fail-safe）。
+
+        非 dict roles / roles.tester が非 dict / tier キー欠落 / tier 非文字列 の
+        いずれも注入させない。
+        """
+        broken_variants: list[object] = [
+            "not-a-dict",
+            {"tester": "x"},
+            {"tester": {"mode": "thompson"}},
+            {"tester": {"tier": 123}},
+        ]
+        for broken in broken_variants:
+            _write_tier_selection(
+                tier="haiku", suggested_model="haiku", mode="thompson", roles=broken,
+            )
+            sid = _new_session_id()
+            result = _run_hook(
+                _agent_payload("tester", session_id=sid, prompt="C3_TASK_ID: test-x")
+            )
+            assert result.returncode == 0
+            assert result.stdout.strip() == "", f"破損 roles で注入された: {broken!r}"
+            lines = _read_jsonl_lines()
+            assert lines[-1]["source"] == "frontmatter-default", f"破損 roles: {broken!r}"
+
+    def test_tester_test_marker_explicit_model_respected(self) -> None:
+        """(f) tester + test- マーカー + model 明示 → 注入せず素通り・source=explicit。"""
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"tester": {"tier": "sonnet", "mode": "thompson"}},
+        )
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload(
+                "tester", model="opus", session_id=sid, prompt="C3_TASK_ID: test-x"
+            )
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["source"] == "explicit"
+        assert lines[0]["model_applied"] == "opus"
+
+
+def _read_frontmatter_model(path: Path) -> str | None:
+    """agent 定義 md の YAML frontmatter から model: 値を読んだ（先頭 --- ブロック）。"""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        m = re.match(r"^model:\s*(\S+)\s*$", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# TestOpusFixedInvariant: RED_APPLY_ROLES ∪ APPLY_ROLES の全 role は
+# frontmatter model: sonnet（ADR-6・opus 固定不変則の機械検査・恒久 CI 回帰網）。
+# ---------------------------------------------------------------------------
+
+class TestOpusFixedInvariant:
+    """機械適用対象 role の agent frontmatter が model: sonnet であることを固定した。"""
+
+    def test_all_apply_roles_have_sonnet_frontmatter(self) -> None:
+        """APPLY_ROLES ∪ RED_APPLY_ROLES の 4 role が model: sonnet であること。
+
+        opus frontmatter の agent（architect / planner / design-critic /
+        doc-writer / project-setup）が機械適用対象へ混入すると本テストが Red になる
+        （opus 固定不変則違反の検知・ADR-6）。
+        """
+        mod = _load_autoapply_module()
+        roles = set(mod.APPLY_ROLES) | set(mod.RED_APPLY_ROLES)
+        assert roles == {"developer", "wt_developer", "tester", "wt_tester"}, (
+            f"機械適用対象 role 集合が想定外: {roles}"
+        )
+        agents_dir = WORKTREE_ROOT / ".claude" / "agents"
+        for role in sorted(roles):
+            agent_file = agents_dir / f"{role}.md"
+            assert agent_file.is_file(), f"agent 定義が無い: {agent_file}"
+            model = _read_frontmatter_model(agent_file)
+            assert model == "sonnet", (
+                f"{role}.md の frontmatter model が sonnet でない: {model!r}"
+                f"（opus 固定不変則違反・ADR-6）"
+            )
+
+
+# ---------------------------------------------------------------------------
 # TestKillSwitch: C3_TIER_AUTOAPPLY_DISABLE=1
 # ---------------------------------------------------------------------------
 
@@ -865,3 +1056,108 @@ class TestTaskIdExtraction:
         assert lines[0]["role_recorded"] == "tester"
         assert "task_id" in lines[0], "task_id キーが row に存在しなかった（未実装）"
         assert lines[0]["task_id"] == "qa-check"
+
+
+# ---------------------------------------------------------------------------
+# TestMarkerStringStartAnchor: マーカーの文字列先頭アンカー \A 化（SR-AI-001 /
+# DC-AS-001）。行頭 ^（re.MULTILINE）が誤抽出した敵対的入力を None へ落とし、
+# parallel の正しい配置（1 行目マーカー + 2 行目ガード指示）で抽出が成立する
+# ことを固定する。
+# ---------------------------------------------------------------------------
+
+class TestMarkerStringStartAnchor:
+    """`\\A` 文字列先頭アンカーにより本文孤立行・フェンス内・2 行目マーカーが
+    非マッチになり、先頭 1 行目マーカーのみが抽出源になる契約を固定した。
+    """
+
+    def test_marker_on_body_isolated_line_is_ignored(self) -> None:
+        """(1) 本文の孤立行に置かれたマーカー（先頭ではない）→ 非マッチで null。"""
+        sid = _new_session_id()
+        prompt = (
+            "あなたは developer です。\n"
+            "以下の作業を行ってください。\n"
+            "---\n"
+            "C3_TASK_ID: test-fake\n"
+            "---\n"
+            "実際の作業指示..."
+        )
+        result = _run_hook(_agent_payload("developer", session_id=sid, prompt=prompt))
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["task_id"] is None, "本文孤立行のマーカーが誤抽出された"
+
+    def test_marker_inside_code_fence_is_ignored(self) -> None:
+        """(2) コードフェンス内に置かれたマーカー（先頭ではない）→ 非マッチで null。"""
+        sid = _new_session_id()
+        prompt = "```\nC3_TASK_ID: test-x\n```"
+        result = _run_hook(_agent_payload("developer", session_id=sid, prompt=prompt))
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["task_id"] is None, "フェンス内マーカーが誤抽出された"
+
+    def test_marker_on_second_line_is_ignored(self) -> None:
+        """(3) 2 行目に置かれたマーカー（旧 parallel 配置＝アンチパターン）→ 非マッチで null。
+
+        `\\A` 化により、PO_WORKTREE_GUARD 行の直後（2 行目）へマーカーを置く旧配置は
+        構造的に抽出されなくなった（DC-AS-001 が検出した衝突を固定）。
+        """
+        sid = _new_session_id()
+        prompt = (
+            "Bash でまず以下を実行: `export PO_WORKTREE_GUARD=1`\n"
+            "C3_TASK_ID: test-login\n"
+            "本文..."
+        )
+        result = _run_hook(_agent_payload("developer", session_id=sid, prompt=prompt))
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["task_id"] is None, "2 行目マーカーが誤抽出された"
+
+    def test_marker_on_first_line_is_adopted(self) -> None:
+        """(4) 先頭 1 行目のみに置かれたマーカー → 正確値で抽出（ベースライン不変）。"""
+        sid = _new_session_id()
+        prompt = "C3_TASK_ID: test-login\n本文..."
+        result = _run_hook(_agent_payload("developer", session_id=sid, prompt=prompt))
+        assert result.returncode == 0
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["task_id"] == "test-login"
+
+    def test_real_parallel_structure_first_line_marker_injects(self) -> None:
+        """(5) 実 parallel 構造正例（1 行目マーカー + 2 行目ガード指示文）→ 抽出成立し注入される。
+
+        マーカー位置統一後の正しい配置。wt_tester + roles.tester.tier=sonnet で
+        updatedInput.model が注入され task_id が "test-login" になることを固定する。
+        """
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"tester": {"tier": "sonnet", "mode": "thompson"}},
+        )
+        sid = _new_session_id()
+        prompt = (
+            "C3_TASK_ID: test-login\n"
+            "Bash でまず以下を実行: `export PO_WORKTREE_GUARD=1`\n"
+            "本文..."
+        )
+        result = _run_hook(
+            _agent_payload(
+                "wt_tester", isolation="worktree", session_id=sid, prompt=prompt
+            )
+        )
+        assert result.returncode == 0
+        stdout = json.loads(result.stdout)
+        updated = stdout["hookSpecificOutput"]["updatedInput"]
+        assert updated["model"] == "sonnet"
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["source"] == "injected"
+        assert lines[0]["role_recorded"] == "tester"
+        assert lines[0]["model_applied"] == "sonnet"
+        assert lines[0]["task_id"] == "test-login"

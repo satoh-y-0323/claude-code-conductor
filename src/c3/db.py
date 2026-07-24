@@ -32,6 +32,8 @@ from pathlib import Path
 from c3._db_params import (
     AGENT_ROLES as AGENT_ROLES,
     BANDIT_GATES as BANDIT_GATES,
+    BANDIT_GATES_BY_ROLE as BANDIT_GATES_BY_ROLE,
+    bandit_gates_for_role as bandit_gates_for_role,
     COST_LAMBDA_DEFAULT as COST_LAMBDA_DEFAULT,
     COST_LAMBDA_MAX as COST_LAMBDA_MAX,
     COST_LAMBDA_MIN as COST_LAMBDA_MIN,
@@ -936,11 +938,14 @@ def read_agent_tier_params(
 
     フェーズ2.5（ADR-25-3）で ``agent_tier_bandit`` 累積テーブル読みから
     ``agent_outcomes`` イベントログの GROUP BY 導出集計へ移行した。
-    ``BANDIT_GATES``（D-2.5 / D-3 / D-5 / D-2.5-stuck）に該当する gate の
-    イベントのみを集計対象とし、E-1/E-2（レビュー指摘由来）は success/failure
-    とも対称に除外される（read-side フィルタ 1 点で完結・記録層は全 gate 継続）。
-    シグナル定義（BANDIT_GATES）を変えても過去ログへ即遡及再計算される（累積
-    テーブルに依存しない）のが導出化の眼目。
+    集計対象 gate は ``bandit_gates_for_role(role)`` で role 別に解決する（ADR-1）:
+    既定は ``BANDIT_GATES``（D-2.5 / D-3 / D-5 / D-2.5-stuck）で developer 等の
+    「動く実装」を測るが、``tester`` のみ Red 成果物の生存を測る ``("D-1",)`` に
+    限定され、tester の D-3/D-5 記録は集計から外れる。いずれの role でも E-1/E-2
+    （レビュー指摘由来）は success/failure とも対称に除外される（read-side
+    フィルタ 1 点で完結・記録層は全 gate 継続）。シグナル定義（BANDIT_GATES /
+    BANDIT_GATES_BY_ROLE）を変えても過去ログへ即遡及再計算される（累積テーブルに
+    依存しない）のが導出化の眼目。
 
     集計規則: ``alpha = 1.0 + Σsuccess`` / ``beta = 1.0 + Σ(1 - success)`` /
     ``trials = COUNT(*)``（Beta(1,1) 事前分布 + 観測）。
@@ -967,9 +972,15 @@ def read_agent_tier_params(
         if db_path is None:
             return defaults
 
-    # gate IN の placeholder は BANDIT_GATES 長から動的生成する（DC-GP-001）。
-    # literal '(?, ?, ?, ?)' 写経は将来 BANDIT_GATES 増減でバインド個数エラーを招く。
-    gate_placeholders = ",".join("?" * len(BANDIT_GATES))  # nul-boundary: allow(SQL の IN プレースホルダ生成。区切りは SQL の文法で固定)
+    # gate 集合は role 別（read-side フィルタ・ADR-1）: tester は D-1 のみ、他 role は
+    # 既定 BANDIT_GATES。既定は本モジュールの BANDIT_GATES を second-arg に渡して解決する
+    # （bandit_gates_for_role を直接呼ばず inline get する理由）。_db_params 側の helper
+    # は _db_params.BANDIT_GATES を見るため、テストが db モジュールの BANDIT_GATES を
+    # monkeypatch しても既定集合へ効かせられるよう、ここでは db 側の値を参照する。
+    gates = BANDIT_GATES_BY_ROLE.get(role, BANDIT_GATES)
+    # gate IN の placeholder は gate 集合長から動的生成する（DC-GP-001）。
+    # literal '(?, ?, ?, ?)' 写経は将来 gate 集合の増減でバインド個数エラーを招く。
+    gate_placeholders = ",".join("?" * len(gates))  # nul-boundary: allow(SQL の IN プレースホルダ生成。区切りは SQL の文法で固定)
 
     try:
         conn = sqlite3.connect(str(db_path))
@@ -985,7 +996,7 @@ def read_agent_tier_params(
                 "WHERE role = ? AND task_complexity = ? "
                 f"  AND gate IN ({gate_placeholders}) "
                 "GROUP BY tier",
-                (role, complexity, *BANDIT_GATES),
+                (role, complexity, *gates),
             ).fetchall()
         finally:
             conn.close()
@@ -1079,13 +1090,15 @@ def read_agent_failure_rate(
     window_days: float | None = None,
     db_path: Path | None = None,
 ) -> tuple[float | None, int]:
-    """時間窓内の agent_outcomes（BANDIT_GATES のみ）から failure rate を計算する。
+    """時間窓内の agent_outcomes（role 別 bandit gate のみ）から failure rate を計算する。
 
     フェーズ2.5（ADR-25-2）で直近 ``last_n`` 件窓から時間窓（``window_days``）+
-    ``gate IN BANDIT_GATES`` フィルタへ全面移行した。cutoff より新しく、かつ
-    BANDIT_GATES（D-2.5 / D-3 / D-5 / D-2.5-stuck）に該当する gate のイベント
-    のみを対象とする。E-1/E-2（レビュー指摘由来）の失敗は escalation シグナルを
-    押し上げなくなる（②の gate 除外を bandit だけでなく escalation にも一貫適用）。
+    ``gate IN`` フィルタへ全面移行した。集計対象 gate は
+    ``bandit_gates_for_role(role)`` で role 別に解決する（ADR-1・read_agent_tier_params
+    と同一方針）: 既定は BANDIT_GATES（D-2.5 / D-3 / D-5 / D-2.5-stuck）、``tester``
+    のみ ``("D-1",)``。cutoff より新しく、かつ当該 gate 集合に該当するイベントのみを
+    対象とする。E-1/E-2（レビュー指摘由来）の失敗は escalation シグナルを押し上げ
+    なくなる（gate 除外を bandit だけでなく escalation にも一貫適用）。
 
     Args:
         role: '_db_params.AGENT_ROLES' のいずれか。
@@ -1098,7 +1111,7 @@ def read_agent_failure_rate(
     Returns:
         ``(failure_rate, sample_count)`` のタプル。
 
-        - ``sample_count`` は窓内かつ BANDIT_GATES 該当の実イベント件数。
+        - ``sample_count`` は窓内かつ role 別 bandit gate 該当の実イベント件数。
         - ``failure_rate`` は失敗件数 / sample_count。
         - サンプルが ``_FAILURE_RATE_MIN_SAMPLES`` 未満の場合は
           ``failure_rate = None`` を返し、escalation 判定を skip する目印にする。
@@ -1118,8 +1131,12 @@ def read_agent_failure_rate(
         datetime.now(_tz.utc) - timedelta(days=window_days)
     ).isoformat(timespec="seconds")
 
-    # gate IN の placeholder は BANDIT_GATES 長から動的生成する（DC-GP-001）。
-    gate_placeholders = ",".join("?" * len(BANDIT_GATES))  # nul-boundary: allow(SQL の IN プレースホルダ生成。区切りは SQL の文法で固定)
+    # gate 集合は role 別（read-side フィルタ・ADR-1）: tester は D-1 のみ、他 role は
+    # 既定 BANDIT_GATES。read_agent_tier_params と同一方針で db 側の BANDIT_GATES を
+    # second-arg に渡し、monkeypatch 追随を保つ。
+    gates = BANDIT_GATES_BY_ROLE.get(role, BANDIT_GATES)
+    # gate IN の placeholder は gate 集合長から動的生成する（DC-GP-001）。
+    gate_placeholders = ",".join("?" * len(gates))  # nul-boundary: allow(SQL の IN プレースホルダ生成。区切りは SQL の文法で固定)
 
     try:
         conn = sqlite3.connect(str(db_path))
@@ -1131,7 +1148,7 @@ def read_agent_failure_rate(
                 f"  AND gate IN ({gate_placeholders}) "
                 "  AND ts >= ? "
                 "ORDER BY ts DESC",
-                (role, complexity, tier, *BANDIT_GATES, cutoff),
+                (role, complexity, tier, *gates, cutoff),
             ).fetchall()
         finally:
             conn.close()

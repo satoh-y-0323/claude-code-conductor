@@ -2028,6 +2028,157 @@ class TestReadAgentTierParams:
         )
 
 
+class TestBanditGatesByRole:
+    """RG 群（tester Red 限定 tier-routing 拡張・ADR-1）: role 別 bandit gate 集合。
+
+    `_db_params.BANDIT_GATES_BY_ROLE` / `bandit_gates_for_role` の SSOT 定義と、
+    それを read-side フィルタに使う read_agent_tier_params / read_agent_failure_rate
+    の role 別集計を検証する。tester は D-1 のみ集計対象・他 role は既定 BANDIT_GATES
+    のまま不変・未知 role は既定集合（fail-safe）。
+    """
+
+    def _seed(self, db, *, role, complexity, tier, gate, outcomes, prefix):
+        for i, success in enumerate(outcomes):
+            record_agent_outcome_event(
+                role=role, complexity=complexity, tier=tier, success=success,
+                gate=gate, session_id=f"{prefix}-{i}", db_path=db,
+            )
+
+    def test_bandit_gates_by_role_tester_is_d1_only(self) -> None:
+        """RG-1: `_db_params.BANDIT_GATES_BY_ROLE["tester"] == ("D-1",)`。"""
+        from c3 import _db_params  # noqa: PLC0415
+
+        assert hasattr(_db_params, "BANDIT_GATES_BY_ROLE"), (
+            "_db_params.BANDIT_GATES_BY_ROLE が未定義"
+        )
+        assert _db_params.BANDIT_GATES_BY_ROLE["tester"] == ("D-1",)
+
+    def test_bandit_gates_by_role_default_is_bandit_gates(self) -> None:
+        """RG-2: 明示エントリの無い role（developer）は既定 BANDIT_GATES 集合。"""
+        from c3 import _db_params  # noqa: PLC0415
+
+        assert (
+            _db_params.BANDIT_GATES_BY_ROLE.get("developer", _db_params.BANDIT_GATES)
+            == _db_params.BANDIT_GATES
+        )
+        # wt_tester キーは統合方式で置かない（--role tester へ正規化されるため）。
+        assert "wt_tester" not in _db_params.BANDIT_GATES_BY_ROLE
+
+    def test_bandit_gates_for_role_helper(self) -> None:
+        """RG-3: `bandit_gates_for_role` は tester→("D-1",)・既知/未知 role→既定集合。"""
+        from c3 import _db_params  # noqa: PLC0415
+        from c3.db import bandit_gates_for_role  # noqa: PLC0415
+
+        assert bandit_gates_for_role("tester") == ("D-1",)
+        assert bandit_gates_for_role("developer") == _db_params.BANDIT_GATES
+        # 未知 role は例外にならず既定集合（fail-safe）。
+        assert bandit_gates_for_role("brand-new-role") == _db_params.BANDIT_GATES
+
+    def test_tester_cell_aggregates_d1_only(self, tmp_path: Path) -> None:
+        """RG-4: tester セルは gate=D-1 の記録のみ集計する。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        self._seed(
+            db, role="tester", complexity="medium", tier="haiku",
+            gate="D-1", outcomes=[True, True], prefix="rg-4",
+        )
+
+        result = read_agent_tier_params("tester", "medium", db_path=db)
+        assert result["haiku"] == (3.0, 1.0, 2), (
+            "tester の D-1 記録（成功2）は alpha=3/beta=1/trials=2 に集計されるはず"
+        )
+
+    def test_tester_cell_excludes_d3_d5(self, tmp_path: Path) -> None:
+        """RG-5（回帰・FR-3）: tester の D-3/D-5 記録は集計から外れる。
+
+        実 DB の tester bandit 対象（medium 28＝D-3:6+D-5:22 / complex 1＝D-5:1・全 sonnet）
+        を模した seed で、新フィルタ後は tester セルの trials が 0 になることを確認する。
+        """
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        # medium: D-3 を 6 件 + D-5 を 22 件（= 28 件）
+        self._seed(
+            db, role="tester", complexity="medium", tier="sonnet",
+            gate="D-3", outcomes=[True] * 6, prefix="rg-5-d3",
+        )
+        self._seed(
+            db, role="tester", complexity="medium", tier="sonnet",
+            gate="D-5", outcomes=[True] * 22, prefix="rg-5-d5m",
+        )
+        # complex: D-5 を 1 件
+        self._seed(
+            db, role="tester", complexity="complex", tier="sonnet",
+            gate="D-5", outcomes=[True], prefix="rg-5-d5c",
+        )
+
+        medium = read_agent_tier_params("tester", "medium", db_path=db)
+        complex_ = read_agent_tier_params("tester", "complex", db_path=db)
+
+        assert medium["sonnet"] == (1.0, 1.0, 0), (
+            "tester の D-3/D-5（medium 28 件）は D-1 フィルタで除外され trials=0 のはず"
+        )
+        assert complex_["sonnet"] == (1.0, 1.0, 0), (
+            "tester の D-5（complex 1 件）も除外され trials=0 のはず"
+        )
+
+    def test_developer_cell_unchanged(self, tmp_path: Path) -> None:
+        """RG-6: developer は既定 BANDIT_GATES 全 gate が集計対象のまま不変。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        for gate in ("D-2.5", "D-3", "D-5", "D-2.5-stuck"):
+            self._seed(
+                db, role="developer", complexity="medium", tier="sonnet",
+                gate=gate, outcomes=[True], prefix=f"rg-6-{gate}",
+            )
+
+        result = read_agent_tier_params("developer", "medium", db_path=db)
+        assert result["sonnet"] == (5.0, 1.0, 4), (
+            "developer は 4 gate 全て集計対象のまま（成功4件で alpha=5/trials=4）"
+        )
+
+    def test_unknown_role_uses_default_gates_without_error(self, tmp_path: Path) -> None:
+        """RG-7: 未知 role は例外にならず既定集合で集計する（fail-safe）。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        self._seed(
+            db, role="brand-new-role", complexity="medium", tier="opus",
+            gate="D-2.5", outcomes=[True], prefix="rg-7",
+        )
+
+        result = read_agent_tier_params("brand-new-role", "medium", db_path=db)
+        assert result["opus"] == (2.0, 1.0, 1), (
+            "未知 role も既定 BANDIT_GATES で集計され D-2.5 の 1 件が反映されるはず"
+        )
+
+    def test_failure_rate_tester_d1_only(self, tmp_path: Path) -> None:
+        """RG-8: read_agent_failure_rate も tester は D-1 のみ対象（D-3/D-5 除外）。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        # tester の D-3 failure を 5 件（新フィルタで除外されるべき）
+        self._seed(
+            db, role="tester", complexity="medium", tier="sonnet",
+            gate="D-3", outcomes=[False] * 5, prefix="rg-8-d3",
+        )
+        rate, count = read_agent_failure_rate("tester", "medium", "sonnet", db_path=db)
+        assert (rate, count) == (None, 0), (
+            "tester の D-3 記録は D-1 フィルタで除外され sample_count=0 のはず"
+        )
+
+        # D-1 failure を 5 件投入すれば failure_rate が計算される
+        self._seed(
+            db, role="tester", complexity="medium", tier="sonnet",
+            gate="D-1", outcomes=[False] * 5, prefix="rg-8-d1",
+        )
+        rate2, count2 = read_agent_failure_rate("tester", "medium", "sonnet", db_path=db)
+        assert count2 == 5
+        assert rate2 == pytest.approx(1.0)
+
+
 class TestRecordAgentOutcomeEvent:
     """O3 群: record_agent_outcome_event(*, role, complexity, tier, success, gate=None,
     note=None, session_id=None, db_path=None)。"""
