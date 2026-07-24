@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.53.0] - 2026-07-24
+
+### 追加
+
+- **`autonomous-mode` skill の配布開始**: 2026-07-14 以降 git 非追跡・wheel 非収録の配布元専用として熟成してきた `autonomous-mode` skill を配布物に含める（`.gitignore` / `src/c3/_excludes.py` / `hatch_build.py` の除外 3 行を削除・3 ファイル同期）。利用先で委任プラン承認＋モード行の二重 opt-in により自律モードを有効化できるようになる。既定は変わらず HITL（各ゲートを AskUserQuestion で実行）
+- **`.claude/docs/autonomous-mode-onboarding.md` を新規作成（配布対象）**: 正しい opt-in 導線（プランモード先行・資源同意節・`cycles=` 付きモード行）／「質問が来る＝設計どおり」（人間の関所 2 類型＋バックログ照合＋コミット）／「C-3 収束 ≠ 欠陥ゼロ」（design-critic の実行検証不能という構造的限界）／上限到達→エスカレーション→裁定→再開の流れをまとめる。実走 2 件（NUL 境界 lint / TOML エスケープ是正）で著者自身が 2 回誤読した論点を最優先で明記
+- **`init-session` skill の復帰導線を強化**: Step 5 の確認対象に「資源同意節」「`cycles` トークン」を名指しで追加し、自律モードからの復帰時に見落としを防ぐ
+- **`adapters.py` にアダプター専用除外機構を追加**: `ADAPTER_EXCLUDE_PATTERNS` / `_adapter_skip()` を新設し、Codex/Cursor/OpenCode の skill 写像 3 経路（`_write_codex_skills` 等）を置換。`autonomous-mode` は他プラットフォームのアダプター生成物に一切写像されない（`_adapter_skip` は `fnmatch.fnmatchcase` で大小文字を区別）。関数レベル・CLI レベル双方の e2e 回帰テストを追加
+
+### 変更
+
+- **`autonomous-mode` SKILL.md の規約改訂**（実走 2 件で確定した規約の穴を配布前に是正）:
+  - R4（是正案の裏取り義務）の対象範囲を拡張し、レビューが提示した是正案だけでなく「親 Claude 自身が新設した是正策・検査・成功条件（規約・設計文書に書く事実主張を含む）」も裏取り対象に含める（実走で親モデルを跨いで同型 6 回発生した抜け穴を解消）
+  - E→C 差し戻し後の C-3 サイクルカウンタ規定を明文化（差し戻し後は別枠で上限 2 サイクル・周回全体の総量上界 13）。従来は同一カウンタを消費し続け、上限到達の直接原因になっていた
+  - BNF にスペース入りパス対応の `quoted-path`（ダブルクォート囲み）を追加し、`mode_line.py` を引用符優先でパースするよう変更。引用符の閉じ忘れは新設の理由コード `unclosed_quote` で INVALID（fail-closed）を返す。既存の従来形（非引用符パス）は後方互換のまま動作する回帰テストを新設
+  - 個人パス表記を汎用化し、`.dev/loop` 参照へ配布元限定の注記を追加。従量課金 API ユーザー向けに資源同意節が費用同意を兼ねる旨を明記
+- **`.claude/CLAUDE.md` に Approval Flow 追記・Platform Compatibility 拡充**: 自律モード有効時に承認ゲートが客観条件へ付け替わる旨を Approval Flow 節に 1 段落追記。Platform Compatibility 節に「自律モードは Claude Code 専用・Codex/Cursor/OpenCode では常に無効＝HITL（検証できない → HITL の fail-closed）」を明記し、adapter 生成物にも写像されないことを明示
+
+### 後方互換
+
+- **破壊的変更なし**。利用先の既定動作は従来どおり HITL のまま変化しない。自律モードは「委任プラン承認＋モード行」の二重 opt-in がなければ一切発動せず、`autonomous-mode` skill が配布物に加わったこと自体は既存挙動に影響しない。モード行 BNF は拡張のみ（従来形は無変更で動作）で、`mode_line.py` の従来のパース・封じ込め検査・fail-closed 挙動は不変。ロールバックは除外 3 行の復活で可能
+
 ## [2.52.1] - 2026-07-23
 
 ### 修正
