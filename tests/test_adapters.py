@@ -20,6 +20,7 @@ from c3.adapters import (
     MANAGED_CODEX_TOML_END,
     MANAGED_OPENCODE_BEGIN,
     MANAGED_OPENCODE_END,
+    _adapter_skip,
     _codex_agent_toml,
     _convert_skill,
     _opencode_agent_md,
@@ -1493,3 +1494,105 @@ def test_toml_multiline_escape_map_is_derived_from_basic_escape_map():
         k: v for k, v in _TOML_ESCAPE_MAP.items() if k not in (0x09, 0x0A, 0x22)
     }
     assert _TOML_MULTILINE_ESCAPE_MAP == expected
+
+
+# -----------------------------------------------------------------------
+# NEW: Adapter exclusion mechanism (AD-1 ~ AD-4 / S-11)
+# -----------------------------------------------------------------------
+
+# AD-1: autonomous-mode を除外
+def test_adapter_skip_excludes_autonomous_mode():
+    """_adapter_skip must exclude autonomous-mode from adapter outputs."""
+    assert _adapter_skip("skills/autonomous-mode/SKILL.md") is True
+    assert _adapter_skip("skills/autonomous-mode/scripts/mode_line.py") is True
+
+
+# AD-2: 大文字パスは大小文字区別により除外されない
+def test_adapter_skip_uppercase_path_not_excluded():
+    """_adapter_skip must be case-sensitive (fnmatchcase): an uppercase
+    variant of the autonomous-mode path must NOT be excluded, matching
+    should_skip's case-sensitive policy (CR-Q-004 regression guard)."""
+    assert _adapter_skip("skills/AUTONOMOUS-MODE/SKILL.md") is False
+
+
+# AD-3: 既存 skill は除外しない
+def test_adapter_skip_does_not_exclude_existing_skills():
+    """_adapter_skip must allow existing skills like brainstorm."""
+    assert _adapter_skip("skills/brainstorm/SKILL.md") is False
+
+
+# AD-4: should_skip 既存 挙動 を維持（OR 結合）
+def test_adapter_skip_inherits_should_skip_rules():
+    """_adapter_skip must preserve should_skip exclusions (reports, docs, etc)."""
+    # reports are excluded by should_skip
+    assert _adapter_skip("reports/plan-report-20260427-232152.md") is True
+    # personal memory is excluded by should_skip
+    assert _adapter_skip("memory/patterns.json") is True
+
+
+# AD-5: e2e 自動回帰テスト（_write_codex_skills / _write_opencode_skills）
+def test_adapter_skip_e2e_codex_excludes_autonomous_mode(tmp_path: Path):
+    """_adapter_skip must exclude autonomous-mode from codex skills generation."""
+    # Create minimal .claude tree with autonomous-mode and brainstorm skills
+    (tmp_path / ".claude").mkdir()
+    skills_dir = tmp_path / ".claude" / "skills"
+    skills_dir.mkdir()
+
+    # Create autonomous-mode skill (should be excluded from adapter outputs)
+    autonomous_dir = skills_dir / "autonomous-mode"
+    autonomous_dir.mkdir()
+    (autonomous_dir / "SKILL.md").write_text(
+        "---\ndescription: Autonomous mode\n---\n# autonomous-mode\nBody\n",
+        encoding="utf-8",
+    )
+
+    # Create brainstorm skill (should be included in adapter outputs)
+    brainstorm_dir = skills_dir / "brainstorm"
+    brainstorm_dir.mkdir()
+    (brainstorm_dir / "SKILL.md").write_text(
+        "---\ndescription: Brainstorm\n---\n# brainstorm\nBody\n",
+        encoding="utf-8",
+    )
+
+    # Test codex skills generation
+    adapters._write_codex_skills(tmp_path, dry_run=False)
+    assert not (
+        tmp_path / ".agents" / "skills" / "autonomous-mode"
+    ).exists(), "autonomous-mode should be excluded from codex skills"
+    assert (tmp_path / ".agents" / "skills" / "brainstorm").exists(), (
+        "brainstorm should be included in codex skills"
+    )
+
+
+# AD-6: e2e 自動回帰テスト（_write_opencode_skills）
+def test_adapter_skip_e2e_opencode_excludes_autonomous_mode(tmp_path: Path):
+    """_adapter_skip must exclude autonomous-mode from opencode skills generation."""
+    # Create minimal .claude tree with autonomous-mode and brainstorm skills
+    (tmp_path / ".claude").mkdir()
+    skills_dir = tmp_path / ".claude" / "skills"
+    skills_dir.mkdir()
+
+    # Create autonomous-mode skill (should be excluded from adapter outputs)
+    autonomous_dir = skills_dir / "autonomous-mode"
+    autonomous_dir.mkdir()
+    (autonomous_dir / "SKILL.md").write_text(
+        "---\ndescription: Autonomous mode\n---\n# autonomous-mode\nBody\n",
+        encoding="utf-8",
+    )
+
+    # Create brainstorm skill (should be included in adapter outputs)
+    brainstorm_dir = skills_dir / "brainstorm"
+    brainstorm_dir.mkdir()
+    (brainstorm_dir / "SKILL.md").write_text(
+        "---\ndescription: Brainstorm\n---\n# brainstorm\nBody\n",
+        encoding="utf-8",
+    )
+
+    # Test opencode skills generation
+    adapters._write_opencode_skills(tmp_path, dry_run=False)
+    assert not (
+        tmp_path / ".opencode" / "agents" / "c3-skill-autonomous-mode.md"
+    ).exists(), "autonomous-mode should be excluded from opencode skills"
+    assert (tmp_path / ".opencode" / "agents" / "c3-skill-brainstorm.md").exists(), (
+        "brainstorm should be included in opencode skills"
+    )

@@ -12,7 +12,44 @@ from typing import Any
 
 import yaml
 
+import fnmatch
+
 from c3._excludes import should_skip
+
+# ---------------------------------------------------------------------------
+# Adapter-specific exclusion patterns (S-11・DC-AS-001 / DC-GP-001)
+# ---------------------------------------------------------------------------
+
+# autonomous-mode は Claude Code 専用。モード行検証が Bash + mode_line.py に依存し、
+# 他プラットフォーム（Codex / Cursor / OpenCode）で安全に再現できない。
+# wheel 収録（EXCLUDE_PATTERNS 削除後）とアダプター除外を独立の機構として実現する。
+# 参照: CLAUDE.md Platform Compatibility
+ADAPTER_EXCLUDE_PATTERNS: tuple[str, ...] = (
+    "skills/autonomous-mode/*",
+)
+
+
+def _adapter_skip(rel_path: str) -> bool:
+    """Check if a file should be skipped from adapter output (Codex/Cursor/OpenCode).
+
+    Combines wheel exclusions (should_skip) with adapter-specific exclusions
+    (ADAPTER_EXCLUDE_PATTERNS). Returns True if either rule matches.
+
+    Args:
+        rel_path: Path relative to .claude/ (e.g., "skills/autonomous-mode/SKILL.md")
+
+    Returns:
+        True if should be excluded from adapter output, False otherwise.
+    """
+    # First check wheel exclusions (existing rules)
+    if should_skip(rel_path):
+        return True
+    # Then check adapter-specific exclusions
+    for pattern in ADAPTER_EXCLUDE_PATTERNS:
+        if fnmatch.fnmatchcase(rel_path, pattern):
+            return True
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Managed-block marker constants (CR L-04: defined before helpers that use them)
@@ -170,7 +207,7 @@ def _write_codex_skills(target_root: Path, *, dry_run: bool) -> list[AdapterActi
     actions: list[AdapterAction] = []
     for source in sorted(path for path in source_root.rglob("*") if path.is_file()):
         rel = source.relative_to(source_root)
-        if should_skip(f"skills/{rel.as_posix()}"):
+        if _adapter_skip(f"skills/{rel.as_posix()}"):
             continue
         dest = target_root / ".agents" / "skills" / rel
         if source.name == "SKILL.md":
@@ -189,7 +226,10 @@ def _write_codex_agents(target_root: Path, *, dry_run: bool) -> list[AdapterActi
     actions: list[AdapterAction] = []
     for source in sorted(path for path in source_root.glob("*.md") if path.is_file()):
         rel = source.relative_to(target_root / ".claude")
-        if should_skip(rel.as_posix()):
+        # Note: agents/ paths do not match "skills/autonomous-mode/*" pattern,
+        # so _adapter_skip here acts as should_skip. However, we use _adapter_skip
+        # uniformly for consistency across all adapter write functions.
+        if _adapter_skip(rel.as_posix()):
             continue
         name = source.stem
         text = source.read_text(encoding="utf-8")
@@ -487,11 +527,11 @@ def _write_opencode_agents(target_root: Path, *, dry_run: bool) -> list[AdapterA
     actions: list[AdapterAction] = []
     source_root_resolved = source_root.resolve()
     for source in sorted(source_root.glob("*.md")):
-        # CR M-04 / SR-NEW: mirror the should_skip guard from _write_codex_agents.
+        # CR M-04 / SR-NEW: mirror the _adapter_skip guard from _write_codex_agents.
         # rel is relative to .claude/ (e.g. "agents/tdd-develop.md") to match
         # the EXCLUDE_PATTERNS convention used by _write_codex_agents.
         rel = source.relative_to(target_root / ".claude")
-        if should_skip(rel.as_posix()):
+        if _adapter_skip(rel.as_posix()):
             continue
         # SR-V-002: symlink guard — skip sources that resolve outside source_root.
         try:
@@ -553,10 +593,10 @@ def _write_opencode_skills(target_root: Path, *, dry_run: bool) -> list[AdapterA
         if not skill_file.exists():
             continue
         skill_name = skill_dir.name
-        # CR M-04 / SR-NEW: mirror should_skip guard from _write_codex_skills.
+        # CR M-04 / SR-NEW: mirror _adapter_skip guard from _write_codex_skills.
         # rel is relative to .claude/ (e.g. "skills/worktree-tdd-workflow/SKILL.md").
         rel = skill_file.relative_to(target_root / ".claude")
-        if should_skip(rel.as_posix()):
+        if _adapter_skip(rel.as_posix()):
             continue
         # SR-V-002: symlink guard — skip files that resolve outside source_root.
         try:

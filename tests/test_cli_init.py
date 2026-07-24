@@ -145,6 +145,38 @@ def test_init_codex_scaffolds_adapter_without_moving_claude(tmp_path: Path):
     assert "PYTHONPATH" in config_text
 
 
+def test_init_codex_excludes_autonomous_mode_skill(tmp_path: Path):
+    """CLI-level e2e (DC-GP-002): `c3 init --platform codex` must not emit the
+    autonomous-mode skill into the codex adapter output, while still emitting
+    an existing skill like brainstorm."""
+    rc = _run_init(tmp_path, platform="codex")
+    assert rc == 0
+
+    codex_skills = tmp_path / ".agents" / "skills"
+    assert not (codex_skills / "autonomous-mode").exists(), (
+        "autonomous-mode must be excluded from codex adapter output"
+    )
+    assert (codex_skills / "brainstorm" / "SKILL.md").is_file(), (
+        "existing skill brainstorm must be present in codex adapter output"
+    )
+
+
+def test_init_opencode_excludes_autonomous_mode_skill(tmp_path: Path):
+    """CLI-level e2e (DC-GP-002): `c3 init --platform opencode` must not emit the
+    autonomous-mode skill into the opencode adapter output, while still emitting
+    an existing skill like brainstorm."""
+    rc = _run_init(tmp_path, platform="opencode")
+    assert rc == 0
+
+    oc_agents = tmp_path / ".opencode" / "agents"
+    assert not (oc_agents / "c3-skill-autonomous-mode.md").exists(), (
+        "autonomous-mode must be excluded from opencode adapter output"
+    )
+    assert (oc_agents / "c3-skill-brainstorm.md").is_file(), (
+        "existing skill brainstorm must be present in opencode adapter output"
+    )
+
+
 def test_init_cursor_scaffolds_rule_and_mcp(tmp_path: Path):
     rc = _run_init(tmp_path, platform="cursor")
     assert rc == 0

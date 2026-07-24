@@ -160,15 +160,17 @@ def test_hatch_build_keep_patterns_match_c3_excludes():
 
 
 # ---------------------------------------------------------------------------
-# T4-2: 新除外パターン検査（architecture-report-20260714-213000.md §9-1）
+# T4-2: autonomous-mode skill 配布対象検査（architecture-report-20260714-213000.md §9-1）
 #
-# autonomous-mode skill は配布除外での熟成対象（T5 で EXCLUDE_PATTERNS に
-# "skills/autonomous-mode/*" を追加）。T5 適用前の現時点ではこの検査は
-# 意図的に赤（Red）になる。dev-workflow は巻き込み事故がないことも併せて検査する。
+# v2.53.0 配布切替で autonomous-mode skill の除外定義を削除し配布対象化した
+# （旧仕様: 配布除外での熟成対象）。SKILL.md 本体もサブパスも配布対象になる。
+# dev-workflow は巻き込み事故がないことも併せて検査する。
 # ---------------------------------------------------------------------------
 
-def test_autonomous_mode_skill_is_excluded_from_distribution():
-    assert should_skip("skills/autonomous-mode/SKILL.md") is True
+def test_autonomous_mode_skill_is_included_in_distribution():
+    # v2.53.0 配布切替で除外解除された（旧: should_skip(...) is True）
+    assert should_skip("skills/autonomous-mode/SKILL.md") is False
+    assert should_skip("skills/autonomous-mode/scripts/mode_line.py") is False
 
 
 def test_dev_workflow_skill_not_caught_up_in_autonomous_mode_exclusion():
@@ -277,6 +279,7 @@ def test_mode_line_extracts_plan_path_with_spaces(tmp_path, monkeypatch):
 
     _extract_plan_path は「plan= 以降を行末まで取り込み、後続に " cycles=" トークン
     がある場合のみ分離する」正規表現方式で、スペース含みパスに対応する。
+    T2 引用符対応により _extract_plan_path は (path, reason_code) tuple を返す。
     """
     mode_line = _load_mode_line_module()
     allowed_root = tmp_path / "plans"
@@ -287,13 +290,15 @@ def test_mode_line_extracts_plan_path_with_spaces(tmp_path, monkeypatch):
 
     # スペース入りパスの抽出テスト
     rest1 = f"plan={plan_with_spaces}"
-    extracted1 = mode_line._extract_plan_path(rest1)
+    extracted1, reason1 = mode_line._extract_plan_path(rest1)
     assert extracted1 == str(plan_with_spaces), f"expected {plan_with_spaces}, got {extracted1}"
+    assert reason1 is None, f"expected no reason code, got {reason1}"
 
     # スペース入りパス + cycles= トークンの抽出テスト
     rest2 = f"plan={plan_with_spaces} cycles=C-3/1"
-    extracted2 = mode_line._extract_plan_path(rest2)
+    extracted2, reason2 = mode_line._extract_plan_path(rest2)
     assert extracted2 == str(plan_with_spaces), f"expected {plan_with_spaces}, got {extracted2}"
+    assert reason2 is None, f"expected no reason code, got {reason2}"
 
     # スペース入りパスが有効宣言として機能する
     line = f"モード: 自律 plan={plan_with_spaces}"
