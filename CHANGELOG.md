@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.54.0] - 2026-07-24
+
+### 追加
+
+- **tester / wt_tester の Red フェーズ限定 tier-routing 機械適用**: 起動プロンプト先頭の `C3_TASK_ID: test-` マーカーを条件に、tier_autoapply hook（PreToolUse）が `tier_selection.json` の `roles.tester.tier`（select_tier hook が developer と同一の複雑度分類で算出・escalation 適用後の実効値）を `model:` に注入する。D-3/D-5 等の非 Red 起動・confirm- タスクは対象外のまま（frontmatter の sonnet が実効）。学習セルは新設 gate `D-1` の記録のみを集計する role 別 read-side フィルタ（`BANDIT_GATES_BY_ROLE`・SSOT は `src/c3/_db_params.py`）で分離し、既存の確認役成績（D-3/D-5）と混ざらない
+- **Red 成果物の成否 4 条件を記録規約として明文化**（dev-workflow / parallel-agents SKILL）: failure = ①Red の理由が違う（意図した AssertionError でなく ImportError 等で落ちる・実装前に pass する「効かないテスト」）②ベースライン破壊（既存スイートの結果が D-1 前後で変化）③Green 中のテスト側修正（テストコード欠陥。仕様変更追随はセッションファイルに裁定記録がある場合のみ除外）／success = ④D-3（parallel は confirm- 全合格）時点で ①〜③ が発生していないこと。記録はいずれも `--gate D-1 --task test-{ID}` で Red 起動時の実適用 tier に帰属する
+- **不変則の機械検査テストを新設**: ①opus 固定不変則（`APPLY_ROLES`/`RED_APPLY_ROLES` の全 role の frontmatter が `model: sonnet` であること。opus frontmatter の 5 agent（architect/planner/design-critic/doc-writer/project-setup）は tier-routing の恒久対象外）を `tests/hooks/test_tier_autoapply.py` に、②マーカー遵守（dev-workflow SKILL の D-3/D-5 節本文・parallel-agents SKILL に `C3_TASK_ID: test-` が現れないこと）を `tests/skills/test_marker_compliance.py` に追加
+
+### 変更
+
+- **`C3_TASK_ID` マーカー抽出を文字列先頭アンカー（`\A`）へ変更**: 従来の `re.MULTILINE` 行頭一致では、起動プロンプト本文に引用挿入されたレポート等の中の `C3_TASK_ID:` 孤立行が誤ってマーカー採用されうる。文字列先頭の 1 行目のみを対象にすることでこの経路を構造的に閉じる（security-review 実証・27 パターンの敵対的入力で確認）
+- **parallel-agents の起動プロンプト規約でマーカーを 1 行目へ統一**: `C3_TASK_ID: {task_id}` を 1 行目、`PO_WORKTREE_GUARD=1` の export 指示を 2 行目に置く（従来はガード指示が先）。`worktree_guard.py` は環境変数のみを参照するため順序入れ替えによる機能影響はない
+- **tester の record 側 tier 解決を「優先 2a → 優先 4」の 2 段へ限定**: `--task` が `test-` で始まる tester 記録は applied-state（`tier_autoapply.jsonl`）の task-exact 突合（2a）で実適用 tier に帰属し、不成立時は frontmatter 自己解決（4）へ直行する。session-latest フォールバック（2b）と `roles.tester` 読み（3）は tester では使わない（同一セッションの別タスクの tier を誤帰属する経路の閉塞）。developer の解決順は従来どおり不変
+- **parallel-agents の test- タスク記録 gate を `D-1` へ変更**: test- タスクの成否は Red 4 条件で記録し（成功の確定は confirm- 全合格まで遅延）、従来の `2-D`/`2-E` は使わない。confirm- / impl- タスクの記録は現行どおり
+- **dev-workflow の集計注記を role 別記述へ**: bandit 集計対象 gate が role 別（developer 等 = D-2.5/D-3/D-5/D-2.5-stuck・tester = D-1 のみ）であることを明記し、新設の tester Red 限定説明との矛盾を解消
+
+### 後方互換
+
+- **破壊的変更なし**。developer / wt_developer の tier-routing 挙動・学習データは不変。`tier_selection.json` のトップレベルスキーマは bit 一致を維持し、`roles` キーは additive（旧バージョンの読者は無視する）。既存 tester 記録 29 件はイベントログとして温存され（削除・書き換えなし）、tester の bandit セルは 0 件から学習を開始する（`LEARNING_THRESHOLD=30` までは uniform 探索期）。マーカー無し・非 test- の tester 起動は従来どおり注入されず frontmatter が実効するため、旧手順のままでも安全側（注入なし）に倒れる
+
 ## [2.53.0] - 2026-07-24
 
 ### 追加
