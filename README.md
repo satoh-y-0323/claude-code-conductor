@@ -208,7 +208,7 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 
 インタラクティブな対話が必要なエージェント（interviewer・architect・planner）は親 Claude がペルソナを採用して動作します。実装・検証系エージェントはサブエージェントとして起動されます。
 
-> **model 列は既定値です。** developer / wt_developer は tier-routing（タスク複雑度に応じた Haiku/Sonnet/Opus の自動選択・Thompson Sampling）の hook が起動時に model を自動適用するため、実際の使用 model は複雑度と学習データに応じて変わります。
+> **model 列は既定値です。** developer / wt_developer は tier-routing（タスク複雑度に応じた Haiku/Sonnet/Opus の自動選択・Thompson Sampling）の hook が起動時に model を自動適用するため、実際の使用 model は複雑度と学習データに応じて変わります。v2.54.0 からは tester / wt_tester も **Red フェーズ（起動プロンプト 1 行目の `C3_TASK_ID: test-` マーカー付き起動）に限り**自動適用の対象です（テスト合否を判定する確認フェーズ D-3/D-5・confirm- タスクは対象外・既定の sonnet のまま）。
 
 ---
 
