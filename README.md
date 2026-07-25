@@ -9,6 +9,8 @@
 
 📖 **公式ドキュメント**: [https://satoh-y-0323.github.io/claude-code-conductor/](https://satoh-y-0323.github.io/claude-code-conductor/)
 
+💬 **質問・要望・使ってみた報告**: [GitHub Discussions](https://github.com/satoh-y-0323/claude-code-conductor/discussions) へお気軽にどうぞ（[フィードバック](#フィードバック--feedback)参照）
+
 ---
 
 ## コンセプト
@@ -390,6 +392,23 @@ C3 はセッションをまたいで作業状態を記憶します。
   - session ファイルの記録時刻を更新
   - Claude の最終応答（`last_assistant_message`）を事実ログに自動記録（次セッションで「前回何をしたか」が分かる）
   - パターン信用度を再計算
+
+---
+
+## フィードバック / Feedback
+
+C3 を使っていて気になったこと・聞きたいことがあれば、[GitHub Discussions](https://github.com/satoh-y-0323/claude-code-conductor/discussions) に気軽に書き込んでください。バグと言い切れない違和感や「この使い方で合ってる？」レベルの質問も歓迎です。
+
+| カテゴリ | 用途 |
+|---|---|
+| [Q&A](https://github.com/satoh-y-0323/claude-code-conductor/discussions/categories/q-a) | 使い方の質問・困りごと |
+| [Ideas](https://github.com/satoh-y-0323/claude-code-conductor/discussions/categories/ideas) | 機能要望・改善アイデア |
+| [Show and tell](https://github.com/satoh-y-0323/claude-code-conductor/discussions/categories/show-and-tell) | 使ってみた報告・活用事例 |
+| [General](https://github.com/satoh-y-0323/claude-code-conductor/discussions/categories/general) | その他なんでも |
+
+明確なバグ報告は従来どおり [Issues](https://github.com/satoh-y-0323/claude-code-conductor/issues) へお願いします。
+
+Questions and feedback in English are also welcome.
 
 ---
 
