@@ -7,8 +7,12 @@ PYTHONPATH に追加してから `from _hook_utils import ...` する経路を�
 
 ## Exports
 
+- ``norm_component(s)`` — パス成分を正規化する（`.lower().rstrip('. ')`）。
+  ディレクトリ比較・拡張子判定の際にケース非依存化・末尾ドット/スペース除去を行う。
 - ``write_debug_log(log_path, line)`` — ``C3_HOOK_DEBUG=1`` のときのみログを追記する
   fail-safe な書き込みヘルパー。
+- ``sanitize_for_terminal(text)`` — 端末出力（stderr / stdout JSON）へ載せる前に
+  C0 + DEL + C1 制御文字を除去するヘルパー。
 """
 
 from __future__ import annotations
@@ -30,6 +34,27 @@ DEBUG_ENV = "C3_HOOK_DEBUG"
 #   - C1 制御文字 (\x80-\x9f) — Latin-1 拡張領域の制御文字。一部の端末・ロケールで
 #     エスケープシーケンスのプリフィクス（例: CSI = \x9b）として解釈される
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def norm_component(s: str) -> str:
+    """パス成分を正規化する（ケース非依存化・末尾ドット/スペース除去）。
+
+    Windows・macOS の既定（ケース非依存 FS）では大文字・小文字の違い、
+    末尾のドットやスペースは同一実体を示す。複数ディレクトリ・拡張子判定の際に
+    `.lower().rstrip('. ')` で正規化してから比較する。
+    """
+    return str(s).lower().rstrip('. ')
+
+
+def sanitize_for_terminal(text: str) -> str:
+    """端末インジェクション対策: C0 制御文字 / DEL / C1 制御文字を除去する。
+
+    - 除去範囲は ``_CONTROL_CHARS_RE``（C0 + DEL + C1）と共通。ANSI エスケープの
+      ESC (``\\x1b``) と CSI (``\\x9b``) の双方をカバーする。
+    - hook が stderr / stdout JSON（additionalContext）へ外部由来の文字列
+      （ファイル名など）を載せる前に通す。
+    """
+    return _CONTROL_CHARS_RE.sub("", str(text))
 
 
 def write_debug_log(log_path: Path, line: str) -> None:

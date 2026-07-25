@@ -8,6 +8,16 @@ _hook_utils.write_debug_log に集約した検証。CR-M-001 (L-01) 対応。
   - write_debug_log 関数を公開している
   - 両 hook が共通モジュールから import している（重複実装が消えている）
   - C3_HOOK_DEBUG=1 のときのみ書き込みする fail-safe 設計が保たれている
+
+## E 周回 1 修正サイクル追加分（T5・Red — plan-report-20260725-180252.md §2-B）
+
+F5（`sanitize_for_terminal` の共有化）の未実装による Red。
+
+  - `_hook_utils.sanitize_for_terminal()` が存在し、既存 `_CONTROL_CHARS_RE`
+    （C0 + DEL + C1）と同じ除去範囲を持つこと
+  - (f) 重複消滅の機械検査: P1/P2/P3 の 3 hook に `def _sanitize` の独自定義が
+    残っていないこと（既存 `test_no_duplicate_write_debug_log_definitions` と同型・
+    rework2 DC-GP-004）
 """
 
 from __future__ import annotations
@@ -25,6 +35,11 @@ HOOK_DIR = WORKTREE_ROOT / ".claude" / "hooks"
 HOOK_UTILS_PATH = HOOK_DIR / "_hook_utils.py"
 PLANNER_CHECK_PATH = HOOK_DIR / "planner_check.py"
 AGENT_HOOK_PATH = HOOK_DIR / "check_agent_invocation.py"
+
+# T5 追加分: F5 の共有化対象となる 3 hook（P1 / P2 / P3）
+PATTERNS_GUARD_PATH = HOOK_DIR / "patterns_guard.py"
+REPORT_CONTRACT_CHECK_PATH = HOOK_DIR / "report_contract_check.py"
+SESSION_MODE_WATCH_PATH = HOOK_DIR / "session_mode_watch.py"
 
 pytestmark = pytest.mark.skipif(
     not HOOK_UTILS_PATH.is_file(),
@@ -223,4 +238,121 @@ def test_write_debug_log_sanitizes_c1_control_chars(tmp_path: Path) -> None:
     for keyword in ("before", "c1lo", "csi", "apc", "after"):
         assert keyword in content, (
             f"可読部分 {keyword!r} がログから消失している: {content!r}"
+        )
+
+
+# ===========================================================================
+# T5 追加分（E 周回 1 修正サイクル・Red）— F5: sanitize_for_terminal の共有化
+# ===========================================================================
+
+
+def test_hook_utils_exposes_sanitize_for_terminal() -> None:
+    """[F5・Red] _hook_utils.py が sanitize_for_terminal 関数を公開している。"""
+    source = HOOK_UTILS_PATH.read_text(encoding="utf-8")
+    assert "def sanitize_for_terminal" in source, (
+        "_hook_utils.py に sanitize_for_terminal 関数が見つからない"
+    )
+
+
+def _run_sanitize_for_terminal(tmp_path: Path, sample: str) -> str:
+    """subprocess で `_hook_utils.sanitize_for_terminal(sample)` を評価し結果を返す。
+
+    結果は cp932 の stdout を経由せずファイル（UTF-8）へ書き出して読み戻す
+    （CLAUDE.md §9 の文字コード前提を回避するため）。
+    """
+    out_path = tmp_path / "sanitized.txt"
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(HOOK_DIR)!r})
+        from _hook_utils import sanitize_for_terminal
+        from pathlib import Path
+        Path({str(out_path)!r}).write_text(
+            sanitize_for_terminal({sample!r}), encoding="utf-8"
+        )
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    assert result.returncode == 0, (
+        f"sanitize_for_terminal の呼び出しに失敗（未実装のため Red）: {result.stderr}"
+    )
+    return out_path.read_text(encoding="utf-8")
+
+
+def test_sanitize_for_terminal_removes_c0_and_del(tmp_path: Path) -> None:
+    """[F5・Red] C0 制御文字（ANSI ESC を含む）と DEL を除去する。"""
+    sample = "before\x1b[31mRED\x1b[0mafter\x00null\x7fdel"
+    sanitized = _run_sanitize_for_terminal(tmp_path, sample)
+    for ch in ("\x00", "\x1b", "\x7f"):
+        assert ch not in sanitized, (
+            f"C0/DEL 制御文字 {ch!r} が除去されていない: {sanitized!r}"
+        )
+    for keyword in ("before", "RED", "after", "null", "del"):
+        assert keyword in sanitized, (
+            f"可読部分 {keyword!r} が消失している: {sanitized!r}"
+        )
+
+
+def test_sanitize_for_terminal_removes_c1(tmp_path: Path) -> None:
+    """[F5・Red] C1 制御文字（U+0080-U+009F）も除去する（既存 _CONTROL_CHARS_RE 準拠）。"""
+    sample = "before\x80pad\x9bcsi\x9fapc after"
+    sanitized = _run_sanitize_for_terminal(tmp_path, sample)
+    for ch in ("\x80", "\x9b", "\x9f"):
+        assert ch not in sanitized, (
+            f"C1 制御文字 {ch!r} が除去されていない: {sanitized!r}"
+        )
+    for keyword in ("before", "pad", "csi", "apc", "after"):
+        assert keyword in sanitized, (
+            f"可読部分 {keyword!r} が消失している: {sanitized!r}"
+        )
+
+
+def test_sanitize_for_terminal_keeps_plain_text_unchanged(tmp_path: Path) -> None:
+    """[F5・Red] 制御文字を含まない文字列は変更しない（過剰除去がない）。"""
+    sample = ".claude/reports/plan-report-20260725-180252.md"
+    sanitized = _run_sanitize_for_terminal(tmp_path, sample)
+    assert sanitized == sample, (
+        f"制御文字を含まない文字列が変更された: {sanitized!r}"
+    )
+
+
+def test_no_duplicate_sanitize_definitions_in_p1_p2_p3() -> None:
+    """[F5(f)・Red] P1/P2/P3 の 3 hook から `_sanitize` の独自定義が消えている。
+
+    共有 `_hook_utils.sanitize_for_terminal()` への置換後は、hook ファイル側に
+    `def _sanitize` / `def sanitize_for_terminal` の関数定義が残っていてはならない
+    （呼び出しは許可）。既存 `test_no_duplicate_write_debug_log_definitions` と同型。
+    """
+    for path in (
+        PATTERNS_GUARD_PATH,
+        REPORT_CONTRACT_CHECK_PATH,
+        SESSION_MODE_WATCH_PATH,
+    ):
+        assert path.is_file(), f"{path} が見つからない"
+        source = path.read_text(encoding="utf-8")
+        assert "def _sanitize" not in source, (
+            f"{path.name} に _sanitize の独自定義が残っている"
+            "（_hook_utils.sanitize_for_terminal へ置換すること）"
+        )
+        assert "def sanitize_for_terminal" not in source, (
+            f"{path.name} に sanitize_for_terminal の独自定義が残っている"
+        )
+
+
+def test_p1_p2_p3_import_sanitize_from_hook_utils() -> None:
+    """[F5・Red] 3 hook が _hook_utils から sanitize_for_terminal を import している。"""
+    for path in (
+        PATTERNS_GUARD_PATH,
+        REPORT_CONTRACT_CHECK_PATH,
+        SESSION_MODE_WATCH_PATH,
+    ):
+        source = path.read_text(encoding="utf-8")
+        assert "from _hook_utils import" in source, (
+            f"{path.name} が _hook_utils から import していない"
+        )
+        assert "sanitize_for_terminal" in source, (
+            f"{path.name} が sanitize_for_terminal を使っていない"
         )

@@ -114,6 +114,13 @@ trust_score: {スコア}
 
 ## Step 6: patterns.json を更新する
 
+**注意:** patterns.json への直接編集は patterns_guard.py hook でブロックされます。以下の順序で実行してください:
+
+1. まず `.claude/state/patterns_guard_allow.flag` を作成します（空ファイルで可）:
+   - Bash: `touch .claude/state/patterns_guard_allow.flag`
+   - PowerShell: `New-Item -ItemType File -Force .claude/state/patterns_guard_allow.flag`
+2. その直後に patterns.json を Edit ツールで更新します（TTL 600 秒以内）
+
 昇格したパターンの entry に以下を追加する:
 
 rule の場合:

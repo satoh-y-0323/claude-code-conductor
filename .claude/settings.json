@@ -79,6 +79,11 @@
             "type": "command",
             "command": "c3",
             "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
+          },
+          {
+            "type": "command",
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/patterns_guard.py"]
           }
         ]
       },
@@ -89,6 +94,11 @@
             "type": "command",
             "command": "c3",
             "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
+          },
+          {
+            "type": "command",
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/patterns_guard.py"]
           }
         ]
       },
@@ -121,6 +131,11 @@
             "type": "command",
             "command": "c3",
             "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
+          },
+          {
+            "type": "command",
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/report_contract_check.py"]
           }
         ]
       },
@@ -136,6 +151,11 @@
             "type": "command",
             "command": "c3",
             "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
+          },
+          {
+            "type": "command",
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/session_mode_watch.py"]
           }
         ]
       }

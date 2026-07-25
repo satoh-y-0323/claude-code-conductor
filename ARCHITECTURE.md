@@ -114,9 +114,13 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 | `UserPromptSubmit` | （全て） | `recall_inject.py` | 過去類似情報を意味検索しコンテキスト注入（[§4](#4-知能基盤)） |
 | `PreToolUse` | `Bash` | `pre_tool.py` | 破壊的コマンド（`rm -rf` 等）ブロック・secret スキャン |
 | `PreToolUse` | `Write` / `Edit` | `worktree_guard.py` | worktree 外への書き込み禁止（`PO_WORKTREE_GUARD=1` 設定時のみ作動。parallel-agents が並列実行時に有効化） |
+| `PreToolUse` | `Write` / `Edit` | `patterns_guard.py` | patterns.json への直接編集を block（許可フラグ TTL 600 秒・C3_PATTERNS_GUARD_DISABLE=1 で無効化） |
 | `PreToolUse` | `Agent` | `check_agent_invocation.py` | エージェント起動の検査 |
+| `PreToolUse` | `Agent` | `tier_autoapply.py` | 推奨 Tier の `model:` 自動注入（既存登録の表への追随・乖離是正） |
 | `PostToolUse` | `Write` / `Edit` | `post_tool.py` | skills 変更通知・品質パターン（TODO 等）スキャン |
 | `PostToolUse` | `Write` / `Edit` | `planner_check.py` | plan-report の YAML/タイムスタンプ/reviewer 規約検査 |
+| `PostToolUse` | `Write` | `report_contract_check.py` | reports 直下のタイムスタンプ契約 4 種の命名逸脱を warn（stderr + additionalContext） |
+| `PostToolUse` | `Edit` | `session_mode_watch.py` | session.tmp のモード行挿入・plan= 差し替えを warn（stderr + additionalContext） |
 | `PermissionRequest` | （全て） | `permission_handler.py` | `permission_rules.json` の `auto_allow` で自動承認（[config-policy §2 レイヤー B](.claude/docs/config-policy.md)） |
 | `PreCompact` | （全て） | `pre_compact.py` | compact 前にチェックポイントマーカー注入 |
 | `Stop` | （全て） | `session_stop.py` | セッション終了処理のオーケストレータ |
