@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.55.0] - 2026-07-26
+
+### 追加
+
+- **`patterns_guard.py`（PreToolUse block・配布対象）**: `.claude/memory/patterns.json` への Write / Edit を exit 2 でブロックする事故防止ガード。過去の直接 Edit 起因の肥大 defect（98KB）の再発防止で、正規経路（session.tmp 経由で `stop.py` が取り込む promote-pattern フロー）は Python 直接 I/O のため影響を受けない。意図的な編集は `.claude/state/patterns_guard_allow.flag`（TTL 600 秒）で一時許可、緊急時は環境変数 `C3_PATTERNS_GUARD_DISABLE=1` で無効化できる。promote-pattern skill の Step 6 にフラグ発行手順を追記。docstring に射程の限界（Bash / NotebookEdit 経由は対象外・非実在パスのケース正準化不可）を明記
+- **`report_contract_check.py`（PostToolUse warn・配布対象）**: `.claude/reports/` 直下への Write で、strict-4 prefix（requirements / architecture / plan / design-review）のタイムスタンプ契約逸脱を警告する。判定は basename 全体のフルマッチ `^{prefix}\d{8}-\d{6}\.md$`（`re.ASCII`・prefix とタイムスタンプの間に任意文字列を挟む名前も検出）。ディレクトリ判定は `.claude/reports/` 直下を名前ベース・ケース非依存（`norm_component`）で行う。警告は stderr（人間向け）+ stdout JSON `additionalContext`（LLM 向け）の 2 経路
+- **`session_mode_watch.py`（PostToolUse warn・配布対象）**: `sessions/*.tmp` への Edit で autonomous-mode のモード行変更を監視する。警告条件は 3 条件の OR — (a) `^モード: 自律` 行の挿入 (b) 有効 plan= 値の新出 (c) 実効モード行（最初の `^モード: ` 行）の状態遷移表該当。削除（HITL 復帰）・cycles= 更新・有効→無効降格は沈黙。opt-in 不変則の事後検知層として機能する（モード行の検証 SSOT は従来どおり `mode_line.py`）
+- **`_hook_utils.py` に共通ヘルパー追加**: `sanitize_for_terminal()`（C0/C1/DEL 制御文字除去・警告文へ埋め込む外部由来文字列の共通サニタイズ）と `norm_component()`（Windows 末尾ドット・スペース正規化＋ケース非依存比較）を新設し、新 hook 3 本から共用
+- **`.claude/settings.json` に hook 3 本を登録**: PreToolUse（Write|Edit）に patterns_guard、PostToolUse（Write）に report_contract_check、PostToolUse（Edit）に session_mode_watch。テスト +129 件（フルスイート 2152 → 2281 passed）
+
+### 変更
+
+- **ARCHITECTURE.md の hook 一覧を実態へ同期**: 新規 3 hook の行を追加し、tier_autoapply の記述乖離を是正
+
+### 後方互換
+
+- **破壊的変更なし**。patterns.json への直接 Write / Edit はもともと規約違反の経路（taxonomy.md の正規定義・配布元 CLAUDE.md §10）であり、正規経路の promote-pattern フロー・`stop.py` の機械管理は挙動不変。ブロックされた場合も警告文に許可フラグの発行手順が表示され、フラグ / 環境変数で意図的な編集は引き続き可能。P2 / P3 は警告のみ（exit 0）で既存ワークフローを止めない
+
 ## [2.54.0] - 2026-07-24
 
 ### 追加
