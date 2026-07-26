@@ -16,8 +16,12 @@ import os
 import re
 import sys
 
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
+try:
+    sys.stdin.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
 
 # worktree パスの識別に使うコンポーネント名。
 # `.claude/worktrees/agent-<id>/` という構造を前提とし、

@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_utils import write_debug_log  # noqa: E402
 
 try:
+    sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 except AttributeError:
@@ -53,8 +54,8 @@ REVIEWER_TYPES = frozenset({"code-reviewer", "security-reviewer"})
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEBUG_LOG_PATH = PROJECT_ROOT / ".claude" / "tmp" / "agent_hook_debug.log"
 
-# DoS 防御の読み取り上限（hook はローカル前提だが多層防御として明示する）。
-_STDIN_READ_LIMIT_BYTES = 1 * 1024 * 1024  # 1 MiB
+# DoS 防御の読み取り上限（文字数ベース）。hook はローカル前提だが多層防御として明示する。
+_STDIN_READ_LIMIT_CHARS = 1 * 1024 * 1024  # 1M chars
 
 
 def _escape_for_log(value: str) -> str:
@@ -64,7 +65,7 @@ def _escape_for_log(value: str) -> str:
 
 def main() -> None:
     try:
-        payload = json.loads(sys.stdin.read(_STDIN_READ_LIMIT_BYTES))
+        payload = json.loads(sys.stdin.read(_STDIN_READ_LIMIT_CHARS))
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 

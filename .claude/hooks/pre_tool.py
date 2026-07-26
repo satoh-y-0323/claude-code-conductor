@@ -7,8 +7,12 @@ import re
 import shlex
 import sys
 
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
+try:
+    sys.stdin.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
 
 
 def _is_rm_rf(tokens: list[str], rm_idx: int) -> bool:

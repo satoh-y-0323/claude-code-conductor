@@ -23,8 +23,10 @@ import sys
 import time
 from pathlib import Path
 
-# CLAUDE.md §9-3: reconfigure stdout/stderr to UTF-8 on Windows.
+# CLAUDE.md §9-3: reconfigure stdin/stdout/stderr to UTF-8 on Windows.
 try:
+    if sys.stdin and hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     if sys.stderr and hasattr(sys.stderr, "reconfigure"):

@@ -106,8 +106,10 @@ _VALID_TIERS = ("haiku", "sonnet", "opus")
 
 KILL_SWITCH_ENV = "C3_TIER_AUTOAPPLY_DISABLE"
 
-# DoS 防御の stdin 読み取り上限（check_agent_invocation.py と同一）。
-_STDIN_READ_LIMIT_BYTES = 1 * 1024 * 1024  # 1 MiB
+# DoS 防御の stdin 読み取り上限（文字数ベース・check_agent_invocation.py と同一）。
+# sys.stdin はテキストストリームのため read(n) の n は文字数であってバイト数ではない
+# （UTF-8 マルチバイト文字では実バイト量が最大 4 倍になり得る）。
+_STDIN_READ_LIMIT_CHARS = 1 * 1024 * 1024  # 1M chars
 
 # applied-state のローテーション閾値（§3-4）。
 _MAX_JSONL_BYTES = 1 * 1024 * 1024  # 1 MB
@@ -371,7 +373,7 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        payload = json.loads(sys.stdin.read(_STDIN_READ_LIMIT_BYTES))
+        payload = json.loads(sys.stdin.read(_STDIN_READ_LIMIT_CHARS))
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
     if not isinstance(payload, dict):

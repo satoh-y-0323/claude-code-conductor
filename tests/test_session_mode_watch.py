@@ -823,3 +823,145 @@ def test_normal_sessions_path_without_trailing_chars_still_detected(
         f"通常パスのモード行挿入が検知されなかった（正規化導入で正常系が退行した）: "
         f"{result.stderr!r}"
     )
+
+
+# ===========================================================================
+# T? 追加分（stdin cp932 defect リグレッション・
+# architecture-report-20260726-082504.md ADR-3）— 独立した module-level ヘルパー/クラス
+# ===========================================================================
+#
+# 【背景】v2.55.0 で追加した session_mode_watch.py は stdout/stderr のみ
+# reconfigure(encoding='utf-8') しており、stdin は Windows ネイティブ既定の
+# cp932 のまま payload を読む。ハーネスは UTF-8 JSON を stdin に送るため、
+# payload 中の日本語（`old_string`/`new_string` 内の `モード:`）が
+# cp932 環境下で mojibake（または UnicodeDecodeError → 既存の
+# `except (json.JSONDecodeError, ValueError)` に吸収されて fail-open）になり、
+# `^モード: 自律` 正規表現が不一致となって全編集が沈黙ですり抜ける
+# （2026-07-26 実機スモークで確定）。
+#
+# 【既存ヘルパー `_run_hook` は変更しない】
+# 既存 37 テストのベースラインを崩さないため、`_run_hook`（json.dumps は
+# ensure_ascii 既定=True）はそのまま維持する。本節は独立した新規ヘルパー
+# `_run_hook_bytes_stdin` を用い、stdin に生バイト列（UTF-8・
+# ensure_ascii=False で非 ASCII を保持した JSON）を渡すことで、
+# 実ハーネスと同じワイヤ形式を決定論的に再現する。
+#
+# 【Red の理由】追加当時は stdin reconfigure が無かったため、
+# PYTHONIOENCODING=cp932 環境下で `モード: 自律` 行を含む payload が
+# 正しくデコードできず、挿入検知 warn（stderr `[SessionModeWatch WARN]` /
+# stdout JSON の additionalContext）が出ていなかった。修正前は以下の
+# cp932 系テストが fail していた。
+
+
+def _run_hook_bytes_stdin(
+    payload: dict,
+    *,
+    pythonioencoding: str,
+) -> subprocess.CompletedProcess:
+    """stdin に生バイト列（UTF-8・非 ASCII 保持）を渡す専用ヘルパー。
+
+    既存の `_run_hook`（json.dumps は ensure_ascii 既定=True で `\\uXXXX`
+    エスケープの純 ASCII になる）とは独立させている。ensure_ascii=True の
+    payload は cp932 環境でも化けずに読めてしまい、本 defect（cp932 環境で
+    stdin の生の日本語バイト列がデコードミスする）を再現できないため、
+    本ヘルパーは `json.dumps(payload, ensure_ascii=False)` を UTF-8
+    エンコードした生バイト列を直接 stdin に渡す（実ハーネスと同じワイヤ形式）。
+
+    `env` はホワイトリスト方式で明示的に構築しており、`PYTHONUTF8` は
+    決して転記しない（`os.environ` に存在しても引き継がない）。これにより
+    Windows ネイティブ既定（cp932 stdin）を PYTHONIOENCODING の値だけで
+    決定論的に切り替えられる。
+    """
+    if not HOOK_PATH.is_file():
+        raise FileNotFoundError(
+            f"{HOOK_PATH} が存在しません（P3 hook 未実装のため Red）"
+        )
+    env: dict[str, str] = {"PYTHONIOENCODING": pythonioencoding}
+    for key in ("SYSTEMROOT", "PATH"):
+        if key in os.environ:
+            env[key] = os.environ[key]
+    stdin_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    assert "モード".encode("utf-8") in stdin_bytes, (
+        "stdin payload に生の日本語 UTF-8 バイト列が含まれていない"
+        "（ensure_ascii=False の前提が崩れている）"
+    )
+    return subprocess.run(
+        [sys.executable, str(HOOK_PATH)],
+        input=stdin_bytes,
+        capture_output=True,
+        text=False,
+        env=env,
+    )
+
+
+def _cp932_regression_payload(tmp_path: Path) -> dict:
+    """cp932 defect 再現用の Edit payload を生成する。
+
+    file_path は `sessions/YYYYMMDD.tmp` 形式、old_string にモード行なし、
+    new_string に「モード: 自律 plan=~/.claude/plans/x.md cycles=1」行の
+    挿入を含む（architecture-report-20260726-082504.md ADR-3 準拠）。
+    """
+    path = _sessions_tmp_path(tmp_path)
+    old_string = _wrap(None)
+    new_string = _wrap("モード: 自律 plan=~/.claude/plans/x.md cycles=1")
+    return _edit_payload(path, old_string, new_string)
+
+
+class TestStdinCp932Regression:
+    """stdin cp932 defect のリグレッションテスト（ADR-3）。
+
+    PYTHONIOENCODING=cp932・PYTHONUTF8 除去の子プロセスで実 UTF-8 バイト列の
+    payload を送り、Windows ネイティブ既定の stdin cp932 環境を決定論的に
+    再現する。修正前は session_mode_watch.py が stdin reconfigure を持たず、
+    cp932 環境でこのクラスのテストは「hook が沈黙して warn が出ない」ため
+    fail していた。修正（stdin reconfigure 追加）後は pass する。
+    """
+
+    def test_cp932_stdin_env_still_detects_insertion_warn(
+        self, tmp_path: Path
+    ) -> None:
+        """PYTHONIOENCODING=cp932 環境でも挿入警告が検知される（修正後 green）。
+
+        追加当時は stdin reconfigure が無かったため、cp932 環境下で
+        `モード: 自律` 行が正しくデコードできず沈黙し、本テストは fail していた
+        （defect の再現＝正しい理由による Red だった）。
+        """
+        payload = _cp932_regression_payload(tmp_path)
+        result = _run_hook_bytes_stdin(payload, pythonioencoding="cp932")
+        stderr_text = result.stderr.decode("utf-8", errors="replace")
+        stdout_text = result.stdout.decode("utf-8", errors="replace")
+        assert result.returncode == 0, (
+            f"exit code が 0 でない: returncode={result.returncode} "
+            f"stderr={stderr_text!r}"
+        )
+        assert "[SessionModeWatch WARN]" in stderr_text, (
+            "cp932 stdin 環境で挿入警告が検知されなかった"
+            f"（stdin cp932 defect の再現）: stderr={stderr_text!r}"
+        )
+        parsed = json.loads(stdout_text)
+        ctx = parsed["hookSpecificOutput"]["additionalContext"]
+        assert "挿入" in ctx, (
+            f"検知種別(挿入)が additionalContext に無い: {ctx!r}"
+        )
+
+    def test_utf8_stdin_env_detects_insertion_warn_as_control(
+        self, tmp_path: Path
+    ) -> None:
+        """[対照] PYTHONIOENCODING=utf-8 環境では同一 payload で警告が出る。
+
+        stdin の暗黙デコードが utf-8 になるケースであり、cp932 特有の
+        defect ではないことを示す対照ケース（環境非依存の確認）。
+        現行実装でも stdin は暗黙的に PYTHONIOENCODING の値でデコードされる
+        ため、本ケースは現行実装でも pass する想定。
+        """
+        payload = _cp932_regression_payload(tmp_path)
+        result = _run_hook_bytes_stdin(payload, pythonioencoding="utf-8")
+        stderr_text = result.stderr.decode("utf-8", errors="replace")
+        assert result.returncode == 0, (
+            f"exit code が 0 でない: returncode={result.returncode} "
+            f"stderr={stderr_text!r}"
+        )
+        assert "[SessionModeWatch WARN]" in stderr_text, (
+            "utf-8 stdin 環境で挿入警告が検知されなかった: "
+            f"stderr={stderr_text!r}"
+        )

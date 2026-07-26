@@ -12,10 +12,23 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
+try:
+    sys.stdin.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
 
-from session_utils import SESSION_JSON_MARKER, append_checkpoint, is_worktree, SESSIONS_DIR
+from session_utils import append_checkpoint, is_worktree, SESSIONS_DIR
+# SESSION_JSON_MARKER は本ファイルのロジックでは未参照だが、過去レビュー（Code Medium-3a）の
+# 契約として module-level 定数の存在を tests/test_stop_precompact_fixes.py が要求する再エクスポート。
+# 未使用に見えても削除しないこと。
+# `# noqa: F401` は flake8/ruff 固有の規約で生の pyflakes は解釈しないため、
+# 代わりに __all__ へ列挙して re-export であることを明示する（pyflakes は
+# __all__ 掲載名を使用済みとみなすため、警告が実際に抑制される）。
+from session_utils import SESSION_JSON_MARKER
+
+__all__ = ["SESSION_JSON_MARKER"]
 
 
 # デバウンス窓幅（秒）。直近の PreCompact checkpoint からこの秒数以内の再実行は
