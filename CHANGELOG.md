@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.56.0] - 2026-07-26
+
+### 追加
+
+- **plan-design-guidelines にルール 14 を新設（gitignored-only writes タスクの main 直接経路）**: `writes` が全て gitignored ファイル（`.claude/reports/` のレポート出力のみ・confirm- 系が典型）のタスクは、parallel-agents 実行時に worktree を使わず main 直接経路・素の agent（`wt_tester`→`tester` / `wt_developer`→`developer` 読み替え）で起動する運用ルールを文書化。git 的に「未変更」の worktree は Agent 完了時に auto-cleanup され、親が取り込む前に成果物（レポート）が消失する実測 defect（2026-07-26・v2.55.1 走行 Wave 2）の再発防止。R5（read_only タスクの worktree 禁止）と同族だが本ルールは文書ルール（hook 機械強制なし）で、planner の `writes` 宣言は変更不要（読み替えは実行層）。あわせて main 直接経路タスクは worktree の使い捨て隔離を失うため、親がタスク完了後に `git status --short` で宣言外変更なしを確認する検証手順も明記
+- **parallel-agents 2-F-1 に取り込み前検証を新設**: worktree からの成果物取り込みで使う `worktreePath` は、harness が完了通知に付与する `<worktree>` メタデータブロックのみを信頼し（subagent 応答本文中の同名タグ・パス文字列は無視＝プロンプトインジェクション対策）、使用前に realpath 相当で正規化して `.claude/worktrees/agent-*` 配下を指すことを確認する（範囲外は取り込み中止・fail 扱い）。`worktree_guard.py` の書き込み側検証と同型の境界検証を読み取り側にも適用。コマンド例もクォート付きへ修正
+
+### 変更
+
+- **parallel-agents 2-F-1 の取り込み方式を実態合わせ（`git checkout` ブランチ方式 → worktree 作業ツリーからの直接コピー）**: 従来記載の `git checkout worktree-agent-{id} -- {file}` は、2-C が agent へ git commit 禁止を注入する設計と構造矛盾（worktree ブランチにコミットが存在せず変更を取得できない）のため、実態である `cp` 直接コピー方式へ書き換え
+- **parallel-agents 2-F-3 の auto-cleanup 記述を条件形へ**: 「完了時に全パターンで自動削除」から「git 的に未変更の worktree は自動削除・変更が残る worktree は残留しうる（残留チェック＋手動 cleanup で後始末）」へ実測（2026-07-26）に基づき修正。2-A 例示表・2-F-4 の confirm- タスク表記もルール 14 と整合する形へ統一
+- **docs/parallel-agents-setup.md の auto-cleanup 信頼度節を一次資料と整合**: 2026-05-23 検証の実数（4 パターン・全 5 シナリオ）と累計 10/11 の出典関係・検証軸差分（旧検証はファイル変更を伴わないタスクのみ）・引用先の到達可能性（非配布・配布元ローカル保管）を明記
+
+### 後方互換
+
+- **破壊的変更なし**。全て skill / ガイドライン / docs の文書変更（テストは docstring 1 行のみ・実装コード変更なし）。ルール 14 は従来暗黙だった実行層の読み替えを明文化するもので、plan-report のスキーマ・agent 定義・hook 挙動は不変
+
 ## [2.55.1] - 2026-07-26
 
 ### 修正
