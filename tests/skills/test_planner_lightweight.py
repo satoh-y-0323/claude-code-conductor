@@ -45,7 +45,7 @@ def test_planner_references_plan_design_guidelines():
 
 
 def test_plan_design_guidelines_exists_and_has_rules():
-    """skills/dev-workflow/references/plan-design-guidelines.md が存在し、ルール 1〜13 と R2〜R6 を含む。"""
+    """skills/dev-workflow/references/plan-design-guidelines.md が存在し、ルール 1〜14 と R2〜R6 を含む。"""
     content = _read(PLAN_DESIGN_GUIDELINES)
     assert content, "skills/dev-workflow/references/plan-design-guidelines.md が存在しない"
     required_concepts = (

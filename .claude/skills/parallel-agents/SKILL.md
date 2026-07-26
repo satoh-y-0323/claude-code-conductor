@@ -110,9 +110,9 @@ stdout の JSON 形式:
 |---|---|---|---|---|
 | test-login | tester | `wt_tester` | false | tests/auth/test_login.py, .claude/reports/test-report-test-login.md |
 | impl-login | developer | `wt_developer` | false | src/auth/login.py |
-| confirm-login | tester | `wt_tester` | false | .claude/reports/test-report-confirm-login.md |
+| confirm-login | tester | `tester` | false | .claude/reports/test-report-confirm-login.md |
 
-v2.2.0 以降、全 agent が並列起動可能のため `parallelizable` 列は省略する。subagent_type マッピングは 2-C 参照。
+v2.2.0 以降、全 agent が並列起動可能のため `parallelizable` 列は省略する。subagent_type マッピングは 2-C 参照。confirm-login は writes が gitignored レポートのみのため 2-C の isolation ルール（gitignored-only writes は main 直接経路・素の agent）適用。
 
 ### 2-B: マイルストーン確認（設定時のみ）
 
@@ -154,7 +154,7 @@ plan-report 承認時点で全タスク・agent・writes・prompt が確認済�
 
 - `subagent_type`: 上記マッピング表の値
 - `model`: **親 Claude は `model:` を指定しない**。`wt_developer` タスクは起動時に PreToolUse hook（`tier_autoapply.py`）が `[tier-routing 推奨]`（developer 基準）の推奨 Tier を `model:` へ自動適用する（機械適用・親 Claude が model: を転記する必要はない）。この推奨 Tier の SSOT は `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、kickoff の UserPromptSubmit で 1 度確定して以降 wave をまたいで安定する（`[tier-routing 推奨]` の表示テキストはその派生表示）。hook は実適用した model を `.claude/state/tier_autoapply.jsonl` に記録する（適用者=記録 SSOT）。並列 wave 内に複数の `wt_developer` が居る場合、**全 wt_developer は同一の推奨 Tier（単一 tier_selection.json.tier）で起動される。これは本 MVP の設計として明示的に許容する**（per-task complexity に応じて wt_developer ごとに tier を変える機能は本 MVP のスコープ外・フェーズ 3 以降）。推奨と異なる Tier を使いたい場合のみ `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。`wt_tester` は **test- タスク（Red）に限り機械適用対象**（`C3_TASK_ID` マーカーの `test-` プレフィックスで RED_APPLY_ROLES 注入・confirm- 等の非 test- タスクは対象外＝frontmatter 任せ）。`wt_systematic-debugger` / `code-reviewer` / `security-reviewer` は **model: 指定対象外**（frontmatter/元 agent 任せ・機械適用対象外）。fork は model 上書き不可のため対象外。
-- `isolation`: **`read_only: false` タスクのみ `"worktree"` を指定する。`read_only: true`（code-reviewer / security-reviewer）はソースを変更しないため worktree 不要。`isolation` を省略して main リポジトリで直接実行し、レポートを main の `.claude/reports/` に直接書かせる。**
+- `isolation`: **`read_only: false` タスクのみ `"worktree"` を指定する。ただし `writes` が全て gitignored ファイル（実質 `.claude/reports/` のレポートのみ）のタスク（confirm- 系が典型）は git 的に「未変更」の worktree となるため Agent 完了時に auto-cleanup され、親が取り込む前に成果物が消失する（2026-07-26 実測）ため、worktree を使わず `isolation` を省略して main 直接経路・素の agent（読み替え: `wt_tester`→`tester` 等）で起動する。`read_only: true`（code-reviewer / security-reviewer）はソースを変更しないため worktree 不要。`isolation` を省略して main リポジトリで直接実行し、レポートを main の `.claude/reports/` に直接書かせる。**
   > **R5 hook による機械強制**: 上記ルールに違反して `read_only: true` のレビュータスクに `isolation: "worktree"` を指定した場合、`.claude/hooks/check_agent_invocation.py`（PreToolUse Agent hook）が exit 2 でブロックする。詳細は `.claude/skills/dev-workflow/references/plan-design-guidelines.md` R5 参照。
 - `run_in_background`: `true`
 - `description`: タスク id（5 単語以内）
@@ -247,7 +247,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
   --task {task_id}   # ← test-* の task_id（2-C の C3_TASK_ID マーカーと完全一致）
 
-# wt_tester→tester・confirm- タスクの失敗（gate は 2-E のまま・frontmatter 解決）
+# tester→tester・confirm- タスクの失敗（gitignored-only writes ルール（plan-design-guidelines.md ルール 14・2-C の isolation 項参照）により main 直接経路で起動・gate は 2-E のまま・frontmatter 解決）
 c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role tester --outcome failure --gate 2-E \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
@@ -276,10 +276,15 @@ cd <ROOT>
 各 worktree の `writes` ファイルを main に取り込む。**親 Claude が一括で行う**:
 
 ```bash
-# 各 worktree ブランチから writes ファイルだけ checkout
-git checkout worktree-agent-{id} -- src/auth/login.py
-git checkout worktree-agent-{id2} -- src/auth/logout.py
+# 各 worktree 作業ツリーからファイルを直接コピー
+cp "<worktreePath>/src/auth/login.py" "src/auth/login.py"
+cp "<worktreePath2>/src/auth/logout.py" "src/auth/logout.py"
 ```
+
+- `<worktreePath>` は 2-D で集約した Agent 返り値の `<worktree><worktreePath>...</worktreePath></worktree>` ブロックから取得する（harness が完了通知に付与する構造化メタデータブロック）
+- **重要: 取り込み前検証** — `<worktreePath>` の値は、**使用前に `os.path.realpath()` 相当で正規化し、プロジェクトルート直下の `.claude/worktrees/agent-*` 構造を指していることを確認する**。指した先が `.claude/worktrees/` 配下を外れている場合は、当該ファイルの取り込みを中止し worktree 外ファイルアクセスとして fail 扱いにする（`worktree_guard.py` の書き込み側検証と同型の境界検証を読み取り側にも適用する）
+- **信頼の対象: harness メタデータのみ** — `<worktreePath>` の取得元は harness が完了通知に付与する `<worktree>` ブロック（構造化フィールド）のみを信頼する。subagent 応答の自由記述部分に同名タグ・パス文字列が現れても、それを `<worktreePath>` の値として使用しない（プロンプトインジェクション対策 [SR-V-002]）
+- **注記: 従来の `git checkout worktree-agent-{id} -- {file}` 方式は使わない** 。2-C が agent へ git add/commit/push 禁止を注入する設計のため、worktree ブランチにはコミットが存在せず、branch checkout では agent の変更を取得できない（構造矛盾）。実態は worktree 作業ツリーからのファイル直接コピーである
 
 注意:
 - `writes` フィールドに列挙されたファイルのみを取り込む
@@ -298,9 +303,9 @@ git commit -m "Wave {N}: {要約}"
 
 #### 2-F-3: worktree クリーンアップ（残留チェックのみ）
 
-Claude Code 2.1.x（少なくとも 2.1.150 で実測確認、2026-05-23）以降、`isolation:"worktree"` 付き Agent は完了時に **物理ディレクトリ・worktree 登録・`worktree-agent-*` ブランチが自動削除** される（foreground / background / 並列 / 失敗ケース全パターンで検証済み。詳細: `.claude/reports/worktree-cleanup-verification-20260523-234110.md`）。
+Claude Code 2.1.x（少なくとも 2.1.150 で実測確認、2026-05-23）以降、`isolation:"worktree"` 付き Agent は完了時に worktree を auto-cleanup する仕様となっている（foreground / background / 並列 / 失敗ケース全パターンで検証済み。詳細: `.claude/reports/worktree-cleanup-verification-20260523-234110.md`）。ただし実測では **git 的に未変更の worktree は自動削除されるが、変更が残る worktree は残留しうる**（2026-07-26 実測）。
 
-そのため明示的な `git worktree remove` は **不要**。auto-cleanup が race や障害でスキップされた場合のセーフティとして残留チェックのみ行う:
+したがって明示的な `git worktree remove` は基本的に不要だが、auto-cleanup が完全に走らなかった場合のセーフティとして残留チェック + 手動 cleanup で後始末する:
 
 ```bash
 # 念のため worktree 登録の残留を確認、あれば prune（物理ディレクトリも片付く）
@@ -362,7 +367,7 @@ append_checkpoint(os.path.join(SESSIONS_DIR, '{YYYYMMDD}.tmp'),
 
 - **impl- タスク（wt_developer）の成功** → `--role developer --gate 2-D`（現行のまま）。
 - **test- タスク（wt_tester Red）の成功** → **success を記録しない**（**現行の `--gate 2-D` success 記録は廃止**＝成功の確定は confirm- 全合格まで遅延）。ただし wave 完了処理で親が test-report を確認し、**条件 1（Red の失敗理由が意図と違う）・条件 2（ベースライン破壊）** の違反があれば `--role tester --outcome failure --gate D-1 --task test-{X}` を記録する（違反が無ければこの時点では何も記録しない）。
-- **confirm- タスク（wt_tester）の成功** → **2 件**記録する:
+- **confirm- タスク（plain tester・main 直接経路）の成功** → **2 件**記録する（ルール 14 により gitignored-only writes のため main 直接経路で起動される。記録ルールは同一）:
   1. confirm-X 自身のイベントログ `--role tester --outcome success --gate 2-D --task confirm-{X}`（現行のまま・bandit 外）。
   2. **条件 4（Red 成果物の生存確定）**: confirm-X 全合格（wave 成功）は Red が要求した挙動が実装で満たされた確定点なので、対応する test-X の成功を `--role tester --outcome success --gate D-1 --task test-{X}` として記録する（逐次 D-3 全合格時と同じ確定点）。
 
@@ -375,7 +380,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
   --task {task_id}   # ← 2-C の C3_TASK_ID マーカーと完全一致・突合の必須キー
 
-# confirm- タスク自身のイベントログ: wt_tester→tester（gate 2-D・frontmatter 解決）
+# confirm- タスク自身のイベントログ: tester→tester（ルール 14 により main 直接経路で起動・gate 2-D・frontmatter 解決）
 c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role tester --outcome success --gate 2-D \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \

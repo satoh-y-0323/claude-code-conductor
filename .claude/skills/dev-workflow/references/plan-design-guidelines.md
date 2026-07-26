@@ -65,6 +65,14 @@ v2.1.0 で `tdd-develop` エージェントを廃止した。TDD を伴う機能
 
 13. **`depends_on: []` を空配列で書かない** — `c3 plan validate` の構造チェックで lint されるリスクがある（依存が無いタスクは `depends_on` フィールド**自体を省略**する慣習）
 
+## worktree 実行経路の制約（運用ルール・機械強制なし）
+
+14. **writes が全て gitignored のタスクは main 直接経路で起動される** — `writes` が全て `.claude/reports/` 等の gitignored ファイル（レポート出力のみ）のタスク（confirm- 系が典型）は、`parallel-agents` skill 実行時に worktree を使わず main 直接経路・素の agent（読み替え: `wt_tester`→`tester` / `wt_developer`→`developer`）で起動される。git 的に「未変更」の worktree は Agent 完了時に auto-cleanup され、親が取り込む前に成果物が消失するため。
+   - **planner は該当タスクの `writes` 宣言を変更不要** — 運用層（`parallel-agents` skill）で読み替える設計のため、plan-report 側は従来通り `wt_tester` / `wt_developer` を宣言してよい
+   - **main 直接経路のタスク取り込み時の検証** — worktree 隔離が失われるため、親 Claude は当該タスク完了後に `git status --short` で `writes` 宣言外のファイルへの書き込みが発生していないことを確認する（宣言外の変更があれば、通常の permission プロンプトに頼らず明示的に指摘して取り込みを中止する）
+   - **R5 との同族関係** — R5（`read_only: true` タスク worktree 禁止）と同じく gitignored-only write を理由に isolation を外すが、R5 は hook で機械強制、本ルール 14 は**文書ルール（機械強制なし）**であり段階的対処の段階 1
+   - **再発実績の積み上がり時** は機械化（hook 拡張）への昇格を検討する（v2.55.1 で初実測）
+
 ## 直列・並列交互パターンの取り扱い
 
 ユーザーが **stage 単位で順序を強制したい / 中間状態を確認したい** と要求した場合は、ルール 1（「真の依存だけに絞る」）から逸脱して順序付けの `depends_on` を許容してよい。典型構造:
@@ -102,6 +110,7 @@ plan-report を Write する前に以下を必ず確認する:
 - [ ] 想定実行時間が 15 分を超えるタスクがないか
 - [ ] R5: `read_only: true` タスクに `isolation: "worktree"` を指定していないか
 - [ ] R6: タスク総数 3 件以上なら reviewer 系タスクが 1 件以上含まれているか
+- [ ] ルール 14: writes が全て gitignored のタスク（confirm- 等）は運用層で main 直接経路に読み替えられることを認識しているか
 
 ---
 

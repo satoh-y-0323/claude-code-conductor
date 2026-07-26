@@ -101,12 +101,34 @@ parallel-agents は「直近の修正を反映した worktree で並列実装さ
 
 検証実績 (2026-05-23 〜 2026-05-24):
 
-- foreground / background / 並列 / 失敗 (exit 1) の全パターンで 10/10 cleanup 確認
-- ごく稀に **外部要因による一時的ファイルロック** で cleanup が失敗するケースを
-  1 件観測 (約 1/11 以下)。原因は未特定（アンチウィルス・バックアップソフト・
-  その他常駐プロセスのいずれかの可能性）
-- SKILL.md Step 2-F-3 の残留チェック + `git worktree prune` フォールバックで
-  実害なく吸収される設計
+- 2026-05-23 の集中検証で foreground / background / 並列 / 失敗 (exit 1) の 4 パターン・
+  **全 5 シナリオで cleanup 確認**（一次資料:
+  `.claude/reports/archive/worktree-cleanup-verification-20260523-234110.md`。ただし
+  この検証ログは gitignored かつ配布対象外で、C3 配布元のローカルにのみ保管されている。
+  fresh clone / `c3 init` 展開先には存在しないため、配布元での検証可能性を残す目的で
+  パスのみ記載している）
+- 上記に v2.15.2 リリース作業中 (〜2026-05-24) の実起動を加えた累計では **10/11 で
+  cleanup**。残る 1 件は **外部要因による一時的ファイルロック** で cleanup が失敗した
+  ケース (約 1/11)。原因は未特定（アンチウィルス・バックアップソフト・その他常駐
+  プロセスのいずれかの可能性）
+
+なお 2026-05-23 の 5 シナリオ検証はファイル変更を伴わないタスク（`pwd` / `git rev-parse` /
+`date`）のみで実施されており、ソースコード変更を伴うタスクでの auto-cleanup 挙動は
+下記 2026-07-26 実測の追記で初めて確認された（5 シナリオは実行モードの網羅であって
+ファイル変更の有無の網羅ではないため、両者は矛盾しない）。
+
+**2026-07-26 実測で判明した条件**:
+
+- **git 的に未変更の worktree は確実に auto-cleanup される** — confirm- 系の
+  gitignored-only レポート出力タスクなど、`writes` が全て `.claude/reports/` 等の
+  gitignored ファイルのみの場合、Agent 完了時に worktree が自動削除される
+- **変更が残る worktree は残留しうる** — ソースコード修正など変更が git 管理下に
+  残る worktree は auto-cleanup されず残留することがある。残留時は SKILL.md Step
+  2-F-3 の残留チェック + 手動 cleanup（`git worktree remove` / `git branch -D`）で
+  後始末する
+
+SKILL.md Step 2-F-3 の残留チェック + `git worktree prune` フォールバックで
+実害なく吸収される設計。
 
 ---
 
