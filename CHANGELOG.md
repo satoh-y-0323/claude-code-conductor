@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.55.1] - 2026-07-26
+
+### 修正
+
+- **hook stdin cp932 defect の修正（stdin UTF-8 reconfigure 横断適用）**: v2.55.0 の `session_mode_watch.py` が実機の Edit 発火で沈黙する defect を修正。Windows ネイティブ Python では hook の stdin が cp932 既定でデコードされるため、ハーネスが送る UTF-8 JSON payload 中の日本語（`モード:` 行）が mojibake となり `^モード: 自律` 正規表現が不一致→モード行変更を一切検知できていなかった（実機発火スモークで確定・同一 payload の素パイプ再現と `PYTHONIOENCODING=utf-8` 対照実験で原因を実測特定）。stdin reconfigure が欠落していた 10 hook（新規 3 本 + 既存 7 本: session_mode_watch / patterns_guard / report_contract_check / check_agent_invocation / planner_check / post_tool / pre_tool / pre_compact / worktree_guard / recall_autorebuild）へ `sys.stdin.reconfigure(encoding='utf-8')` を追加し、既存 12 hook のイディオムへ統一（canonical 順序 stdin → stdout → stderr・素の呼び出し 3 ファイルは try/except AttributeError ラップ化＝crash-to-fail-open リスクの軽減方向）
+
+### 追加
+
+- **cp932 実バイトリグレッションテスト**: `PYTHONIOENCODING=cp932` を強制した subprocess に `ensure_ascii=False` の生 UTF-8 payload をパイプし、Windows ネイティブ既定の欠陥環境を CI の Linux 上でも決定論的に再現するテストを `tests/test_session_mode_watch.py` に追加（ASCII エスケープ payload では defect を再現できないことが既存テスト素通しの真因だった）
+- **静的イディオム検査 `tests/test_hooks_stdin_idiom.py` 新設**: `.claude/hooks/*.py` を走査し「`sys.stdin` を読む hook は stdin reconfigure 必須」を機械強制する。検出は純粋 AST 判定（reconfigure receiver 除外の 2 周走査）でコメント/docstring 内の文字列による偽陽性・誤検出なし。アンダースコア始まりファイルも検査対象
+
+### 変更
+
+- **`_STDIN_READ_LIMIT_BYTES` → `_STDIN_READ_LIMIT_CHARS` 改名**（check_agent_invocation / planner_check / tier_autoapply）: `sys.stdin.read(n)` の n は文字数であり命名のバイト数示唆と実際の意味論の乖離を解消（読み取り方式は不変・挙動変更なし）
+- **`pre_compact.py` の `SESSION_JSON_MARKER` 再エクスポートを `__all__` 明示化**: 過去レビュー（Code Medium-3a）の契約再エクスポートである旨のコメントを付し、生 pyflakes でも未使用 import 警告が出ない形へ整理
+
+### 後方互換
+
+- **破壊的変更なし**。修正は「stdin を UTF-8 として読む」の 1 点で、fail-open 挙動・payload 処理ロジック・ブロック/警告の判定条件は不変。修正前に誤って沈黙していた検知（session_mode_watch のモード行監視）が正しく発火するようになる方向のみの変更
+
 ## [2.55.0] - 2026-07-26
 
 ### 追加
