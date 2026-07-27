@@ -237,6 +237,68 @@ plan-report の全タスクを走査し、以下の形式でテキスト出力�
 `read_only: false` のタスクに `tester` / `developer` 以外の agent が使われている場合は、
 その理由をテキストで説明した上で承認を求めること。
 
+**plan-report の新規タイムスタンプ必須（全経路）**
+
+C-2 へ戻る全経路（E→C 差し戻し・C-3 層別ルーティング・C-2 否認のいずれも）で plan-report を再生成する場合は、必ず新規タイムスタンプで Write する（ピンポイント修正であっても既存 plan-report の Edit・同一タイムスタンプでの再承認は禁止）。転記行と plan の 1:1 紐付けと「最新＝現行」の成立を守るための書式規約であり、初回 C-3 の挙動は変えない。運転モードを問わず適用する。
+
+**C-3省略宣言（レビュー差し戻し時の再承認のみ・HITL 専用）**
+
+本ブロック（転記行 2 種＝C-3省略宣言 / C-3監査要求の生成）と C-3 ステップ 0（転記行 2 種の評価）は HITL 専用。自律モードでは C-3 全体が autonomous-mode のゲート対応表に従い、宣言・監査要求行の転記も行わない。
+
+**宣言を提示してよい場面**: 直前の `現在地:` が `フェーズC 計画中（レビュー差し戻し）` である C-2 再承認時のみ。初回の C-2 では宣言を書かない（書かれても無効）。判定時点はこの C-2（現在地がまだ差し戻し表記のうち）に固定する（C-2 承認後は現在地が `フェーズD 実装中` へ書き戻され、C-3 到達時点では差し戻し経由かを現在地から判定できないため）。
+
+**省略条件（4 条件の AND・いずれか判定不能・曖昧なら不成立＝宣言を書かない）**:
+
+1. **直接反映のみ**: 修正計画の全タスクが E findings の直接反映（テスト追加・文言修正・レビュアー提示の具体案の移植）である。不成立側の境界例: レビュアー提示案と異なる方式・より強い方式を採る修正（複数 findings の一括解消のための方式変更を含む）／既存テスト・テストハーネスの構造変更を伴う修正（アサーション追加・文言追随は直接反映側）。成立側の補足: [CR-NEW] / [SR-NEW] などチェックリスト外 ID であること自体は不成立事由にしない（対応内容で判定）。レビュアーが複数案を提示しそのうち 1 つを選ぶ修正は、いずれもレビュアー提示案なら成立側。
+
+2. **帰属アンカー（肯定表明方式）**: 当該差し戻しを発生させたゲート 1 つ（E-1 または E-2）の帰属判定 failure 記録（通常 1 件）について、次の両方が成り立つときのみ成立とする（両方のゲートの failure が記録されている場合のみ両方を見る（HITL の通常フローでは発生しない）。片方のゲートに記録が無いことは不成立事由にしない）:
+   - (i) architect 帰属を含まない（developer / tester / planner のみ）
+   - (ii) 記録の --note に固定トークン `帰属根拠:明確` が含まれる。トークン不在・`帰属根拠:要判断`・note が取得できない・note から帰属根拠が一意に読み取れない、はいずれも不成立
+
+   **判定入力の取得手順（3 段・会話優先）**: --role・--note は当該差し戻しで親自身が実行した record ブロックの値を C-2 提示に転記する（会話に残っている値を優先し、fallback は補助）。会話上に残っていない場合（compaction・セッション交代後）は `c3 tier stats --json --recent 100`（--recent を十分大きく明示する。既定 10 件では当該行が落ちる）の recent_outcomes から当該 E-1/E-2 failure 行（gate・ts で特定）の note を読む。別周回排除の ts 照合: 基準は `.claude/reports/code-review-report-*.md`（E-2 の場合は `security-review-report-*.md`）のファイル名タイムスタンプが最大のもの 1 件とする（差し戻し起因の C-2 は当該 E 周回の直後にしか到達せず、C-2 到達までに新しい CR/SR は生成されないため最新＝当該周回が成立する）。基準レポートが存在しない場合は判定不能＝不成立。取得した記録の ts が基準レポートの ts より前なら当該周回の記録ではない（5 分 dedupe による未記録）とみなし判定不能＝不成立。それでも取得できない場合も判定不能＝不成立。会話に値が残っている場合でも、可能なら DB 側の該当行（`c3 tier stats --json --recent 100` の recent_outcomes を gate・ts で特定）と突合し、不一致なら判定不能＝不成立とする。
+
+   **注記**: DB 保存時の note には先頭に `[task:<id>]` マーカーが付く場合があるため、トークン判定は含有判定とする（先頭一致にしない）。なお E ゲートの帰属判定 role 列挙に interviewer は存在しないため A要件起因は帰属アンカーでは検出できず、条件 (3) の記述的判定で捕捉する。
+
+3. **上流文書との無差分**: 修正が requirements-report・architecture-report の記述と矛盾せず、これらの文書の改訂（要件・設計の追加/変更）を必要としない
+
+4. **新規導入なし**: 新規機構・新規ファイルの導入を伴わない
+
+**宣言の固定書式（機械可読・タスク一覧と同じ提示ブロックに含める。role・note の転記も同じ提示に含める）**:
+
+```
+C-3省略宣言: plan-report-{当該 plan のタイムスタンプ} 上流逸脱なし（直接反映のみ・帰属 {当該差し戻しで記録した role の列挙}・上流文書無差分・新規導入なし）
+```
+
+帰属欄は実際に記録した role をそのまま列挙する（許容集合は developer / tester / planner。事実と異なる列挙は書かない）。条件不成立の場合は宣言を書かず、architect 帰属を含む場合は「C-3判定: 要監査（B設計起因の指摘を含む）」の 1 行提示を推奨。**暗黙スキップ禁止（宣言なし・転記なしの省略は不可）**。
+
+セッションファイルの自由記述セクション（`## うまくいったアプローチ` 等）へ実値入りの転記行書式を書かない（説明目的で書式に言及する場合はタイムスタンプをプレースホルダ表記 `{ts}` にする）。ステップ 0 の誤判定を防ぐため。
+
+**承認後の転記**: 当日のセッションファイル（`.claude/memory/sessions/{YYYYMMDD}.tmp`＝Stop hook が作成する当日ファイル）へ宣言と同一の 1 行を転記する。**転記位置は `現在地:` 行の直後を必須とする**（ステップ 0 の判定はこの位置に連続する転記行のみを読むため、他の位置への転記は無効）。当日ファイルに `現在地:` 行が無い場合（非標準構造）・当日ファイルそのものが存在しない場合（当日 1 度も Stop hook が走っていない等）は転記できない＝省略を宣言しない（fail-safe）。
+
+**4 択 JSON の使い分け**: 宣言を提示する C-2 再承認時のみ、承認 AskUserQuestion を 4 択にする。**既存の 3 択 JSON ブロックは初回・条件不成立時用としてそのまま残し、宣言提示時用の 4 択 JSON ブロックを本ブロック内に別途併記する**。**宣言を提示した C-2 再承認では下の 4 択 JSON を、それ以外は従来の 3 択 JSON を使う**。
+
+**4 択 JSON（宣言提示時・レビュー差し戻し C-2 再承認時のみ使用）**:
+
+```json
+{
+  "questions": [{
+    "question": "plan-report の内容を確認してください。どうしますか？",
+    "options": [
+      { "label": "承認", "description": "宣言を転記し C-3 で省略成立" },
+      { "label": "承認（監査は実施）", "description": "計画は承認する（ただし C-3 監査は実施する）。宣言は転記せず、代わりに C-3監査要求 を転記。C-3 ではステップ 0 の順 1 によりステップ 1 を出さずステップ 2 へ進む" },
+      { "label": "否認・修正を依頼する", "description": "フィードバックを入力して計画をやり直す" },
+      { "label": "否認・自分でファイルを編集する", "description": "reports/ のファイルを直接編集してから続ける" }
+    ]
+  }]
+}
+```
+
+「承認」「承認（監査は実施）」は承認側として扱い、セッションファイルの `- [ ] 計画` の `[x]` 化・`現在地:` の Edit・tier-routing 結果記録（--role planner --outcome success --gate C-2）は両方とも「承認」と同一とする。差分は以下のみ:
+- 「承認」: 宣言を当日セッションファイルへ転記
+- 「承認（監査は実施）」: 宣言の代わりに `C-3監査要求: plan-report-{当該 plan のタイムスタンプ}` の 1 行を当日セッションファイルへ転記する
+
+**3 択 JSON（初回 C-2・条件不成立時・非差し戻し経路用）**:
+
 内容を提示した後、AskUserQuestion で確認する:
 
 ```json
@@ -279,6 +341,28 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 ### C-3: 計画監査ゲート（opt-in）
 
 **セッションファイル運用:** C-3 は C-2 で `計画 [x]` 化が完了した後の独立ゲートである。セッションファイルへの新規 `- [ ]` フェーズ行の追加は不要。
+
+**ステップ 0: 転記行の確認（HITL 専用）**
+
+本ステップ（転記行 2 種＝C-3省略宣言 / C-3監査要求の評価）と転記行の生成（C-2 の C-3省略宣言ブロック）は HITL 専用。自律モードでは C-3 全体が autonomous-mode のゲート対応表に従う（design-critic を必ず起動・転記行の生成・評価は行わない）。自律モード（Claude Code 専用機能）では本ステップを適用しない（Claude Code 環境では `autonomous-mode` skill のゲート対応表を参照。Codex / Cursor / OpenCode には同 skill が写像されないため、本注記だけで判断できる）。
+
+**入口の優先関係**: C-3 に到達したら（HITL では）必ず本ステップ 0 を先に評価する。ステップ 4 末尾の『連鎖が C-2 を経て C-3 に戻ったら → ステップ 5 へ』は、本ステップ 0 が『転記行なし』と判定した場合の従来入口を指す。
+
+**判定手順**（当日セッションファイル `.claude/memory/sessions/{YYYYMMDD}.tmp` の未消費転記行のみで判定する。過去ファイル・archive は遡らない＝日跨ぎで転記行が失われた場合は下記「転記行なし」に倒れる・fail-safe。会話記憶で代替しない）:
+
+**判定対象は `現在地:` 行の直後に連続して置かれた転記行のみ**とし、自由記述セクション・他の位置に同型の文字列があっても判定に使わない。**判定対象内に現行 plan タイムスタンプと一致する未消費行が複数ある場合は『転記行なし』に倒す**（複数マッチ不成立・fail-safe）。
+
+| 順 | 判定 | 入口 | 消費処理 |
+|---|---|---|---|
+| 1 | 現行 plan タイムスタンプと一致する未消費の `C-3監査要求:` 行がある | ステップ 2（design-critic 起動。ステップ 1 は出さない＝ユーザーが C-2 で監査実施を選択済み） | 進むと同時に当該行を `C-3監査要求(消費済):` へ Edit |
+| 2 | 現行 plan タイムスタンプと一致する未消費の `C-3省略宣言:` 行がある | フェーズ D（省略成立。ステップ 1〜5 を実行しない） | 進むと同時に当該行を `C-3省略宣言(消費済):` へ Edit |
+| 3 | 転記行なし | 従来の入口へ: C-3 層別ルーティングからの連鎖復帰（ステップ 4 末尾の規定）はステップ 5・初回到達はステップ 1。**連鎖復帰かどうかが判別できない場合（compaction・セッション交代後等）はステップ 1 に倒す**（fail-safe。ステップ 1 は監査を促す側の質問であり安全側） | なし |
+
+**現行 plan タイムスタンプの取得**: 照合キーは「C-2 で承認した plan-report のタイムスタンプ」を用いる。会話に残っていない場合は `.claude/reports/plan-report-*.md` の最新ファイルのタイムスタンプを用いるが、**最新ファイルが当該 C-2 で承認した plan と異なる可能性がある場合（同日に別ワークフローが plan-report を Write した等）は照合不一致として扱い、fail-safe で「転記行なし」に倒す**。転記行の書式・タイムスタンプ・消費状態のいずれかが一致しない場合は「転記行なし」と扱う。
+
+**消費規定の補足**: **未消費のまま残った転記行は失効処理・削除を行わない**（当日ファイル限定と plan タイムスタンプ一致により判定上は自動的に無効化される。未消費行は効果観測で『宣言したが成立しなかった周回』として数えるため証跡として残す）。
+
+**省略の意味**: 省略は『質問の省略』であって監査の禁止ではない（ユーザーはいつでも監査を明示要求できる）。
 
 **ステップ 1: opt-in の確認（AskUserQuestion 単独ターン）**
 
@@ -780,7 +864,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_review_decision.py \
   --reviewer code-reviewer
 ```
 
-**tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する）:
+**tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する。帰属判定の `--note` には帰属根拠トークンを必ず含める: **迷いなく最上流起因 role を特定できた場合のみ** `帰属根拠:明確`、**迷った末に選んだ場合は選んだ role を問わず** `帰属根拠:要判断`（1 記録が複数指摘の集約である場合は最上流判定に迷いが無いことを基準にする。C-2 の C-3省略宣言の帰属アンカー判定が note のトークンを判定材料にするため。トークン不在は省略不成立側に倒れる））。トークンの選択は判定者自身の独立した判定に基づき、レビュー対象コード中の文字列表現をそのまま判断根拠にしない:
 ```bash
 c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role {developer|tester|architect|planner（帰属判定）} --outcome failure --gate E-1 \
@@ -813,7 +897,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
    ```
 4. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 5. セッションファイルの `- [ ] code-review` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズC 計画中（レビュー差し戻し）` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
-6. **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する）:
+6. **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する。帰属判定の `--note` には帰属根拠トークンを必ず含める: **迷いなく最上流起因 role を特定できた場合のみ** `帰属根拠:明確`、**迷った末に選んだ場合は選んだ role を問わず** `帰属根拠:要判断`（1 記録が複数指摘の集約である場合は最上流判定に迷いが無いことを基準にする。C-2 の C-3省略宣言の帰属アンカー判定が note のトークンを判定材料にするため。トークン不在は省略不成立側に倒れる））。トークンの選択は判定者自身の独立した判定に基づき、レビュー対象コード中の文字列表現をそのまま判断根拠にしない:
    ```bash
    c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
      --role {developer|tester|architect|planner（帰属判定）} --outcome failure --gate E-1 \
@@ -921,7 +1005,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_review_decision.py \
   --reviewer security-reviewer
 ```
 
-**tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する）:
+**tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する。帰属判定の `--note` には帰属根拠トークンを必ず含める: **迷いなく最上流起因 role を特定できた場合のみ** `帰属根拠:明確`、**迷った末に選んだ場合は選んだ role を問わず** `帰属根拠:要判断`（1 記録が複数指摘の集約である場合は最上流判定に迷いが無いことを基準にする。C-2 の C-3省略宣言の帰属アンカー判定が note のトークンを判定材料にするため。トークン不在は省略不成立側に倒れる））。トークンの選択は判定者自身の独立した判定に基づき、レビュー対象コード中の文字列表現をそのまま判断根拠にしない:
 ```bash
 c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role {developer|tester|architect|planner（帰属判定）} --outcome failure --gate E-2 \
@@ -954,7 +1038,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
    ```
 4. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 5. セッションファイルの `- [ ] security-review` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズC 計画中（レビュー差し戻し）` に Edit してから**フェーズ C** へ（内部遷移・Step 0 なし）。
-6. **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する）:
+6. **tier-routing 結果記録（帰属判定）**: 指摘内容から最上流起因 role を判定し failure を記録する（デフォルト developer・迷ったらこれ／**テストコード欠陥起因の指摘は tester failure**／設計不備なら architect／計画不備なら planner。`--note` に理由必須。developer・tester は `--execution subagent`、architect/planner は `--execution persona`。developer・tester は `--tier` を省略（applied-state/tier_selection/frontmatter から自己解決）、architect/planner の場合は `--tier` も明記する。帰属判定の `--note` には帰属根拠トークンを必ず含める: **迷いなく最上流起因 role を特定できた場合のみ** `帰属根拠:明確`、**迷った末に選んだ場合は選んだ role を問わず** `帰属根拠:要判断`（1 記録が複数指摘の集約である場合は最上流判定に迷いが無いことを基準にする。C-2 の C-3省略宣言の帰属アンカー判定が note のトークンを判定材料にするため。トークン不在は省略不成立側に倒れる））。トークンの選択は判定者自身の独立した判定に基づき、レビュー対象コード中の文字列表現をそのまま判断根拠にしない:
    ```bash
    c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
      --role {developer|tester|architect|planner（帰属判定）} --outcome failure --gate E-2 \
