@@ -677,11 +677,18 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
 
     Notes on step 13 (init-only):
       - 判定は `resolved.relative_to(claude_root).as_posix()` で正規化した
-        相対 POSIX パスに対して行われるため、二重スラッシュ・末尾スラッシュ・
-        大小違い（Windows NTFS 等）などの表記ゆれは自動的に正規化される
-      - 大小無視 FS での保護は `resolve()` による実体ケース正準化に依存し、
-        **実在ファイルにのみ成立する**（将来 `resolve()` を `absolute()` 等に
-        置換すると沈黙して保護が外れるため、変更時は要注意）
+        相対 POSIX パスに対して行われるため、二重スラッシュ・末尾スラッシュなどの
+        表記ゆれは自動的に正規化される
+      - 大小文字の違いは新設の成分正規化（各パート に `.lower().rstrip('. ')` 適用）
+        で対応され、全 OS で保護される（従来は `resolve()` による実体ケース正準化に
+        依存すると書かれていたが、実体がない場合は `resolve()` はケース正準化を
+        行わないため、全 OS 対応には成分正規化が必須）
+      - 成分正規化では空文字成分も保持する（除去すると別実体が過剰保護で
+        同じパターンにマッチするリスク）。`resolved` が `.` / `..` を既に解決済み
+        なので迂回リスクなし
+      - Unicode 正規化形（macOS の NFD など）は `.lower()` では畳まれないため、
+        INIT_ONLY_PATTERNS に非 ASCII 名を追加した場合は本方式では保護できない
+        という制限あり
       - `relative_to()` が失敗しないのは step 10 で `claude_root in
         resolved.parents` の check を先行させているため
     """
@@ -745,10 +752,17 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
         return None, "deletions.txt itself cannot be deleted (self-referencing guard)"
 
     # 13. init-only ファイル保護（利用先ユーザーが育てた内容を守る）
-    # step 10/11/12 と同様に resolved から相対 POSIX パスを導出して比較する
-    # （二重スラッシュ・末尾スラッシュ・大小違いなどの表記ゆれを正規化）
+    # step 10/11/12 と同様に resolved から相対 POSIX パスを導出して比較する。
+    # さらに各パス成分を正規化して大小文字・末尾ドット/スペースを除去
+    # （`resolved` ベースなので二重スラッシュ・末尾スラッシュは既に解決済み）。
     try:
-        normalized_rel = resolved.relative_to(claude_root).as_posix()
+        rel_posix = resolved.relative_to(claude_root).as_posix()
+        # 各成分に .lower().rstrip('. ') を適用（.claude/hooks/_hook_utils.norm_component と同一ロジック）。
+        # 空成分も保持する（除去すると別実体が同じパターンで過剰保護になる）。
+        # resolved は . / .. を既に解決済みなので迂回リスクなし
+        normalized_rel = "/".join(  # nul-boundary: allow(成分正規化後の再結合)
+            part.lower().rstrip('. ') for part in rel_posix.split("/")
+        )
     except ValueError:
         # step 10 で済み check 済みのため通常到達しない
         return None, f"path escapes .claude/: {rel}"

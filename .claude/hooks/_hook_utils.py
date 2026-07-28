@@ -36,6 +36,8 @@ DEBUG_ENV = "C3_HOOK_DEBUG"
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
+# NOTE: 同一ロジックが src/c3/cli_update.py::_validate_deletion_path の step 13 に
+# 複製されている（import 経路がないため）。変更時は両方を揃えること。
 def norm_component(s: str) -> str:
     """パス成分を正規化する（ケース非依存化・末尾ドット/スペース除去）。
 

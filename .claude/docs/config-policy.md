@@ -354,9 +354,11 @@ C3 side で `promoted/` の雛形を更新した場合は、リリースノー�
   - ディレクトリ（ファイルのみサポート）
   - `\` （バックスラッシュ）を含むパス
   - INIT_ONLY ファイル（`.gitignore` / `rules/promoted/index.md`）。判定は解決済み実体パスに対して
-    行われるため、表記ゆれ（二重スラッシュ `rules//promoted/`・末尾スラッシュ `rules/promoted/index.md/`・
-    大小違い `RULES/PROMOTED/INDEX.MD` や `.GITIGNORE`）でも保護される（`Path.resolve()` による
-    ケース正準化が実体ファイルに対して機能するため）
+    成分正規化（各パートに `.lower().rstrip('. ')` 適用）して行われるため、表記ゆれ（二重スラッシュ
+    `rules//promoted/`・末尾スラッシュ `rules/promoted/index.md/`・大小違い `RULES/PROMOTED/INDEX.MD` や
+    `.GITIGNORE`）でも全 OS で保護される。実在しないファイルに対しても保護が成立する（従来は実体ケース
+    正準化に依存していたが、実体がない場合は `Path.resolve()` はケース正準化を行わないため、全 OS 対応には
+    成分正規化が必須。また Unicode 正規化形の差（macOS の NFD など）は `.lower()` では畳まれないという制限あり）
 
 **対処**:
 - 削除候補に書くパスは「.claude/ からの相対 POSIX パス」のみ（例: `agents/foo.md`）

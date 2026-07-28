@@ -88,6 +88,13 @@ KEEP_PATTERNS: tuple[str, ...] = (
 #
 # 3 ファイル同期（``.gitignore`` / ``_excludes.py`` / ``hatch_build.py``）の対象外。
 # wheel ビルドは ``should_skip`` しか参照しないため ``hatch_build.py`` への複製は不要。
+#
+# **重要**: パターンは小文字・末尾ドット/スペースなしの正規形で書くこと。
+# ``is_init_only()`` は ``fnmatch.fnmatchcase()`` （ケース依存）で比較するため、
+# パターンが大文字・末尾ドット/スペース込みだと、その形式の入力にのみ一致し、
+# 正規化済みの入力では一致しないという矛盾が生じる（例: パターン
+# ``Rules/Promoted/Index.md`` は小文字版 ``rules/promoted/index.md`` に一致しない）。
+# ``cli_update.py`` step 13 側で入力を正規化するため、パターン側は常に正規形であるべき。
 INIT_ONLY_PATTERNS: tuple[str, ...] = (
     # 利用先で /promote-pattern が目録行を追記するユーザー所有領域
     "rules/promoted/index.md",
