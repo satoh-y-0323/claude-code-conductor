@@ -58,10 +58,17 @@ Claude Code Conductor（C3）における各ファイルタイプの意味を定
 | スコープ | 場所 | コミット対象 |
 |---|---|---|
 | `user` | `~/.claude/agent-memory/<agent-name>/` | × (個人) |
-| `project` | `.claude/agent-memory/<agent-name>/` | × (`.gitignore` で除外) |
+| `project` | `.claude/agent-memory/<agent-name>/` | △ (下記注記) |
 | `local` | `.claude/agent-memory-local/<agent-name>/` | × (個人) |
 
+> **注記（`project` スコープのコミット対象）**: この列は**リポジトリによって答えが違う**。
+> C3 配布元リポジトリでは `.gitignore` に `.claude/agent-memory/` があるため除外されるが、
+> **`c3 init` は利用先に `.gitignore` を配置しない**ため、利用先プロジェクトでは既定で
+> tracked になりうる（Claude Code 公式でも `project` スコープは「バージョン管理で共有可能」と
+> 位置づけられている）。利用先での扱いと注意点は `.claude/docs/config-policy.md` §1-2 を参照。
+
 メモリが有効な場合、`MEMORY.md` の最初の 200 行（最大 25KB）がシステムプロンプトに自動注入される。
+超過分は読まれないため、`stop.py` が予算の 80% 到達で stderr 警告を出す。
 
 **運用ルール:**
 

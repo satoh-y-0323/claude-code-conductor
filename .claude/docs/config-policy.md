@@ -39,11 +39,22 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 .claude/hooks/                         c3 init で配置・c3 update で更新
 .claude/state/                         実行時生成（gitignore 推奨）
 .claude/memory/                        実行時生成
-.claude/agent-memory/                  実行時生成
+.claude/agent-memory/                  実行時生成（コミット可＝チーム共有向け。下記の注意を参照）
 .claude/reports/                       実行時生成（gitignore 推奨）
 .claude/worktrees/                     並列実行時一時生成
 .claude/logs/                          実行時生成
 ```
+
+> **注意（`.claude/agent-memory/`）**: これは Claude Code の `memory: project` スコープの実体で、
+> 公式仕様上は「バージョン管理で共有可能」な領域として設計されている。**`c3 init` は `.gitignore` を
+> 配置しないため、既定では利用先で tracked になりうる**（`.claude/state/` や `.claude/reports/` と違い
+> 「gitignore 推奨」と一律には言えない）。コミットする場合は、agent 定義の `## Memory` 節が定める
+> **記録対象の限定**（秘密情報・一時情報・雑記録を書かない）が守られているかを確認すること。
+> チームで共有する必要がなければ `.gitignore` に加えてよい。
+>
+> なお各 `MEMORY.md` は起動時に**先頭 200 行 / 25KB まで**しか system prompt に載らない（超過分は
+> 読まれない）。肥大すると過去に合意した許容例外が window 外へ落ちるため、`stop.py` が 80% 到達で
+> stderr 警告を出す。警告が出たら価値の低いエントリから削って予算内に戻す。
 
 ### 1-3. ディレクトリの命名・配置チート
 

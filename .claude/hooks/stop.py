@@ -34,12 +34,42 @@ MAX_DESCRIPTION_LENGTH = 500
 DESCRIPTION_WARN_LENGTH = 1000
 MAX_LAST_MSG = 500
 
+# サブエージェントの MEMORY.md は、ハーネスが起動時に「先頭 200 行 / 25KB」までしか
+# system prompt へ載せない（公式 sub-agents.md「Enable persistent memory」）。
+# 超過分は読まれないため、過去にユーザーと合意した許容例外が injection window 外へ落ち、
+# 次回起動時にその合意を知らないまま再指摘する（＝合意の実効的な巻き戻り）。
+# ハーネスの truncation は「読まれる範囲」の cutoff であって「書く量」の抑制圧力ではないため、
+# 超過後ではなく予算の 80% 到達時点で警告する（超過時点では既に巻き戻りが起きている）。
+AGENT_MEMORY_DIR = os.path.join(_CLAUDE_DIR, 'agent-memory')
+AGENT_MEMORY_LIMIT_BYTES = 25 * 1024
+AGENT_MEMORY_LIMIT_LINES = 200
+AGENT_MEMORY_WARN_RATIO = 0.8
+# 行数カウントのための読み込み上限。サイズ自体は getsize() で正確に取れるため、
+# 全体を read() する必要はない。予算の 2 倍を超えたファイルは（上限を超えた時点で
+# 必ず警告条件を満たすので）行数を下限値として報告する [SR-NEW]。
+AGENT_MEMORY_READ_CAP_BYTES = AGENT_MEMORY_LIMIT_BYTES * 2
+
 # 過去セッションファイルから引き継ぐ - [ ] 行のサニタイズ用パターン。
 # C0/C1 制御文字 (タブ 	 と通常スペース   は保持) と U+2028 / U+2029 を除去する。
 # 過去ファイルの ## 残タスク はユーザー編集領域のため信頼境界として扱う [SR-V-001]。
 # raw string は \uXXXX を解釈しないため、U+2028 / U+2029 は chr() で生成して連結する。
 _INHERIT_SANITIZE_RE = re.compile(
     r'[\x00-\x08\x0b-\x1f\x7f-\x9f' + chr(0x2028) + chr(0x2029) + r']'
+)
+
+# stderr へ表示する外部由来の値（agent-memory のディレクトリ名・patterns.json の id 等）の
+# 無害化用。_INHERIT_SANITIZE_RE はセッションファイルの「行単位」処理向けで LF が来ない前提の
+# ため \x0a を残すが、表示経路では改行が入ると「1 件 1 行」の出力契約が崩れ、後続テキストを
+# 独立した警告行に見せかけられる [SR-V-001]。表示用は C0 全域（TAB 含む）・C1 に加え、
+# 双方向制御文字とゼロ幅文字（表示偽装）も除去する。
+_DISPLAY_SANITIZE_RE = re.compile(
+    r'[\x00-\x1f\x7f-\x9f'
+    + chr(0x200b) + '-' + chr(0x200f)
+    + chr(0x2028) + chr(0x2029)
+    + chr(0x202a) + '-' + chr(0x202e)
+    + chr(0x2066) + '-' + chr(0x2069)
+    + chr(0xfeff)
+    + r']'
 )
 
 # _append_last_message が処理済みのパスを記録するキャッシュ（重複 read/write 防止）。
@@ -356,13 +386,62 @@ def _warn_oversized_descriptions(patterns: list) -> None:
             # 制御文字/ANSI 等を除去し MAX_ID_LENGTH で切り詰めて無害化する。
             if not isinstance(pid, str):
                 pid = str(pid)
-            pid = _INHERIT_SANITIZE_RE.sub('', pid)[:MAX_ID_LENGTH]
+            pid = _DISPLAY_SANITIZE_RE.sub('', pid)[:MAX_ID_LENGTH]
             print(
                 f'[Stop] patterns.json エントリの description が肥大しています '
                 f'(id={pid}, {len(desc)}字 > {DESCRIPTION_WARN_LENGTH}字)。'
                 f'内容を見直すか、日次評価が原因の場合は .dev/changelog-evals.md へ移してください',
                 file=sys.stderr,
             )
+
+
+def _warn_oversized_agent_memory() -> None:
+    """agent-memory/*/MEMORY.md が injection 予算の 80% に達していたら stderr 警告する。
+
+    削除・切り詰めは行わない（警告のみ・read-only）。1 ファイル 1 行で出力する。
+    patterns.json 側の `_warn_oversized_descriptions` と同じ「警告のみ」方針を取る。
+    本関数は例外を出さない防御的実装だが、呼び出し側でも try/except で二重に保護する。
+    """
+    warn_bytes = int(AGENT_MEMORY_LIMIT_BYTES * AGENT_MEMORY_WARN_RATIO)
+    warn_lines = int(AGENT_MEMORY_LIMIT_LINES * AGENT_MEMORY_WARN_RATIO)
+    try:
+        names = sorted(os.listdir(AGENT_MEMORY_DIR))
+    except OSError:
+        # 利用先の初回起動時などディレクトリ自体が無い場合は何もしない
+        return
+
+    for name in names:
+        path = os.path.join(AGENT_MEMORY_DIR, name, 'MEMORY.md')
+        try:
+            size = os.path.getsize(path)
+            with open(path, 'rb') as f:
+                head = f.read(AGENT_MEMORY_READ_CAP_BYTES)
+        except OSError:
+            # MEMORY.md 未生成のディレクトリ（wt_developer 等）や
+            # トップ階層の .gitkeep 等はスキップする
+            continue
+
+        # 末尾改行は行を増やさない（全 agent-memory ファイルが末尾改行ありのため、
+        # 単純な count+1 だと通常経路で常に 1 行多く報告してしまう）。
+        lines = head.count(b'\n')
+        if head and not head.endswith(b'\n'):
+            lines += 1
+        truncated = size > len(head)
+
+        if size <= warn_bytes and lines <= warn_lines:
+            continue
+
+        # ディレクトリ名はファイルシステム由来で未検証のため、出力前に制御文字・
+        # 表示偽装文字を除去し MAX_ID_LENGTH で切り詰めて無害化する。
+        safe = _DISPLAY_SANITIZE_RE.sub('', name)[:MAX_ID_LENGTH]
+        line_label = f'{lines}行以上' if truncated else f'{lines}行'
+        print(
+            f'[Stop] agent-memory/{safe}/MEMORY.md が injection 予算に接近しています '
+            f'({size}B / {AGENT_MEMORY_LIMIT_BYTES}B, {line_label} / {AGENT_MEMORY_LIMIT_LINES}行)。'
+            f'超えた分は起動時に system prompt へ載らず、蓄積した知見が読まれなくなります。'
+            f'価値の低いエントリから削って予算内に戻してください',
+            file=sys.stderr,
+        )
 
 
 def update_patterns(date_str: str) -> None:
@@ -467,6 +546,13 @@ def run(payload: dict) -> int:
         _append_last_message(get_session_path(today_str), last_msg)
 
     update_patterns(today_str)
+
+    # agent-memory の肥大検知（警告のみ）。誤動作しても Stop を止めない。
+    try:
+        _warn_oversized_agent_memory()
+    except Exception:
+        pass
+
     return 0
 
 
