@@ -442,12 +442,15 @@ class TestHandleUpdateIntegrationInitOnly:
 
 
 class TestPathNormalizationBypassesInitOnlyProtection:
-    """Step 13 (init-only protection) が表記ゆれで迂回される脆弱性の Red テスト.
+    """Step 13 (init-only protection) が表記ゆれで迂回されないことの回帰テスト.
 
-    _validate_deletion_path は step 13 で `is_init_only(rel)` を呼ぶが、
-    `rel` は deletions.txt から読んだ生文字列のまま。二重スラッシュ・末尾スラッシュ・
-    大小違いなどの表記ゆれがあると、is_init_only() の fnmatch パターンと一致せず
-    保護が素通りされる既知の穴（類型 3・入力 4 件）。
+    是正前、`_validate_deletion_path` は step 13 で `is_init_only(rel)` に
+    deletions.txt から読んだ**生文字列**を渡していた。二重スラッシュ・末尾スラッシュ・
+    大小違いなどの表記ゆれがあると `is_init_only()` の fnmatch パターンと一致せず、
+    実ファイルに解決されるにもかかわらず保護が素通りしていた（類型 3・入力 4 件）。
+
+    是正（6bb1b6a）で `resolved.relative_to(claude_root).as_posix()` を渡す形になり、
+    step 10/11/12 と同じ実体解決後の値で判定されるようになった。本クラスはその退行を防ぐ。
 
     検証層を 2 つに分けて要件化:
       - 戻り値層: _apply_deletions() の result["warnings"] に該当 rel が含まれること
@@ -500,12 +503,12 @@ class TestPathNormalizationBypassesInitOnlyProtection:
     ):
         """戻り値層: OS 非依存の表記ゆれは warning で弾かれること.
 
-        二重スラッシュ・末尾スラッシュは Path.resolve() で正規化される一方、
-        step 13 の is_init_only() 呼び出しは生文字列 `rel` に対して行われるため
-        パターンと一致する必要がある。
+        二重スラッシュ・末尾スラッシュは `Path.resolve()` で正規化される。是正前は
+        step 13 の `is_init_only()` 呼び出しが生文字列 `rel` に対して行われていたため
+        パターンと一致せず保護が素通りしていた。
 
-        Red 状態: `rel` が正規化されずに is_init_only(rel) が呼ばれ、
-        パターン不一致で保護が素通りされる。
+        是正後は解決済み実体パスの相対 POSIX で判定されるため、これらの表記ゆれでも
+        保護される（本テストはその退行を防ぐ）。
         """
         from c3.cli_update import _apply_deletions
 
