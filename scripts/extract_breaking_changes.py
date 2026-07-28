@@ -26,6 +26,19 @@ import sys
 import uuid
 from pathlib import Path
 
+# stdout/stderr reconfigure for Windows CI compatibility (cp1252 environment)
+# stdin は未使用なため reconfigure 不要（本スクリプトは対話入力を使用するが、
+# input() は自動的に locale に従うため明示的なencoding 指定が不必要）
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except (AttributeError, ValueError, OSError):
+    pass
+
+try:
+    sys.stderr.reconfigure(encoding='utf-8')
+except (AttributeError, ValueError, OSError):
+    pass
+
 
 # ---------------------------------------------------------------------------
 # 定数

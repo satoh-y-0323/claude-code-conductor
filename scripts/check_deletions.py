@@ -26,6 +26,18 @@ from pathlib import Path
 from c3._excludes import should_skip
 from c3.cli_update import _load_deletions
 
+# stdout/stderr reconfigure for Windows CI compatibility (cp1252 environment)
+# stdin は未使用なため reconfigure 不要（本スクリプトは stdin を読まない）
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except (AttributeError, ValueError, OSError):
+    pass
+
+try:
+    sys.stderr.reconfigure(encoding='utf-8')
+except (AttributeError, ValueError, OSError):
+    pass
+
 
 # ---------------------------------------------------------------------------
 # 定数

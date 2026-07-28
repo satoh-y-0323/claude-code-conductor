@@ -19,11 +19,12 @@ jobs:
       fail-fast: false
       matrix:
         # ubuntu は対応 Python 全バージョン、windows / macos は代表 1 バージョン。
-        # OS を分ける理由: パス正規化・大小無視ファイルシステム依存の挙動
-        # （`.claude/.gitignore` の否定パターン解決・`Path.resolve()` の実体ケース正準化・
-        # `_validate_deletion_path` の init-only 保護）は単一 OS では検証できない。
-        # ubuntu は大小区別 FS のため大小依存テストが skip され、windows / macos の
-        # 大小無視 FS でのみ実行される（skip 判定自体も OS ごとに確認する必要がある）。
+        # 3 OS マトリクスを維持する理由: パス正規化・`Path.resolve()` / `os.path.normcase`
+        # の OS 差を実測で押さえるため。単一 OS では以下の退行を検知できない:
+        # - `.claude/.gitignore` の否定パターン解決・ファイルシステム依存の実体パス正規化
+        # - `_validate_deletion_path` の init-only 保護（二重スラッシュ・末尾スラッシュ・
+        #   大小違い等の表記ゆれ正規化は全 OS で実行されるため、各 OS での実装挙動を検証）
+        # 是正後、大小違いテストは全 OS で実行される（実在ファイル版は FS 依存性あり）。
         include:
           - os: ubuntu-latest
             python-version: '3.10'

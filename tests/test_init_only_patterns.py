@@ -143,7 +143,7 @@ class TestDeletionsRespectInitOnly:
     `rules/promoted/index.md` を誤って追記すると、`_walk_diff` の保護を
     素通りして**利用先が育てた内容ごと完全削除**される。
 
-    既存 13 段のセーフガード（絶対パス・`..`・symlink・`deletions.txt` 自己削除など）は
+    既存 15 段のセーフガード（絶対パス・`..`・symlink・`deletions.txt` 自己削除など）は
     いずれも「warning を積んでスキップ」で弾いている。INIT_ONLY もその仲間として扱う。
     """
 
@@ -444,20 +444,17 @@ class TestHandleUpdateIntegrationInitOnly:
 class TestPathNormalizationBypassesInitOnlyProtection:
     """Step 13 (init-only protection) が表記ゆれで迂回されないことの回帰テスト.
 
-    是正前、`_validate_deletion_path` は step 13 で `is_init_only(rel)` に
-    deletions.txt から読んだ**生文字列**を渡していた。二重スラッシュ・末尾スラッシュ・
-    大小違いなどの表記ゆれがあると `is_init_only()` の fnmatch パターンと一致せず、
-    実ファイルに解決されるにもかかわらず保護が素通りしていた（類型 3・入力 4 件）。
-
-    是正（6bb1b6a）で `resolved.relative_to(claude_root).as_posix()` を渡す形になり、
-    step 10/11/12 と同じ実体解決後の値で判定されるようになった。本クラスはその退行を防ぐ。
+    是正後、`_validate_deletion_path` は step 13 で `is_init_only()` に
+    `resolved.relative_to(claude_root).as_posix()` で正規化した相対 POSIX パスを渡す形になり、
+    step 10/11/12 と同じ実体解決後の値で判定される。これにより二重スラッシュ・末尾スラッシュ・
+    大小違いなどの表記ゆれで保護が素通りすることを防ぐ。本クラスはその退行を防ぐ。
 
     検証層を 2 つに分けて要件化:
       - 戻り値層: _apply_deletions() の result["warnings"] に該当 rel が含まれること
       - 画面層: handle() 経由で stdout/stderr に警告が出ること
 
-    Windows 大小無視テストは tmp_path 上で実際に大小無視を実測し、
-    区別される環境では skip される（恒久的担保は OS 非依存 2 件のみ）。
+    大小違いテストのうち、実在ファイル版は大小無視 FS（Windows NTFS）でのみ保護が成立するが、
+    実在しないファイル版は全 OS で保護される（resolve() はケース正準化を実体なしでは行わない）。
     """
 
     PROMOTED_REL = "rules/promoted/index.md"
@@ -540,29 +537,68 @@ class TestPathNormalizationBypassesInitOnlyProtection:
             f"表記ゆれ '{variant}' が to_delete に載った"
         )
 
+    def test_apply_deletions_rejects_case_variant_nonexistent_all_os(
+        self, tmp_path: Path
+    ):
+        """戻り値層: 実在しないファイルの大小違いは全 OS で warning で弾かれること（対象 1・最重要）.
+
+        実存しないファイルに対しては resolve() がケース正準化を行わないため、
+        `RULES/PROMOTED/INDEX.MD` のような大文字版は是正後も正規化されずに
+        `rules/promoted/index.md` の INIT_ONLY パターンと一致しない。
+        しかし step 13 で `normalized_rel = resolved.relative_to(claude_root).as_posix()`
+        により再正規化されるため保護される。
+
+        このテストは全 OS で Red になる唯一のケース（ファイルが実在しないため
+        OS 差がない）。これが Green になったら是正が成功した証拠。
+
+        **重要**: ファイルを`.claude/` 配下に**作らないまま**大文字版を渡す。
+        ファイルが実在すると Windows では素通りして False になり、テストが失敗する。
+        """
+        from c3.cli_update import _apply_deletions
+
+        # ファイルを作らない（実在しない状態）
+        claude_root = self._make_claude_root(tmp_path, {})  # 空
+
+        result = _apply_deletions(
+            ["RULES/PROMOTED/INDEX.MD"],  # ← 大文字版・ファイルは実在しない
+            claude_root=claude_root,
+            dry_run=False,
+            assume_yes=True,
+        )
+
+        # 警告が記録されていることが是正の成功指標
+        # 判別子は `result["warnings"]` の有無 1 点だけ
+        # （ファイルが存在しないため `exists()` 系のアサーションでは判別できない）
+        assert result["warnings"], (
+            "実在しない大小違いファイルが warning なしで通った（保護が無い）。"
+            f"是正後は step 13 で `normalized_rel` が正規化されるため warning が入るべき。"
+            f"warnings={result['warnings']!r}"
+        )
+        assert any("rules/promoted" in w.lower() for w in result["warnings"]), (
+            f"警告に保護対象（promoted）が含まれていない: warnings={result['warnings']!r}"
+        )
+        # absent（既に削除済み）ではなく、warning で弾かれたこと
+        assert "RULES/PROMOTED/INDEX.MD" not in result["absent"]
+
     @pytest.mark.parametrize(
         "variant,target_rel",
         [
-            # 類型 3: 大文字違い — 大小区別なし FS（Windows NTFS）でのみテスト
+            # 類型 3: 大文字違い — 全 OS で実行へ変更（是正後はファイルの実在依存から脱却）
             ("RULES/PROMOTED/INDEX.MD", "rules/promoted/index.md"),
-            # 類型 4: .gitignore の大小違い
+            # 類型 4: .gitignore の大小違い — 全 OS で実行へ変更
             (".GITIGNORE", ".gitignore"),
         ],
     )
-    def test_apply_deletions_rejects_case_variants_windows_only(
+    def test_apply_deletions_rejects_case_variants_all_os(
         self, tmp_path: Path, variant: str, target_rel: str
     ):
-        """戻り値層: Windows 大小無視 FS での表記ゆれは warning で弾かれること.
+        """戻り値層: 大小違いは全 OS で warning で弾かれること（対象 2・既存テストの全 OS 化）.
 
-        Windows NTFS では大小無視のため、`RULES/PROMOTED/INDEX.MD` は
-        `rules/promoted/index.md` に解決される。しかし step 13 で
-        is_init_only(rel) が呼ばれる際 `rel` はまだ大文字のままで、
-        パターン `rules/promoted/index.md` と不一致。
+        是正後、`resolve()` ではなく `resolved.relative_to().as_posix()` で正規化するため、
+        大小文字区別 FS（Linux）でも大小違いが保護される。
+
+        **期待値（全 OS 共通）**: 実在ファイルの大小違いは保護される + warning が出る。
         """
-        # 大小文字が区別されないファイルシステムでのみテスト
-        if not self._is_case_insensitive(tmp_path):
-            pytest.skip("test only on case-insensitive filesystems (Windows NTFS)")
-
         from c3.cli_update import _apply_deletions
 
         claude_root = self._make_claude_root(
@@ -579,10 +615,71 @@ class TestPathNormalizationBypassesInitOnlyProtection:
 
         # 削除されてはいけない
         assert target.exists(), (
-            f"大小違い '{variant}' が保護を素通りして削除された"
+            f"大小違い '{variant}' が保護を素通りして削除された（OS={os.name}）"
         )
         # warning に小文字版 (target_rel) が含まれていること
         assert any(target_rel.lower() in w.lower() for w in result["warnings"]), (
+            f"warning に保護対象が含まれていない（OS={os.name}）: warnings={result['warnings']!r}"
+        )
+
+    def test_apply_deletions_rejects_trailing_dot_all_os(self, tmp_path: Path):
+        """戻り値層: 末尾ドットは全 OS で warning で弾かれること（対象 3）.
+
+        末尾ドットは Linux FS で意味を持つ（実ファイルとして区別される）。
+        `_validate_deletion_path` の step 9（resolve）が末尾ドットを正規化するため、
+        全 OS で保護される。
+        """
+        from c3.cli_update import _apply_deletions
+
+        claude_root = self._make_claude_root(
+            tmp_path, {"rules/promoted/index.md": self.PROMOTED_BODY}
+        )
+        target = claude_root / "rules/promoted/index.md"
+
+        result = _apply_deletions(
+            ["rules/promoted/index.md."],  # ← 末尾ドット版
+            claude_root=claude_root,
+            dry_run=False,
+            assume_yes=True,
+        )
+
+        # 削除されてはいけない
+        assert target.exists(), "末尾ドット版が保護を素通りして削除された"
+        # warning に正規化後のパス（末尾ドット除去）が含まれていること
+        assert result["warnings"], f"warning が積まれていない: warnings={result['warnings']!r}"
+        assert any("rules/promoted" in w.lower() for w in result["warnings"]), (
+            f"warning に保護対象が含まれていない: warnings={result['warnings']!r}"
+        )
+
+    def test_apply_deletions_rejects_trailing_whitespace_in_apply_deletions_layer(
+        self, tmp_path: Path
+    ):
+        """戻り値層: 末尾空白は _apply_deletions() 直呼びで warning で弾かれること（対象 3）.
+
+        末尾空白ケースは `_apply_deletions()` 直呼び（戻り値層）に置く理由：
+        `_load_deletions()` が各行に `line.strip()` を掛ける（`:597`）ため、
+        `handle()` 経由の画面層に置くと末尾空白が `_validate_deletion_path` に
+        到達する前に消え、通常の init-only ケースへ縮退して warning がなくなる（沈黙して緑）。
+        """
+        from c3.cli_update import _apply_deletions
+
+        claude_root = self._make_claude_root(
+            tmp_path, {"rules/promoted/index.md": self.PROMOTED_BODY}
+        )
+        target = claude_root / "rules/promoted/index.md"
+
+        result = _apply_deletions(
+            ["rules/promoted/index.md "],  # ← 末尾空白版（直呼び層では strip されない）
+            claude_root=claude_root,
+            dry_run=False,
+            assume_yes=True,
+        )
+
+        # 削除されてはいけない
+        assert target.exists(), "末尾空白版が保護を素通りして削除された"
+        # warning に正規化後のパスが含まれていること
+        assert result["warnings"], f"warning が積まれていない: warnings={result['warnings']!r}"
+        assert any("rules/promoted" in w.lower() for w in result["warnings"]), (
             f"warning に保護対象が含まれていない: warnings={result['warnings']!r}"
         )
 
@@ -642,17 +739,20 @@ class TestPathNormalizationBypassesInitOnlyProtection:
             f"警告が画面に出ていない: out={captured.out!r} err={captured.err!r}"
         )
 
-    def test_handle_rejects_case_variants_and_shows_warning_windows_only(
+    def test_handle_rejects_case_variants_and_shows_warning_all_os(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ):
-        """画面層: Windows 大小無視 FS での .gitignore 大小違い版.
+        """画面層: 大小違いは全 OS で警告表示・ファイル保持（対象 2・既存テストの全 OS 化）.
 
         `.GITIGNORE` が `.gitignore` として保護されることを確認。
-        """
-        # 大小無視 FS でのみテスト
-        if not self._is_case_insensitive(tmp_path):
-            pytest.skip("test only on case-insensitive filesystems (Windows NTFS)")
+        是正後、全 OS で実行される。
 
+        **注意**: 実在ファイル版は以下の依存性あり：
+        - Windows（大小無視 FS）: resolve() でケース正規化 → 保護される
+        - Linux（大小区別 FS）: .GITIGNORE と .gitignore は別ファイル → 本来保護対象でない
+          しかし是正後は `resolved.relative_to().as_posix()` で正規化されるため、
+          パターン `*.gitignore` と一致して保護される（期待値確定済み）
+        """
         from c3.cli_update import handle
 
         claude_dir = tmp_path / ".claude"
