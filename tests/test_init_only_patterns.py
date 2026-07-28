@@ -61,6 +61,48 @@ class TestInitOnlyPatterns:
                 f"{rel} が should_skip に入ると wheel から消え c3 init でも配置されなくなる"
             )
 
+    def test_init_only_patterns_are_already_normalized(self):
+        """パターン自体が成分正規化後の形（小文字・末尾ドット/スペースなし）であること.
+
+        `is_init_only` は `fnmatch.fnmatchcase`（ケース依存）で比較し、
+        `_validate_deletion_path` step 13 は**入力側だけ**を成分正規化して渡す。
+        したがってパターン側に大文字や末尾ドット/スペースが混じると、正規化済み入力とは
+        絶対に一致せず**保護が例外もエラーも出さずに静かに外れる**。
+
+        本テストが無いと、将来 `INIT_ONLY_PATTERNS` に `Rules/Promoted/Index.md` のような
+        表記を足しても全緑のままリリースされ、`c3 update` の deletions.txt 経路で
+        当該ファイルが無警告で削除可能になる（security-review-report-20260729-044241 Finding 1）。
+        """
+        for pattern in INIT_ONLY_PATTERNS:
+            for part in pattern.split("/"):
+                assert part == part.lower().rstrip(". "), (
+                    f"{pattern!r} の成分 {part!r} が正規形でない。"
+                    "入力側の成分正規化と一致しなくなり保護が静かに外れる"
+                )
+
+    def test_all_dot_component_does_not_collapse_into_pattern(self):
+        """空成分を保持したまま join することで、全ドット成分を挟んだ別実体が
+        INIT_ONLY パターンと衝突しないこと（過剰保護の回帰防止）.
+
+        `"...".lower().rstrip('. ')` は空文字列になる。これを join 前に**除去すると**
+        `rules/.../promoted/index.md` が `rules/promoted/index.md` に潰れてパターンと一致し、
+        POSIX で `...` という実ディレクトリを持つ利用者が正当に削除したいファイルを
+        削除できなくなる（過剰保護）。空成分の保持はそれを避けるための確定仕様。
+
+        `_validate_deletion_path` を経由せず純粋な文字列処理で検証するため、
+        `...` ディレクトリを作成できない Windows でも OS 分岐なしに実行できる
+        （security-review-report-20260729-044241 Finding 2）。
+        """
+        rel_posix = "rules/.../promoted/index.md"
+        # step 13（cli_update._validate_deletion_path）と同じ再結合を再現する
+        normalized = "/".join(part.lower().rstrip(". ") for part in rel_posix.split("/"))
+        assert normalized == "rules//promoted/index.md", (
+            f"空成分が除去されている: {normalized!r}"
+        )
+        assert is_init_only(normalized) is False, (
+            "全ドット成分を挟んだ別実体が init-only パターンと衝突している（過剰保護）"
+        )
+
 
 class TestWalkDiffRespectsInitOnly:
     """`_walk_diff` が INIT_ONLY を「add はする・update はしない」で扱うこと."""
@@ -473,18 +515,6 @@ class TestPathNormalizationBypassesInitOnlyProtection:
             p.write_text(body, encoding="utf-8")
         root.mkdir(parents=True, exist_ok=True)
         return root.resolve()
-
-    @staticmethod
-    def _is_case_insensitive(tmp_path: Path) -> bool:
-        """tmp_path 上で大小文字が区別されないか実測.
-
-        小文字ファイルを作成し、大文字名で exists() を見る。
-        True なら大小区別なし（Windows NTFS 等）。
-        """
-        test_file = tmp_path / "lowercase.txt"
-        test_file.write_text("test")
-        # 同じディレクトリで大文字でアクセスして True なら大小区別なし
-        return (tmp_path / "LOWERCASE.TXT").exists()
 
     @pytest.mark.parametrize(
         "variant,target_rel",

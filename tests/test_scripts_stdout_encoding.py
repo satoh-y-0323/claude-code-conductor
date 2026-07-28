@@ -39,8 +39,6 @@ This ensures Windows CI environments (cp1252) can handle UTF-8 output without Un
 import ast
 from pathlib import Path
 
-import pytest
-
 
 def get_scripts_dir() -> Path:
     """Return the scripts directory path."""

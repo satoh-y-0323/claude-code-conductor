@@ -760,7 +760,7 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
         # 各成分に .lower().rstrip('. ') を適用（.claude/hooks/_hook_utils.norm_component と同一ロジック）。
         # 空成分も保持する（除去すると別実体が同じパターンで過剰保護になる）。
         # resolved は . / .. を既に解決済みなので迂回リスクなし
-        normalized_rel = "/".join(  # nul-boundary: allow(成分正規化後の再結合)
+        normalized_rel = "/".join(  # nul-boundary: allow(パス区切りの再結合。fnmatch へ渡す FS 表記の "/" であり、内部で再パースする機械可読な行集合ではない)
             part.lower().rstrip('. ') for part in rel_posix.split("/")
         )
     except ValueError:
