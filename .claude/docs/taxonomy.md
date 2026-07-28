@@ -58,14 +58,16 @@ Claude Code Conductor（C3）における各ファイルタイプの意味を定
 | スコープ | 場所 | コミット対象 |
 |---|---|---|
 | `user` | `~/.claude/agent-memory/<agent-name>/` | × (個人) |
-| `project` | `.claude/agent-memory/<agent-name>/` | △ (下記注記) |
+| `project` | `.claude/agent-memory/<agent-name>/` | ○ (チーム共有向け・下記注記) |
 | `local` | `.claude/agent-memory-local/<agent-name>/` | × (個人) |
 
-> **注記（`project` スコープのコミット対象）**: この列は**リポジトリによって答えが違う**。
-> C3 配布元リポジトリでは `.gitignore` に `.claude/agent-memory/` があるため除外されるが、
-> **`c3 init` は利用先に `.gitignore` を配置しない**ため、利用先プロジェクトでは既定で
-> tracked になりうる（Claude Code 公式でも `project` スコープは「バージョン管理で共有可能」と
-> 位置づけられている）。利用先での扱いと注意点は `.claude/docs/config-policy.md` §1-2 を参照。
+> **注記（`project` スコープのコミット対象）**: 公式でも `project` は「バージョン管理で共有可能」な
+> スコープとして設計されており（共有したくないものは `user` / `local` に置く）、C3 でも
+> **チーム開発では git 管理を推奨する**。`c3 init` は `.gitignore` を配置しないため既定で tracked。
+> reviewer の `[許容例外]` はコミットして初めてチーム全員の reviewer が同じ判断を再現できる。
+> ただし public リポジトリでは許容例外の一覧が公開される点に注意が要る（C3 配布元リポジトリが
+> `.gitignore` で除外しているのはこの理由＋配布物と開発ログの分離のため）。
+> 判断材料は `.claude/docs/config-policy.md` §1-2 を参照。
 
 メモリが有効な場合、`MEMORY.md` の最初の 200 行（最大 25KB）がシステムプロンプトに自動注入される。
 超過分は読まれないため、`stop.py` が予算の 80% 到達で stderr 警告を出す。

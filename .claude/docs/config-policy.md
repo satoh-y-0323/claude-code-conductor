@@ -39,22 +39,37 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 .claude/hooks/                         c3 init で配置・c3 update で更新
 .claude/state/                         実行時生成（gitignore 推奨）
 .claude/memory/                        実行時生成
-.claude/agent-memory/                  実行時生成（コミット可＝チーム共有向け。下記の注意を参照）
+.claude/agent-memory/                  実行時生成（チーム開発では git 管理を推奨。下記参照）
 .claude/reports/                       実行時生成（gitignore 推奨）
 .claude/worktrees/                     並列実行時一時生成
 .claude/logs/                          実行時生成
 ```
 
-> **注意（`.claude/agent-memory/`）**: これは Claude Code の `memory: project` スコープの実体で、
-> 公式仕様上は「バージョン管理で共有可能」な領域として設計されている。**`c3 init` は `.gitignore` を
-> 配置しないため、既定では利用先で tracked になりうる**（`.claude/state/` や `.claude/reports/` と違い
-> 「gitignore 推奨」と一律には言えない）。コミットする場合は、agent 定義の `## Memory` 節が定める
-> **記録対象の限定**（秘密情報・一時情報・雑記録を書かない）が守られているかを確認すること。
-> チームで共有する必要がなければ `.gitignore` に加えてよい。
+> **`.claude/agent-memory/` のコミット方針**: **チーム開発では git 管理を推奨する。**
+> これは Claude Code の `memory: project` スコープの実体で、公式仕様でも「バージョン管理で共有可能」な
+> 領域として設計されている（共有したくないものは `user` / `local` スコープに置く）。`c3 init` は
+> `.gitignore` を配置しないため、既定で tracked になる。
+>
+> 推奨する理由は、agent-memory が **C3 を「使って育てた」結果そのもの**だから。とりわけ reviewer の
+> `[許容例外]`（この指摘はこのプロジェクトでは許容する、とユーザーが判断した記録）は、コミットして
+> 初めてチーム全員の reviewer が同じ判断を再現できる。ローカルに留めると、その合意は最初に決めた人の
+> マシンにしか存在しない。`.claude/reports/` も併せてコミットしておくと、PR レビュー時に
+> 「レポート＋実差分」で変更の意図まで追えるようになる。
+>
+> **前提となる規律**: コミットする以上、agent 定義の `## Memory` 節が定める**記録対象の限定**
+> （秘密情報・一時情報・雑記録を書かない）が守られている必要がある。共有するとこの規律は
+> 「自分だけの問題」ではなくなる。
+>
+> **public リポジトリでの注意**: security-reviewer の MEMORY.md には構造上「この脅威はこの
+> プロジェクトでは許容する・理由は〜」が蓄積される。private repo ではチームの資産だが、public では
+> 「既知の弱点と、それを見逃している理由の一覧」を公開することになる。公開プロジェクトでは
+> reviewer 系のみ `.gitignore` に加えるか `local` スコープへ移すことを検討する。
+> （C3 配布元リポジトリ自身が `.claude/agent-memory/` を gitignore しているのは、この理由と、
+> 配布物と開発ログを分けるためであって、「共有すべきでない領域だから」ではない。）
 >
 > なお各 `MEMORY.md` は起動時に**先頭 200 行 / 25KB まで**しか system prompt に載らない（超過分は
-> 読まれない）。肥大すると過去に合意した許容例外が window 外へ落ちるため、`stop.py` が 80% 到達で
-> stderr 警告を出す。警告が出たら価値の低いエントリから削って予算内に戻す。
+> 読まれない）。共有運用ではこれは「チーム全員の reviewer が過去の合意を読めなくなる」ことを意味する
+> ため、`stop.py` が 80% 到達で stderr 警告を出す。警告が出たら価値の低いエントリから削って予算内に戻す。
 
 ### 1-3. ディレクトリの命名・配置チート
 
