@@ -74,7 +74,7 @@ Claude Code Conductor（C3）における各ファイルタイプの意味を定
 
 **運用ルール:**
 
-- **配布除外**: `.claude/agent-memory/` は `.gitignore` / `_excludes.py` / `hatch_build.py` の 3 ファイルで除外済み。wheel にも含まれない（プロジェクト固有・個人作業）
+- **配布除外**: `.claude/agent-memory/` は `.gitignore` / `_excludes.py` / `hatch_build.py` の 3 ファイルで除外済み。wheel にも含まれない（プロジェクト固有の実行時データであり配布物ではないため。利用先での git 管理は推奨＝上記注記を参照）
 - **書き込みタイミング**: agent が `memory:` frontmatter を持つ場合、Claude Code がエージェント停止時に自動更新する
 - **手動編集**: `MEMORY.md` は index ファイル（150 文字/行 × 200 行が注入対象）。個別の memory ファイルは別ファイルとして同ディレクトリ配置
 - **chat / Codex / Cursor 共通**: `.claude/agent-memory/` は canonical source として全プラットフォームで参照される

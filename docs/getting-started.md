@@ -43,7 +43,7 @@ c3 init
 | 変更される場所 | 内容 |
 |---|---|
 | `.claude/` ディレクトリ（追加） | C3 のフレームワーク一式 |
-| `.gitignore`（追記推奨） | `.claude/reports/`・`.claude/memory/sessions/` 等の個人作業ファイルを除外 |
+| `.gitignore`（追記推奨） | `.claude/state/recall.*`（再生成可能・数十 MB）・`.claude/state/*.flag`・`.claude/logs/` 等の一時ファイルを除外。`.claude/agent-memory/`・`.claude/reports/`・`.claude/memory/`・`.claude/state/c3.db` はチームの引き継ぎ資産のため tracked 推奨（[コミット方針](../.claude/docs/config-policy.md)） |
 
 後日 C3 を更新したくなったら:
 

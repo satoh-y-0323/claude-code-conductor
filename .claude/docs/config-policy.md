@@ -37,35 +37,59 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 .claude/rules/                         c3 init で配置・c3 update で更新
 .claude/rules/promoted/index.md        c3 init で空雛形のみ配置（c3 update は触らない）
 .claude/hooks/                         c3 init で配置・c3 update で更新
-.claude/state/                         実行時生成（gitignore 推奨）
-.claude/memory/                        実行時生成
+.claude/state/                         実行時生成（c3.db 等は git 管理を推奨・一部除外。下記参照）
+.claude/memory/                        実行時生成（チーム開発では git 管理を推奨。下記参照）
 .claude/agent-memory/                  実行時生成（チーム開発では git 管理を推奨。下記参照）
-.claude/reports/                       実行時生成（gitignore 推奨）
-.claude/worktrees/                     並列実行時一時生成
-.claude/logs/                          実行時生成
+.claude/reports/                       実行時生成（チーム開発では git 管理を推奨。下記参照）
+.claude/worktrees/                     並列実行時一時生成（gitignore 推奨）
+.claude/logs/                          実行時生成（gitignore 推奨）
 ```
 
-> **`.claude/agent-memory/` のコミット方針**: **チーム開発では git 管理を推奨する。**
-> これは Claude Code の `memory: project` スコープの実体で、公式仕様でも「バージョン管理で共有可能」な
-> 領域として設計されている（共有したくないものは `user` / `local` スコープに置く）。`c3 init` は
-> `.gitignore` を配置しないため、既定で tracked になる。
+> **`.claude/` 実行時生成領域のコミット方針**: **チーム開発では「載せない理由があるもの以外は
+> git 管理する」を既定とする。** C3 は使いながら育てるフレームワークで、育った結果の大半は
+> これらの領域に溜まる。載せなければ、その資産は最初に動かした人のマシンにしか存在しない。
+> `c3 init` は `.gitignore` を配置しないため、既定で tracked になる。
 >
-> 推奨する理由は、agent-memory が **C3 を「使って育てた」結果そのもの**だから。とりわけ reviewer の
-> `[許容例外]`（この指摘はこのプロジェクトでは許容する、とユーザーが判断した記録）は、コミットして
-> 初めてチーム全員の reviewer が同じ判断を再現できる。ローカルに留めると、その合意は最初に決めた人の
-> マシンにしか存在しない。`.claude/reports/` も併せてコミットしておくと、PR レビュー時に
-> 「レポート＋実差分」で変更の意図まで追えるようになる。
+> **載せない**（載せても価値がないか、載せると邪魔になるもの）:
+>
+> | 対象 | 理由 |
+> |---|---|
+> | `state/recall.hnsw` / `state/recall_meta.json`（+ `.bak`） | **元データから再生成可能**。実測 63MB あり履歴を無用に太らせる |
+> | `state/*.flag` / `state/tier_selection.json` | hook が動的生成する**セッション一時**ファイル |
+> | `logs/` / `worktrees/` | 実行ログ・並列実行の一時領域 |
+>
+> **載せる**（引き継ぎ資産）:
+>
+> | 対象 | 何が引き継がれるか |
+> |---|---|
+> | `agent-memory/` | 各 agent が蓄積した判断基準。とりわけ reviewer の `[許容例外]`（この指摘はこのプロジェクトでは許容する、というユーザー判断の記録）は、コミットして初めてチーム全員の reviewer が同じ判断を再現できる |
+> | `reports/` | 個々の変更の記録。PR レビュー時に「レポート＋実差分」を並べて読め、レビュアーが変更の意図まで追える（実運用で有効性を確認済み） |
+> | `memory/` | セッション記録（現在地・残タスク・うまくいったアプローチ）と学習パターン。次に触る人が前回の文脈から再開できる |
+> | `state/c3.db` | tier-routing の学習データと review-hint の判断記録（許容例外・是正履歴）。載せないと「このプロジェクトではこの指摘を許容する」という合意が記録した個人に閉じる |
+> | `state/security_audit_exceptions.json` / `state/tier_autoapply.jsonl` | 許容例外の設定と tier 適用ログ |
+>
+> agent-memory は Claude Code の `memory: project` スコープの実体で、公式仕様でも「バージョン管理で
+> 共有可能」な領域として設計されている（共有したくないものは `user` / `local` スコープに置く）。
+>
+> **c3.db のコンフリクトについて**: SQLite バイナリは git でマージできないため、同一プロジェクトを
+> 複数人が**同時に**改修する運用では、衝突時の解決手段が「どちらかの DB を丸ごと選ぶ」しかなく
+> 片方の記録が失われる。2026-07-28 時点の実運用ではコンフリクトは発生していない（同一プロジェクトへの
+> 同時改修という運用形態を取っていないため）。**まず載せる方針とし、実際に衝突が問題化した時点で
+> エクスポート方式（DB を JSONL 等へダンプして tracked にし、DB 本体は再構築する）を検討する。**
+> 衝突の起きやすさはチームの運用形態に依存するため、一律の正解はない。
 >
 > **前提となる規律**: コミットする以上、agent 定義の `## Memory` 節が定める**記録対象の限定**
 > （秘密情報・一時情報・雑記録を書かない）が守られている必要がある。共有するとこの規律は
 > 「自分だけの問題」ではなくなる。
 >
-> **public リポジトリでの注意**: security-reviewer の MEMORY.md には構造上「この脅威はこの
-> プロジェクトでは許容する・理由は〜」が蓄積される。private repo ではチームの資産だが、public では
-> 「既知の弱点と、それを見逃している理由の一覧」を公開することになる。公開プロジェクトでは
-> reviewer 系のみ `.gitignore` に加えるか `local` スコープへ移すことを検討する。
-> （C3 配布元リポジトリ自身が `.claude/agent-memory/` を gitignore しているのは、この理由と、
-> 配布物と開発ログを分けるためであって、「共有すべきでない領域だから」ではない。）
+> **public リポジトリでの注意**: security-reviewer の MEMORY.md と `security-review-report-*.md`
+> には構造上「この脅威はこのプロジェクトでは許容する・理由は〜」が蓄積される。private repo では
+> チームの資産だが、public では「**既知の弱点と、それを見逃している理由の一覧**」を公開することに
+> なる。公開プロジェクトでは security 系（reviewer の agent-memory と security-review-report）を
+> `.gitignore` に加えるか `local` スコープへ移すことを検討する。
+> （C3 配布元リポジトリ自身が `.claude/agent-memory/` と `.claude/reports/` を gitignore して
+> いるのは、この理由と、配布物と開発ログを分けるためであって、「共有すべきでない領域だから」
+> ではない。）
 >
 > なお各 `MEMORY.md` は起動時に**先頭 200 行 / 25KB まで**しか system prompt に載らない（超過分は
 > 読まれない）。共有運用ではこれは「チーム全員の reviewer が過去の合意を読めなくなる」ことを意味する
@@ -229,7 +253,7 @@ C3 の wheel 配布除外パターンは **3 つのファイルに分散して�
 
 | ファイル | 役割 | 変更が必要な場面 |
 |---|---|---|
-| `.gitignore` | git 追跡から除外（配布元リポジトリの個人作業ファイルを管理外に） | 配布元で新たに除外すべきファイルが増えた時 |
+| `.gitignore` | git 追跡から除外（配布元リポジトリの実行時データ・開発ログを管理外に。利用先の推奨方針は §1-2 の注記を参照） | 配布元で新たに除外すべきファイルが増えた時 |
 | `src/c3/_excludes.py` | `c3 init` / `c3 update` 時の除外判断（Python 実装） | 配布先への配布/非配布を変更する時 |
 | `hatch_build.py` | wheel ビルド時の除外判断（`_excludes.py` の重複定義） | `_excludes.py` を変更した時（必ず同期） |
 
