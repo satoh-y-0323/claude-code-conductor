@@ -41,14 +41,15 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 .claude/memory/                        実行時生成（チーム開発では git 管理を推奨。下記参照）
 .claude/agent-memory/                  実行時生成（チーム開発では git 管理を推奨。下記参照）
 .claude/reports/                       実行時生成（チーム開発では git 管理を推奨。下記参照）
-.claude/worktrees/                     並列実行時一時生成（gitignore 推奨）
-.claude/logs/                          実行時生成（gitignore 推奨）
+.claude/worktrees/                     並列実行時一時生成（.claude/.gitignore が自動除外）
+.claude/logs/                          実行時生成（.claude/.gitignore が自動除外）
 ```
 
 > **`.claude/` 実行時生成領域のコミット方針**: **チーム開発では「載せない理由があるもの以外は
 > git 管理する」を既定とする。** C3 は使いながら育てるフレームワークで、育った結果の大半は
 > これらの領域に溜まる。載せなければ、その資産は最初に動かした人のマシンにしか存在しない。
-> `c3 init` は `.gitignore` を配置しないため、既定で tracked になる。
+> **`c3 init` は `.claude/.gitignore` を配置する**（プロジェクトルートの `.gitignore` は編集しない）。
+> そこで除外されない領域は既定で tracked になる。
 >
 > **載せない**（載せても価値がないか、載せると邪魔になるもの）:
 >
@@ -111,7 +112,7 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 同じキー（`permissions.allow` など）が複数ファイルで定義されている場合、
 **上位ファイルが下位ファイルを上書き**する（高 → 低の順）:
 
-1. `.claude/settings.local.json` — 個人 override（`.gitignore` 推奨。c3 update の対象外）
+1. `.claude/settings.local.json` — 個人 override（`.claude/.gitignore` が自動除外。c3 update の対象外）
 2. `.claude/settings.json` — プロジェクト共通設定（git 管理）
 3. `~/.claude/settings.json` — グローバル個人設定（マシンローカル）
 
@@ -153,10 +154,11 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 | `.claude/CLAUDE.md` | ○ | ○ | △（c3 update で上書きされる前提で） |
 | `.claude/rules/*.md` | ○ | ○ | △（同上） |
 | `.claude/rules/promoted/index.md` | ○（空雛形のみ） | × | ○（`/promote-pattern` が追記、手動編集も可） |
+| `.claude/.gitignore` | ○ | ×（INIT_ONLY） | ○（追記は `c3 update` で失われない。C3 側の分類更新は手動マージ） |
 
 ---
 
-## 3. 配布判断マトリクス（14 カテゴリ）
+## 3. 配布判断マトリクス（15 カテゴリ）
 
 `_excludes.py` の `EXCLUDE_PATTERNS` / `KEEP_PATTERNS` を実装照合した結果。
 各カテゴリに配布有無・c3 update の更新有無・理由を明示する。
@@ -167,7 +169,7 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 | 2 | `.claude/agents/*.md` | ○ | ○ | ペルソナ定義。配布先で読まれる。例外: `tdd-develop.md` のみ除外（v2.1.0 廃止） |
 | 3 | `.claude/skills/*/` | ○ | ○ | オーケストレーション/ユーティリティ skill 定義（`scripts/` / `templates/` 等サブディレクトリ含む）。例外: `worktree-tdd-workflow/*` のみ除外（v2.1.0 廃止） |
 | 4 | `.claude/rules/*.md` | ○ | ○ | C3 配布デフォルトルール（常時注入対象） |
-| 5 | `.claude/rules/promoted/*` | ○ | × | プロジェクト固有昇格ルール。配布元の `promoted/index.md` は空雛形のみ配布。利用先で `/promote-pattern` が追記する **ユーザー所有領域**。c3 update が触ると昇格内容が失われる |
+| 5 | `.claude/rules/promoted/*` | ○ | ×（`index.md` は INIT_ONLY） | プロジェクト固有昇格ルール。配布元の `promoted/index.md` は空雛形のみ配布。利用先で `/promote-pattern` が追記する **ユーザー所有領域**。`index.md` は `INIT_ONLY_PATTERNS` で上書きから保護される。昇格ルール本体（`YYYYMMDD-{id}.md`）は template 側に存在しないため `_walk_diff` の走査対象にならず元から無事 |
 | 6 | `.claude/docs/*.md` | △（一部のみ） | ○ | 利用先向けリファレンス。配布対象は `platform-adapters.md` / `settings.json.md` / `parallel-agents-setup.md` / `config-policy.md`（本ドキュメント）の 4 ファイル。配布元固有の設計メモ等は `_excludes.py` で個別除外。`taxonomy.md` は tracked（GitHub 公開）だが EXCLUDE 対象のため wheel 非配布（詳細は §7 落とし穴 2 参照）。 |
 | 7 | `.claude/CLAUDE.md` | ○ | ○ | 配布先で常時注入される共通ルール |
 | 8 | `.claude/settings.json` | ○ | ○ | プロジェクト共通設定（hooks 登録・permissions など） |
@@ -177,6 +179,7 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 | 12 | `.dev/*` / `/CLAUDE.md` / `/AGENTS.md` / `/.codex/` / `/.cursor/` / `/.agents/` | × | — | 配布元専用または adapter 生成物。wheel には構造的に含まれない（`src/c3/_template/.claude/` 配下のみ同梱）が、配布元 `.gitignore` で commit 混入も防ぐ |
 | 13 | `.claude/deletions.txt` | ○ | ○ | `c3 update` が読み込み、利用先 `.claude/` から該当ファイルを削除候補として扱う。配布元の `.claude/deletions.txt` に追記したエントリは次回 pip install → `c3 update` で利用先に伝播。`KEEP_PATTERNS` で明示配布。`c3 update` 自体は本ファイルを削除しない（§7 落とし穴 5 参照） |
 | 14 | `.claude/breaking-changes.txt` | ○ | ○ | `c3 update` が読み込み、利用先の `.claude/state/c3_version.txt`（バージョン checkpoint）と diff を計算して破壊的変更を表示する。MAJOR bump 時は y/N 承認プロンプトを発火。`KEEP_PATTERNS` で明示配布。配布元 `.claude/breaking-changes.txt` を更新すれば次回 pip install → `c3 update` で利用先に伝播。利用先 git 管理は tracked（上書きされる） |
+| 15 | `.claude/.gitignore` | ○ | ×（INIT_ONLY） | 利用先の実行時生成領域のうち「再生成可能」「セッション一時」だけを除外する配布 `.gitignore`（§1-2 の方針の実装）。プロジェクトルートの `.gitignore` は編集しないため既存設定と衝突しない。`INIT_ONLY_PATTERNS` により初回配置のみで **c3 update は上書きしない**（利用先の追記を守る）。C3 側で分類を更新した場合はリリースノートで手動マージを案内する |
 
 > **注意 (カテゴリ #6)**: `taxonomy.md` は `_excludes.py` の EXCLUDE 対象だが、`.gitignore` では tracked 状態（GitHub に公開済み）。
 > **wheel には含まれない**点に注意。gitignore と wheel 配布は別レイヤーであり、
@@ -198,7 +201,7 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 
 > **注意**: `git add -f` の強制オプションを使うと `.gitignore` が無効化されるため、秘匿情報が誤ってコミットされるリスクがある。CI/CD パイプラインでの自動 `add` 設定にも注意すること。
 
-> **注意**: `c3 init` はプロジェクトルートの `.gitignore` を自動編集しない。`settings.local.json` を新規作成する場合は、ユーザー自身が `.gitignore` に `.claude/settings.local.json` を追加すること。
+> **注意**: `c3 init` はプロジェクトルートの `.gitignore` を自動編集しない。代わりに `.claude/.gitignore` を配置し、その中で `settings.local.json` を除外している（v2.58.0〜）。**それ以前に `c3 init` した既存プロジェクトには `.claude/.gitignore` が無い**ため、`c3 update` で配置されるまではユーザー自身がルートの `.gitignore` に `.claude/settings.local.json` を追加すること。
 
 ### 原則 2: c3 update は触らない
 
@@ -315,7 +318,14 @@ C3 の wheel 配布除外パターンは **3 つのファイルに分散して�
 または「なぜ promoted/ は更新されないのか」と疑問に思う。
 
 **原因**: `.claude/rules/promoted/index.md` は **ユーザー所有領域**。
-c3 update が上書きすると利用先で `/promote-pattern` が追記したルールが消失するため、意図的に除外している（§3 カテゴリ #5 参照）。
+c3 update が上書きすると利用先で `/promote-pattern` が追記した目録行が消失するため、
+`_excludes.py` の **`INIT_ONLY_PATTERNS`** で「初回配置のみ・update は触らない」に指定している（§3 カテゴリ #5 参照）。
+
+> **経緯（v2.58.0）**: それ以前は「意図的に除外している」と書きながら実装が伴っておらず
+> （`should_skip("rules/promoted/index.md")` は `False`）、実際には `c3 update` の上書き対象だった。
+> 原因は `should_skip` が「wheel 収録 / init 配置 / update 上書き」の 3 つを 1 つの真偽値で兼ねており、
+> 「init では配置するが update では触らない」を表現できなかったこと。`INIT_ONLY_PATTERNS` で
+> 3 番目の軸を分離して解消した。
 
 **対処**: `promoted/` への変更は `c3 update` に委ねず、手動または `/promote-pattern` skill で管理する。
 C3 side で `promoted/` の雛形を更新した場合は、リリースノートで手動マージ手順を案内する。

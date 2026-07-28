@@ -12,6 +12,12 @@ Patterns are POSIX-style and relative to the ``.claude/`` directory itself
 (e.g. ``"reports/*"``, not ``".claude/reports/*"``). ``KEEP_PATTERNS`` win
 over ``EXCLUDE_PATTERNS`` so that placeholder ``.gitkeep`` files survive.
 
+A second, independent axis lives here as well: ``INIT_ONLY_PATTERNS`` (see
+:func:`is_init_only`) marks files that ``c3 init`` places but ``c3 update``
+must never overwrite, because the destination copy becomes user-owned once it
+exists. ``should_skip`` cannot express this — it collapses three questions
+(bundle into the wheel / place on init / overwrite on update) into one boolean.
+
 See ``.claude/docs/config-policy.md`` for the distribution decision matrix
 and the rationale behind each excluded pattern.
 """
@@ -72,6 +78,25 @@ KEEP_PATTERNS: tuple[str, ...] = (
 )
 
 
+# ``c3 init`` では配置したいが ``c3 update`` では上書きしたくないファイル。
+#
+# ``should_skip`` は「wheel 収録 / init 配置 / update 上書き」の 3 つを 1 つの真偽値で
+# 兼ねているため、「初回は配置するが以後はユーザーが育てる」領域を表現できなかった
+# （``should_skip`` に入れると wheel からも消えて init でも配置されない）。
+# 本リストはその 3 番目の軸だけを分離する。``should_skip`` とは独立で、
+# INIT_ONLY のファイルも wheel には収録され ``c3 init`` で配置される。
+#
+# 3 ファイル同期（``.gitignore`` / ``_excludes.py`` / ``hatch_build.py``）の対象外。
+# wheel ビルドは ``should_skip`` しか参照しないため ``hatch_build.py`` への複製は不要。
+INIT_ONLY_PATTERNS: tuple[str, ...] = (
+    # 利用先で /promote-pattern が目録行を追記するユーザー所有領域
+    "rules/promoted/index.md",
+    # 利用先が独自の除外行を追記しうる（上書きすると次の commit で
+    # 意図しないファイルが tracked になる）
+    ".gitignore",
+)
+
+
 def should_skip(rel_posix: str) -> bool:
     """Return True if the path (relative to ``.claude/``) is personal state."""
     parts = rel_posix.split("/")
@@ -80,3 +105,13 @@ def should_skip(rel_posix: str) -> bool:
     if any(fnmatch.fnmatchcase(rel_posix, p) for p in KEEP_PATTERNS):
         return False
     return any(fnmatch.fnmatchcase(rel_posix, p) for p in EXCLUDE_PATTERNS)
+
+
+def is_init_only(rel_posix: str) -> bool:
+    """Return True if ``c3 init`` must place the file but ``c3 update`` must not
+    overwrite it (user-owned after the first placement).
+
+    Independent of :func:`should_skip`: an init-only file is still bundled into
+    the wheel and placed by ``c3 init``; only the overwrite step is skipped.
+    """
+    return any(fnmatch.fnmatchcase(rel_posix, p) for p in INIT_ONLY_PATTERNS)

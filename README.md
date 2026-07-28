@@ -276,7 +276,7 @@ Copy-Item -Recurse claude-code-conductor\.claude your-project\
 | 変更される場所 | 内容 |
 |---|---|
 | `.claude/` ディレクトリ（追加） | C3 のフレームワーク一式 |
-| `.gitignore`（追記推奨） | `state/recall.*`（再生成可能・数十 MB）・`state/*.flag`・`logs/` 等の一時ファイルを除外。`agent-memory/`・`reports/`・`memory/`・`state/c3.db` はチームの引き継ぎ資産のため tracked 推奨（[コミット方針](.claude/docs/config-policy.md)） |
+| `.claude/.gitignore`（自動配置） | 再生成可能なもの（`state/recall.*` は数十 MB）とセッション一時ファイルのみ除外。`agent-memory/`・`reports/`・`memory/`・`state/c3.db` はチームの引き継ぎ資産として tracked（[コミット方針](.claude/docs/config-policy.md)）。**プロジェクト既存の `.gitignore` は変更しません** |
 
 プロジェクトの `src/` や既存コードには一切触れません。
 

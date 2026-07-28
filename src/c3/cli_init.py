@@ -34,7 +34,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite an existing .claude/ directory without confirmation",
+        help=(
+            "Overwrite an existing .claude/ directory without confirmation. "
+            "This removes the directory tree first, so user-owned init-only files "
+            "(rules/promoted/index.md, .gitignore) are lost as well."
+        ),
     )
     parser.add_argument(
         "--target",

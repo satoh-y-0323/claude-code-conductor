@@ -24,8 +24,12 @@
 # git worktree list から外れた残骸は cleanup 対象だが、tracking はしない。
 .claude/worktrees/
 
-# C3 runtime state (per-user, never committed; tier_selection.json も hooks が動的生成する一時ファイル)
+# C3 runtime state (per-user; tier_selection.json も hooks が動的生成する一時ファイル)
 # v2.10.0: recall.hnsw / recall_meta.json も state/* で自動除外（元データから再生成可能）
+# v2.58.0: 例外は state/setup_done.flag のみ tracked。配布物 .claude/.gitignore の
+#   `!state/setup_done.flag` がこの一括除外を打ち消すため（git はよりネストの深い
+#   .gitignore を優先し、ルート側から取り消せない）。0 バイトのマーカーで差分ノイズはなく、
+#   _excludes.py の state/* により wheel にも入らない。
 .claude/state/*
 !.claude/state/.gitkeep
 
