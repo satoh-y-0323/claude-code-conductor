@@ -16,7 +16,7 @@ from typing import Any, Literal
 _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[\x20-\x3f]*[\x40-\x7e]')
 
 import c3
-from c3._excludes import should_skip
+from c3._excludes import is_init_only, should_skip
 from c3._terminal import sanitize_terminal_text, supports_color
 from c3.adapters import print_adapter_actions, scaffold_adapters
 from c3.paths import templates_dir
@@ -657,7 +657,7 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
                    正常時は None。「ファイル不在（=既に削除済み）」は warning ではなく
                    呼び出し側で「skipped (already absent)」として処理する
 
-    セーフガード順序（13 段）:
+    セーフガード順序（14 段）:
       1. 空文字列 / 空白のみ
       2. 文字列レベル: 先頭 /
       3. 文字列レベル: 先頭 ~
@@ -671,8 +671,9 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
       10. claude_root in resolved.parents で範囲確認
       11. resolved == claude_root 拒否（step 10 と統合）
       12. deletions.txt 自己削除保護
-      13. Path.is_dir() でディレクトリ拒否
-      14. Path.is_file() で実在確認（not file → None, None → absent として処理）
+      13. init-only ファイル保護（利用先ユーザーが育てた内容を守る）
+      14. Path.is_dir() でディレクトリ拒否
+      15. Path.is_file() で実在確認（not file → None, None → absent として処理）
     """
     # 1. 空文字列 / 空白のみ
     if not rel.strip():
@@ -733,11 +734,15 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
     if resolved == claude_root / "deletions.txt":
         return None, "deletions.txt itself cannot be deleted (self-referencing guard)"
 
-    # 13. ディレクトリ拒否
+    # 13. init-only ファイル保護（利用先ユーザーが育てた内容を守る）
+    if is_init_only(rel):
+        return None, f"init-only file cannot be deleted: {rel}"
+
+    # 14. ディレクトリ拒否
     if resolved.is_dir():
         return None, f"directory deletion not supported: {rel}"
 
-    # 14. ファイル実在確認（不在は warning なし）
+    # 15. ファイル実在確認（不在は warning なし）
     if not resolved.is_file():
         return None, None  # absent として処理
 
@@ -924,14 +929,22 @@ def _walk_diff(template: Path, dest: Path):
     Only ``add`` and ``update`` are emitted; we never delete files in dest.
     Personal/working files (per ``c3._excludes``) are skipped both as bundle
     sources and as overwrite targets.
+
+    Init-only files (``INIT_ONLY_PATTERNS``) are placed when absent but never
+    overwritten: the destination copy is user-owned once it exists (e.g. the
+    promoted-rules index that ``/promote-pattern`` appends to, or the shipped
+    ``.gitignore`` a project may add its own exclusions to).
     """
     for src_file in _iter_files(template):
         rel = src_file.relative_to(template)
-        if should_skip(rel.as_posix()):
+        rel_posix = rel.as_posix()
+        if should_skip(rel_posix):
             continue
         target = dest / rel
         if not target.exists():
             yield "add", target
+        elif is_init_only(rel_posix):
+            continue
         elif not filecmp.cmp(src_file, target, shallow=False):
             yield "update", target
 
