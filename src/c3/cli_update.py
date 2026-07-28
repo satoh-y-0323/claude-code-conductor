@@ -657,7 +657,7 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
                    正常時は None。「ファイル不在（=既に削除済み）」は warning ではなく
                    呼び出し側で「skipped (already absent)」として処理する
 
-    セーフガード順序（14 段）:
+    セーフガード順序（15 段）:
       1. 空文字列 / 空白のみ
       2. 文字列レベル: 先頭 /
       3. 文字列レベル: 先頭 ~
@@ -674,6 +674,16 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
       13. init-only ファイル保護（利用先ユーザーが育てた内容を守る）
       14. Path.is_dir() でディレクトリ拒否
       15. Path.is_file() で実在確認（not file → None, None → absent として処理）
+
+    Notes on step 13 (init-only):
+      - 判定は `resolved.relative_to(claude_root).as_posix()` で正規化した
+        相対 POSIX パスに対して行われるため、二重スラッシュ・末尾スラッシュ・
+        大小違い（Windows NTFS 等）などの表記ゆれは自動的に正規化される
+      - 大小無視 FS での保護は `resolve()` による実体ケース正準化に依存し、
+        **実在ファイルにのみ成立する**（将来 `resolve()` を `absolute()` 等に
+        置換すると沈黙して保護が外れるため、変更時は要注意）
+      - `relative_to()` が失敗しないのは step 10 で `claude_root in
+        resolved.parents` の check を先行させているため
     """
     # 1. 空文字列 / 空白のみ
     if not rel.strip():
@@ -735,8 +745,15 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
         return None, "deletions.txt itself cannot be deleted (self-referencing guard)"
 
     # 13. init-only ファイル保護（利用先ユーザーが育てた内容を守る）
-    if is_init_only(rel):
-        return None, f"init-only file cannot be deleted: {rel}"
+    # step 10/11/12 と同様に resolved から相対 POSIX パスを導出して比較する
+    # （二重スラッシュ・末尾スラッシュ・大小違いなどの表記ゆれを正規化）
+    try:
+        normalized_rel = resolved.relative_to(claude_root).as_posix()
+    except ValueError:
+        # step 10 で済み check 済みのため通常到達しない
+        return None, f"path escapes .claude/: {rel}"
+    if is_init_only(normalized_rel):
+        return None, f"init-only file cannot be deleted: {normalized_rel}"
 
     # 14. ディレクトリ拒否
     if resolved.is_dir():

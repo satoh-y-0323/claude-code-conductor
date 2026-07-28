@@ -330,6 +330,14 @@ c3 update が上書きすると利用先で `/promote-pattern` が追記した�
 **対処**: `promoted/` への変更は `c3 update` に委ねず、手動または `/promote-pattern` skill で管理する。
 C3 side で `promoted/` の雛形を更新した場合は、リリースノートで手動マージ手順を案内する。
 
+**削除経路**: INIT_ONLY ファイルは `_walk_diff` だけでなく `.claude/deletions.txt` 経由の削除からも保護される。
+配布元が誤って `rules/promoted/index.md` を `deletions.txt` に追記しても、利用先ユーザーが育てた
+目録行が完全削除されることはない（セーフガード step 13 で弾かれ、warning が出力される）。
+
+**意図的廃止の場合**: INIT_ONLY をユーザーの同意のもと廃止したい場合、`deletions.txt` は使えない
+（セーフガード構造上、INIT_ONLY は削除不能に設計）。代わりにリリースノートで「利用先ユーザーが
+手動で削除するよう案内する」手順を記載する（c3 update では自動削除できない制約を明記）。
+
 ### 落とし穴 4: `deletions.txt` 自身は削除されない・絶対パスは無視される
 
 **症状**: `deletions.txt` が利用先に残り続ける / 絶対パスを書いたのに削除されない / `..` 含みパスが効かない。
@@ -345,6 +353,10 @@ C3 side で `promoted/` の雛形を更新した場合は、リリースノー�
   - シンボリックリンク経由のパス
   - ディレクトリ（ファイルのみサポート）
   - `\` （バックスラッシュ）を含むパス
+  - INIT_ONLY ファイル（`.gitignore` / `rules/promoted/index.md`）。判定は解決済み実体パスに対して
+    行われるため、表記ゆれ（二重スラッシュ `rules//promoted/`・末尾スラッシュ `rules/promoted/index.md/`・
+    大小違い `RULES/PROMOTED/INDEX.MD` や `.GITIGNORE`）でも保護される（`Path.resolve()` による
+    ケース正準化が実体ファイルに対して機能するため）
 
 **対処**:
 - 削除候補に書くパスは「.claude/ からの相対 POSIX パス」のみ（例: `agents/foo.md`）
