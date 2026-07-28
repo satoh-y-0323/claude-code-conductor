@@ -107,5 +107,7 @@ def test_probe_case_normalization_behaviour(tmp_path):
 
     _report(lines)
 
-    # 本テストは調査用のため常に成功させる（CI を赤くしない）
-    assert True
+    # pytest は成功テストの stdout/stderr を畳むため、CI ログに値を残すには
+    # 失敗させて assertion メッセージに載せるしかない（-s を CI へ足すより副作用が小さい）。
+    # 本テストは調査用で、原因確定後にファイルごと削除する。
+    pytest.fail("PROBE RESULT (intentional failure to surface values):\n" + "\n".join(lines))
