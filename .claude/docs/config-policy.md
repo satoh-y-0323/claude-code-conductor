@@ -59,6 +59,26 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 > | `state/*.flag` / `state/tier_selection.json` | hook が動的生成する**セッション一時**ファイル |
 > | `logs/` / `worktrees/` | 実行ログ・並列実行の一時領域 |
 >
+> > **既存プロジェクトへの移行（重要）**: **`.gitignore` は「既に tracked のファイル」には効かない。**
+> > v2.58.0 より前から C3 を使っていて `state/recall.hnsw`（実測 63MB）等を既に commit している場合、
+> > `c3 update` で `.claude/.gitignore` が配置されても**それだけでは追跡から外れない**。
+> > 一度だけ以下を実行する（作業ツリーのファイルは消えない）:
+> >
+> > ```bash
+> > git rm -r --cached .claude/state/recall.hnsw .claude/state/recall_meta.json \
+> >                    .claude/logs .claude/worktrees 2>/dev/null
+> > git status   # 削除予定が想定どおりか確認してから commit する
+> > ```
+> >
+> > 履歴からも消したい場合（63MB が clone を重くしている等）は `git filter-repo` 等での
+> > 履歴書き換えが必要で、共有ブランチでは force push を伴うためチームと合意してから行う。
+> > **未 commit のプロジェクトでは何もしなくてよい**（`.claude/.gitignore` が最初から効く）。
+> >
+> > また、プロジェクトルートの `.gitignore` で `.claude/state/` のように**ディレクトリごと**除外して
+> > いる場合、git はその配下へ降りないため `.claude/.gitignore` の否定パターン（`!state/setup_done.flag`
+> > 等）が**効かない**。ルート側を `.claude/state/*` のようなワイルドカード形式にするか、
+> > ルート側の当該行を削除して `.claude/.gitignore` に一本化する。
+>
 > **載せる**（引き継ぎ資産）:
 >
 > | 対象 | 何が引き継がれるか |

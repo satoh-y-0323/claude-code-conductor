@@ -26,9 +26,16 @@ import sys
 import uuid
 from pathlib import Path
 
-# stdout/stderr reconfigure for Windows CI compatibility (cp1252 environment)
-# stdin は未使用なため reconfigure 不要（本スクリプトは対話入力を使用するが、
-# input() は自動的に locale に従うため明示的なencoding 指定が不必要）
+# stdin/stdout/stderr reconfigure for Windows CI compatibility (cp1252 environment)
+# 本スクリプトは input() で **stdin を読む**（英語 / 日本語サマリの対話入力）。
+# 既定のままだと cp932 / cp1252 で解釈されるため、UTF-8 を流し込む非対話実行
+# （`printf '...\n...\n' | python scripts/extract_breaking_changes.py`）で
+# 日本語サマリが化ける。CLAUDE.md §9-3 の canonical 順序（stdin → stdout → stderr）に従う。
+try:
+    sys.stdin.reconfigure(encoding='utf-8')
+except (AttributeError, ValueError, OSError):
+    pass
+
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except (AttributeError, ValueError, OSError):

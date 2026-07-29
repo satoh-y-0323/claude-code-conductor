@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.58.0] - 2026-07-29
+
+### 破壊的変更
+
+- **`c3 init` / `c3 update` が `.claude/.gitignore` を配置するようになった（既存プロジェクトは一度だけ移行作業が必要）**: 従来 C3 は利用先に gitignore を一切配置しておらず、`.claude/state/recall.hnsw`（recall インデックス・**実測 63MB**）のような再生成可能ファイルが素で commit されうる状態だった。本バージョンから配布物として `.claude/.gitignore` を追加し、**再生成可能なもの（`state/recall.*`）とセッション一時のもの（`state/*.flag` / `state/tier_selection.json` / `logs/` / `worktrees/` / `tmp/`）のみ**を除外する（`state/setup_done.flag` と `tmp/.gitkeep` は否定パターンで tracked に戻す）。**重要: `.gitignore` は既に tracked のファイルには効かない。** v2.57.0 以前から C3 を使っていて上記を既に commit している場合、`c3 update` で配置されるだけでは追跡から外れないため、一度だけ `git rm -r --cached .claude/state/recall.hnsw .claude/state/recall_meta.json .claude/logs .claude/worktrees` を実行して commit する（作業ツリーのファイルは消えない）。また**プロジェクトルートの `.gitignore` で `.claude/state/` のようにディレクトリごと除外している場合、git はその配下へ降りないため `.claude/.gitignore` の否定パターンが効かない**。ルート側をワイルドカード形式（`.claude/state/*`）にするか、ルート側の当該行を削除して `.claude/.gitignore` へ一本化する。詳細な手順は `.claude/docs/config-policy.md` §1-2 を参照。なお `.claude/.gitignore` は init-only（下記）のため、配置後にユーザーが追記した除外行は `c3 update` で失われない
+
+### 追加
+
+- **`INIT_ONLY_PATTERNS`（`c3 init` は配置するが `c3 update` は上書きしないファイル）**: `_excludes.should_skip()` は「wheel に収録するか / `c3 init` が配置するか / `c3 update` が上書きするか」の 3 つの問いを 1 つの真偽値で兼ねており、「**初回は配置したいが、以後ユーザーが育てるので上書きしたくない**」を表現できなかった（`should_skip` に入れると wheel からも消えて init でも配置されない）。第 2 の独立した軸として `INIT_ONLY_PATTERNS` / `is_init_only()` を追加する。対象は `rules/promoted/index.md`（利用先で `/promote-pattern` が目録行を追記するユーザー所有領域）と `.gitignore`（利用先が独自の除外行を追記しうる）の 2 件。wheel ビルドは `should_skip` しか参照しないため、3 ファイル同期（`.gitignore` / `_excludes.py` / `hatch_build.py`）の対象外である
+- **`deletions.txt` 経路の init-only 保護（`_validate_deletion_path` step 13）**: `deletions.txt` は `_walk_diff` とは別にファイルを消す経路であり、配布元が誤って init-only ファイルを列挙すると利用先ユーザーが育てた内容が完全削除される。既存 14 段のセーフガードと同じく「warning を積んでスキップ」する形式で step 13 を追加した（全 15 段）
+- **`.claude/agent-memory/*/MEMORY.md` の肥大検知警告（`stop.py`）**: ハーネスの injection 予算（先頭 200 行 / 25KB）の 80% に達したら stderr へ警告する。block ではなく warn。閾値は実測してから決定した（security-reviewer 84% / tester 71% / code-reviewer 70% / developer 18% / design-critic 3% ＝実機で発火するのは 1 件のみ）。**行数よりバイト数が先に飽和する**（code-reviewer は 73 行で 70%）ため 25KB が実質的な制約である。読み込みは 51,200B で打ち切り、上限到達時は「N 行以上」と下限表記する
+- **CI を 3 OS マトリクスへ拡張**: 従来 `ubuntu-latest` 単独だったため、パス正規化・大小無視ファイルシステム依存の挙動が CI で一度も検証されていなかった。`ubuntu-latest`（Python 3.10 / 3.11 / 3.12）に加え `windows-latest` / `macos-latest`（Python 3.12）を追加する。**この拡張の初回実行で実バグ 2 件（下記「修正」の macOS 保護破綻と Windows の `UnicodeEncodeError`）を検出した**
+- **`scripts/` の stdout / stderr reconfigure と静的検査テスト**: `tests/test_scripts_stdout_encoding.py` を新設し、`scripts/` 配下で**非 ASCII を含む文字列を `print` する場合はその出力先ストリーム（`file=` 省略時は stdout / `file=sys.stderr` 指定時は stderr）の reconfigure を持つこと**を AST で機械強制する。f-string（`ast.JoinedStr`）の定数部も走査し、走査対象が 0 件のときは `RuntimeError` で空回りを防ぐ（除外リストは設けない）
+
+### 変更
+
+- **`.claude/` 実行時生成領域のコミット方針を「載せない理由がなければ載せる」に統一**: C3 は使いながら育てるフレームワークで、育った結果の大半が実行時生成領域に溜まる。載せなければその資産は最初に動かした人のマシンにしか残らない。**載せる**＝`agent-memory/`（reviewer の `[許容例外]` はコミットして初めてチーム全員の reviewer が同じ判断を再現できる）/ `reports/`（PR レビュー時に「レポート＋実差分」を並べて読める）/ `memory/` / `state/c3.db`（tier-routing の学習と review-hint の判断記録）/ `state/security_audit_exceptions.json` / `state/tier_autoapply.jsonl`。**載せない**＝再生成可能なものとセッション一時のもの（上記「破壊的変更」参照）。`config-policy.md` / `taxonomy.md` / `README.md` / `docs/getting-started.md` の旧方針（「reports/・memory/sessions/ 等の個人作業ファイルを除外」）を全て統一した。**c3.db のコンフリクト**: SQLite バイナリは git でマージできないため、同一プロジェクトを複数人が同時改修する運用では衝突時に片方の記録が失われる。2026-07-28 時点の実運用では未発生のため「まず載せる・問題化した時点でエクスポート方式を検討する」方針とした。**public リポジトリでの注意**: security-reviewer の MEMORY.md と `security-review-report-*.md` は構造上「既知の弱点と、それを見逃している理由の一覧」になるため、公開プロジェクトでは security 系のみ gitignore か `local` スコープを検討する
+- **agent 定義の `## Memory` 節を簡略化（8 agent・正味 16 行減）**: ハーネスが system prompt へ自動注入する内容との重複（読み書き指示）と、機械参照のない書式縛りを削除した。公式 `sub-agents.md`「Enable persistent memory」により Read/Write/Edit の付与と管理指示はハーネス側が注入する。**維持したのは記録対象の限定（役割固有 3 項目）**で、これは共有前提では load-bearing になる。雑記録禁止・書式・サイズキャップを 1 行に統合し、200 行に加え **25KB**・「超過分は起動時に読まれない」・「1 エントリ 1 行」を明示して従来より正確化した。`rules/` への集約ではなく簡略化を選んだのは、`rules/` が親セッションにも常時ロードされコンテキスト総量が増えるため
+
+### 修正
+
+- **init-only 保護が macOS で機能していなかった（CI 3 OS 化で発覚）**: `_validate_deletion_path` step 13 の大小違い保護が `Path.resolve()` の実体ケース正準化に依存していたが、これは Windows（`nt._getfinalpathname`）固有の挙動であり、**macOS APFS は大小無視 FS でありながら `resolve()` がケースを正準化しない**。このため macOS 利用者では `c3 update` が `deletions.txt` 経由で init-only ファイルを削除しうる状態だった。さらに `resolve()` のケース正準化は**実在ファイル限定**のため、保護対象がまだ存在しない場合は Windows でも素通りしていた。是正として、step 13 の呼び出し側で `resolved` 由来の相対 POSIX パスの**各成分**に `.lower().rstrip('. ')` を適用して再結合する（`.claude/hooks/_hook_utils.norm_component` と同一ロジック）。空成分は保持する（除去すると `rules/.../promoted/index.md` のような別実体が `rules/promoted/index.md` に畳まれ、利用者が正当に削除したいファイルを削除できなくなる）。パターン側は `fnmatch.fnmatchcase`（ケース依存）で正規化されないため、`INIT_ONLY_PATTERNS` が正規形であることを機械強制するテストも追加した
+- **init-only 保護をパスの表記ゆれで迂回できた**: step 13 が `deletions.txt` の生文字列を `is_init_only()` に渡していたため、実ファイルに解決される表記ゆれで保護を迂回できた。迂回入力は `rules//promoted/index.md`（二重スラッシュ・OS 非依存）/ `rules/promoted/index.md/`（末尾スラッシュ・OS 非依存）/ `RULES/PROMOTED/INDEX.MD`・`.GITIGNORE`（大小違い・大小無視 FS）の 3 類型。`resolved.relative_to(claude_root).as_posix()` を渡す形へ変更し step 10/11/12 と一貫させた
+- **Windows CI で `scripts/extract_breaking_changes.py` が `UnicodeEncodeError` でクラッシュしていた**: GitHub Actions の `windows-latest` ランナーは cp932 でなく **cp1252** のため、成功時の日本語メッセージがエンコードできず落ちていた。ローカル（cp932）では日本語が「化けるだけ」で済むが cp1252 では例外になるため、「ローカルで動いているから CI でも動く」は成り立たない。`scripts/` の 2 ファイル両方に stdout / stderr の reconfigure をモジュールトップレベルで追加した（`check_deletions.py` の未記載検出経路は日本語を **stderr** へ出すため stdout だけでは不足する）
+- **`cli_init.py --force` のヘルプに init-only ファイルも失われる旨を追記**
+
 ## [2.57.0] - 2026-07-27
 
 ### 追加
