@@ -38,6 +38,16 @@ TODO_TRUNCATION_NOTICE = (
     '表示されていない項目があるため、全文は `{path}` を Read して確認すること。'
 )
 
+# 現在地（genba）値の表示上限（characters）。
+# ①はマーカーより前方に出力されるため、①の長さがマーカーの生存位置を直接決める。
+# 現在地は運用規約上「フェーズD 実装中」等の短い定型値であり（dev-workflow SKILL.md）、
+# 実値は 50 文字程度。200 は正常系に一切影響しない。値の根拠は plan §1-5。
+MAX_GENBA_CHARS = 200
+
+GENBA_TRUNCATION_SUFFIX = (
+    '…[現在地は全 {total} 文字中 先頭 {shown} 文字のみ表示。全文は `{path}` を Read]'
+)
+
 # 現在地フィールドの読み取り用 regex（architecture §2.3）
 _GENBA_RE = re.compile(r'^現在地:[ \t]*(.*)$', re.MULTILINE)
 
@@ -127,6 +137,30 @@ def _sanitize_genba(value: str) -> str:
     - タブ（\\t）は保持する（SR L-1・session_utils.sanitize_value 参照）
     """
     return _load_session_utils().sanitize_value(value)
+
+
+def _cap_genba(value: str, path: str, limit: int = MAX_GENBA_CHARS) -> str:
+    """現在地の値を limit 文字で切り詰め、切り詰めた場合のみ fail-loud 表示を付ける。
+
+    ①ワークフロー復帰指示は fail-loud マーカーより前方に出力されるため、
+    現在地の値が肥大するとマーカーが上限境界の外へ押し出されて静かに消える。
+    それを防ぐためのキャップ（SR-NEW）。
+
+    判定は ``len(value) <= limit`` で「ちょうどは切り詰めない」側に寄せる
+    （``_fit_items`` と同じ規約）。切り詰めは末尾を落として先頭を残す
+    （現在地の値は先頭にフェーズ名が来るため）。
+
+    Note:
+        ``value[:limit]`` は末尾を削るだけなので、サニタイズ済み文字列に存在しなかった
+        ``-->`` が新たに出現することはない（削除操作は新しい部分列を作らない）。
+        grapheme cluster（絵文字の ZWJ 連結など）の途中で切れる可能性はあるが、
+        表示の乱れのみで安全性には影響しないため許容する。
+    """
+    if len(value) <= limit:
+        return value
+    return value[:limit] + GENBA_TRUNCATION_SUFFIX.format(
+        total=len(value), shown=limit, path=path
+    )
 
 
 def _fit_items(items: list[str], budget: int) -> list[str]:
@@ -222,9 +256,16 @@ def main():
 
     head_parts = []
 
+    # safe_path: セッションファイルの絶対パスをサニタイズして通知に使う
+    # （①の切り詰め表示と残タスク切り詰めマーカーの両方で使うため冒頭で 1 回だけ算出する）
+    safe_path = _sanitize(path)
+
     # ①ワークフロー復帰指示（現在地が進行中のときのみ・出力冒頭）
     if genba_in_progress:
-        safe_genba = _sanitize_genba(genba)
+        # キャップは必ず _sanitize_genba の後に掛ける:
+        # sanitize_value は '-->' → '-- >' で 1 出現あたり 1 文字増えるため、
+        # サニタイズ前に長さを測ると過小評価になる。
+        safe_genba = _cap_genba(_sanitize_genba(genba), safe_path)
         head_parts.append(
             f'⚠️ dev-workflow 進行中（現在地: {safe_genba}）。\n'
             f'残作業に直接着手せず、対応 skill（develop / review-phase / start）経由で再開し、\n'
@@ -268,13 +309,10 @@ def main():
     # fixed_len は head_parts + tail_parts + print() の末尾改行による実効文字数
     fixed_len = len('\n'.join(head_parts + tail_parts))  # nul-boundary: allow(固定部の長さを測るための一時的な連結で、結果の文字列は len() 計測後に捨てられるため、機械的な分割消費者がない)
 
-    # safe_path: セッションファイルの絶対パスをサニタイズして通知に使う
-    safe_path = _sanitize(path)
-
     parts = []
     if pending_todos:
         heading = '\n## 残タスク'
-        # 予算 = 上限 - 安全マージン - 既出部分 - 見出し - print末尾改行
+        # -3 の内訳: heading 挿入で増える '\n' 1 + 本文挿入で増える '\n' 1 + print() の末尾改行 1
         budget_body = MAX_OUTPUT_CHARS - OUTPUT_SAFETY_MARGIN - fixed_len - len(heading) - 3
         body = '\n'.join(pending_todos)  # nul-boundary: allow(stdout へ出力する残タスク本文の構成で、読み手は表示または全文 Read のみであり、機械的な分割消費者がない)
 
@@ -302,9 +340,18 @@ def main():
     # `kept` が空のときの総長は `fixed_len + len(heading) + len(notice) + 3` で、
     # `len(notice) <= len(reserve)` かつ `budget2 >= 0` ⟹ `len(reserve) <= budget_body - 1`
     # より上限内に収まる。
-    # `budget2 < 0` になるのは固定部（①②④⑤）だけで上限に迫る場合であり、
-    # これは requirements §6-4 が明示的にスコープ外宣言した領域であること
-    # （クラッシュはせず、マーカーは出るが上限は保証されない）。
+    # 固定部①②④⑤の性質はマーカーとの位置関係で 3 つに分かれる:
+    # - ①現在地（マーカーより前）: `MAX_GENBA_CHARS` でキャップ済み。
+    #   したがって①が `budget2 < 0` の原因になることはなく、マーカーは常に
+    #   `MAX_OUTPUT_CHARS` 境界の内側に留まる。
+    # - ②ヘッダ（マーカーより前）: 固定長（`date_str` は `^\d{8}$` 検証済み）で変動しない。
+    # - ④⑤アプローチ（マーカーより後）: `_tail` の行数上限のみで文字数上限がないため、
+    #   総長が上限を超え得る（`budget2 < 0` になり得るのはこの肥大時のみ）。
+    #   ただしマーカーは④⑤より前方にあるため、マーカーの生存は④⑤の大きさに依存しない。
+    # よってマーカー生存を脅かすのは①の肥大だけであり、それは `MAX_GENBA_CHARS` で
+    # キャップ済みである。④⑤による総長超過は requirements §6-4 が明示的に
+    # スコープ外宣言した領域であること（クラッシュはせず、マーカーは生存するが
+    # 上限は保証されない）。
 
     lines = head_parts + parts + tail_parts
     print('\n'.join(lines))  # nul-boundary: allow(stdout へ出力する復元メッセージ全体。読み手は Claude Code の表示でリポジトリ内に split 側がない)
