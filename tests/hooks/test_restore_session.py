@@ -2060,8 +2060,13 @@ class TestCapGenba:
         assert len(value) == limit + 1
 
         result = module._cap_genba(value, "/path/to/session")
+        assert result.startswith(value[:limit])
         assert "…[現在地は全" in result
-        assert len(result) == limit + 1
+        # 長さ検証：先頭 limit 文字 + 切り詰め表示の実長
+        expected_suffix = module.GENBA_TRUNCATION_SUFFIX.format(
+            total=limit + 1, shown=limit, path="/path/to/session"
+        )
+        assert len(result) == limit + len(expected_suffix)
 
     def test_short_value_unchanged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2120,7 +2125,7 @@ class TestMainGenbaCapAndMarker:
     ) -> None:
         """C-4: 現在地 15,000 文字 + 残タスク数十件のとき、マーカーが 10,000 境界内。"""
         _, sessions_dir = _setup_tmp_structure(tmp_path)
-        genba = "フェーズD実装中" + "X" * 14985
+        genba = "フェーズD実装中" + "X" * (15000 - len("フェーズD実装中"))
         assert len(genba) == 15000
 
         todos = self._make_todos(20, 2000)
