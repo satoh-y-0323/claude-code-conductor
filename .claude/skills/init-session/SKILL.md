@@ -122,6 +122,8 @@ Glob で `.claude/memory/sessions/*.tmp` を検索し、ファイル名（YYYYMM
 {promotion_candidate: true のパターン一覧。なければ「なし」}
 ```
 
+> 注: `現在地:` の値は dev-workflow SKILL.md の運用総則で 200 文字以内と定められている。ただし**この長さ規約を機械的に強制する仕組みは無い**（`restore_session.py` の `MAX_GENBA_CHARS` / `_cap_genba` は同 hook の stdout を組み立てるときだけ働くもので、本 skill が session.tmp を直接 Read する経路には関与しない。書き込み時点で長さを検証する hook も存在しない）。したがって規約に反する長大な値が実在し得る。要約・省略はせず、上記のサニタイズを施したうえでそのまま表示すること。
+
 Step 1.5 で「完了している可能性のあるタスク」が検出された場合は、Step 4 の前に以下の AskUserQuestion を提示する（**`from-start` 起動時はスキップ**・G-3 参照）:
 
 ```json
