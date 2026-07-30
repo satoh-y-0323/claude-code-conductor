@@ -10,7 +10,7 @@ import sys
 
 try:
     sys.stdin.reconfigure(encoding='utf-8')
-    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8', newline='\n')
     sys.stderr.reconfigure(encoding='utf-8')
 except AttributeError:
     pass
@@ -26,6 +26,17 @@ APPROACH_TAIL_LINES = 15
 # GENBA_DONE: 現在地値が「完了」状態を表す定数（GENBA = 現在地 の音写）（CR M-01）。
 # 他 Python consumer が生まれたら session_utils へ移動すること（CR L-06）。
 GENBA_DONE = '完了'
+
+# stdout の文字数上限（DC-AS-001）
+MAX_OUTPUT_CHARS = 10000
+OUTPUT_SAFETY_MARGIN = 200
+
+# 残タスク切り詰め通知文言テンプレート（architecture §2-4）
+TODO_TRUNCATION_NOTICE = (
+    '⚠️ 残タスクは全 {total} 件のうち先頭 {shown} 件のみ表示している'
+    '（C3 が stdout {limit} 文字上限に収めるため末尾側を切り詰めた）。'
+    '表示されていない項目があるため、全文は `{path}` を Read して確認すること。'
+)
 
 # 現在地フィールドの読み取り用 regex（architecture §2.3）
 _GENBA_RE = re.compile(r'^現在地:[ \t]*(.*)$', re.MULTILINE)
@@ -118,6 +129,55 @@ def _sanitize_genba(value: str) -> str:
     return _load_session_utils().sanitize_value(value)
 
 
+def _fit_items(items: list[str], budget: int) -> list[str]:
+    """予算に収まる項目を先頭から順に返す（architecture §2-2）。
+
+    項目の途中では絶対に切らない（意味の破壊とサニタイズ済みトークン `-- >` の分断を防ぐ）。
+    `budget <= 0` のとき必ず空リストを返す。
+    `_tail` の `n=0` が全体を返す反直感挙動とは意味が逆である点に注意。
+
+    Args:
+        items: サニタイズ済みの項目文字列リスト。
+        budget: 総文字数の上限。
+
+    Returns:
+        予算に収まるまでの先頭連続部分。budget <= 0 のときは空リスト。
+    """
+    if budget <= 0:
+        return []
+
+    kept = []
+    used = 0
+    for item in items:
+        # 2 件目以降は '\n' の 1 文字が挿入されるコスト
+        cost = len(item) + (1 if kept else 0)
+        if used + cost > budget:
+            break  # continue ではない（前置の連続性を保つ）
+        kept.append(item)
+        used += cost
+
+    return kept
+
+
+def _truncation_notice(total: int, shown: int, path: str) -> str:
+    """残タスク切り詰め通知文言を生成する（architecture §2-4）。
+
+    Args:
+        total: 全体の項目数。
+        shown: 実際に表示される項目数。
+        path: セッションファイルの絶対パス。
+
+    Returns:
+        フォーマットされた通知文字列。
+    """
+    return TODO_TRUNCATION_NOTICE.format(
+        total=total,
+        shown=shown,
+        limit=MAX_OUTPUT_CHARS,
+        path=path
+    )
+
+
 def main():
     path = find_latest_session()
     if not path or not os.path.exists(path):
@@ -158,39 +218,95 @@ def main():
     if not genba_in_progress and not pending_todos and not successes and not failures:
         sys.exit(0)
 
-    lines = []
+    # ========== 2 段構成・段階 1: head_parts と tail_parts を事前組立 ==========
+
+    head_parts = []
 
     # ①ワークフロー復帰指示（現在地が進行中のときのみ・出力冒頭）
     if genba_in_progress:
         safe_genba = _sanitize_genba(genba)
-        lines.append(
+        head_parts.append(
             f'⚠️ dev-workflow 進行中（現在地: {safe_genba}）。\n'
             f'残作業に直接着手せず、対応 skill（develop / review-phase / start）経由で再開し、\n'
             f'各エージェント出力後の Approval Flow を守ること。'
         )
 
     # ②ヘッダ
-    lines.append(f'[C3 セッション復元: {date_str} / 圧縮後リマインダー]')
+    head_parts.append(f'[C3 セッション復元: {date_str} / 圧縮後リマインダー]')
 
-    # ③残タスク（- [ ] 行のみ・0件ならセクション省略）
-    if pending_todos:
-        lines.append('\n## 残タスク')
-        lines.append('\n'.join(pending_todos))  # nul-boundary: allow(stdout へ出す復元メッセージの残タスク段落。表示専用)
+    # tail_parts: ④⑤を先に組み立てて fixed_len 計算に使う
+    tail_parts = []
 
     # ④うまくいったアプローチ（末尾 N 行に切り詰め・行単位でサニタイズ）（SR M-2）
     if successes:
-        lines.append('\n## うまくいったアプローチ')
         tail_text = _tail(successes, APPROACH_TAIL_LINES)
+        n = len(successes.splitlines())
+        # 切り詰めが起きたときだけサフィックスを付ける（DC-GP-005）
+        if n > APPROACH_TAIL_LINES:
+            heading = f'\n## うまくいったアプローチ（末尾 {APPROACH_TAIL_LINES} 行のみ・全 {n} 行）'
+        else:
+            heading = '\n## うまくいったアプローチ'
+        tail_parts.append(heading)
         sanitized_lines = [_sanitize(line) for line in tail_text.splitlines()]
-        lines.append('\n'.join(sanitized_lines))  # nul-boundary: allow(stdout へ出す復元メッセージの成功アプローチ段落。表示専用)
+        tail_parts.append('\n'.join(sanitized_lines))  # nul-boundary: allow(stdout へ出す復元メッセージの成功アプローチ段落。表示専用)
 
     # ⑤試みたが失敗したアプローチ（末尾 N 行に切り詰め・行単位でサニタイズ）（SR M-2）
     if failures:
-        lines.append('\n## 試みたが失敗したアプローチ')
         tail_text = _tail(failures, APPROACH_TAIL_LINES)
+        n = len(failures.splitlines())
+        # 切り詰めが起きたときだけサフィックスを付ける（DC-GP-005）
+        if n > APPROACH_TAIL_LINES:
+            heading = f'\n## 試みたが失敗したアプローチ（末尾 {APPROACH_TAIL_LINES} 行のみ・全 {n} 行）'
+        else:
+            heading = '\n## 試みたが失敗したアプローチ'
+        tail_parts.append(heading)
         sanitized_lines = [_sanitize(line) for line in tail_text.splitlines()]
-        lines.append('\n'.join(sanitized_lines))  # nul-boundary: allow(stdout へ出す復元メッセージの失敗アプローチ段落。表示専用)
+        tail_parts.append('\n'.join(sanitized_lines))  # nul-boundary: allow(stdout へ出す復元メッセージの失敗アプローチ段落。表示専用)
 
+    # ========== 段階 2: 固定部長から残タスク予算を逆算し、切り詰め通知を判定 ==========
+
+    # fixed_len は head_parts + tail_parts + print() の末尾改行による実効文字数
+    fixed_len = len('\n'.join(head_parts + tail_parts))
+
+    # safe_path: セッションファイルの絶対パスをサニタイズして通知に使う
+    safe_path = _sanitize(path)
+
+    parts = []
+    if pending_todos:
+        heading = '\n## 残タスク'
+        # 予算 = 上限 - 安全マージン - 既出部分 - 見出し - print末尾改行
+        budget_body = MAX_OUTPUT_CHARS - OUTPUT_SAFETY_MARGIN - fixed_len - len(heading) - 3
+        body = '\n'.join(pending_todos)
+
+        if len(body) <= budget_body:
+            # パス 1: 全件がマーカーなしで収まる
+            parts = [heading, body]
+        else:
+            # パス 2: 先頭部分に切り詰め・マーカーを付ける
+            total = len(pending_todos)
+            # reserve: 最悪ケース（全 total 件を表示する場合のマーカー長）から上界を得る
+            reserve = _truncation_notice(total, total, safe_path)
+            budget2 = budget_body - len(reserve) - 1  # -1 はマーカー挿入で増える '\n'
+            kept = _fit_items(pending_todos, budget2)
+            notice = _truncation_notice(total, len(kept), safe_path)
+            # kept が空のときだけ本文パートを足さない（マーカーは必ず出す・fail-loud）
+            parts = [heading, notice] + (['\n'.join(kept)] if kept else [])
+
+    # 先頭優先を採る理由は 2 点（DC-AS-002）:
+    # (1) ハーネスの truncate preview は先頭側を残すため、C3 側の予算計算にズレがあっても
+    #     優先度の高い内容が生き残る（二重防御）
+    # (2) 落とした項目は fail-loud マーカーと全文ポインタで必ず通知される
+
+    # 上限保証コメント（DC-AS-003）:
+    # 上限 `MAX_OUTPUT_CHARS` を満たす保証条件は **`budget2 >= 0`** であること。
+    # `kept` が空のときの総長は `fixed_len + len(heading) + len(notice) + 3` で、
+    # `len(notice) <= len(reserve)` かつ `budget2 >= 0` ⟹ `len(reserve) <= budget_body - 1`
+    # より上限内に収まる。
+    # `budget2 < 0` になるのは固定部（①②④⑤）だけで上限に迫る場合であり、
+    # これは requirements §6-4 が明示的にスコープ外宣言した領域であること
+    # （クラッシュはせず、マーカーは出るが上限は保証されない）。
+
+    lines = head_parts + parts + tail_parts
     print('\n'.join(lines))  # nul-boundary: allow(stdout へ出力する復元メッセージ全体。読み手は Claude Code の表示でリポジトリ内に split 側がない)
 
 
