@@ -266,7 +266,7 @@ def main():
     # ========== 段階 2: 固定部長から残タスク予算を逆算し、切り詰め通知を判定 ==========
 
     # fixed_len は head_parts + tail_parts + print() の末尾改行による実効文字数
-    fixed_len = len('\n'.join(head_parts + tail_parts))
+    fixed_len = len('\n'.join(head_parts + tail_parts))  # nul-boundary: allow(固定部の長さを測るための一時的な連結で、結果の文字列は len() 計測後に捨てられるため、機械的な分割消費者がない)
 
     # safe_path: セッションファイルの絶対パスをサニタイズして通知に使う
     safe_path = _sanitize(path)
@@ -276,7 +276,7 @@ def main():
         heading = '\n## 残タスク'
         # 予算 = 上限 - 安全マージン - 既出部分 - 見出し - print末尾改行
         budget_body = MAX_OUTPUT_CHARS - OUTPUT_SAFETY_MARGIN - fixed_len - len(heading) - 3
-        body = '\n'.join(pending_todos)
+        body = '\n'.join(pending_todos)  # nul-boundary: allow(stdout へ出力する残タスク本文の構成で、読み手は表示または全文 Read のみであり、機械的な分割消費者がない)
 
         if len(body) <= budget_body:
             # パス 1: 全件がマーカーなしで収まる
@@ -290,7 +290,7 @@ def main():
             kept = _fit_items(pending_todos, budget2)
             notice = _truncation_notice(total, len(kept), safe_path)
             # kept が空のときだけ本文パートを足さない（マーカーは必ず出す・fail-loud）
-            parts = [heading, notice] + (['\n'.join(kept)] if kept else [])
+            parts = [heading, notice] + (['\n'.join(kept)] if kept else [])  # nul-boundary: allow(stdout へ出力するための出力部分リストの構成で、読み手は表示または全文 Read のみであり、機械的な分割消費者がない)
 
     # 先頭優先を採る理由は 2 点（DC-AS-002）:
     # (1) ハーネスの truncate preview は先頭側を残すため、C3 側の予算計算にズレがあっても
