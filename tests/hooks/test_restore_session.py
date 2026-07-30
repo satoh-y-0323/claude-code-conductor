@@ -1502,3 +1502,512 @@ class TestMainDateStrValidation:
             "非数字を含むファイル名のとき stdout は空であるべき（スキップ）。"
             f"stdout: {result.stdout!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 以降は stdout 10,000 文字上限対応（残タスクの文字数予算 + fail-loud マーカー）の
+# 追加テスト群。architecture-report-20260730-220207.md §2-1 / §2-2 / §2-3 / §5 に対応する。
+# 既存 53 ケースは 1 行も変更していない（末尾追記のみ）。
+# ---------------------------------------------------------------------------
+
+import os
+import re
+
+
+# ---------------------------------------------------------------------------
+# 39-45. _fit_items の境界値テスト（architecture §5-1 / §2-2 の境界条件表と 1:1）
+# ---------------------------------------------------------------------------
+
+
+class TestFitItems:
+    """_fit_items(items, budget) のモジュールレベル単体テスト（architecture §2-2）。
+
+    「合計」の定義は len('\\n'.join(items)) = Σlen(item) + (件数 - 1)。
+    仕様（architecture §2-2 のアルゴリズム）:
+      - 先頭から順に採用し、予算に入らない項目に出会った時点で **break** する
+        （continue ではない = 返り値は必ず先頭からの連続した前置部分になる）
+      - 項目の途中では絶対に切らない
+      - budget <= 0 のときは必ず空リストを返す
+
+    境界を main() 経由で作ると固定部長に依存して脆くなるため、<= 境界の厳密固定は
+    ヘルパー単体で行う（既存 TestTail と同じくモジュールを直接ロードして呼ぶスタイル）。
+    """
+
+    def test_total_exactly_equals_budget_keeps_all_items(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A-1: 合計がちょうど budget と等しいとき全件採用される（判定は > なので等号は収まる側）。"""
+        module = _load_module(monkeypatch, tmp_path)
+        items = ["aaa", "bbbb", "cc"]
+        budget = len("\n".join(items))  # 3 + 4 + 2 + 改行 2 = 11
+        result = module._fit_items(items, budget)
+        assert result == items, (
+            f"合計 == budget（{budget}）のとき全 {len(items)} 件が採用されるべき。実際: {result!r}"
+        )
+
+    def test_total_one_over_budget_drops_last_item(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A-2: 合計が budget + 1 のとき末尾 1 件だけが落ち、残りは全採用される。"""
+        module = _load_module(monkeypatch, tmp_path)
+        items = ["aaa", "bbbb", "cc"]
+        budget = len("\n".join(items)) - 1  # 合計 == budget + 1 の状況
+        result = module._fit_items(items, budget)
+        assert result == items[:-1], (
+            f"合計 == budget + 1 のとき末尾 1 件のみ落ちるべき（期待 {items[:-1]!r}）。実際: {result!r}"
+        )
+
+    def test_budget_zero_returns_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A-3: budget == 0 のとき必ず空リストを返す。
+
+        注意（architecture §2-7 / 取り違え防止）: 同じ「切り詰め」でも _tail の n=0 は
+        lines[-0:] == 全体という反直感挙動で **全行を返す**（既存 TestTail::test_n_zero_returns_full_text）。
+        _fit_items はその逆で、budget 0 は「0 件しか入らない」を意味し必ず 0 件を返す。
+        """
+        module = _load_module(monkeypatch, tmp_path)
+        result = module._fit_items(["- [ ] タスクA", "- [ ] タスクB"], 0)
+        assert result == [], (
+            "budget == 0 のときは空リストを返すべき（_tail の n=0 とは逆の境界意味）。"
+            f"実際: {result!r}"
+        )
+
+    def test_negative_budget_returns_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A-4: budget < 0（負値）でも安全に空リストを返す。
+
+        注意（architecture §2-7 / 取り違え防止）: _tail の n=0 が全体を返すのとは **逆** に、
+        _fit_items は budget が 0 でも負でも必ず 0 件を返す。
+        固定部が上限に迫って budget が負になるケース（本ファイル B-6 相当）で
+        クラッシュしないことの土台になる。
+        """
+        module = _load_module(monkeypatch, tmp_path)
+        result = module._fit_items(["- [ ] タスクA"], -1)
+        assert result == [], (
+            f"budget < 0 のときは空リストを返すべき（負値でも安全）。実際: {result!r}"
+        )
+
+    def test_first_item_alone_over_budget_returns_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A-5: items[0] が単独で budget を超えるとき空リストを返す（項目分割禁止の帰結）。"""
+        module = _load_module(monkeypatch, tmp_path)
+        items = ["x" * 10, "y"]
+        result = module._fit_items(items, 5)
+        assert result == [], (
+            "先頭項目が単独で budget を超えるときは空リストを返すべき（項目の途中では切らない）。"
+            f"実際: {result!r}"
+        )
+
+    def test_empty_items_returns_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A-6: items == [] のとき空リストを返す。"""
+        module = _load_module(monkeypatch, tmp_path)
+        result = module._fit_items([], 100)
+        assert result == [], f"空入力は空出力であるべき。実際: {result!r}"
+
+    def test_stops_at_first_oversized_item_without_skipping_ahead(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A-7: 入らない項目に出会ったら break する（後続の小さい項目を拾いに行かない）。
+
+        2 件目が巨大・3 件目が極小のとき、continue 実装なら 3 件目を拾ってしまう。
+        break 実装であること（返り値が先頭からの連続した前置部分であること）を機械固定する。
+        """
+        module = _load_module(monkeypatch, tmp_path)
+        items = ["a" * 10, "b" * 5000, "c"]
+        result = module._fit_items(items, 20)
+        assert result == [items[0]], (
+            "入らない項目に出会った時点で break し、後続の小さい項目（3 件目）を拾わないべき。"
+            f"期待 {[items[0]]!r}、実際: {result!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 46-52. main 経由: 残タスクの文字数予算と fail-loud マーカー（architecture §5-2）
+#
+# 上限 assert の計測方法（本サイクルの確定裁定・後任向けメモ）:
+#   - _run_main_subprocess は subprocess.run(..., text=True, encoding="utf-8") を使う
+#     （本ファイル 96-101 行）。text モードの universal newlines により、Windows の
+#     \r\n は **読み取り時に既に \n へ正規化されている**
+#   - したがって .replace('\r\n', '\n') は恒等変換（no-op）であり、付けると
+#     「テストが CRLF を見ている」という誤解を生むだけで意味がない
+#   - さらに実装側は sys.stdout.reconfigure(encoding='utf-8', newline='\n') を採用し、
+#     Windows 実出力からも CRLF が構造的に消える。よって「テストが見ている len(stdout)」＝
+#     「ハーネスが数える文字数」が 3 OS で厳密一致する
+# ⇒ 上限 assert は必ず生の len(result.stdout) 1 本で行う（正規化を挟まない）。
+# ---------------------------------------------------------------------------
+
+
+class TestMainOutputBudget:
+    """main: stdout 10,000 文字上限に収めるための残タスク予算と fail-loud マーカー。
+
+    マーカー文言は将来の微修正で無関係に赤くならないよう、逐語全文ではなく
+    安定部分（'件のうち先頭' / 正規表現 '全 (\\d+) 件のうち先頭 (\\d+) 件' / パス文字列）で検査する。
+    """
+
+    # マーカー文言の安定部分（過検知テストにも使う）
+    MARKER_STABLE = "件のうち先頭"
+    # 総件数・表示件数を抽出する正規表現（architecture §2-4 の逐語文言の数値部）
+    MARKER_RE = re.compile(r"全 (\d+) 件のうち先頭 (\d+) 件")
+
+    def _write_session(
+        self,
+        sessions_dir: Path,
+        *,
+        todos: list[str] | None = None,
+        successes: list[str] | None = None,
+        failures: list[str] | None = None,
+        date_str: str = "20260730",
+    ) -> Path:
+        """テスト用セッションファイルを作成してパスを返す（既存フィクスチャと同じ並び順）。"""
+        todos = todos or []
+        successes = successes or []
+        failures = failures or []
+        content = (
+            f"SESSION: {date_str}\n"
+            "AGENT: \n"
+            "DURATION: \n"
+            "現在地: \n"
+            "\n"
+            "## うまくいったアプローチ\n"
+            + ("\n".join(successes) + "\n" if successes else "")
+            + "\n## 試みたが失敗したアプローチ\n"
+            + ("\n".join(failures) + "\n" if failures else "")
+            + "\n## 残タスク\n"
+            + ("\n".join(todos) + "\n" if todos else "")
+        )
+        session_file = sessions_dir / f"{date_str}.tmp"
+        session_file.write_text(content, encoding="utf-8")
+        return session_file
+
+    def _make_todos(self, count: int, size: int) -> list[str]:
+        """1 件 size 文字ちょうどの '- [ ] ' 行を count 件つくる。"""
+        out = []
+        for i in range(count):
+            prefix = f"- [ ] T{i:02d} "
+            out.append(prefix + "A" * (size - len(prefix)))
+        return out
+
+    def test_no_marker_when_todos_fit_in_budget(self, tmp_path: Path) -> None:
+        """B-1: 残タスクが予算未満のとき全件出力され、マーカーは出ない（過検知しない・requirements §7-3）。
+
+        注: このケースは上限値を必要としないため MAX_OUTPUT_CHARS を参照しない
+        （参照すると実装前に AttributeError で赤くなり、「実装前から緑であるべき」条件と噛み合わない）。
+        """
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        todos = ["- [ ] 小タスクA", "- [ ] 小タスクB", "- [ ] 小タスクC"]
+        self._write_session(sessions_dir, todos=todos)
+
+        result = _run_main_subprocess(sessions_dir)
+
+        assert result.returncode == 0, (
+            f"期待 exit 0、実際 {result.returncode}\nstderr: {result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert "## 残タスク" in stdout, (
+            f"残タスクセクションが出力されるべき。stdout: {stdout!r}"
+        )
+        for todo in todos:
+            assert todo in stdout, (
+                f"予算未満のときは全件出力されるべき（{todo!r} が欠落）。stdout: {stdout!r}"
+            )
+        assert self.MARKER_STABLE not in stdout, (
+            "予算内に全件収まるときは切り詰めマーカーを出してはいけない（過検知禁止）。"
+            f"stdout: {stdout!r}"
+        )
+
+    def test_oversized_todos_are_truncated_with_marker(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B-2: 1 件 2,000 文字 × 20 件のとき上限内に収まり、マーカーが件数とパスを伴って出る。"""
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        todos = self._make_todos(20, 2000)
+        self._write_session(sessions_dir, todos=todos)
+
+        module = _load_module(monkeypatch, sessions_dir)
+        max_chars = module.MAX_OUTPUT_CHARS
+
+        result = _run_main_subprocess(sessions_dir)
+        assert result.returncode == 0, (
+            f"期待 exit 0、実際 {result.returncode}\nstderr: {result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        # (a) 上限内（生の len(stdout) 1 本で判定する。理由は本セクション冒頭のコメント参照）
+        assert len(stdout) <= max_chars, (
+            f"stdout が上限 {max_chars} 文字を超えた（実際 {len(stdout)} 文字）。"
+        )
+
+        # (b) マーカーが出ること
+        assert self.MARKER_STABLE in stdout, (
+            "予算を超えて切り詰めたときは fail-loud マーカーを出すべき（沈黙禁止）。"
+            f"stdout: {stdout!r}"
+        )
+
+        # (c) 総件数 20 と表示件数が抽出できること
+        m = self.MARKER_RE.search(stdout)
+        assert m is not None, (
+            "マーカーから '全 N 件のうち先頭 M 件' の数値が抽出できない。"
+            f"stdout: {stdout!r}"
+        )
+        total, shown = int(m.group(1)), int(m.group(2))
+        assert total == len(todos), (
+            f"総件数は {len(todos)} であるべき。実際: {total}"
+        )
+        assert 0 < shown < total, (
+            f"このフィクスチャでは一部だけが表示されるはず（0 < shown < {total}）。実際: {shown}"
+        )
+
+        # (d) セッションファイルの絶対パスが含まれること（OS 依存セパレータをハードコードしない）
+        expected_path = os.path.normpath(
+            os.path.join(str(sessions_dir), "20260730.tmp")
+        )
+        assert expected_path in stdout, (
+            f"マーカーに全文参照先の絶対パス {expected_path!r} が含まれるべき。stdout: {stdout!r}"
+        )
+
+        # (e) 実際に出た - [ ] 行数が表示件数と一致すること
+        todo_lines = [ln for ln in stdout.splitlines() if ln.startswith("- [ ]")]
+        assert len(todo_lines) == shown, (
+            f"出力中の '- [ ]' 行数（{len(todo_lines)}）がマーカーの表示件数（{shown}）と一致しない。"
+        )
+
+    def test_limit_kept_when_approach_sections_also_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B-3: アプローチ 2 セクションにも本文があるとき、固定部長を織り込んで上限内に収まる。"""
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        todos = self._make_todos(20, 2000)
+        successes = [f"S{i:02d} " + "C" * 296 for i in range(5)]  # 各 300 文字 × 5 行
+        failures = [f"F{i:02d} " + "D" * 296 for i in range(5)]  # 各 300 文字 × 5 行
+        self._write_session(
+            sessions_dir, todos=todos, successes=successes, failures=failures
+        )
+
+        module = _load_module(monkeypatch, sessions_dir)
+        max_chars = module.MAX_OUTPUT_CHARS
+
+        result = _run_main_subprocess(sessions_dir)
+        assert result.returncode == 0, (
+            f"期待 exit 0、実際 {result.returncode}\nstderr: {result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        # 上限判定は生の len(stdout) 1 本（理由は本セクション冒頭のコメント参照）
+        assert len(stdout) <= max_chars, (
+            f"アプローチ 2 セクションの実長が予算計算（fixed_len）に反映されていない。"
+            f"上限 {max_chars} に対し実際 {len(stdout)} 文字。"
+        )
+        assert self.MARKER_STABLE in stdout, (
+            f"切り詰めたときはマーカーを出すべき。stdout 先頭 500 文字: {stdout[:500]!r}"
+        )
+
+    def test_marker_is_placed_right_after_heading(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B-4: マーカーは '## 残タスク' 見出しの直後・本文（最初の - [ ] 行）より前に置かれる（ADR-2）。"""
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        todos = self._make_todos(20, 2000)
+        self._write_session(sessions_dir, todos=todos)
+
+        # 上限値そのものは使わないが、実装済みモジュールのロード可否は B-2 側で担保される
+        _load_module(monkeypatch, sessions_dir)
+
+        result = _run_main_subprocess(sessions_dir)
+        assert result.returncode == 0, (
+            f"期待 exit 0、実際 {result.returncode}\nstderr: {result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert self.MARKER_STABLE in stdout, (
+            f"切り詰めたときはマーカーを出すべき。stdout: {stdout[:500]!r}"
+        )
+        heading_pos = stdout.index("## 残タスク")
+        marker_pos = stdout.index(self.MARKER_STABLE)
+        first_todo_pos = stdout.index("- [ ]")
+
+        assert heading_pos < marker_pos, (
+            f"マーカー（位置 {marker_pos}）は '## 残タスク' 見出し（位置 {heading_pos}）より後にあるべき。"
+        )
+        assert marker_pos < first_todo_pos, (
+            f"マーカー（位置 {marker_pos}）は最初の '- [ ]' 行（位置 {first_todo_pos}）より前にあるべき"
+            "（末尾配置はハーネス truncate でマーカー自体が溢れるため禁止・ADR-2）。"
+        )
+
+    def test_single_item_over_budget_shows_zero_items_with_marker(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B-5: 1 項目が単独で予算超のとき、表示件数 0 のマーカーだけが出て沈黙しない。"""
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        todos = ["- [ ] X" + "B" * 11993]  # 12,000 文字ちょうどの 1 件
+        assert len(todos[0]) == 12000, "フィクスチャ前提: 1 件が 12,000 文字であること"
+        self._write_session(sessions_dir, todos=todos)
+
+        module = _load_module(monkeypatch, sessions_dir)
+        max_chars = module.MAX_OUTPUT_CHARS
+
+        result = _run_main_subprocess(sessions_dir)
+        assert result.returncode == 0, (
+            f"期待 exit 0、実際 {result.returncode}\nstderr: {result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert self.MARKER_STABLE in stdout, (
+            "1 項目が単独で予算超のときも（沈黙せず）マーカーを出すべき。"
+            f"stdout: {stdout!r}"
+        )
+        m = self.MARKER_RE.search(stdout)
+        assert m is not None, f"マーカーの数値が抽出できない。stdout: {stdout!r}"
+        assert int(m.group(1)) == 1, f"総件数は 1 であるべき。実際: {m.group(1)}"
+        assert int(m.group(2)) == 0, (
+            f"表示件数は 0 であるべき（項目の途中では切らない）。実際: {m.group(2)}"
+        )
+
+        todo_lines = [ln for ln in stdout.splitlines() if ln.startswith("- [ ]")]
+        assert todo_lines == [], (
+            f"'- [ ]' 行は 1 つも出力されないべき。実際: {todo_lines!r}"
+        )
+        # 上限判定は生の len(stdout) 1 本（理由は本セクション冒頭のコメント参照）
+        assert len(stdout) <= max_chars, (
+            f"stdout が上限 {max_chars} 文字を超えた（実際 {len(stdout)} 文字）。"
+        )
+
+    def test_no_crash_when_fixed_part_alone_exceeds_limit(self, tmp_path: Path) -> None:
+        """B-6: 固定部だけで上限に迫るとき（budget2 < 0）でもクラッシュせず、マーカーは必ず出る。
+
+        意図的に len(stdout) <= MAX_OUTPUT_CHARS を assert **しない**（assert 漏れではない）:
+        本設計の上限保証は budget2 = budget_body - len(reserve) - 1 が 0 以上のときにのみ
+        成立する。budget2 < 0 になるのは固定部（ワークフロー復帰指示・ヘッダ・アプローチ 2
+        セクション）だけで上限に迫る場合で、これは requirements §6-4 が
+        「④⑤アプローチ 2 セクション自体が単独で 10,000 文字に迫る極端なケースまでは
+        今回のスコープで保証しない」と明示的にスコープ外宣言した領域と一致する。
+        この領域で固定するのは「クラッシュしない・exit 0・マーカーは必ず出る」の 3 点のみ。
+
+        ④は 15 行（APPROACH_TAIL_LINES=15 では切り詰められない行数）× 各 700 文字。
+        """
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        successes = [f"S{i:02d} " + "C" * 696 for i in range(15)]  # 各 700 文字 × 15 行
+        assert all(len(s) == 700 for s in successes), "フィクスチャ前提: 各行 700 文字"
+        todos = ["- [ ] 残タスクA", "- [ ] 残タスクB", "- [ ] 残タスクC"]
+        self._write_session(sessions_dir, todos=todos, successes=successes)
+
+        result = _run_main_subprocess(sessions_dir)
+
+        assert result.returncode == 0, (
+            "固定部だけで上限に迫るケースでも例外を出さず exit 0 であるべき。"
+            f"returncode: {result.returncode}\nstderr: {result.stderr!r}"
+        )
+        assert self.MARKER_STABLE in result.stdout, (
+            "固定部が予算を食い潰して残タスクを出せないときも、沈黙せずマーカーを出すべき。"
+            f"stdout 先頭 500 文字: {result.stdout[:500]!r}"
+        )
+
+    def test_section_omitted_when_no_pending_todos_even_with_huge_fixed_part(
+        self, tmp_path: Path
+    ) -> None:
+        """B-7: - [ ] 行が 0 件なら、固定部が巨大（budget_body < 0）でも残タスクセクションを出さない。
+
+        DC-GP-001 への回帰固定。既存 test_section_omitted_when_no_pending_todos は
+        固定部が小さいケースしか見ていないため、budget_body が負になる条件でも
+        現行の `if pending_todos:` ガードが効いていることをここで追加固定する。
+        入力は B-6 と同じ（④が 15 行 × 各 700 文字）で、- [ ] 行だけを取り除いたもの。
+
+        注: このケースは上限値を必要としないため MAX_OUTPUT_CHARS を参照しない
+        （参照すると実装前に AttributeError で赤くなり、「実装前から緑であるべき」条件と噛み合わない）。
+        """
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        successes = [f"S{i:02d} " + "C" * 696 for i in range(15)]  # 各 700 文字 × 15 行
+        self._write_session(sessions_dir, todos=[], successes=successes)
+
+        result = _run_main_subprocess(sessions_dir)
+
+        assert result.returncode == 0, (
+            f"期待 exit 0、実際 {result.returncode}\nstderr: {result.stderr!r}"
+        )
+        stdout = result.stdout
+
+        assert "## 残タスク" not in stdout, (
+            "- [ ] 行が 0 件のとき ## 残タスク セクションは出力されるべきでない"
+            "（固定部が巨大でも同じ）。stdout 先頭 500 文字: {!r}".format(stdout[:500])
+        )
+        assert self.MARKER_STABLE not in stdout, (
+            "残タスクが 0 件のときは切り詰めマーカーも出すべきでない（過検知禁止）。"
+            f"stdout 先頭 500 文字: {stdout[:500]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 53. main 経由: アプローチセクションの切り詰め通知（DC-GP-005）
+# ---------------------------------------------------------------------------
+
+
+class TestMainApproachTruncationNotice:
+    """main: _tail で切り詰めたアプローチ見出しに切り詰め通知サフィックスが付く（DC-GP-005）。
+
+    切り詰めが起きていないセクションにはサフィックスを付けない（過検知しない）。
+    """
+
+    def test_success_heading_gets_suffix_and_failure_heading_does_not(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B-8: ④が 20 行（上限超）なら見出しにサフィックス、⑤が 10 行（上限内）なら付かない。"""
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        successes = [f"成功行{i:02d}" for i in range(1, 21)]  # 20 行（APPROACH_TAIL_LINES 超）
+        failures = [f"失敗行{i:02d}" for i in range(1, 11)]  # 10 行（超えない）
+
+        content = (
+            "SESSION: 20260730\n"
+            "AGENT: \n"
+            "DURATION: \n"
+            "現在地: \n"
+            "\n"
+            "## うまくいったアプローチ\n"
+            + "\n".join(successes)
+            + "\n\n## 試みたが失敗したアプローチ\n"
+            + "\n".join(failures)
+            + "\n\n## 残タスク\n"
+        )
+        (sessions_dir / "20260730.tmp").write_text(content, encoding="utf-8")
+
+        module = _load_module(monkeypatch, sessions_dir)
+        tail_n = module.APPROACH_TAIL_LINES  # 15 をテストにハードコードしない
+
+        result = _run_main_subprocess(sessions_dir)
+        assert result.returncode == 0, (
+            f"期待 exit 0、実際 {result.returncode}\nstderr: {result.stderr!r}"
+        )
+        out_lines = result.stdout.splitlines()
+
+        success_headings = [
+            ln for ln in out_lines if ln.startswith("## うまくいったアプローチ")
+        ]
+        assert len(success_headings) == 1, (
+            f"成功アプローチ見出しは 1 行だけ出るべき。実際: {success_headings!r}"
+        )
+        heading = success_headings[0]
+        # 文言全体を逐語 assert せず、安定部分のみ検査する
+        assert "（末尾" in heading, (
+            f"切り詰めが起きた見出しには切り詰め通知が付くべき。実際: {heading!r}"
+        )
+        assert f"{tail_n} 行" in heading, (
+            f"切り詰め通知には表示行数（APPROACH_TAIL_LINES={tail_n}）が入るべき。実際: {heading!r}"
+        )
+        assert f"全 {len(successes)} 行）" in heading, (
+            f"切り詰め通知には元の総行数（{len(successes)}）が入るべき。実際: {heading!r}"
+        )
+
+        failure_headings = [
+            ln for ln in out_lines if ln.startswith("## 試みたが失敗したアプローチ")
+        ]
+        assert len(failure_headings) == 1, (
+            f"失敗アプローチ見出しは 1 行だけ出るべき。実際: {failure_headings!r}"
+        )
+        assert failure_headings[0] == "## 試みたが失敗したアプローチ", (
+            "切り詰めが起きていないセクションの見出しにサフィックスを付けてはいけない（過検知禁止）。"
+            f"実際: {failure_headings[0]!r}"
+        )
