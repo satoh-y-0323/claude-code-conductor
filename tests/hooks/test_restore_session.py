@@ -2011,3 +2011,176 @@ class TestMainApproachTruncationNotice:
             "切り詰めが起きていないセクションの見出しにサフィックスを付けてはいけない（過検知禁止）。"
             f"実際: {failure_headings[0]!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 54-56. _cap_genba の単体テスト（サイクル 2・SR-NEW）
+# ---------------------------------------------------------------------------
+
+
+class TestCapGenba:
+    """_cap_genba(value, path, limit=MAX_GENBA_CHARS) のモジュールレベル単体テスト。
+
+    現在地（genba）値を制限文字数でキャップし、
+    キャップした場合のみ fail-loud 表示を付ける（SR-NEW）。
+    """
+
+    def _load(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> object:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("restore_session", HOOK_PATH)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # type: ignore[attr-defined]
+        monkeypatch.setattr(module, "SESSIONS_DIR", str(tmp_path))
+        return module
+
+    def test_value_within_limit_is_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C-1: len(value) == MAX_GENBA_CHARS（ちょうど）のとき、戻り値が入力と完全一致し、
+        切り詰め表示を含まない。判定は > 側に寄せる（ちょうどは収まる側）。
+        """
+        module = self._load(monkeypatch, tmp_path)
+        limit = module.MAX_GENBA_CHARS
+        value = "フェーズD 実装中" + "X" * (limit - len("フェーズD 実装中"))
+        assert len(value) == limit
+
+        result = module._cap_genba(value, "/path/to/session")
+        assert result == value
+        assert "…[現在地は全" not in result
+
+    def test_value_one_over_limit_is_capped_with_display(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C-2: len(value) == MAX_GENBA_CHARS + 1 のとき、先頭 MAX_GENBA_CHARS 文字 + 切り詰め表示。"""
+        module = self._load(monkeypatch, tmp_path)
+        limit = module.MAX_GENBA_CHARS
+        value = "フェーズD 実装中" + "X" * (limit - len("フェーズD 実装中") + 1)
+        assert len(value) == limit + 1
+
+        result = module._cap_genba(value, "/path/to/session")
+        assert "…[現在地は全" in result
+        assert len(result) == limit + 1
+
+    def test_short_value_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C-3: 短い値のとき、入力と完全一致・切り詰め表示なし。"""
+        module = self._load(monkeypatch, tmp_path)
+        value = "フェーズD 実装中"
+
+        result = module._cap_genba(value, "/path/to/session")
+        assert result == value
+        assert "…[現在地は全" not in result
+
+
+# ---------------------------------------------------------------------------
+# 57-59. main 経由: 現在地キャップとマーカー生存（サイクル 2・SR-NEW）
+# ---------------------------------------------------------------------------
+
+
+class TestMainGenbaCapAndMarker:
+    """main: 現在地値をキャップし、マーカーが 10,000 文字境界内に生存することを確認（SR-NEW）。"""
+
+    MARKER_STABLE = "件のうち先頭"
+    MARKER_RE = re.compile(r"全 (\d+) 件のうち先頭 (\d+) 件")
+
+    def _write_session_with_genba(
+        self, sessions_dir: Path, genba: str, todos: list[str] | None = None,
+        date_str: str = "20260730"
+    ) -> Path:
+        todos = todos or []
+        content = (
+            f"SESSION: {date_str}\n"
+            "AGENT: \n"
+            "DURATION: \n"
+            f"現在地: {genba}\n"
+            "\n"
+            "## うまくいったアプローチ\n"
+            "\n"
+            "## 試みたが失敗したアプローチ\n"
+            "\n"
+            "## 残タスク\n"
+            + ("\n".join(todos) + "\n" if todos else "")
+        )
+        session_file = sessions_dir / f"{date_str}.tmp"
+        session_file.write_text(content, encoding="utf-8")
+        return session_file
+
+    def _make_todos(self, count: int, size: int) -> list[str]:
+        out = []
+        for i in range(count):
+            prefix = f"- [ ] T{i:02d} "
+            out.append(prefix + "A" * (size - len(prefix)))
+        return out
+
+    def test_genba_15000_chars_marker_within_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C-4: 現在地 15,000 文字 + 残タスク数十件のとき、マーカーが 10,000 境界内。"""
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        genba = "フェーズD実装中" + "X" * 14985
+        assert len(genba) == 15000
+
+        todos = self._make_todos(20, 2000)
+        self._write_session_with_genba(sessions_dir, genba, todos)
+
+        module = _load_module(monkeypatch, sessions_dir)
+        max_chars = module.MAX_OUTPUT_CHARS
+
+        result = _run_main_subprocess(sessions_dir)
+        assert result.returncode == 0
+        stdout = result.stdout
+
+        assert self.MARKER_STABLE in stdout
+        marker_idx = stdout.index(self.MARKER_STABLE)
+        assert marker_idx < max_chars
+
+    def test_genba_at_limit_not_truncated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C-5: 現在地が MAX_GENBA_CHARS ちょうど + 残タスク数件のとき、値が逐語出力＋切り詰め表示なし。"""
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        module = _load_module(monkeypatch, sessions_dir)
+        limit = module.MAX_GENBA_CHARS
+
+        genba = "フェーズD" + "実" * (limit - len("フェーズD"))
+        assert len(genba) == limit
+
+        todos = ["- [ ] タスクA", "- [ ] タスクB", "- [ ] タスクC"]
+        self._write_session_with_genba(sessions_dir, genba, todos)
+
+        result = _run_main_subprocess(sessions_dir)
+        assert result.returncode == 0
+        stdout = result.stdout
+
+        assert genba in stdout
+        assert "…[現在地は全" not in stdout
+
+    def test_genba_over_limit_shows_truncation_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C-6: 現在地が MAX_GENBA_CHARS + 1 + 残タスク数件のとき、切り詰め表示と3つの情報を含む。"""
+        _, sessions_dir = _setup_tmp_structure(tmp_path)
+        module = _load_module(monkeypatch, sessions_dir)
+        limit = module.MAX_GENBA_CHARS
+
+        genba = "フェーズD" + "実" * (limit - len("フェーズD") + 1)
+        assert len(genba) == limit + 1
+
+        todos = ["- [ ] タスクA", "- [ ] タスクB"]
+        self._write_session_with_genba(sessions_dir, genba, todos)
+
+        result = _run_main_subprocess(sessions_dir)
+        assert result.returncode == 0
+        stdout = result.stdout
+
+        assert "…[現在地は全" in stdout
+        assert f"全 {limit + 1} 文字中" in stdout
+        assert f"先頭 {limit} 文字" in stdout
+
+        expected_path = os.path.normpath(
+            os.path.join(str(sessions_dir), "20260730.tmp")
+        )
+        assert expected_path in stdout
