@@ -18,6 +18,36 @@ import yaml
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.DOTALL)
 
+# Allowed values for po_plan_version field (maintained for backward compatibility
+# after PO retirement; see v1.14.0 plan)
+ALLOWED_PO_PLAN_VERSIONS = ("0.1", "sequential")
+
+# エラーメッセージ内の許容値表記の SSOT。ALLOWED_PO_PLAN_VERSIONS から動的生成し、
+# 逐語文言 `(allowed: "0.1", "sequential")` とバイト完全一致させる (CR-M-001)。
+# 制約: ALLOWED_PO_PLAN_VERSIONS に `"` や `\` を含む値を追加する場合、下の f-string は
+# エスケープしないためエスケープ処理が必要（現行値 "0.1" / "sequential" は非該当）。
+_ALLOWED_PO_PLAN_VERSIONS_DISPLAY = ", ".join(
+    f'"{v}"' for v in ALLOWED_PO_PLAN_VERSIONS
+)  # nul-boundary: allow(エラーメッセージ表示用で機械可読行集合ではない)
+
+# エラーメッセージへ埋め込む値の repr 長上限 (SR-V-001)。plan-report は外部編集可能な
+# ため、巨大な po_plan_version 値がそのまま stderr へ流れると出力が汚染される。
+# 上限以下の通常値では repr をそのまま返し、既存の逐語エラーメッセージとバイト完全一致を保つ。
+_MAX_REPR_LENGTH = 120
+_TRUNCATION_SUFFIX = "...(truncated)"
+
+
+def _safe_repr(value: object, limit: int = _MAX_REPR_LENGTH) -> str:
+    """Return ``repr(value)``, truncated to ``limit`` chars plus a marker suffix.
+
+    Values whose repr fits within ``limit`` are returned unchanged so that
+    existing canonical error messages stay byte-identical.
+    """
+    text = repr(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + _TRUNCATION_SUFFIX
+
 
 # ---------------------------------------------------------------------------
 # Frontmatter extraction
@@ -113,6 +143,8 @@ def validate_plan_report(plan_report_path: Path, claude_root: Path) -> list[str]
     - YAML frontmatter parses successfully
     - ``po_plan_version`` field present (フィールド名は PO 廃止後も後方互換のため維持。
       既存 plan-report の再利用性を担保するため次回 major bump まで改名しない)
+    - ``po_plan_version`` is a string (型検査)
+    - ``po_plan_version`` is one of the allowed values (許容値検査)
     - ``tasks`` is a non-empty list
     - each task has a non-empty string ``id``
     - each task has a non-empty string ``agent``
@@ -130,8 +162,20 @@ def validate_plan_report(plan_report_path: Path, claude_root: Path) -> list[str]
         return ["could not parse YAML frontmatter"]
 
     errors: list[str] = []
+    # po_plan_version: 欠落 → 型エラー → 許容値エラー（排他的に 1 件のみ）
+    po_plan_version = fm.get("po_plan_version")
     if "po_plan_version" not in fm:
         errors.append("missing required field: po_plan_version")
+    elif not isinstance(po_plan_version, str):
+        errors.append(
+            f"po_plan_version must be a string, got {_safe_repr(po_plan_version)} "
+            f"(allowed: {_ALLOWED_PO_PLAN_VERSIONS_DISPLAY})"
+        )
+    elif po_plan_version not in ALLOWED_PO_PLAN_VERSIONS:
+        errors.append(
+            f"invalid po_plan_version: {_safe_repr(po_plan_version)} "
+            f"(allowed: {_ALLOWED_PO_PLAN_VERSIONS_DISPLAY})"
+        )
 
     tasks = fm.get("tasks")
     if not isinstance(tasks, list) or not tasks:
@@ -158,7 +202,7 @@ def validate_plan_report(plan_report_path: Path, claude_root: Path) -> list[str]
         agent_file = agents_dir / f"{agent}.md"
         if not agent_file.is_file():
             errors.append(
-                f"task {task_id!r}: agent {agent!r} not found at {agent_file}"
+                f"task {task_id!r}: agent {agent!r} not found at {str(agent_file)!r}"
             )
         prompt = task.get("prompt")
         if not isinstance(prompt, str) or not prompt:
@@ -187,12 +231,17 @@ def split_waves(plan_report_path: Path) -> dict:
         ``writes`` / ``prompt``。
 
     Raises:
-        ValueError: YAML frontmatter is malformed, or a cycle / unknown
-            depends_on reference is present.
+        ValueError: YAML frontmatter is malformed, sequential plan-report (no waves),
+            or a cycle / unknown depends_on reference is present.
     """
     fm = extract_frontmatter(plan_report_path)
     if fm is None:
         raise ValueError("could not parse YAML frontmatter")
+    # sequential プランは波分解を持たないため error を出す
+    if fm.get("po_plan_version") == "sequential":
+        raise ValueError(
+            "sequential plan-report has no waves (executed via the legacy sequential TDD path)"
+        )
     waves = compute_waves(fm)
     return {
         "waves": [

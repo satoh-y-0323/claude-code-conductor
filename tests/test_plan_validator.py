@@ -226,6 +226,26 @@ class TestValidatePlanReport:
             'po_plan_version must be a string, got 0.1 (allowed: "0.1", "sequential")'
         ]
 
+    def test_null_po_plan_version_rejected(self, tmp_path: Path) -> None:
+        """YAML 明示 null（``po_plan_version:`` に値なし）は None になり型エラーになる。"""
+        root = _make_claude_root_with_agents(tmp_path, ["developer"])
+        report = _make_report(
+            root,
+            textwrap.dedent(
+                """\
+                po_plan_version:
+                tasks:
+                  - id: t1
+                    agent: developer
+                    prompt: implement login
+                """
+            ),
+        )
+        errors = validate_plan_report(report, root)
+        assert errors == [
+            'po_plan_version must be a string, got None (allowed: "0.1", "sequential")'
+        ]
+
     def test_missing_tasks(self, tmp_path: Path) -> None:
         root = _make_claude_root_with_agents(tmp_path, ["developer"])
         report = _make_report(root, "po_plan_version: \"0.1\"\n")
@@ -248,6 +268,36 @@ class TestValidatePlanReport:
         )
         errors = validate_plan_report(report, root)
         assert any("nonexistent" in e and "not found" in e for e in errors)
+
+    def test_unknown_agent_with_esc_control_char_is_sanitized(
+        self, tmp_path: Path
+    ) -> None:
+        """存在しない agent 名に ESC 制御文字を含む場合の ANSI 無害化回帰ガード（SR-NEW-001）。
+
+        agent 値の repr 化（``{agent!r}``）により、errors の文字列には生の ESC バイト
+        (``\\x1b``) が含まれず、repr エスケープ形（``\\\\x1b`` の 4 文字表記）になる。
+        fixture は YAML の ``\\x1B`` エスケープ記法で構成する（yaml.safe_load が実 ESC
+        バイトへ変換する）。追加時点で本実装は既に対応済みのため緑の回帰ガードであり、
+        Red は要求しない。
+        """
+        root = _make_claude_root_with_agents(tmp_path, ["developer"])
+        report = _make_report(
+            root,
+            textwrap.dedent(
+                """\
+                po_plan_version: "0.1"
+                tasks:
+                  - id: t1
+                    agent: "nonexistent-\\x1B[31magent"
+                    prompt: x
+                """
+            ),
+        )
+        errors = validate_plan_report(report, root)
+        assert any("not found" in e for e in errors)
+        joined = "\n".join(errors)
+        assert "\x1b" not in joined
+        assert "\\x1b" in joined
 
     def test_missing_prompt(self, tmp_path: Path) -> None:
         root = _make_claude_root_with_agents(tmp_path, ["developer"])

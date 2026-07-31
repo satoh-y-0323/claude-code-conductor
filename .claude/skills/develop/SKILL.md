@@ -1,5 +1,5 @@
 ---
-description: plan-report に基づいて実装フェーズ（フェーズ D）を実行する。po_plan_version の値に応じて分岐: "0.1" なら parallel-agents（Agent ツール並列起動 + isolation:worktree）、"sequential" または無しなら逐次 TDD、不正値は fail-loud 停止。
+description: 'plan-report に基づいて実装フェーズ（フェーズ D）を実行する。po_plan_version の値に応じて分岐: "0.1" なら parallel-agents（Agent ツール並列起動 + isolation:worktree）、"sequential" または無しなら逐次 TDD、不正値は fail-loud 停止。'
 ---
 
 # develop

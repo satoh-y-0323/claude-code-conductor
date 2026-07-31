@@ -2,11 +2,11 @@
 
 本ガイドラインは既定で並列実行（`po_plan_version: "0.1"`）を前提とする。逐次（`"sequential"`）プランも `po_plan_version: "sequential"` のフロントマター＋`tasks` を持ち `c3 plan validate` を通すこと。適用射程は下記の分類表に従う。
 
-| モード | ルール 1・2・10・11・14 | ルール 3・9 | R5 | 自己チェック項目 |
-|---|---|---|---|---|
-| `"0.1"`（並列実行）限定 | 適用 | 適用（※直後の注記） | 適用 | チェーン長／同一ファイル衝突／R5／ルール 14 |
-| 両モード共通 | - | - | - | id 一意・depends_on 参照先実在／空配列禁止／TDD 3 タスク分解／15 分粒度／R6／writes 空のタスク／レビュータスク depends_on |
-| 逐次（`"sequential"`）のみ | 別規定 | - | - | - |
+| 分類 | ルール番号 | R 番号 | 自己チェックリスト項目 |
+|---|---|---|---|
+| `"0.1"`（並列実行）限定 | ルール 1・2・10・11・14／ルール 3・9（※直後の注記により sequential でも成果物宣言・レビュー配置の規律は満たすこと） | R5（isolation 指定が発生しない逐次では非該当） | チェーン長／同一ファイル衝突／R5／ルール 14 |
+| 両モード共通 | ルール 4・5・7・8・12・13 | R2・R3・R4・R6（planner_check hook 群は po_plan_version の値を読まないため sequential プランでも発火する） | id 一意・depends_on 参照先実在／空配列禁止／TDD 3 タスク分解／15 分粒度／R6／writes が空のタスク／レビュータスクの depends_on |
+| 逐次では読み替え | ルール 6（Stuck Signal の契約自体は共通。wave 失敗時の 2-E 吸収は並列限定の運用であり、逐次は dev-workflow SKILL.md の D-2.5〈Stuck チェック〉で吸収する） | - | - |
 
 **注記**: 両モード共通に分類されたルール（5・R2・R4・R6 等）が `writes` や reviewer タスクの存在を前提とする場合、**その前提を作るルール（9・3）も sequential プランで満たすこと**。`"0.1"` 限定の趣旨は『並列度・worktree 取り込み衝突に関する制約』に限られ、成果物宣言・レビュー配置の規律はモードを問わない。
 
@@ -42,7 +42,7 @@ v2.1.0 で `tdd-develop` エージェントを廃止した。TDD を伴う機能
 - **Green 確認並列**: 確認 tester を 1 wave で並列起動
 
 4. **TDD タスクの命名規約（推奨）** — `test-{機能}` / `impl-{機能}` / `confirm-{機能}` の 3 タスクで 1 機能を表現する。命名は強制ではないが、レポート整理と `depends_on` の見通しのために統一を推奨する
-5. **test-report ファイル名の衝突回避** — Red 用 tester と Green 確認用 tester は **別 worktree** で動くため物理衝突は起きないが、main 取り込み後の上書きを避けるため `writes` には `.claude/reports/test-report-{task_id}.md` のように **task_id ベース**のファイル名を宣言する。tester agent 内では `report-timestamp` Skill でタイムスタンプ取得 → 出力ファイル名を `writes` 宣言と一致させるよう、各 `prompt` に明記する
+5. **test-report ファイル名の衝突回避** — Red 用 tester と Green 確認用 tester は **別 worktree** で動くため物理衝突は起きないが、main 取り込み後の上書きを避けるため `writes` には `.claude/reports/test-report-{task_id}.md` のように **task_id ベース**のファイル名を宣言する。tester agent 内では `report-timestamp` Skill でタイムスタンプ取得 → 出力ファイル名を `writes` 宣言と一致させるよう、各 `prompt` に明記する。逐次経路では worktree を使わないが、task_id ベースの固定名により上書き・混同を同様に回避できるため、本ルールは両モード共通である
 6. **Stuck Signal の経路は変わらない** — developer が 3 回以上同じ問題で詰まった場合 `.claude/reports/debug-needed-*.md` を出力する仕様は維持。Green wave が失敗した場合は `parallel-agents` skill 2-E（リトライ / スキップ / 中断）で吸収する。リトライ時に親 Claude が後続 wave で `systematic-debugger` を呼ぶ運用に統一
 
 ## タスクの粒度（基本: ファイル/モジュール単位）

@@ -82,6 +82,7 @@ class TestCliPlanValidate:
     def test_exit_2_on_unknown_po_plan_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
+        """許容値以外の po_plan_version は validate が exit 2 になる。"""
         root = _make_claude_root(tmp_path, ["developer"])
         report = _make_report(
             root,
