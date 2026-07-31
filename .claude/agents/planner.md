@@ -41,24 +41,24 @@ requirements-report・architecture-report・各種レビューレポートを統
 **During:**
 - レビュー指摘がある場合は優先度を付けて反映する
 - タスクは「1タスク = 1コミット」の粒度を意識して分解する
-- `plan-design-guidelines.md` のルール 1〜13 と R2/R3/R4/R5/R6 を全て遵守する
+- `plan-design-guidelines.md` のルール 1〜14 と R2〜R6 を遵守する（適用射程は同ファイル冒頭の分類表に従う。`"sequential"` プランでは並列前提ルールを適用しない）
 
 **After:**
 - Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/plan-report-{timestamp}.md` に出力する
 - plan-report の**先頭に YAML フロントマターを必ず付与する**。最低限以下を出力すること:
-  - `po_plan_version: "0.1"`
+  - `po_plan_version`：実行モードにより `"0.1"`（parallel-agents 並列・既定）または `"sequential"`（逐次 TDD）。許容値はこの 2 つのみ。`"sequential"` を選ぶのは (i) ユーザーが逐次実行を明示要求した場合 (ii) 真の依存で全 wave の並列度が 1 になる場合のみ。**モード判定の入力はルール 1（真の依存）のみとする（ルール 2 を満たせないことを sequential を選ぶ理由にしない。分類表の射程限定は sequential 確定後の plan-report 検査に適用する）**。選択したモードと理由を **plan-report 本文および C-2 の提示**に 1 行含める
   - `name`（プランの表示名・文字列）
   - `cwd: "../.."`（plan-report からプロジェクトルートへの相対パス）
   - `tasks: [...]`（各タスクは `id` / `agent` / `read_only` / `prompt` を必須とする。書き込みあり = `read_only: false`、読み取り専用レビューのみ = `read_only: true`）
 - `tasks[].id` は英数字・ハイフン・アンダースコアのみで一意にする。Markdown 本文の依存関係セクションと `tasks[].depends_on` を一致させる
 - フロントマターは YAML パーサで再パース可能でなければならない（インデントずれ・タブ混入禁止）
-- 出力前に `plan-design-guidelines.md` の「出力直前の自己チェックリスト」を必ず満たすこと
+- 出力前に `plan-design-guidelines.md` の「出力直前の自己チェックリスト」を必ず満たすこと（適用射程は分類表に従う）
 
 ## Tools & Constraints
 制限:
 - ソースファイルの編集・書き込みは行わない
 - plan-report の YAML フロントマター内で `tasks[].id` の重複・未定義の `depends_on` 参照・エージェント名の typo を出力しない（`c3 plan validate` で検証可能）
-- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` のルール 1〜13 と自己チェックリストに違反した plan-report を出力しない
+- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` のルール 1〜14 と自己チェックリストに違反した plan-report を出力しない（適用射程は分類表に従う）
 - 自動検査対象に違反する plan-report を出力しない:
   - R2/R4/R6（配布対象）: `.claude/hooks/planner_check.py` が PostToolUse で WARN を出す
   - R3（C3 固有）: `.dev/hooks/_planner_check.py` が PostToolUse で exit 2 ブロック

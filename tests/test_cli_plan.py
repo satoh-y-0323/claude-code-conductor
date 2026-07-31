@@ -59,6 +59,47 @@ class TestCliPlanValidate:
         rc = _run(monkeypatch, root, "plan", "validate", str(report))
         assert rc == 0
 
+    def test_exit_0_on_sequential(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """sequential プランは validate では受理される（回帰ガード）。"""
+        root = _make_claude_root(tmp_path, ["developer"])
+        report = _make_report(
+            root,
+            textwrap.dedent(
+                """\
+                po_plan_version: "sequential"
+                tasks:
+                  - id: t1
+                    agent: developer
+                    prompt: x
+                """
+            ),
+        )
+        rc = _run(monkeypatch, root, "plan", "validate", str(report))
+        assert rc == 0
+
+    def test_exit_2_on_unknown_po_plan_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        root = _make_claude_root(tmp_path, ["developer"])
+        report = _make_report(
+            root,
+            textwrap.dedent(
+                """\
+                po_plan_version: "sequental"
+                tasks:
+                  - id: t1
+                    agent: developer
+                    prompt: x
+                """
+            ),
+        )
+        rc = _run(monkeypatch, root, "plan", "validate", str(report))
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert 'allowed: "0.1", "sequential"' in err
+
     def test_exit_2_on_missing_field(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
@@ -141,6 +182,30 @@ class TestCliPlanWaves:
         assert len(data["waves"]) == 2
         assert data["waves"][0]["tasks"][0]["id"] == "a"
         assert data["waves"][1]["tasks"][0]["id"] == "b"
+
+    def test_exit_2_on_sequential_plan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """sequential プランは wave 分解できないため waves は exit 2 になる。"""
+        root = _make_claude_root(tmp_path, ["developer"])
+        report = _make_report(
+            root,
+            textwrap.dedent(
+                """\
+                po_plan_version: "sequential"
+                tasks:
+                  - id: a
+                    agent: developer
+                    read_only: false
+                    writes: ["src/a.py"]
+                    prompt: aaa
+                """
+            ),
+        )
+        rc = _run(monkeypatch, root, "plan", "waves", str(report))
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no waves" in err
 
     def test_exit_2_on_validation_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture

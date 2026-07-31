@@ -547,8 +547,18 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 
 以下の順で実行モードを判定する:
 
-1. Glob で `.claude/reports/plan-report-*.md` の最新が存在する場合、冒頭の YAML フロントマター
-   （`---` で始まり `po_plan_version: "0.1"` を含む）の有無を確認する。
+1. Glob で `.claude/reports/plan-report-*.md` の最新が存在する場合、冒頭の YAML フロントマターを確認する:
+
+   | plan-report の状態 | D-0 の動作 |
+   |---|---|
+   | フロントマターあり・`po_plan_version: "0.1"` | parallel-agents モード |
+   | フロントマターあり・`po_plan_version: "sequential"` | legacy 逐次 TDD モード（D-1〜D-5） |
+   | フロントマターあり・キー欠落 | fail-loud 停止（validate の結果を提示・フェーズ C 修正を案内） |
+   | フロントマターあり・未知値（typo 等） | fail-loud 停止（同上） |
+   | フロントマター自体なし | legacy 逐次 TDD モード（後方互換・bug-fix 等） |
+
+   **注意**: 値が許容値であっても `tasks` 不備・agent 不在・循環依存等で validate が exit 2 になった場合は同じく分岐せず停止する。fail-loud の実施：フロントマターを検出したら、モード分岐の**前に必ず** `c3 plan validate <plan-report-path>` を Bash で実行する。exit 0 → 値で分岐、exit 2 → stderr を整形提示し**分岐せず停止**（暗黙フォールバック禁止）。
+
 2. plan-report が存在せず、**当日タイムスタンプ**の `.claude/reports/debug-analysis-*.md` が存在する場合は **bug-fix モード** とする。
    当日判定は LLM のテキスト解釈ではなく以下の Bash で機械的に取得すること（前セッションの残骸 debug-analysis による意図しない bug-fix モード突入を防ぐ）:
 
@@ -559,12 +569,12 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
    標準出力が空でなければそのパスを bug-fix モードの入力として保持する。空なら debug-analysis を「無し」とみなし判定 3 へ進む。
 3. plan-report も当日 debug-analysis も存在しない場合はフェーズ C から始めるよう案内して終了する。
 
-**フロントマターありの場合（parallel-agents モード）:**
+**`po_plan_version: "0.1"` の場合（parallel-agents モード）:**
 1. **最初に必ず** `.claude/skills/parallel-agents/SKILL.md` を Read する（記憶・推測で進めない）
 2. `.claude/skills/parallel-agents/SKILL.md` の手順に完全に従って wave 単位で実装を進める
 3. 全 wave 完了後はフェーズ E（レビュー）へ進む（wave に reviewer タスクが含まれていれば E をスキップ可能と案内する）
 
-**フロントマターなしの場合（legacy TDD モード）:**
+**`po_plan_version: "sequential"` またはフロントマターなしの場合（legacy TDD モード）:**
 
 今日のセッションファイルに以下を追記する（未登録の場合のみ）:
 - `- [ ] tester: Red フェーズ`

@@ -143,7 +143,7 @@ AskUserQuestion で 3 択を提示する:
 | デバッグ調査から | Agent ツールで `systematic-debugger` を起動 → `.claude/skills/dev-workflow/SKILL.md` を Read して **フェーズ D** へ（[注 2]） |
 | レビューから | `.claude/skills/dev-workflow/SKILL.md` を Read して **フェーズ E** から |
 
-[注 1] **実装から** の D-0 判定: plan-report-*.md の YAML フロントマターに `po_plan_version` があれば parallel-agents モード、なければ legacy TDD モードで動作する。plan-report が無い場合はフェーズ C へ案内される。
+[注 1] **実装から** の D-0 判定: plan-report-*.md の YAML フロントマターの `po_plan_version` 値に応じて分岐する。`"0.1"` なら parallel-agents モード、`"sequential"` または無しなら legacy TDD モード、不正値・キー欠落なら fail-loud 停止する。plan-report が無い場合はフェーズ C へ案内される。
 
 [注 2] **デバッグ調査から** の D-0 判定: systematic-debugger が当日タイムスタンプの debug-analysis-*.md を出力するため、D-0 がそれを検出して bug-fix モードで動作する。D-1（Red tester）と D-4（Refactor）はスキップされる。
 

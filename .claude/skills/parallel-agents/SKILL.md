@@ -5,7 +5,7 @@ user-invocable: false
 
 # Parallel Agents（PO 後継、v1.12.0+）
 
-`/develop` のフェーズ D で plan-report に YAML フロントマター（`po_plan_version: "0.1"`）が含まれるときに Read される手順。
+`/develop` のフェーズ D で plan-report に YAML フロントマター内の `po_plan_version` 値が `"0.1"` のときに Read される手順（`"sequential"` または フロントマター無しのプランは dev-workflow の legacy TDD 経路へ振り分けられる）。
 
 C3 の親 Claude が plan-report の DAG を **wave 単位** で歩く:
 
@@ -39,8 +39,8 @@ Claude Code のサブエージェントは **更にサブエージェントを s
 
 ## 前提条件
 
-- plan-report が `.claude/reports/plan-report-*.md` の形式で配置され、YAML フロントマターを持つこと
-- フロントマターが無ければ `.claude/skills/dev-workflow/SKILL.md` の D-1〜D-5 ceremony へフォールバック
+- plan-report が `.claude/reports/plan-report-*.md` の形式で配置され、YAML フロントマターを持つこと（`po_plan_version: "0.1"`）
+- `po_plan_version: "sequential"` またはフロントマター無しの plan-report は D-0 が legacy 逐次 TDD（D-1〜D-5）へ振り分ける（本 skill には入らない）
 - Claude Code の Agent ツールが `isolation: "worktree"` パラメータをサポートしていること（v2.1.x 以降）。v2.1.150 未満では Agent 完了時の worktree auto-cleanup が動作しないため、2-F-3 のフォールバック手順が毎回必要になる挙動差がある（利用者向け推奨設定は [`.claude/docs/parallel-agents-setup.md`](../../docs/parallel-agents-setup.md) を参照）
 
 ---
@@ -95,6 +95,8 @@ stdout の JSON 形式:
 セッションファイル（`.claude/memory/sessions/YYYYMMDD.tmp`）に未登録の場合のみ以下を追記:
 - 各 wave につき `- [ ] Wave {N} ({task_count} tasks, parallel={M})` を 1 行ずつ
   - `M` は wave 内のタスク数（全 agent が並列起動可能）
+
+**`c3 plan waves` の exit 扱い**: `c3 plan waves` が exit 2 の場合は stderr を提示してスキルを終了し、D-0 の再判定へ戻る（sequential プランなら legacy 逐次 TDD 経路へ）。無言停止・推測リトライ・JSON 無しでの Step 2 続行を禁止する。
 
 ---
 
@@ -287,8 +289,7 @@ cp "<worktreePath2>/src/auth/logout.py" "src/auth/logout.py"
 - **注記: 従来の `git checkout worktree-agent-{id} -- {file}` 方式は使わない** 。2-C が agent へ git add/commit/push 禁止を注入する設計のため、worktree ブランチにはコミットが存在せず、branch checkout では agent の変更を取得できない（構造矛盾）。実態は worktree 作業ツリーからのファイル直接コピーである
 
 注意:
-- `writes` フィールドに列挙されたファイルのみを取り込む
-- worktree が touch したが本タスクの責務でない周辺ファイル（`CLAUDE.md` / `package.json` / `.claude/settings.local.json` / `.claude/reports/` 配下）は取り込まない
+- **`writes` に宣言されたファイルは gitignored（`.claude/reports/` 配下等）であっても、worktree に実在すれば取り込む**（宣言済みだが不在のファイルはスキップし失敗として扱わない）。取り込まないのは `writes` に宣言されていない周辺ファイル（`CLAUDE.md` / `package.json` / `.claude/settings.local.json` 等）である
 
 #### 2-F-2: 親 Claude が一括コミット
 

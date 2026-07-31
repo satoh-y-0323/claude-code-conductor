@@ -165,6 +165,67 @@ class TestValidatePlanReport:
         errors = validate_plan_report(report, root)
         assert any("po_plan_version" in e for e in errors)
 
+    def test_sequential_po_plan_version_accepted(self, tmp_path: Path) -> None:
+        """``po_plan_version: "sequential"`` は許容値なので受理される（回帰ガード）。
+
+        許容値列挙を追加したときに sequential を巻き込んで拒否しないことを守る。
+        """
+        root = _make_claude_root_with_agents(tmp_path, ["developer"])
+        report = _make_report(
+            root,
+            textwrap.dedent(
+                """\
+                po_plan_version: "sequential"
+                tasks:
+                  - id: t1
+                    agent: developer
+                    prompt: implement login
+                """
+            ),
+        )
+        errors = validate_plan_report(report, root)
+        assert errors == []
+
+    def test_unknown_po_plan_version_rejected(self, tmp_path: Path) -> None:
+        """許容値以外の文字列は 1 件の許容値エラーになる。"""
+        root = _make_claude_root_with_agents(tmp_path, ["developer"])
+        report = _make_report(
+            root,
+            textwrap.dedent(
+                """\
+                po_plan_version: "sequental"
+                tasks:
+                  - id: t1
+                    agent: developer
+                    prompt: implement login
+                """
+            ),
+        )
+        errors = validate_plan_report(report, root)
+        assert errors == [
+            'invalid po_plan_version: \'sequental\' (allowed: "0.1", "sequential")'
+        ]
+
+    def test_non_string_po_plan_version_rejected(self, tmp_path: Path) -> None:
+        """引用符なし ``0.1`` は YAML が float でパースするため型エラーになる。"""
+        root = _make_claude_root_with_agents(tmp_path, ["developer"])
+        report = _make_report(
+            root,
+            textwrap.dedent(
+                """\
+                po_plan_version: 0.1
+                tasks:
+                  - id: t1
+                    agent: developer
+                    prompt: implement login
+                """
+            ),
+        )
+        errors = validate_plan_report(report, root)
+        assert errors == [
+            'po_plan_version must be a string, got 0.1 (allowed: "0.1", "sequential")'
+        ]
+
     def test_missing_tasks(self, tmp_path: Path) -> None:
         root = _make_claude_root_with_agents(tmp_path, ["developer"])
         report = _make_report(root, "po_plan_version: \"0.1\"\n")
@@ -273,6 +334,25 @@ class TestSplitWaves:
             "writes": ["src/a.py"],
             "prompt": "aaa",
         }
+
+    def test_sequential_plan_raises(self, tmp_path: Path) -> None:
+        """sequential プランは wave 分解を持たないので ValueError になる。"""
+        report = _make_report(
+            tmp_path,
+            textwrap.dedent(
+                """\
+                po_plan_version: "sequential"
+                tasks:
+                  - id: a
+                    agent: developer
+                    read_only: false
+                    writes: ["src/a.py"]
+                    prompt: aaa
+                """
+            ),
+        )
+        with pytest.raises(ValueError, match="no waves"):
+            split_waves(report)
 
     def test_missing_frontmatter_raises(self, tmp_path: Path) -> None:
         path = tmp_path / "bad.md"
