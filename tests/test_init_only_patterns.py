@@ -312,10 +312,10 @@ class TestDeletionsRespectInitOnly:
     ):
         """`c3 update` 入口（handle）を通しても INIT_ONLY が消えず、利用者が気づけること.
 
-        通常ファイル 1 件の削除を混ぜているのは、`_format_deletion_report` が
-        「削除候補ゼロ」のときサマリを `deletions: nothing to delete` に畳んで
-        warning 本文を出さないため（現行仕様）。実運用に近い混在ケースで
-        「弾いた事実が画面に出る」ことを確認する。
+        通常ファイル 1 件の削除を混ぜているのは、INIT_ONLY 単独ではなく
+        混在ケースでも「弾いた事実が画面に出る」ことを回帰確認するため。
+        INIT_ONLY 単独ケース（`to_delete` が空になるケース）は
+        `test_handle_shows_warning_for_init_only_single_entry` を参照。
         """
         from c3.cli_update import handle
 
@@ -361,6 +361,57 @@ class TestDeletionsRespectInitOnly:
             f"out={captured.out!r} err={captured.err!r}"
         )
         assert self.GITIGNORE_REL in combined
+
+    def test_handle_shows_warning_for_init_only_single_entry(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """INIT_ONLY 単独ケース（`to_delete` が空になるケース）でも警告本文が画面に出ること.
+
+        `test_handle_does_not_delete_init_only_files` は通常ファイルを混ぜて
+        `to_delete` を非空にすることで既存実装でも warning が出るようにしている。
+        本テストは INIT_ONLY のみを deletions.txt に書き、`to_delete` が空になる
+        単独ケースを直接検証する（plan-report §B-1）。是正前の実装は `to_delete` が
+        空だと `deletions: nothing to delete` に畳んで warning 本文を出さなかったため、
+        本テストは是正前は赤だった（それが正しい）。
+        """
+        from c3.cli_update import handle
+
+        claude_dir = tmp_path / ".claude"
+        template_dir = tmp_path / "fake_template"
+        for base in (claude_dir, template_dir):
+            base.mkdir(parents=True, exist_ok=True)
+
+        # 利用先に「育った」INIT_ONLY ファイルのみを置く（通常ファイルは混ぜない）
+        (claude_dir / "rules" / "promoted").mkdir(parents=True)
+        (claude_dir / self.PROMOTED_REL).write_text(self.PROMOTED_BODY, encoding="utf-8")
+
+        # 配布元が誤って INIT_ONLY を deletions.txt に追記してしまった状況
+        (template_dir / "deletions.txt").write_text(
+            f"{self.PROMOTED_REL}\n", encoding="utf-8"
+        )
+
+        monkeypatch.setattr("c3.cli_update.templates_dir", lambda: template_dir)
+        monkeypatch.setattr("c3.__version__", "2.58.0")
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: (_ for _ in ()).throw(AssertionError("prompt must not fire with --yes")),
+        )
+
+        args = argparse.Namespace(
+            target=tmp_path, dry_run=False, platform="claude", yes=True
+        )
+        ret = handle(args)
+        assert ret == 0
+
+        # (a) 当該ファイルが消えていない
+        assert (claude_dir / self.PROMOTED_REL).read_text(encoding="utf-8") == self.PROMOTED_BODY
+
+        # (b) stdout に弾いた理由（warning 本文）が出る
+        captured = capsys.readouterr()
+        assert self.PROMOTED_REL in captured.out, (
+            "INIT_ONLY 単独ケースで弾いた理由が stdout に出ていない: "
+            f"out={captured.out!r} err={captured.err!r}"
+        )
 
 
 class TestHandleUpdateIntegrationInitOnly:

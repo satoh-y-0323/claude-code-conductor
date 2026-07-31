@@ -653,7 +653,7 @@ def _validate_deletion_path(rel: str, claude_root: Path) -> tuple[Path | None, s
     Returns:
         (resolved_path, warning):
           resolved_path: 安全に削除可能と判定された絶対 Path。不正・対象外なら None
-          warning: 不正検出時の理由メッセージ（人間可読、stderr 出力用）。
+          warning: 不正検出時の理由メッセージ（人間可読、削除レポートの一部として stdout 出力用）。
                    正常時は None。「ファイル不在（=既に削除済み）」は warning ではなく
                    呼び出し側で「skipped (already absent)」として処理する
 
@@ -864,6 +864,62 @@ def _apply_deletions(
     return result
 
 
+def _format_deletion_details(result: dict[str, Any]) -> list[str]:
+    """absent / errors / warnings の詳細行を組み立てる（唯一の出力経路）。
+
+    dry-run・通常実行の別を引数に取らない。状態による出し分けを持たないことが
+    この関数の契約であり、呼び出し側は結果を無条件に連結する。
+    各要素の本文は sanitize_terminal_text を通す（ADR-8）。
+    """
+    lines: list[str] = []
+
+    absent = result["absent"]
+    errors = result["errors"]
+    warnings = result["warnings"]
+
+    if absent:
+        lines.append(f"deletions: {len(absent)} already absent:")
+        for rel in absent:
+            lines.append(f"  - {sanitize_terminal_text(rel)}")
+    if errors:
+        lines.append(_color(f"deletions: {len(errors)} error(s):", "\033[31m"))
+        for e in errors:
+            lines.append(f"  - {sanitize_terminal_text(e)}")
+    if warnings:
+        lines.append(_color(f"deletions: {len(warnings)} warning(s):", "\033[33m"))
+        for w in warnings:
+            lines.append(f"  - {sanitize_terminal_text(w)}")
+
+    return lines
+
+
+def _format_deletion_summary(result: dict[str, Any]) -> str:
+    """通常実行の状態行に出すサマリ 1 行を組み立てる。
+
+    `_format_deletion_report` の行数を抑えるための抽出であり、文言・色・書式は
+    抽出前と同一。件数のみを見るため詳細一覧は組み立てない（詳細は
+    `_format_deletion_details` の担当）。
+    """
+    deleted_count = _color(f"{len(result['deleted'])} deleted", "\033[32m")
+    error_count = len(result["errors"])
+    error_str = (
+        _color(f"{error_count} error(s)", "\033[31m")
+        if error_count > 0
+        else f"{error_count} errors"
+    )
+    absent_count = len(result["absent"])
+    warn_count = len(result["warnings"])
+    warn_str = (
+        _color(f"{warn_count} warning(s)", "\033[33m")
+        if warn_count > 0
+        else f"{warn_count} warning(s)"
+    )
+    return (
+        f"deletions: {deleted_count}, {absent_count} absent,"
+        f" {error_str}, {warn_str}"
+    )
+
+
 def _format_deletion_report(result: dict[str, Any], *, dry_run: bool, assume_yes: bool = False) -> str:
     """`_apply_deletions()` の戻り値を人間可読な stdout テキストに整形する。
 
@@ -871,6 +927,17 @@ def _format_deletion_report(result: dict[str, Any], *, dry_run: bool, assume_yes
         result:     `_apply_deletions()` の戻り値 dict
         dry_run:    True なら dry-run 出力フォーマット
         assume_yes: True かつ通常実行の場合、`(--yes: skipping prompt)` を出力
+
+    構成は 3 段（(1) 状態行 / (2) 詳細 / (3) 締め）に固定する。前提は以下:
+
+    - サマリ行の条件は `any_info`（to_delete / deleted / absent / errors / warnings の
+      5 要素すべてを見る）であるため、「`deleted` が非空なら `to_delete` も非空」といった
+      `_apply_deletions` 側の不変則に依存しない
+    - 状態行の条件と締めの条件は相補的であり、通常実行では必ず状態行が 1 本出る。
+      締めの `not cancelled` が `cancelled` 行との同時出力を構造的に排除する
+    - 詳細（absent / errors / warnings）は `_format_deletion_details` が
+      唯一の出力経路である。ここでは分岐を持たせず無条件に連結する。
+      状態分岐の中で詳細を出す実装を再び足してはならない（本欠陥の再発経路）
     """
     lines: list[str] = []
 
@@ -881,8 +948,10 @@ def _format_deletion_report(result: dict[str, Any], *, dry_run: bool, assume_yes
     warnings = result["warnings"]
     cancelled = result["cancelled"]
 
+    any_info = bool(to_delete or deleted or absent or errors or warnings)
+
+    # --- (1) 状態行 ─ 経路・状態ごとに異なるのはここだけ ---
     if dry_run:
-        # --- dry_run 出力 ---
         if to_delete:
             header = _color(
                 f"deletions: {len(to_delete)} file(s) would be removed:",
@@ -890,22 +959,11 @@ def _format_deletion_report(result: dict[str, Any], *, dry_run: bool, assume_yes
             )
             lines.append(header)
             for rel in to_delete:
-                lines.append(f"  - {rel}")
-        if absent:
-            lines.append(f"deletions: {len(absent)} already absent:")
-            for rel in absent:
-                lines.append(f"  - {rel}")
-        if warnings:
-            warn_header = _color(f"deletions: {len(warnings)} warning(s):", "\033[33m")
-            lines.append(warn_header)
-            for w in warnings:
-                lines.append(f"  - {w}")
-        if not to_delete and not absent and not warnings:
-            lines.append("deletions: nothing to delete")
-        else:
-            lines.append("(dry-run: no files were modified)")
+                # rel は deletions.txt 由来の外部文字列。_validate_deletion_path は
+                # パスの安全性しか検査せず、_load_deletions の ANSI 検査も CSI 形式
+                # のみを弾くため、OSC / bare ESC / BS / BEL は生き残り得る（ADR-8 改訂 6）。
+                lines.append(f"  - {sanitize_terminal_text(rel)}")
     else:
-        # --- 通常実行出力 ---
         # 候補一覧は _apply_deletions() 内でプロンプト前に表示済み。
         # assume_yes の場合はプロンプトスキップを明示する。
         # NOTE: assume_yes=True のとき _apply_deletions は input() を呼ばないため
@@ -916,40 +974,17 @@ def _format_deletion_report(result: dict[str, Any], *, dry_run: bool, assume_yes
 
         if cancelled:
             lines.append("deletions: cancelled by user (no files removed)")
-        elif not to_delete:
-            lines.append("deletions: nothing to delete")
-        else:
-            # 削除実行済み
-            deleted_count = _color(f"{len(deleted)} deleted", "\033[32m")
-            error_count = len(errors)
-            error_str = (
-                _color(f"{error_count} error(s)", "\033[31m")
-                if error_count > 0
-                else f"{error_count} errors"
-            )
-            absent_count = len(absent)
-            warn_count = len(warnings)
-            warn_str = (
-                _color(f"{warn_count} warning(s)", "\033[33m")
-                if warn_count > 0
-                else f"{warn_count} warning(s)"
-            )
-            lines.append(
-                f"deletions: {deleted_count}, {absent_count} absent,"
-                f" {error_str}, {warn_str}"
-            )
-            if absent:
-                lines.append(f"  absent:")
-                for rel in absent:
-                    lines.append(f"    - {rel}")
-            if errors:
-                lines.append("  errors:")
-                for e in errors:
-                    lines.append(f"    - {e}")
-            if warnings:
-                lines.append("  warnings:")
-                for w in warnings:
-                    lines.append(f"    - {w}")
+        elif any_info:
+            lines.append(_format_deletion_summary(result))
+
+    # --- (2) 詳細 ─ 単一・無条件。分岐を持たない ---
+    lines.extend(_format_deletion_details(result))
+
+    # --- (3) 締め ---
+    if not any_info and not cancelled:
+        lines.append("deletions: nothing to delete")
+    elif dry_run:
+        lines.append("(dry-run: no files were modified)")
 
     return "\n".join(lines)  # nul-boundary: allow(c3 update のサマリ表示テキスト。表示専用で再パースしない)
 

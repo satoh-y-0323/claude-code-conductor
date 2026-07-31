@@ -5,10 +5,12 @@ A: _validate_deletion_path ユニット (13)
 B: _apply_deletions 結合 (8)
 C: パストラバーサル / symlink / 範囲外 攻撃 (9)
 D: CLI 統合 (4)
+E: _format_deletion_report 不変則 (I-1 プロパティ・I-2 シグネチャ・状態行 7 件)
 """
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import sys
 from pathlib import Path
@@ -16,6 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
+from c3._terminal import strip_ansi
 from c3.cli_update import (
     _apply_deletions,
     _format_deletion_report,
@@ -536,3 +539,259 @@ class TestCLIIntegration:
         args = self._make_args(tmp_path, dry_run=False, yes=False)
         ret = handle(args)
         assert ret == 0
+
+
+# ---------------------------------------------------------------------------
+# E: _format_deletion_report 不変則テスト
+#    architecture-report-20260801-015843.md（改訂 5・確定版）ADR-5' 準拠。
+#    I-1 直積 128 ケースは Red 群と回帰ガード群が混在する（plan-report §C-2）。
+#    `.claude/agents/tester.md:49`（最初から Pass するテストは修正する）は
+#    本タスクには適用しない（plan-report §C-2 の明文の適用除外）。
+# ---------------------------------------------------------------------------
+
+def _make_result(
+    *,
+    to_delete=(),
+    deleted=(),
+    absent=(),
+    errors=(),
+    warnings=(),
+    cancelled=False,
+):
+    """テスト内で `_apply_deletions` の戻り値と同じ 6 キーを直接組み立てるヘルパー。"""
+    return {
+        "to_delete": list(to_delete),
+        "deleted": list(deleted),
+        "absent": list(absent),
+        "errors": list(errors),
+        "warnings": list(warnings),
+        "cancelled": cancelled,
+    }
+
+
+# I-1 直積: dry_run × cancelled × assume_yes × to_delete有無 × absent有無 ×
+# errors有無 × warnings有無（各2値 = 128ケース）。plan-report §A-1 の逐語指定。
+_I1_TO_DELETE_VALUES = ([], ["agents/a.md"])
+_I1_ABSENT_VALUES = ([], ["agents/b.md"])
+_I1_ERRORS_VALUES = ([], ["agents/c.md: permission denied"])
+_I1_WARNINGS_VALUES = ([], ["agents/d.md: init-only guard"])
+
+_I1_CASES = list(
+    itertools.product(
+        (True, False),  # dry_run
+        (True, False),  # cancelled
+        (True, False),  # assume_yes
+        _I1_TO_DELETE_VALUES,
+        _I1_ABSENT_VALUES,
+        _I1_ERRORS_VALUES,
+        _I1_WARNINGS_VALUES,
+    )
+)
+
+
+class TestFormatDeletionReportInvariants:
+    """不変則 I-1（プロパティ）・I-2（シグネチャ）のテスト。"""
+
+    @pytest.mark.parametrize(
+        "dry_run,cancelled,assume_yes,to_delete,absent,errors,warnings",
+        _I1_CASES,
+    )
+    def test_i1_non_empty_detail_fields_always_appear_in_output(
+        self, dry_run, cancelled, assume_yes, to_delete, absent, errors, warnings
+    ):
+        """不変則 I-1: absent / errors / warnings の非空要素は、あらゆる組み合わせで
+        出力文字列に含まれる（一般則を 1 つの assert で検証・ケースごとの期待文字列は
+        ハードコードしない）。
+        """
+        # deleted は to_delete 非空かつ cancelled=False かつ dry_run=False のとき同値、
+        # それ以外は空（plan-report §A-1 の逐語指定）。
+        deleted = list(to_delete) if (to_delete and not cancelled and not dry_run) else []
+        result = _make_result(
+            to_delete=to_delete,
+            deleted=deleted,
+            absent=absent,
+            errors=errors,
+            warnings=warnings,
+            cancelled=cancelled,
+        )
+        output = _format_deletion_report(result, dry_run=dry_run, assume_yes=assume_yes)
+
+        for element in absent:
+            assert element in output, (
+                f"absent 要素が出力に無い: {element!r} / output={output!r} / "
+                f"dry_run={dry_run} cancelled={cancelled} assume_yes={assume_yes}"
+            )
+        for element in errors:
+            assert element in output, (
+                f"errors 要素が出力に無い: {element!r} / output={output!r} / "
+                f"dry_run={dry_run} cancelled={cancelled} assume_yes={assume_yes}"
+            )
+        for element in warnings:
+            assert element in output, (
+                f"warnings 要素が出力に無い: {element!r} / output={output!r} / "
+                f"dry_run={dry_run} cancelled={cancelled} assume_yes={assume_yes}"
+            )
+
+    def test_i2_format_deletion_details_signature_is_result_only(self):
+        """不変則 I-2: `_format_deletion_details` のシグネチャは `result` のみ。
+
+        モジュールトップレベルでは import しない（未実装の名前をトップに足すと
+        ファイル全体が collection error になり既存テストが全滅するため・
+        plan-report §A-2）。
+        """
+        import inspect
+
+        import c3.cli_update as m
+
+        assert hasattr(m, "_format_deletion_details"), (
+            "_format_deletion_details が未実装（Red フェーズでは想定内の失敗）"
+        )
+        sig = inspect.signature(m._format_deletion_details)
+        params = list(sig.parameters.keys())
+        assert params == ["result"], f"シグネチャが result のみでない: {params!r}"
+
+
+class TestFormatDeletionReportStateLines:
+    """状態行の個別テスト（3-1〜3-7・plan-report §A-3 の逐語入力）。
+
+    3-2 / 3-4 / 3-5 / 3-6 / 3-7 は是正前から緑になる回帰ガード（plan-report §C-1）。
+    アサーションの反転・削除は禁止（同 §C-2 の適用除外）。
+    """
+
+    def test_3_1_cancelled_line_present_and_excludes_nothing_to_delete(self):
+        result = _make_result(to_delete=["agents/a.md"], cancelled=True)
+        output = _format_deletion_report(result, dry_run=False, assume_yes=False)
+        assert "deletions: cancelled by user (no files removed)" in output
+        assert "nothing to delete" not in output
+
+    def test_3_2_all_five_fields_empty_shows_nothing_to_delete(self):
+        result = _make_result()
+        output = _format_deletion_report(result, dry_run=False, assume_yes=False)
+        assert "deletions: nothing to delete" in output
+
+    def test_3_3_warnings_only_excludes_nothing_to_delete(self):
+        result = _make_result(warnings=["agents/d.md: init-only guard"])
+        output = _format_deletion_report(result, dry_run=False, assume_yes=False)
+        assert "nothing to delete" not in output
+
+    def test_3_4_assume_yes_shows_skipping_prompt_line(self):
+        result = _make_result(to_delete=["agents/a.md"])
+        output = _format_deletion_report(result, dry_run=False, assume_yes=True)
+        assert "(--yes: skipping prompt)" in output
+
+    def test_3_5_summary_line_contains_deleted_and_absent_after_strip_ansi(self):
+        result = _make_result(to_delete=["agents/a.md"], deleted=["agents/a.md"])
+        output = _format_deletion_report(result, dry_run=False, assume_yes=False)
+        stripped = strip_ansi(output)
+        assert "deleted," in stripped
+        assert " absent," in stripped
+
+    def test_3_6_dry_run_absent_only_shows_no_files_modified(self):
+        result = _make_result(absent=["agents/b.md"])
+        output = _format_deletion_report(result, dry_run=True, assume_yes=False)
+        assert "(dry-run: no files were modified)" in output
+
+    def test_3_7_normal_execution_output_is_not_empty(self):
+        result = _make_result(to_delete=["agents/a.md"])
+        output = _format_deletion_report(result, dry_run=False, assume_yes=False)
+        assert output != ""
+
+
+# ---------------------------------------------------------------------------
+# F: 不変則 I-3（サニタイズ適用の回帰ガード）
+#    security-review-report-20260801-025354.md の [SR-NEW]（Low）対応。
+#    plan-report-20260801-030043.md（改訂 7）task test-sanitize-regression 準拠。
+# ---------------------------------------------------------------------------
+
+from c3._terminal import _DISALLOWED_CONTROL_RE  # noqa: E402
+
+_I3_CONTROL_PATTERNS = {
+    "bs": "\x08",
+    "esc": "\x1b",
+    "bel": "\x07",
+    "osc": "\x1b]0;X\x07",
+    "csi": "\x1b[31m",
+}
+
+# to_delete は dry-run 状態行の経路（_format_deletion_report 内、to_delete
+# ループ）でのみ要素本文が出力される。dry_run=False では to_delete の要素は
+# _format_deletion_report のどこにも描画されない（cancelled / assume_yes の
+# 判定材料として真偽値でのみ参照される）ため、("to_delete", False) は
+# 「描画されない＝漏れない」ことを確認する vacuous case（意図的に含む）。
+# サニタイズ除去に対する実質的な回帰検知力は ("to_delete", True) が担う。
+_I3_FIELD_DRY_RUN_CASES = [
+    ("to_delete", True),
+    ("to_delete", False),
+    ("absent", True),
+    ("absent", False),
+    ("errors", True),
+    ("errors", False),
+    ("warnings", True),
+    ("warnings", False),
+]
+
+
+class TestFormatDeletionReportSanitizeRegression:
+    """不変則 I-3: `_format_deletion_report` の出力には、入力に含まれていた
+    C0 制御文字（`sanitize_terminal_text` の除去対象）が一切現れない。
+
+    security-review-report-20260801-025354.md [SR-NEW]（Low）への対応。
+    to_delete（dry-run 状態行の経路）/ absent / errors / warnings
+    （`_format_deletion_details` の経路）の 4 経路すべてを対象とする。
+    """
+
+    @pytest.mark.parametrize(
+        "control_name,control_char", list(_I3_CONTROL_PATTERNS.items())
+    )
+    @pytest.mark.parametrize("field,dry_run", _I3_FIELD_DRY_RUN_CASES)
+    def test_i3_control_characters_never_reach_output(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        field: str,
+        dry_run: bool,
+        control_name: str,
+        control_char: str,
+    ):
+        """除去対象の文字集合に対する一般則として判定する（個別文字を列挙しない）。"""
+        # supports_color() は sys.stdout.isatty() に依存し環境依存になるため、
+        # False に固定して _color() が正規の ANSI（\x1b[...m）を混入させない
+        # ようにする。これにより「出力全体に除去対象文字が 1 つも無い」という
+        # 一般則の判定を、実行環境（TTY か否か）に左右されずに行える。
+        monkeypatch.setattr("c3.cli_update.supports_color", lambda: False)
+
+        injected = f"agents/evil{control_char}payload.md"
+        result = _make_result(**{field: [injected]})
+        output = _format_deletion_report(result, dry_run=dry_run, assume_yes=False)
+
+        assert _DISALLOWED_CONTROL_RE.search(output) is None, (
+            f"サニタイズ対象の制御文字が出力に残存: field={field!r} "
+            f"dry_run={dry_run} control={control_name!r} output={output!r}"
+        )
+
+    def test_i3_normal_paths_unaffected_by_sanitization(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """回帰の防波堤: 制御文字を含まない通常のパス・理由文は変化しない
+        （サニタイズが過剰に効いていないことの担保）。
+        """
+        monkeypatch.setattr("c3.cli_update.supports_color", lambda: False)
+
+        to_delete = ["agents/normal-path.md"]
+        absent = ["skills/removed-skill.md"]
+        errors = ["commands/broken.md: permission denied"]
+        warnings = ["commands/init-only.md: init-only guard"]
+        result = _make_result(
+            to_delete=to_delete, absent=absent, errors=errors, warnings=warnings,
+        )
+
+        for dry_run in (True, False):
+            output = _format_deletion_report(result, dry_run=dry_run, assume_yes=False)
+            if dry_run:
+                for rel in to_delete:
+                    assert f"  - {rel}" in output
+            for rel in absent:
+                assert f"  - {rel}" in output
+            for e in errors:
+                assert f"  - {e}" in output
+            for w in warnings:
+                assert f"  - {w}" in output
