@@ -859,8 +859,11 @@ TOKEN は `NEEDS_VERIFY` / `NOT_NEEDED` / `UNKNOWN`。UNKNOWN の場合は `{件
 
 起動時のマーカー: `C3_TASK_ID: confirm-exec-verify`（test- プレフィックスを使わない。Red 限定注入の不変則）
 
-UNKNOWN の場合は、対象ファイル一覧を当該ワークフローの plan-report の `tasks[].writes` から取る
-（read_only: true タスクを除く。検出器が対象を出せない状態でも入力を確定させる・ADR-7G）。
+**対象ファイル一覧の入力経路（分岐）** — SR-AI-001：
+- **NEEDS_VERIFY の場合**：検出器が stderr に出力したファイル一覧（1 行 1 ファイル）をそのまま tester へ渡す。
+  検出器 stdout の構造化データではなく、stderr の人間可読一覧を入力として与える
+- **UNKNOWN の場合**：対象ファイル一覧を当該ワークフローの plan-report の `tasks[].writes` から取る
+  （read_only: true タスクを除く。検出器が対象を出せない状態でも入力を確定させる・ADR-7G）
 
 **欠陥が出た場合の分岐**:
 tester が欠陥を検出したら、既存の差し戻し経路（**フェーズ C → D-2 developer**）に乗せて修正を進める。

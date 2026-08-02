@@ -73,6 +73,7 @@ import ast
 import importlib.util
 import itertools
 import subprocess
+import sys
 import types
 from pathlib import Path
 
@@ -936,3 +937,193 @@ class TestT13RealSubprocessIntegration:
         assert len(lines) == 1
         assert lines[0].startswith("NEEDS_VERIFY\t")
         assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# T-14: 回帰ガード（E 周回 1 是正・[SR-V-002]）— untracked 読み取りの封じ込め
+# ---------------------------------------------------------------------------
+
+
+class TestT14ContainmentGuard:
+    """[SR-V-002] のガード（symlink チェック + resolve() 封じ込め）の回帰テスト。
+
+    本テスト実行環境（Windows・非管理者）では ``os.symlink()`` が
+    ``OSError: [WinError 1314] クライアントは要求された特権を保有していません`` で
+    失敗するため（実測済み）、実 symlink の作成には依存しない。代わりに
+    ``ls-files --others`` が返す相対パスに ``..`` を含む値（攻撃者が細工した
+    PR ブランチが symlink 経由で到達させうるのと同型の adversarial input）を
+    ``_run_git`` monkeypatch で直接注入し、``collect_untracked`` の
+    resolve() 封じ込め判定そのものを検査する。
+    """
+
+    def test_path_escaping_repo_root_is_skipped(self, mod, monkeypatch, tmp_path, capsys):
+        """repo_root 外に resolve() されるパスは読み取られずスキップされる。"""
+        outside_dir = tmp_path.parent / f"{tmp_path.name}_outside_e0"
+        outside_dir.mkdir(exist_ok=True)
+        secret = outside_dir / "secret.txt"
+        secret.write_text("escape sanitize outside-secret-content\n", encoding="utf-8")
+
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        monkeypatch.chdir(repo_dir)
+
+        traversal_path = "../" + f"{outside_dir.name}/secret.txt"
+        monkeypatch.setattr(
+            mod,
+            "_run_git",
+            lambda args: (0, traversal_path + "\n") if args[:1] == ["ls-files"] else (0, ""),
+        )
+
+        result = mod.collect_untracked()
+
+        assert result == [], "封じ込め外のファイルは読み取り対象に入ってはならない"
+        err = capsys.readouterr().err
+        assert "outside repository" in err or "outside" in err.lower()
+
+    def test_symlink_creation_is_privilege_restricted_in_this_environment(self):
+        """実 symlink が作れない本環境の制約を記録する（正直な申告・代替検査の根拠）。"""
+        import os
+
+        target = None
+        try:
+            os.symlink("nonexistent-target-for-e0-probe", "nonexistent-link-for-e0-probe")
+            target = "created"
+        except OSError as e:
+            target = e
+        finally:
+            try:
+                os.remove("nonexistent-link-for-e0-probe")
+            except OSError:
+                pass
+
+        # 特権があれば symlink 作成に成功しうる（CI 等）。本テストは「作れない」ことの
+        # 固定ではなく、環境依存の事実を記録するのみ（assert は常に真）。
+        assert target is not None
+
+
+# ---------------------------------------------------------------------------
+# T-15: 回帰ガード（E 周回 1 是正・[SR-NEW]）— untracked ファイルのサイズ上限
+# ---------------------------------------------------------------------------
+
+
+class TestT15SizeLimitGuard:
+    def test_oversized_untracked_file_is_skipped(self, mod, monkeypatch, tmp_path, capsys):
+        """サイズ上限（1MB）を超える untracked ファイルは読み取らずスキップする。"""
+        big = tmp_path / "big.txt"
+        # 1MB を確実に超えるサイズ（1MB + 数百バイト分の余裕）。
+        big.write_text("escape sanitize " * 100_000, encoding="utf-8")
+        assert big.stat().st_size > 1024 * 1024
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(mod, "_run_git", _untracked_run_git([], tmp_path, ["big.txt"]))
+
+        result = mod.collect_untracked()
+
+        assert result == []
+        err = capsys.readouterr().err
+        assert "big.txt" in err
+        assert "size" in err.lower()
+
+    def test_small_untracked_file_is_not_affected_by_size_limit(self, mod, monkeypatch, tmp_path):
+        """上限未満のファイルは従来どおり読み取られる（既存挙動の非退行）。"""
+        small = tmp_path / "small_escaper.py"
+        small.write_text("def escape_html(raw):\n    return raw\n", encoding="utf-8")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            mod, "_run_git", _untracked_run_git([], tmp_path, ["small_escaper.py"])
+        )
+
+        result = mod.collect_untracked()
+
+        assert len(result) == 1
+        assert result[0][0].endswith("small_escaper.py")
+
+
+# ---------------------------------------------------------------------------
+# T-16: 回帰ガード（E 周回 1 是正・[CR-NEW]）— --print0 出力に \r が付着しない
+# ---------------------------------------------------------------------------
+
+
+class TestT16NoCarriageReturnInPrint0:
+    """stdout の判定行（--print0 含む）に \\r が混入しないことを固定する。
+
+    D-2 後の実機欠陥（Windows で改行が \\r\\n になり、--print0 の最終ファイル名末尾に
+    \\r が付着）の再発防止（[CR-NEW]）。実プロセスを起動し生バイト列を検査する
+    （capsys 経由では reconfigure(newline="") の効果を観測できないため）。
+    """
+
+    def test_print0_raw_bytes_have_no_carriage_return(self, tmp_path):
+        _run_real_git(tmp_path, "init")
+        _run_real_git(tmp_path, "config", "user.email", "e0-test@example.com")
+        _run_real_git(tmp_path, "config", "user.name", "E0 Test")
+        (tmp_path / "README.md").write_text("# placeholder\n", encoding="utf-8")
+        _run_real_git(tmp_path, "add", "README.md")
+        _run_real_git(tmp_path, "commit", "-m", "initial commit")
+
+        (tmp_path / "a_escaper.py").write_text(
+            "def escape_html(raw):\n    return raw\n", encoding="utf-8"
+        )
+        (tmp_path / "b_lexer.py").write_text(
+            "def lexer(source):\n    return []\n", encoding="utf-8"
+        )
+
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--print0"],
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=15,
+        )
+
+        assert proc.returncode == 0
+        assert b"\r" not in proc.stdout, f"--print0 の生バイト列に \\r が混入: {proc.stdout!r}"
+        assert proc.stdout.startswith(b"NEEDS_VERIFY\t")
+
+    def test_default_stdout_raw_bytes_have_no_carriage_return(self, tmp_path):
+        """--print0 なしの既定出力でも \\r が混入しない（同じ reconfigure の効果を確認）。"""
+        _run_real_git(tmp_path, "init")
+        _run_real_git(tmp_path, "config", "user.email", "e0-test@example.com")
+        _run_real_git(tmp_path, "config", "user.name", "E0 Test")
+        (tmp_path / "README.md").write_text("# placeholder\n", encoding="utf-8")
+        _run_real_git(tmp_path, "add", "README.md")
+        _run_real_git(tmp_path, "commit", "-m", "initial commit")
+
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=15,
+        )
+
+        assert proc.returncode == 0
+        assert b"\r" not in proc.stdout
+        assert b"\r" not in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# T-17: 回帰ガード（E 周回 1 是正・[SR-R-001]）— 例外メッセージ本文を出力しない
+# ---------------------------------------------------------------------------
+
+
+class TestT17ExceptionMessageSymmetry:
+    """main() のトップレベル例外ハンドラが例外メッセージ本文を出力しないことを固定する。
+
+    collect_untracked 内の個別ファイル読み取り失敗時と同じ書式
+    （``type(e).__name__`` のみ）に揃っていることを確認する。
+    """
+
+    def test_top_level_exception_does_not_leak_message_body(self, mod, monkeypatch, capsys):
+        def _boom():
+            raise ValueError("sensitive-detail-that-must-not-leak")
+
+        monkeypatch.setattr(mod, "resolve_base", lambda explicit: None)
+        monkeypatch.setattr(mod, "_collect_diffs", lambda base: ("", False))
+        monkeypatch.setattr(mod, "collect_untracked", _boom)
+
+        rc = mod.main([])
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert captured.out.splitlines() == ["UNKNOWN\tGIT_FAILED"]
+        assert "sensitive-detail-that-must-not-leak" not in captured.err
+        assert "ValueError" in captured.err

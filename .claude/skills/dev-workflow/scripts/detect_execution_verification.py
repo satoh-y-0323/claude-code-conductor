@@ -35,8 +35,8 @@ from pathlib import Path
 
 try:
     sys.stdin.reconfigure(encoding="utf-8")
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", newline="")
+    sys.stderr.reconfigure(encoding="utf-8", newline="")
 except AttributeError:
     pass
 
@@ -154,6 +154,8 @@ def collect_untracked() -> list[tuple[str, str]]:
     ADR-2U: git ls-files --others --exclude-standard で取得。
     ADR-2V: 読み取り失敗（UnicodeDecodeError / PermissionError 等）でもスキップして継続。
     先頭 8KB に NUL バイトを含むファイルは走査対象から外す（バイナリ判定）。
+    SR-V-002: symlink 封じ込め確認・リポジトリ外の実体は読み取り対象から除外。
+    SR-NEW: ファイルサイズ上限を 1MB に設定。超過は読み取りスキップ。
     """
     rc, stdout = _run_git(["ls-files", "--others", "--exclude-standard"])
     if rc != 0:
@@ -162,6 +164,7 @@ def collect_untracked() -> list[tuple[str, str]]:
     files = stdout.strip().split("\n") if stdout.strip() else []
     result: list[tuple[str, str]] = []
     repo_root = Path.cwd()
+    max_file_size = 1024 * 1024  # 1MB
 
     for file_path in files:
         if not file_path:
@@ -169,6 +172,28 @@ def collect_untracked() -> list[tuple[str, str]]:
 
         try:
             full_path = repo_root / file_path
+
+            # SR-V-002: symlink チェック・リポジトリ外の実体を封じ込める
+            if full_path.is_symlink():
+                print(f"Warning: skipping {file_path}: symlink", file=sys.stderr)
+                continue
+
+            resolved = full_path.resolve()
+            repo_root_resolved = repo_root.resolve()
+            # resolved がリポジトリ配下に収まることを確認
+            if not (resolved == repo_root_resolved or repo_root_resolved in resolved.parents):
+                print(f"Warning: skipping {file_path}: outside repository", file=sys.stderr)
+                continue
+
+            # SR-NEW: ファイルサイズ上限チェック
+            try:
+                file_size = full_path.stat().st_size
+                if file_size > max_file_size:
+                    print(f"Warning: skipping {file_path}: exceeds size limit (1MB)", file=sys.stderr)
+                    continue
+            except OSError:
+                pass  # stat 取得失敗時は read で失敗時に catch する
+
             content = full_path.read_text(encoding="utf-8")
 
             # 先頭 8KB でNUL チェック（ADR-2V）
@@ -179,7 +204,6 @@ def collect_untracked() -> list[tuple[str, str]]:
             result.append((file_path, content))
         except (UnicodeDecodeError, PermissionError, FileNotFoundError, OSError) as e:
             # stderr に警告を出して継続（ADR-2V）
-            # nul-boundary: allow(stderr_warning)
             print(f"Warning: skipping {file_path}: {type(e).__name__}", file=sys.stderr)
             continue
 
@@ -204,14 +228,12 @@ def detect(
     if untracked is None:
         untracked = []
 
-    # ファイル名抽出（ADR-8G）
-    file_names_from_diff = _extract_files_from_diff(diff_text)
-
     # 走査対象の統合（ファイル単位で重複排除・POSIX 形式に正規化）
     all_files: dict[str, str] = {}
 
-    # diff からのファイル + 追加行
-    for name, added_lines in _extract_added_lines_from_diff(diff_text).items():
+    # diff からのファイル + 追加行（ADR-8G と tracked_count の両方を get）
+    diff_files = _extract_added_lines_from_diff(diff_text)
+    for name, added_lines in diff_files.items():
         all_files[name] = added_lines
 
     # untracked ファイルはすべての内容を「追加行」とみなす（ADR-2U）
@@ -231,7 +253,7 @@ def detect(
         return ("NEEDS_VERIFY", sorted(list(firing_files)))
 
     # 2. tracked 側（diff）が 0 件なら UNKNOWN（ADR-2W）
-    tracked_count = len(file_names_from_diff)
+    tracked_count = len(diff_files)
     if tracked_count == 0:
         return ("UNKNOWN", [])
 
@@ -242,21 +264,6 @@ def detect(
 def _normalize_path(path: str) -> str:
     """パスを POSIX 形式の相対パスに正規化する（ADR-2R [DC-AM-003]）。"""
     return path.replace("\\", "/").lstrip("/")
-
-
-def _extract_files_from_diff(diff_text: str) -> set[str]:
-    """diff から新規・変更ファイルの名前を抽出する（ADR-8G）。
-
-    抽出元は +++ b/<path> 行。+++ /dev/null（削除）は除外。
-    /dev/null は統一表記だが、念のため両方の形式を排除。
-    """
-    file_names = set()
-    for line in diff_text.split("\n"):
-        if line.startswith("+++ b/"):
-            path = line[6:]  # "+++ b/" を削除
-            if path != "/dev/null" and path != "\\dev\\null":
-                file_names.add(_normalize_path(path))
-    return file_names
 
 
 def _extract_added_lines_from_diff(diff_text: str) -> dict[str, str]:
@@ -292,7 +299,7 @@ def _extract_added_lines_from_diff(diff_text: str) -> dict[str, str]:
             pass
 
     # 集合を連結してテキストに戻す
-    # nul-boundary: allow(dedupe_aggregation)
+    # nul-boundary: allow(dedupe_aggregation)  # NUL 境界不適用・\n は同一ファイル内の行結合
     result = {name: "\n".join(sorted(lines)) for name, lines in added_lines.items()}
     return result
 
@@ -335,6 +342,36 @@ def _count_vocabulary_matches(
     return count
 
 
+def _collect_diffs(base: str | None) -> tuple[str, bool]:
+    """git diff でコミット済み変更と作業ツリー変更を収集する。
+
+    ADR-2R: <base> が明示されていれば差分を取得。未指定でも HEAD 差分を試す。
+    cr-M-002: 明示 base が失敗した場合は HEAD 試行を スキップし fail-safe する（情報損失は
+    UNKNOWN で補完）。
+
+    戻り値: (統合 diff テキスト, git_failed フラグ)
+    """
+    diffs: list[str] = []
+    git_failed = False
+
+    if base:
+        rc, stdout = _run_git(["diff", base])
+        if rc == 0:
+            diffs.append(stdout)
+        else:
+            git_failed = True
+
+    # base が失敗していなければ HEAD 側も試す
+    if not git_failed:
+        rc, stdout = _run_git(["diff", "HEAD"])
+        if rc == 0:
+            diffs.append(stdout)
+        else:
+            git_failed = True
+
+    return ("".join(diffs), git_failed)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。ADR-4R / ADR-2X に従い exit 0 を返す（全経路）。"""
     parser = argparse.ArgumentParser(
@@ -362,29 +399,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         # git diff <base> / git diff HEAD で追加行を取得（ADR-2R）
-        diffs: list[str] = []
-        git_failed = False
-
-        if base:
-            rc, stdout = _run_git(["diff", base])
-            if rc == 0:
-                diffs.append(stdout)
-            else:
-                git_failed = True
-
-        if not git_failed:  # 前段が失敗していなければ HEAD diff も試す
-            rc, stdout = _run_git(["diff", "HEAD"])
-            if rc == 0:
-                diffs.append(stdout)
-            else:
-                git_failed = True
-
-        # git 実行が失敗した場合は GIT_FAILED を返す
+        diff_text, git_failed = _collect_diffs(base)
         if git_failed:
             print("UNKNOWN\tGIT_FAILED")
             return 0
-
-        diff_text = "".join(diffs)
 
         # untracked 収集（ADR-2U）
         untracked = collect_untracked()
@@ -395,12 +413,11 @@ def main(argv: list[str] | None = None) -> int:
         # 出力（ADR-4R）
         if token == "UNKNOWN":
             # detect が UNKNOWN を返したのは EMPTY_DIFF
-            print(f"UNKNOWN\tEMPTY_DIFF")
+            print("UNKNOWN\tEMPTY_DIFF")
         elif token == "NEEDS_VERIFY":
             print(f"NEEDS_VERIFY\t{len(files)}", end="")
             if args.print0:
-                # NUL 区切りで stdout に追加出力（ADR-4R）
-                # nul-boundary: allow(--print0_output)
+                # NUL 区切りで stdout に追加出力（ADR-4R・セパレータは NUL のため lint 対象外）
                 print("\t" + "\x00".join(files), end="")
             print()
         elif token == "NOT_NEEDED":
@@ -414,8 +431,9 @@ def main(argv: list[str] | None = None) -> int:
 
     except Exception as e:
         # すべてのエラーを exit 0 で通す（ADR-5 / N-3）
-        print(f"UNKNOWN\tGIT_FAILED", file=sys.stdout)
-        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+        # SR-R-001: 例外メッセージ本文を出力しない（内部エラーで decoding 不能バイト漏洩回避）
+        print("UNKNOWN\tGIT_FAILED", file=sys.stdout)
+        print(f"Error: {type(e).__name__}", file=sys.stderr)
         return 0
 
 
