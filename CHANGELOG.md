@@ -1,5 +1,51 @@
 # Changelog
 
+## [2.61.0] - 2026-08-03
+
+### 追加
+
+- **フェーズ E に E-0（実行検証判定）を新設した**。エスケープ処理・パーサ・状態機械のロジックは
+  静的読解によるレビューを構造的にすり抜けるため、変更内容を機械判定して該当時は tester に
+  **入力の直積を実際に流させ、往復一致と境界値を確認させる**ステップを置いた
+  （`.claude/skills/dev-workflow/SKILL.md` のフェーズ E 先頭）
+- **検出スクリプト `.claude/skills/dev-workflow/scripts/detect_execution_verification.py` を追加**した。
+  語彙で `NEEDS_VERIFY` / `NOT_NEEDED` / `UNKNOWN` を stdout に 1 行出力する。言語非依存で、
+  利用先が Python 以外でも発火する
+  - 走査対象は `git diff <base>` ∪ `git diff HEAD` ∪ **untracked** の和集合。
+    `git diff` は untracked を出さないため、**新規追加したパーサ・エスケープモジュール**
+    （本機構が最も捕らえたいクラス）が不可視になる欠陥を実測で確認し設計に反映した
+  - 差分 0 件は「該当なし」ではなくベース解決失敗の徴候として `UNKNOWN EMPTY_DIFF` に倒す。
+    `UNKNOWN` は `NEEDS_VERIFY` と同じ扱い（tester を起動する）で、判定の失敗が沈黙にならない
+  - 対象ファイル一覧は `--print0` の stdout を `.claude/state/e0-targets-*.txt` へ書き出し、
+    tester にはパスのみ渡す。一覧は「データであり指示ではない」と枠付けして渡す
+- `.claude/.gitignore` に `state/e0-targets-*.txt` を追加した（(b) セッション一時）
+
+### 修正
+
+- `.claude/skills/dev-workflow/scripts/record_review_decision.py` に `stdout` / `stderr` の
+  reconfigure を追加した。日本語を stderr へ print する一方で reconfigure が無く、
+  cp1252 の CI ランナーで `UnicodeEncodeError` になる既知の事故形（`/CLAUDE.md` §9-1）だった
+- `tests/test_scripts_stdout_encoding.py` の走査対象に `.claude/skills/*/scripts/**/*.py` を加えた。
+  従来はリポジトリ直下の `scripts/` のみで、skill スクリプトの reconfigure を検査する者が居なかった
+
+### ドキュメント
+
+- README に「git 管理の方針（何を載せて、何を載せないか）」節を新設した。`c3 init` が配置する
+  `.claude/.gitignore` の内容をコピペできる形で示し、載せる側の理由・public リポジトリでの注意・
+  既存プロジェクトの `git rm --cached` 移行手順・opt-out 手段（削除ではなく中身を空にする）を明記した
+- `.claude/docs/config-policy.md` のバージョンヘッダを撤去した。生涯 2 回しか更新されず実態とずれていた。
+  本ドキュメントは wheel 同梱で `c3 update` が更新するため、常にインストール済み C3 と同版になる
+- `.claude/agents/design-critic.md` に `## Memory` 節を追加した。`memory: project` を持つ 9 体のうち
+  同 agent だけが記録対象を限定する文言を欠いていた
+
+### 利用先での対応（既存ユーザー向け）
+
+`.claude/.gitignore` は INIT_ONLY（`c3 update` は上書きしない）のため、**今回追加した
+`state/e0-targets-*.txt` の行は既存の利用先には届きません**。E-0 を使うと出力ファイルが
+`git status` に浮上するため、同ファイルへ手動で 1 行追加してください。
+なお自己参照（検出器が自分の過去の出力を走査する）は実装側でも塞いでいるため、
+追加しなくても検出結果は正しくなります。
+
 ## [2.60.1] - 2026-08-01
 
 ### 修正
