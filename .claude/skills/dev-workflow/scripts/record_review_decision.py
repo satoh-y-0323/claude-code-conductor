@@ -24,6 +24,13 @@ import argparse
 import re
 import sys
 
+try:
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except AttributeError:
+    pass
+
 
 # checklist_id 形式検証用の正規表現（[CR-XX-NNN] / [SR-XX-NNN] / [DC-XX-NNN]、
 # 連番 3 桁以上）[SR-V-001]。review_hint_inject.py の CHECKLIST_ID_RE と整合（[ ] なし）。

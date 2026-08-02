@@ -78,6 +78,10 @@ D-0（実行モード自動判別）は AskUserQuestion を持たないステッ
 **D-0（実行モード自動判別）は承認ゲートではない**（別枠）: D-0 は AskUserQuestion を一切持たない Glob/Bash 判定ステップであり、
 承認ゲート 10 個の集合には含めない。自律モードでも**判別ロジックは不変**（HITL と同じ）で、ゲート付け替えの対象ではない。
 
+**E-0（実行検証判定）は承認ゲートではない**（別枠）: E-0 は AskUserQuestion を持たない判定ステップであり、
+承認ゲート 10 個の集合には含めない。ただし**自律モードでも UNKNOWN・NEEDS_VERIFY は例外なく tester を起動する**（fail-safe 原則・ADR-5/N-2）。
+E-0 起因の差し戻しは E 周回として 1 消費する（CR/SR セットを伴わない周回・ADR-9H）。
+
 **findings 分岐の固定**（C-3 / E-1 / E-2 共通）: これら 3 ゲートの findings 分岐 AskUserQuestion には HITL で
 「全て対応する／対応する指摘を選ぶ／全て許容して進む／再監査（再レビュー）」の選択肢があるが、
 **自律モードでは原則「全て対応する」を選ぶ**。「全て許容して進む」を選んでよいのは、
@@ -131,9 +135,11 @@ E findings の修正も「C 差し戻し → D-2 developer」の正規ルート�
    **担当エージェントが生成するレポートの本文 Write は含まない**
    （test-report ＝ tester ／ code-review-report ＝ code-reviewer ／ security-review-report ＝ security-reviewer ／ design-review-report ＝ design-critic）
 2. 記録スクリプトの実行（`record_agent_outcome.py` / `record_review_decision.py` / `review_hint_inject.py`）
-3. `.claude/memory/sessions/*.tmp`（セッションファイル）の更新
-4. `.claude/reports/loop-impl-gaps-*.md`（gaps 台帳）への追記
-5. git 操作のうち**非可逆操作**（commit / push / tag / release・ファイル削除）は**人間の関所 1 の下でのみ**。
+3. E-0（実行検証判定）のスクリプト実行と判定行の記録（`.claude/skills/dev-workflow/scripts/detect_execution_verification.py` 呼び出し、
+   セッションファイルへの `E-0判定: {TOKEN} {件数} plan-report-{ts}` 行の追記）
+4. `.claude/memory/sessions/*.tmp`（セッションファイル）の更新
+5. `.claude/reports/loop-impl-gaps-*.md`（gaps 台帳）への追記
+6. git 操作のうち**非可逆操作**（commit / push / tag / release・ファイル削除）は**人間の関所 1 の下でのみ**。
    ただし**検証用ビルド足場は関所の対象外**であり（`git worktree add/remove`・`dist/` 空化・一時ファイル）、親が実施してよい
 
 **リリース手続きの主体**: CHANGELOG.md の追記は developer 経由

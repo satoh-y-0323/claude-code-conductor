@@ -2,10 +2,19 @@
 """
 test_scripts_stdout_encoding.py: Static analysis test for stdout/stderr reconfigure idiom in scripts.
 
-Tests that all scripts/*.py files that print non-ASCII characters to stdout or stderr
+Tests that all in-scope *.py files that print non-ASCII characters to stdout or stderr
 contain sys.stdout.reconfigure(encoding='utf-8') and sys.stderr.reconfigure(encoding='utf-8') calls.
 
 This ensures Windows CI environments (cp1252) can handle UTF-8 output without UnicodeEncodeError.
+
+## Scan Scope (architecture-report-20260802-190003.md ADR-11 / 要件 F-6)
+
+- `scripts/*.py`                        — repo 直下の dev tool（従来からの対象）
+- `.claude/skills/*/scripts/**/*.py`     — skill 付属スクリプト（配布物。ADR-11 で追加）
+
+ADR-11 の追加以前は repo 直下 `scripts/` のみが対象で、`.claude/skills/*/scripts/` 配下の
+スクリプトには reconfigure を検査する者が 0 人＝「空の緑」だった。
+glob は `tests/test_nul_boundary_lint.py` の `_GLOB_CLAUDE_SKILLS_SCRIPTS` と同一形にしてある。
 
 ## Detection Strategy (AST-based)
 
@@ -40,10 +49,32 @@ import ast
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# 走査対象の glob パターン（tests/test_nul_boundary_lint.py と同一形）
+_GLOB_REPO_SCRIPTS = "scripts/*.py"
+_GLOB_CLAUDE_SKILLS_SCRIPTS = ".claude/skills/*/scripts/**/*.py"
+
+
 def get_scripts_dir() -> Path:
-    """Return the scripts directory path."""
+    """Return the repo-root scripts directory path."""
     project_root = Path(__file__).parent.parent
     return project_root / "scripts"
+
+
+def get_scan_targets() -> list[Path]:
+    """Return every *.py file in scope, sorted and de-duplicated.
+
+    Scope = repo 直下 `scripts/` ∪ `.claude/skills/*/scripts/` 配下（再帰）。
+    `__pycache__` 配下は除外する。
+    """
+    targets: set[Path] = set()
+    for pattern in (_GLOB_REPO_SCRIPTS, _GLOB_CLAUDE_SKILLS_SCRIPTS):
+        for path in REPO_ROOT.glob(pattern):
+            if "__pycache__" in path.parts:
+                continue
+            targets.add(path)
+    return sorted(targets)
 
 
 def _contains_non_ascii(s: str) -> bool:
@@ -248,22 +279,44 @@ def check_script_file(script_path: Path) -> tuple[bool, str]:
         return True, "OK: no non-ASCII prints"
 
 
+def test_scan_targets_include_claude_skills_scripts():
+    """S-10 回帰ガード: 走査対象一覧に `.claude/skills/*/scripts/` 由来が含まれること。
+
+    ADR-11 の射程拡張が将来 `scripts/` のみへ戻されると、skill 付属スクリプトの
+    reconfigure を検査する者が再び 0 人（空の緑）になる。それを検出するためのテスト。
+
+    NOTE: 本ケースは是正の有無に関わらず緑であり、`tester.md:49`
+    （最初から Pass するテストは修正する）の適用対象外とする（plan-report 20260802-204515 の
+    test-detector (B) に明記された裁定）。
+    """
+    targets = get_scan_targets()
+    rel = [p.relative_to(REPO_ROOT).as_posix() for p in targets]
+
+    assert rel, "走査対象が 1 件も無い"
+    assert any(
+        r.startswith(".claude/skills/") and "/scripts/" in r for r in rel
+    ), f".claude/skills/*/scripts/ 由来が走査対象に含まれていない: {rel}"
+    assert any(r.startswith("scripts/") for r in rel), f"repo 直下 scripts/ が落ちている: {rel}"
+    # 射程拡張で初めて検査対象になった実在ファイル（ADR-11 / 要件 F-7 の是正対象）
+    assert ".claude/skills/dev-workflow/scripts/record_review_decision.py" in rel
+
+
 def test_scripts_stdout_encoding():
     """
-    Test that all scripts printing non-ASCII characters have stdout/stderr reconfigure.
+    Test that all in-scope scripts printing non-ASCII characters have stdout/stderr reconfigure.
     """
     scripts_dir = get_scripts_dir()
 
     if not scripts_dir.exists():
         raise RuntimeError(f"Scripts directory not found: {scripts_dir}")
 
-    script_files = sorted(scripts_dir.glob("*.py"))
+    script_files = get_scan_targets()
 
     if not script_files:
-        raise RuntimeError(f"No .py files found in {scripts_dir}")
+        raise RuntimeError(f"No .py files found under {REPO_ROOT}")
 
     print(f"\n=== Scanning {len(script_files)} script files ===")
-    print(f"Directory: {scripts_dir}\n")
+    print(f"Repo root: {REPO_ROOT}\n")
 
     failures = []
     passes = []
@@ -271,13 +324,14 @@ def test_scripts_stdout_encoding():
     for script_path in script_files:
         passed, message = check_script_file(script_path)
 
+        rel_name = script_path.relative_to(REPO_ROOT).as_posix()
         status = "PASS" if passed else "FAIL"
-        print(f"[{status}] {script_path.name}: {message}")
+        print(f"[{status}] {rel_name}: {message}")
 
         if not passed:
-            failures.append((script_path.name, message))
+            failures.append((rel_name, message))
         else:
-            passes.append(script_path.name)
+            passes.append(rel_name)
 
     print("\n=== Summary ===")
     print(f"Passed: {len(passes)}")

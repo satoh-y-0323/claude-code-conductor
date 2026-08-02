@@ -8,6 +8,7 @@
       "Bash(c3 run .claude/hooks/permission_handler.py*)",
       "Bash(c3 run .claude/hooks/statusline.py*)",
       "Bash(c3 run .claude/hooks/recall_autorebuild.py*)",
+      "Bash(c3 run .claude/skills/dev-workflow/scripts/detect_execution_verification.py*)",
       "Bash(c3 run .claude/skills/dev-workflow/scripts/review_hint_inject.py*)",
       "Bash(c3 run .claude/skills/dev-workflow/scripts/record_review_decision.py*)",
       "Bash(c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py*)",

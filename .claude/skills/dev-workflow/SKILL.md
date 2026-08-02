@@ -809,8 +809,72 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 ## フェーズ E: レビュー
 
 今日のセッションファイルに以下を追記する（未登録の場合のみ）:
+- `- [ ] 実行検証`
 - `- [ ] code-review`
 - `- [ ] security-review`
+
+### E-0: 実行検証判定
+
+デリバリ前の最終チェック。変更内容が実行検証を必要とするかを機械判定する。
+
+Bash で実行検証判定スクリプトを呼ぶ:
+
+```bash
+c3 run .claude/skills/dev-workflow/scripts/detect_execution_verification.py [--base <ref>]
+```
+
+既定の射程は「前回 push 以降の全コミット＋作業ツリー＋untracked」（`git merge-base HEAD @{u}` を基準）。
+空打ちは受容済み（語彙定義ファイル自身の変更で発火するのは既知）。狭めたい場合のみ `--base` を明示する。
+
+**判定結果の記録**:
+スクリプト実行後、当日セッションファイルの `現在地:` 行の直後のヘッダブロック（モード行・転記行）の末尾に 1 行を追記する:
+
+```
+E-0判定: {TOKEN} {件数} plan-report-{タイムスタンプ}
+```
+
+TOKEN は `NEEDS_VERIFY` / `NOT_NEEDED` / `UNKNOWN`。UNKNOWN の場合は `{件数}` に理由コード（`GIT_FAILED` / `EMPTY_DIFF`）を書く。
+
+**分岐**:
+
+#### NOT_NEEDED の場合
+
+「実行検証不要」として E-1（code-reviewer）へ進む。セッションファイルの `- [ ] 実行検証` を `- [x]` に Edit し、
+`現在地:` を `現在地: フェーズE code-review中` に Edit する。
+
+#### NEEDS_VERIFY または UNKNOWN の場合
+
+実行検証が必要。tester エージェントを起動して以下の指示を与える:
+
+**tester への指示**（3 点）:
+
+1. **入力の直積を実際に流して往復一致を確認する** — 対象がとりうる値の組み合わせ
+   （エスケープ対象文字 × 出現位置 × 多重度 など）を列挙して**直積を全件**テストに与え、
+   encode した値を decode すると元に戻ること（往復一致）を実際に流して確認する。
+   代表 1 ケースの往復一致だけで済ませない（ADR-7 の実行検証の定義）
+2. **境界値を実際に流す** — 空文字列・制御文字・多重エスケープ・セパレータそのもの等の境界値を
+   実装に与えて正常に処理されることを確認する
+3. **結果を test-report に記録する** — テスト実行結果（成功したテストケース・パラメータ・タイムスタンプ等）を
+   `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` の `## 実行検証` 節に記録する
+
+起動時のマーカー: `C3_TASK_ID: confirm-exec-verify`（test- プレフィックスを使わない。Red 限定注入の不変則）
+
+UNKNOWN の場合は、対象ファイル一覧を当該ワークフローの plan-report の `tasks[].writes` から取る
+（read_only: true タスクを除く。検出器が対象を出せない状態でも入力を確定させる・ADR-7G）。
+
+**欠陥が出た場合の分岐**:
+tester が欠陥を検出したら、既存の差し戻し経路（**フェーズ C → D-2 developer**）に乗せて修正を進める。
+差し戻しは E 周回として 1 消費する（CR/SR セットなしの周回・ADR-9H）。
+
+**tier-routing 結果記録**:
+```bash
+c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
+  --role tester --outcome {success|failure} --gate E-0 \
+  --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
+  --task confirm-exec-verify
+```
+
+---
 
 ### E-1: code-reviewer エージェントの起動
 
