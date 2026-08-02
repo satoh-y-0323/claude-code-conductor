@@ -1178,3 +1178,122 @@ class TestT18Print0StdoutIsolatedFromSkipWarnings:
         assert b"Warning" not in proc.stdout
         assert proc.stdout == b"NEEDS_VERIFY\t1\tnew_escaper.py\n"
         assert b"huge_untracked.bin" not in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# T-19: E-0 自身の出力ファイルの自己参照遮断（E 周回 3 [CR-NEW] Medium・回帰ガード）
+# ---------------------------------------------------------------------------
+
+
+class TestT19SelfOutputExclusion:
+    """code-review-report-20260802-230011.md の [CR-NEW] Medium が実機再現した
+    「`.claude/.gitignore` が届かない環境（`c3 update` 経路）で E-0 の出力ファイル
+    自身が次回実行の走査対象に混入し続ける」自己参照を、実装側の無条件除外
+    （`_SELF_OUTPUT_PATTERNS` / `_is_self_output`）が gitignore の有無に関わらず
+    遮断することを固定する。
+    """
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            # 一致すべき（SKILL.md が生成する正規の命名）
+            (".claude/state/e0-targets-1234567890.txt", True),
+            (".claude/state/e0-targets-1785680870-731-5199.txt", True),
+            (".claude/state/e0-targets-.txt", True),
+            # 一致すべきでない（誤って正規のソースファイルを除外＝fail-open にしないこと）
+            ("state/e0-targets-x.txt", False),  # 先頭 .claude/ が無い
+            (".claude/state/sub/e0-targets-x.txt", False),  # サブディレクトリ経由
+            (".claude/state/e0-targets-x.txt.bak", False),  # 拡張子が異なる
+            (".claude/state/E0-TARGETS-x.txt", False),  # 大文字（厳密一致）
+            (".claude/state/e0-targetsx.txt", False),  # ハイフンが無い
+            (".claude/state/setup_done.flag", False),  # 無関係な既存 state ファイル
+            ("src/c3/e0-targets-fake.py", False),  # 正規ソースファイルの偽装
+            ("e0-targets-x.txt", False),  # ルート直下単独
+            ("other/state/e0-targets-x.txt", False),  # 別トップディレクトリ
+        ],
+    )
+    def test_is_self_output_boundary_cases(self, mod, path, expected):
+        assert mod._is_self_output(path) is expected
+
+    def test_is_self_output_normalizes_windows_separators(self, mod):
+        """git ls-files は POSIX 区切りで返すが、正規化前提が壊れていないことも確認する。"""
+        assert mod._is_self_output(".claude\\state\\e0-targets-x.txt") is True
+
+    def test_collect_untracked_excludes_self_output_without_warning(
+        self, mod, monkeypatch, tmp_path, capsys
+    ):
+        """自身の出力ファイルは collect_untracked の走査対象から無条件に除外され、
+        かつ「スキップ警告」を出さない（自分の出力を無視するのは正常動作のため）。
+        """
+        (tmp_path / "new_escaper.py").write_text(
+            "def escape(x):\n    return x\n", encoding="utf-8"
+        )
+        state_dir = tmp_path / ".claude" / "state"
+        state_dir.mkdir(parents=True)
+        self_output = state_dir / "e0-targets-1111111111-222-33333.txt"
+        self_output.write_text("NEEDS_VERIFY\t1\tnew_escaper.py\n", encoding="utf-8")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            mod,
+            "_run_git",
+            _untracked_run_git(
+                [],
+                tmp_path,
+                ["new_escaper.py", ".claude/state/e0-targets-1111111111-222-33333.txt"],
+            ),
+        )
+
+        result = mod.collect_untracked()
+
+        assert [p for p, _ in result] == ["new_escaper.py"]
+        assert capsys.readouterr().err == ""
+
+    def test_two_consecutive_runs_without_gitignore_do_not_self_reference(
+        self, tmp_path: Path
+    ):
+        """gitignore を持たない一時リポジトリで E-0 を 2 回連続実行しても、
+        2 回目の出力（stdout）に 1 回目の出力ファイル自身が含まれないこと
+        （code-review-report が実機再現した Medium の回帰ガード）。
+        """
+        _run_real_git(tmp_path, "init")
+        _run_real_git(tmp_path, "config", "user.email", "e0-test@example.com")
+        _run_real_git(tmp_path, "config", "user.name", "E0 Test")
+        (tmp_path / "README.md").write_text("# placeholder\n", encoding="utf-8")
+        _run_real_git(tmp_path, "add", "README.md")
+        _run_real_git(tmp_path, "commit", "-m", "initial commit")
+
+        # code-review-report の実機再現と同一シナリオ：発火ファイルが 1 件のみ。
+        (tmp_path / "new_escaper.py").write_text(
+            "def escape(x):\n    return x\n", encoding="utf-8"
+        )
+
+        state_dir = tmp_path / ".claude" / "state"
+        state_dir.mkdir(parents=True)
+        # .claude/.gitignore は意図的に置かない（INIT_ONLY が届かない既存利用先の再現）。
+
+        run1_out = state_dir / "e0-targets-run1.txt"
+        proc1 = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--print0"],
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=15,
+        )
+        assert proc1.returncode == 0
+        run1_out.write_bytes(proc1.stdout)
+        assert proc1.stdout == b"NEEDS_VERIFY\t1\tnew_escaper.py\n"
+
+        run2_out = state_dir / "e0-targets-run2.txt"
+        proc2 = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--print0"],
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=15,
+        )
+        assert proc2.returncode == 0
+        run2_out.write_bytes(proc2.stdout)
+
+        # 修正前（gitignore 一本足）は run1 のファイル名が再度混入して
+        # NEEDS_VERIFY\t2\t...e0-targets-run1.txt\x00new_escaper.py\n になっていた。
+        assert proc2.stdout == b"NEEDS_VERIFY\t1\tnew_escaper.py\n"
+        assert b"e0-targets-run1" not in proc2.stdout

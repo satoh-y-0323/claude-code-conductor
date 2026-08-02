@@ -7,6 +7,9 @@ architecture-report-20260802-190003.md（改訂 1〜5）に従い実装。
 Usage:
     c3 run .claude/skills/dev-workflow/scripts/detect_execution_verification.py [--base <ref>]
 
+    # NEEDS_VERIFY の対象ファイルを tester へ受け渡す形（SKILL.md E-0 の正式な呼び出し形）
+    c3 run .claude/skills/dev-workflow/scripts/detect_execution_verification.py --print0 > .claude/state/e0-targets-$(date +%s)-$$-$RANDOM.txt
+
 出力:
     stdout（第 1 行のみ・必ず出力）:
         NEEDS_VERIFY<TAB>{件数}<TAB>{file1}\0{file2}\0...  （--print0 指定時のみ NUL 区切り）
@@ -31,7 +34,7 @@ import argparse
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 try:
     sys.stdin.reconfigure(encoding="utf-8")
@@ -89,6 +92,28 @@ _WEAK_WORD_BOUNDARY = {
     "switch",
     "mode",
 }
+
+# 自己出力パターン（CR-NEW・E 周回 3）
+# SKILL.md の E-0 手順は `--print0` の stdout を `.claude/state/e0-targets-*.txt` へ
+# リダイレクトする。この出力には発火したファイル名がテキストとして並ぶため、次回以降の
+# 走査で自分の過去の出力が語彙にヒットして再発火する（自己参照）。
+# `.claude/.gitignore` にも同じ除外行があるが、同ファイルは INIT_ONLY 配布で
+# 既存利用先（c3 update 経路）には届かない。配布経路に依存しない防御として
+# 実装側でも無条件に除外する（gitignore との二重防御）。
+_SELF_OUTPUT_PATTERNS = (".claude/state/e0-targets-*.txt",)
+
+
+def _is_self_output(path: str) -> bool:
+    """E-0 自身の受け渡し用出力ファイルかを判定する（CR-NEW）。
+
+    判定はリポジトリ相対の POSIX パスに正規化してから glob で行う。
+    PurePosixPath.match は `*` がパス区切りを跨がないため、
+    `.claude/state/` 直下の `e0-targets-*.txt` のみが一致する。
+    """
+    normalized = _normalize_path(path)
+    return any(
+        PurePosixPath(normalized).match(pattern) for pattern in _SELF_OUTPUT_PATTERNS
+    )
 
 
 def _run_git(args: list[str]) -> tuple[int, str]:
@@ -156,6 +181,7 @@ def collect_untracked() -> list[tuple[str, str]]:
     先頭 8KB に NUL バイトを含むファイルは走査対象から外す（バイナリ判定）。
     SR-V-002: symlink 封じ込め確認・リポジトリ外の実体は読み取り対象から除外。
     SR-NEW: ファイルサイズ上限を 1MB に設定。超過は読み取りスキップ。
+    CR-NEW: E-0 自身の出力（_SELF_OUTPUT_PATTERNS）は無条件に除外（自己参照の遮断）。
     """
     rc, stdout = _run_git(["ls-files", "--others", "--exclude-standard"])
     if rc != 0:
@@ -169,6 +195,11 @@ def collect_untracked() -> list[tuple[str, str]]:
 
     for file_path in files:
         if not file_path:
+            continue
+
+        # CR-NEW: E-0 自身の出力ファイルは無条件に走査対象から外す。
+        # 自分の出力を無視するのは正常動作なので警告は出さない（ノイズになる）。
+        if _is_self_output(file_path):
             continue
 
         try:
