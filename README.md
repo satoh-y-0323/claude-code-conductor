@@ -276,9 +276,62 @@ Copy-Item -Recurse claude-code-conductor\.claude your-project\
 | 変更される場所 | 内容 |
 |---|---|
 | `.claude/` ディレクトリ（追加） | C3 のフレームワーク一式 |
-| `.claude/.gitignore`（自動配置） | 再生成可能なもの（`state/recall.*` は数十 MB）とセッション一時ファイルのみ除外。`agent-memory/`・`reports/`・`memory/`・`state/c3.db` はチームの引き継ぎ資産として tracked（[コミット方針](.claude/docs/config-policy.md)）。**プロジェクト既存の `.gitignore` は変更しません** |
+| `.claude/.gitignore`（自動配置） | 再生成可能なもの（`state/recall.*` は数十 MB）とセッション一時ファイルのみ除外。`agent-memory/`・`reports/`・`memory/`・`state/c3.db` はチームの引き継ぎ資産として tracked（内容とカスタマイズ方法は[次節](#git-管理の方針何を載せて何を載せないか)）。**プロジェクト既存の `.gitignore` は変更しません** |
 
 プロジェクトの `src/` や既存コードには一切触れません。
+
+### git 管理の方針（何を載せて、何を載せないか）
+
+C3 は使いながら育てるフレームワークで、育った結果（各 agent の判断基準・レポート・セッション記録・tier-routing の学習）は `.claude/` の実行時生成領域に溜まります。**載せなければ、その資産は最初に動かした人のマシンにしか残りません。** そのため C3 の推奨は「載せない理由があるもの以外は git 管理する」です。
+
+`c3 init` は下記の内容で `.claude/.gitignore` を配置します。**プロジェクトルートの `.gitignore` は変更しません。**
+
+```gitignore
+# 除外するのは (a) 再生成可能 (b) セッション一時 の 2 種類だけ
+
+# (a) 再生成可能（recall インデックスは実測数十 MB。`c3 recall rebuild` で再構築できる）
+state/recall.hnsw
+state/recall_meta.json
+state/*.bak
+
+# (b) セッション一時（setup_done.flag は「/setup 実行済み」の状態なので除外しない）
+state/*.flag
+!state/setup_done.flag
+state/tier_selection.json
+state/*.lock
+state/*-wal
+state/*-shm
+logs/
+worktrees/
+tmp/*
+!tmp/.gitkeep
+
+# 個人設定（per-user / per-environment）
+settings.local.json
+```
+
+**載せることを推奨するもの**（上記で意図的に除外していないもの）:
+
+| 対象 | 何が引き継がれるか |
+|---|---|
+| `agent-memory/` | 各 agent が蓄積した判断基準。とりわけ reviewer の `[許容例外]`（この指摘はこのプロジェクトでは許容する、というユーザー判断）は、載せて初めてチーム全員の reviewer が同じ判断を再現できる |
+| `reports/` | 各変更の記録。PR で「レポート＋実差分」を並べて読める |
+| `memory/` | セッション記録（現在地・残タスク・学習パターン）。次に触る人が前回の文脈から再開できる |
+| `state/c3.db` | tier-routing の学習と review-hint の判断記録 |
+
+> **public リポジトリでの注意**: security-reviewer の `agent-memory/` と `security-review-report-*.md` には「この脅威は許容する・理由は〜」が蓄積されます。public では「既知の弱点とそれを見逃している理由の一覧」を公開することになるため、公開プロジェクトではこの 2 つの除外を検討してください。
+
+**何を載せるかを決めるのは利用者です。** 上記はあくまで C3 の推奨で、`.claude/.gitignore` はそのまま編集して構いません。`c3 update` は既存の `.claude/.gitignore` を**上書きしない**ため、追記した除外行がアップデートで失われることはありません（逆に C3 側の分類更新も自動では届かないので、リリースノートで案内された変更は手動でマージしてください）。除外そのものが不要な場合は**中身を空にしてください**（ファイルを削除すると、次の `c3 update` が「未配置」とみなして再配置します）。
+
+> **既に C3 を使っているプロジェクトへの移行**: `.gitignore` は**既に tracked のファイルには効きません**。`state/recall.hnsw` 等を既に commit している場合は一度だけ以下を実行してください（作業ツリーのファイルは消えません）。
+>
+> ```bash
+> git rm -r --cached .claude/state/recall.hnsw .claude/state/recall_meta.json \
+>                    .claude/logs .claude/worktrees 2>/dev/null
+> git status   # 削除予定が想定どおりか確認してから commit
+> ```
+
+分類の根拠と、ルート `.gitignore` で `.claude/state/` をディレクトリごと除外している場合の注意は [コミット方針](.claude/docs/config-policy.md) を参照してください。
 
 ---
 
