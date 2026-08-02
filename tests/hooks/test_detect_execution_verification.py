@@ -1210,10 +1210,25 @@ class TestT19SelfOutputExclusion:
             ("src/c3/e0-targets-fake.py", False),  # 正規ソースファイルの偽装
             ("e0-targets-x.txt", False),  # ルート直下単独
             ("other/state/e0-targets-x.txt", False),  # 別トップディレクトリ
+            # E 周回 4 回帰（code-review-report-20260802-233534.md [CR-NEW] Medium）:
+            # `.claude/` の前に余分なディレクトリが付くケース。`PurePosixPath.match` の
+            # 右アンカー挙動では誤って True（誤除外）になっていたが、`fnmatch.fnmatchcase`
+            # 方式では文字列全体の完全一致になるため False（除外しない）が正しい。
+            ("vendor/sub/.claude/state/e0-targets-x.txt", False),
+            ("a/b/c/.claude/state/e0-targets-y.txt", False),
+            ("deeply/nested/vendor/.claude/state/e0-targets-z.txt", False),
         ],
     )
     def test_is_self_output_boundary_cases(self, mod, path, expected):
         assert mod._is_self_output(path) is expected
+
+    def test_is_self_output_allows_star_to_cross_path_separator(self, mod):
+        """developer 裁定（E 周回 4）: `fnmatch` の `*` はパス区切りを跨ぐため、
+        `.claude/state/e0-targets-a/b.txt` のようにパターンの `*` 部分に `/` を
+        含むパスも一致する（除外される）。これは許容として明文化された挙動であり、
+        Red にする項目ではない（docstring L122-124 の逐語と一致することを固定する）。
+        """
+        assert mod._is_self_output(".claude/state/e0-targets-a/b.txt") is True
 
     def test_is_self_output_normalizes_windows_separators(self, mod):
         """git ls-files は POSIX 区切りで返すが、正規化前提が壊れていないことも確認する。"""
@@ -1297,3 +1312,43 @@ class TestT19SelfOutputExclusion:
         # NEEDS_VERIFY\t2\t...e0-targets-run1.txt\x00new_escaper.py\n になっていた。
         assert proc2.stdout == b"NEEDS_VERIFY\t1\tnew_escaper.py\n"
         assert b"e0-targets-run1" not in proc2.stdout
+
+    def test_nested_vendor_dir_e0_targets_lookalike_is_not_excluded(
+        self, tmp_path: Path
+    ):
+        """統合レベル回帰（E 周回 4・code-review-report [CR-NEW] Medium の実機再現の固定）。
+
+        `vendor/subproject/.claude/state/e0-targets-*.txt` という、正規の E-0 出力パス
+        （リポジトリ直下の `.claude/state/`）より深い場所に、E-0 の出力ではない通常の
+        untracked ソースファイル（strong 語彙 `escape` を含む）を置く。
+        `PurePosixPath.match` の右アンカー挙動（是正前の実装）ではこのパスも誤って
+        自己出力とみなし除外していたため `UNKNOWN\tEMPTY_DIFF` にすり替わっていたが、
+        `fnmatch.fnmatchcase` 方式（是正後）ではリポジトリ直下からの完全一致のみが
+        対象になるため除外されず、`NEEDS_VERIFY` になることを実 subprocess で固定する。
+        """
+        _run_real_git(tmp_path, "init")
+        _run_real_git(tmp_path, "config", "user.email", "e0-test@example.com")
+        _run_real_git(tmp_path, "config", "user.name", "E0 Test")
+        (tmp_path / "README.md").write_text("# placeholder\n", encoding="utf-8")
+        _run_real_git(tmp_path, "add", "README.md")
+        _run_real_git(tmp_path, "commit", "-m", "initial commit")
+
+        vendor_state_dir = tmp_path / "vendor" / "subproject" / ".claude" / "state"
+        vendor_state_dir.mkdir(parents=True)
+        (vendor_state_dir / "e0-targets-not-an-output.txt").write_text(
+            "def escape(x):\n    return x\n", encoding="utf-8"
+        )
+
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--print0"],
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=15,
+        )
+
+        assert proc.returncode == 0
+        assert proc.stdout.startswith(b"NEEDS_VERIFY\t"), (
+            f"vendor 配下のネストした e0-targets-*.txt が誤除外され "
+            f"UNKNOWN\\tEMPTY_DIFF にすり替わっていないか: {proc.stdout!r}"
+        )
+        assert b"e0-targets-not-an-output.txt" in proc.stdout

@@ -31,10 +31,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import re
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 try:
     sys.stdin.reconfigure(encoding="utf-8")
@@ -100,6 +101,10 @@ _WEAK_WORD_BOUNDARY = {
 # `.claude/.gitignore` にも同じ除外行があるが、同ファイルは INIT_ONLY 配布で
 # 既存利用先（c3 update 経路）には届かない。配布経路に依存しない防御として
 # 実装側でも無条件に除外する（gitignore との二重防御）。
+# SR-NEW（E 周回 4）: この除外は content-blind（パス一致のみで内容を検証しない）ため、
+# この命名を騙る untracked ファイルを置けば走査を免れる。効くのは untracked 経路のみで
+# tracked diff 側には影響せず、実害は「untracked のまま存在する期間の検証スキップ」に
+# 限定されるため、脅威モデル（ローカル単発実行）上の既知の限界として受容する。
 _SELF_OUTPUT_PATTERNS = (".claude/state/e0-targets-*.txt",)
 
 
@@ -107,12 +112,20 @@ def _is_self_output(path: str) -> bool:
     """E-0 自身の受け渡し用出力ファイルかを判定する（CR-NEW）。
 
     判定はリポジトリ相対の POSIX パスに正規化してから glob で行う。
-    PurePosixPath.match は `*` がパス区切りを跨がないため、
-    `.claude/state/` 直下の `e0-targets-*.txt` のみが一致する。
+    照合は本プロジェクトの既存 SSOT（`src/c3/_excludes.py` の `should_skip`）と同じ
+    `fnmatch.fnmatchcase` 方式で、**パターン全体をリポジトリルート起点の完全一致**
+    （先頭・末尾ともにアンカー）として評価する。したがって
+    `vendor/sub/.claude/state/e0-targets-x.txt` のように前置ディレクトリが付くパスは
+    一致しない（CR-NEW・E 周回 4。`PurePosixPath.match` は相対パターンを右アンカーで
+    比較するため、前置ディレクトリ付きのパスまで誤除外していた）。
+
+    なお `fnmatch` の `*` はパス区切りを跨ぐため、`.claude/state/e0-targets-a/b.txt` の
+    ようにパターンの `*` 部分に `/` を含むパスも一致する。`.claude/state/` は内部
+    ブックキーピング専用でサブディレクトリ運用がないため許容する。
     """
     normalized = _normalize_path(path)
     return any(
-        PurePosixPath(normalized).match(pattern) for pattern in _SELF_OUTPUT_PATTERNS
+        fnmatch.fnmatchcase(normalized, pattern) for pattern in _SELF_OUTPUT_PATTERNS
     )
 
 
@@ -173,15 +186,69 @@ def resolve_base(explicit: str | None) -> str | None:
     return None
 
 
+_MAX_FILE_SIZE = 1024 * 1024  # 1MB（SR-NEW: 読み取りサイズ上限）
+
+
+def _is_contained_in_repo(
+    full_path: Path, file_path: str, repo_root_resolved: Path
+) -> bool:
+    """untracked ファイルがリポジトリ配下に封じ込められているかを判定する（SR-V-002）。
+
+    除外する場合は stderr に理由付きの警告を出して False を返す。
+
+    注: is_symlink() は Windows ジャンクションを捕捉しないため、実質的な封じ込めは
+    2 番目の resolve() ベース判定に依存している。
+    SR-V-002: check-then-use（is_symlink 判定と read 実行の間に TOCTOU の窓が理論上
+    存在）だが、本ツールの脅威モデル（ローカル単発実行・攻撃者が同時にファイル
+    システムを制御する想定なし）から実害は見込まれない。
+    """
+    if full_path.is_symlink():
+        print(f"Warning: skipping {file_path}: symlink", file=sys.stderr)
+        return False
+
+    resolved = full_path.resolve()
+    # resolved がリポジトリ配下に収まることを確認
+    if not (resolved == repo_root_resolved or repo_root_resolved in resolved.parents):
+        print(f"Warning: skipping {file_path}: outside repository", file=sys.stderr)
+        return False
+
+    return True
+
+
+def _read_scannable_text(full_path: Path, file_path: str) -> str | None:
+    """走査対象として読み取れるテキストを返す。対象外なら None を返す。
+
+    SR-NEW: サイズ上限（_MAX_FILE_SIZE）超過は警告して除外。
+    ADR-2V: 先頭 8KB に NUL バイトを含むファイルはバイナリ判定で無警告除外。
+    読み取り自体の例外は呼び出し側（collect_untracked）で捕捉する。
+    """
+    try:
+        if full_path.stat().st_size > _MAX_FILE_SIZE:
+            print(f"Warning: skipping {file_path}: exceeds size limit (1MB)", file=sys.stderr)
+            return None
+    except OSError:
+        pass  # stat 取得失敗時は read で失敗時に catch する
+
+    content = full_path.read_text(encoding="utf-8")
+
+    # 先頭 8KB でNUL チェック（ADR-2V）
+    head_8kb = content[:8192]
+    if "\x00" in head_8kb:
+        return None  # バイナリ判定・走査対象から外す
+
+    return content
+
+
 def collect_untracked() -> list[tuple[str, str]]:
     """untracked ファイル一覧を収集し、(相対パス, 内容) の列を返す。
 
     ADR-2U: git ls-files --others --exclude-standard で取得。
     ADR-2V: 読み取り失敗（UnicodeDecodeError / PermissionError 等）でもスキップして継続。
-    先頭 8KB に NUL バイトを含むファイルは走査対象から外す（バイナリ判定）。
-    SR-V-002: symlink 封じ込め確認・リポジトリ外の実体は読み取り対象から除外。
-    SR-NEW: ファイルサイズ上限を 1MB に設定。超過は読み取りスキップ。
     CR-NEW: E-0 自身の出力（_SELF_OUTPUT_PATTERNS）は無条件に除外（自己参照の遮断）。
+
+    個々のチェックはヘルパーへ委譲する（CR-Q-002）:
+    封じ込めは _is_contained_in_repo、サイズ上限・バイナリ判定・読み取りは
+    _read_scannable_text。
     """
     rc, stdout = _run_git(["ls-files", "--others", "--exclude-standard"])
     if rc != 0:
@@ -191,7 +258,6 @@ def collect_untracked() -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
     repo_root = Path.cwd()
     repo_root_resolved = repo_root.resolve()  # ループ外で 1 回のみ計算
-    max_file_size = 1024 * 1024  # 1MB
 
     for file_path in files:
         if not file_path:
@@ -204,38 +270,12 @@ def collect_untracked() -> list[tuple[str, str]]:
 
         try:
             full_path = repo_root / file_path
-
-            # SR-V-002: symlink チェック・リポジトリ外の実体を封じ込める
-            # 注: is_symlink() は Windows ジャンクションを捕捉しないため、
-            # 実質的な封じ込めは 2 番目の resolve() ベース判定に依存している。
-            if full_path.is_symlink():
-                print(f"Warning: skipping {file_path}: symlink", file=sys.stderr)
+            if not _is_contained_in_repo(full_path, file_path, repo_root_resolved):
                 continue
 
-            resolved = full_path.resolve()
-            # resolved がリポジトリ配下に収まることを確認
-            # SR-V-002: check-then-use（is_symlink 判定と read 実行の間に TOCTOU の窓が
-            # 理論上存在）だが、本ツールの脅威モデル（ローカル単発実行・攻撃者が同時に
-            # ファイルシステムを制御する想定なし）から実害は見込まれない。
-            if not (resolved == repo_root_resolved or repo_root_resolved in resolved.parents):
-                print(f"Warning: skipping {file_path}: outside repository", file=sys.stderr)
+            content = _read_scannable_text(full_path, file_path)
+            if content is None:
                 continue
-
-            # SR-NEW: ファイルサイズ上限チェック
-            try:
-                file_size = full_path.stat().st_size
-                if file_size > max_file_size:
-                    print(f"Warning: skipping {file_path}: exceeds size limit (1MB)", file=sys.stderr)
-                    continue
-            except OSError:
-                pass  # stat 取得失敗時は read で失敗時に catch する
-
-            content = full_path.read_text(encoding="utf-8")
-
-            # 先頭 8KB でNUL チェック（ADR-2V）
-            head_8kb = content[:8192]
-            if "\x00" in head_8kb:
-                continue  # バイナリ判定・走査対象から外す
 
             result.append((file_path, content))
         except (UnicodeDecodeError, PermissionError, FileNotFoundError, OSError) as e:
