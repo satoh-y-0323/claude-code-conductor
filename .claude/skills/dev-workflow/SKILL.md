@@ -860,8 +860,20 @@ TOKEN は `NEEDS_VERIFY` / `NOT_NEEDED` / `UNKNOWN`。UNKNOWN の場合は `{件
 起動時のマーカー: `C3_TASK_ID: confirm-exec-verify`（test- プレフィックスを使わない。Red 限定注入の不変則）
 
 **対象ファイル一覧の入力経路（分岐）** — SR-AI-001：
-- **NEEDS_VERIFY の場合**：検出器が stderr に出力したファイル一覧（1 行 1 ファイル）をそのまま tester へ渡す。
-  検出器 stdout の構造化データではなく、stderr の人間可読一覧を入力として与える
+- **NEEDS_VERIFY の場合**：検出器を `--print0` フラグ付きで実行し、stdout をファイルへリダイレクトする。
+  具体的には、以下を実行してファイルパスを記録する:
+  ```bash
+  c3 run .claude/skills/dev-workflow/scripts/detect_execution_verification.py --print0 > .claude/state/e0-targets-$(date +%s).txt
+  ```
+  出力先は `.claude/.gitignore` の `state/e0-targets-*.txt` で除外済みのため（(b) セッション一時）、
+  次回以降の E-0 で検出器自身の走査対象（`git ls-files --others --exclude-standard`）に載らない。
+  ファイル名の連番に `$(date +%s)` を使うのはレポートではなく 1 回限りの受け渡しファイルで衝突しない
+  一意名だけが要件のため（`report-timestamp` skill の `YYYYMMDD-HHMMSS` はレポート名用の慣行）。
+  そのファイルパスのみを tester 起動プロンプトに記載し、内容は tester に Read させる
+  （debug-analysis / debug-needed で採用している「パスのみ渡してエージェント側で Read」パターンと同型）。
+  ファイルの内容は：
+  - 第 1 行：`NEEDS_VERIFY\t{件数}\t{NUL-区切りファイル一覧}`
+  - NUL 文字（`\0`）で分割可能。警告は stderr へ出力されるため、このファイルには含まれない
 - **UNKNOWN の場合**：対象ファイル一覧を当該ワークフローの plan-report の `tasks[].writes` から取る
   （read_only: true タスクを除く。検出器が対象を出せない状態でも入力を確定させる・ADR-7G）
 

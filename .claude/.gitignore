@@ -37,6 +37,12 @@ state/*.flag
 state/tier_selection.json
 state/*.lock
 
+# フェーズ E-0（実行検証判定）が tester へ渡す対象ファイル一覧。1 回の E-0 実行限りの
+# 受け渡し用で、その周回が終われば意味を失う（(b) に分類。検出器を再実行すれば
+# 作り直せるので (a) の性質も満たすが、寿命の短さの方が本質）。除外しないと E-0 検出器自身の
+# `git ls-files --others` に載り、次回以降の実行で自分の過去の出力を走査してしまう。
+state/e0-targets-*.txt
+
 # SQLite の WAL サイドカー（db.py は PRAGMA journal_mode=WAL で開く）。
 # 通常はチェックポイントで c3.db 本体へ取り込まれるが、プロセス異常終了時に
 # 残存しうる。トランザクション中間データを「引き継ぎ資産」として commit しない。

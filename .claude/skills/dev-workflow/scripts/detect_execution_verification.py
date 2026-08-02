@@ -164,6 +164,7 @@ def collect_untracked() -> list[tuple[str, str]]:
     files = stdout.strip().split("\n") if stdout.strip() else []
     result: list[tuple[str, str]] = []
     repo_root = Path.cwd()
+    repo_root_resolved = repo_root.resolve()  # ループ外で 1 回のみ計算
     max_file_size = 1024 * 1024  # 1MB
 
     for file_path in files:
@@ -174,13 +175,17 @@ def collect_untracked() -> list[tuple[str, str]]:
             full_path = repo_root / file_path
 
             # SR-V-002: symlink チェック・リポジトリ外の実体を封じ込める
+            # 注: is_symlink() は Windows ジャンクションを捕捉しないため、
+            # 実質的な封じ込めは 2 番目の resolve() ベース判定に依存している。
             if full_path.is_symlink():
                 print(f"Warning: skipping {file_path}: symlink", file=sys.stderr)
                 continue
 
             resolved = full_path.resolve()
-            repo_root_resolved = repo_root.resolve()
             # resolved がリポジトリ配下に収まることを確認
+            # SR-V-002: check-then-use（is_symlink 判定と read 実行の間に TOCTOU の窓が
+            # 理論上存在）だが、本ツールの脅威モデル（ローカル単発実行・攻撃者が同時に
+            # ファイルシステムを制御する想定なし）から実害は見込まれない。
             if not (resolved == repo_root_resolved or repo_root_resolved in resolved.parents):
                 print(f"Warning: skipping {file_path}: outside repository", file=sys.stderr)
                 continue
@@ -346,7 +351,7 @@ def _collect_diffs(base: str | None) -> tuple[str, bool]:
     """git diff でコミット済み変更と作業ツリー変更を収集する。
 
     ADR-2R: <base> が明示されていれば差分を取得。未指定でも HEAD 差分を試す。
-    cr-M-002: 明示 base が失敗した場合は HEAD 試行を スキップし fail-safe する（情報損失は
+    CR-M-002: 明示 base が失敗した場合は HEAD 試行を スキップし fail-safe する（情報損失は
     UNKNOWN で補完）。
 
     戻り値: (統合 diff テキスト, git_failed フラグ)
@@ -370,6 +375,31 @@ def _collect_diffs(base: str | None) -> tuple[str, bool]:
             git_failed = True
 
     return ("".join(diffs), git_failed)
+
+
+def _format_output(token: str, files: list[str], print0: bool) -> None:
+    """判定結果と対象ファイル一覧を出力する。
+
+    ADR-4R に従い stdout に判定結果を出力、stderr に対象ファイルを出力する。
+    print0=True の場合は stdout にファイル一覧を NUL 区切りで追加出力。
+
+    副作用: stdout/stderr へ直接出力。戻り値なし。
+    """
+    if token == "UNKNOWN":
+        # detect が UNKNOWN を返したのは EMPTY_DIFF
+        print("UNKNOWN\tEMPTY_DIFF")
+    elif token == "NEEDS_VERIFY":
+        print(f"NEEDS_VERIFY\t{len(files)}", end="")
+        if print0:
+            # NUL 区切りで stdout に追加出力（ADR-4R・セパレータは NUL のため lint 対象外）
+            print("\t" + "\x00".join(files), end="")
+        print()
+    elif token == "NOT_NEEDED":
+        print("NOT_NEEDED\t0")
+
+    # stderr に人間可読の一覧を出力（既定）
+    for file_name in sorted(files):
+        print(file_name, file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -411,21 +441,7 @@ def main(argv: list[str] | None = None) -> int:
         token, files = detect(diff_text, untracked)
 
         # 出力（ADR-4R）
-        if token == "UNKNOWN":
-            # detect が UNKNOWN を返したのは EMPTY_DIFF
-            print("UNKNOWN\tEMPTY_DIFF")
-        elif token == "NEEDS_VERIFY":
-            print(f"NEEDS_VERIFY\t{len(files)}", end="")
-            if args.print0:
-                # NUL 区切りで stdout に追加出力（ADR-4R・セパレータは NUL のため lint 対象外）
-                print("\t" + "\x00".join(files), end="")
-            print()
-        elif token == "NOT_NEEDED":
-            print("NOT_NEEDED\t0")
-
-        # stderr に人間可読の一覧を出力（既定）
-        for file_name in sorted(files):
-            print(file_name, file=sys.stderr)
+        _format_output(token, files, args.print0)
 
         return 0
 

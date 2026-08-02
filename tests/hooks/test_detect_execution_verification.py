@@ -1127,3 +1127,54 @@ class TestT17ExceptionMessageSymmetry:
         assert captured.out.splitlines() == ["UNKNOWN\tGIT_FAILED"]
         assert "sensitive-detail-that-must-not-leak" not in captured.err
         assert "ValueError" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# T-18: 回帰ガード（E 周回 2 是正・[CR-NEW] / [SR-AI-001]）—
+#   発火対象ファイルと skip 警告が同一 stderr に混在しても、--print0 の stdout
+#   リダイレクト経路には警告が一切混入しないことを実 subprocess で固定する。
+# ---------------------------------------------------------------------------
+
+
+class TestT18Print0StdoutIsolatedFromSkipWarnings:
+    """コードレビュー周回 2 [CR-NEW] Medium の主発見（発火対象ファイル + サイズ超過
+    untracked ファイルが同一 stderr に混在する）を実 subprocess で再現し、
+    是正後の受け渡し経路（`--print0` の stdout のみを tester へ渡す）が
+    警告行から構造的に分離されていることを固定する。
+    `main()` を直接呼ぶ単体テスト（monkeypatch 経由）ではなく、周回 2 の
+    code-review-report が指摘した「main() 経由の実 subprocess 統合シナリオ」の穴を埋める。
+    """
+
+    def test_print0_stdout_excludes_warning_lines_when_skip_and_fire_coexist(
+        self, tmp_path: Path
+    ):
+        _run_real_git(tmp_path, "init")
+        _run_real_git(tmp_path, "config", "user.email", "e0-test@example.com")
+        _run_real_git(tmp_path, "config", "user.name", "E0 Test")
+        (tmp_path / "README.md").write_text("# placeholder\n", encoding="utf-8")
+        _run_real_git(tmp_path, "add", "README.md")
+        _run_real_git(tmp_path, "commit", "-m", "initial commit")
+
+        # 発火対象ファイル（strong 語彙 "escape" を含む）
+        (tmp_path / "new_escaper.py").write_text(
+            "def escape(x):\n    return x.replace('<', '&lt;')\n", encoding="utf-8"
+        )
+        # サイズ上限超過ファイル（1MB 超・skip warning を誘発）
+        (tmp_path / "huge_untracked.bin").write_bytes(b"0" * (1024 * 1024 + 100))
+
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--print0"],
+            cwd=tmp_path,
+            capture_output=True,
+            timeout=15,
+        )
+
+        assert proc.returncode == 0
+        # stderr 側には skip 警告が実際に出ていることを前提として確認する
+        # （警告が出ない環境でこのテストが無意味に緑化するのを防ぐ）。
+        assert b"Warning: skipping huge_untracked.bin" in proc.stderr
+
+        # --print0 の stdout（tester への受け渡し経路）には警告文言が一切混入しない。
+        assert b"Warning" not in proc.stdout
+        assert proc.stdout == b"NEEDS_VERIFY\t1\tnew_escaper.py\n"
+        assert b"huge_untracked.bin" not in proc.stdout
