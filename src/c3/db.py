@@ -20,12 +20,14 @@ upsert_po_status / fetch_po_status）も同時に削除した。
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Iterator
 
 # tier-routing パラメータ（定数 + env 解決）は _db_params.py が SSOT。
 # 後方互換のため c3.db からも参照可能にする（cli_tier.py / select_tier.py 等）。
@@ -59,11 +61,53 @@ BUSY_TIMEOUT_MS = 5000
 _BUSY_TIMEOUT_MS = BUSY_TIMEOUT_MS  # 内部互換エイリアス（既存コードへの影響なし）
 
 
-def _apply_busy_timeout(conn: sqlite3.Connection) -> None:
-    # PRAGMA はパラメータバインドできないため値が整数であることを int() で強制する。
-    # 現在 _BUSY_TIMEOUT_MS は定数だが、将来 env 等から読まれた場合の PRAGMA
-    # インジェクション (`5000; ATTACH ...`) を未然に防ぐ防衛的キャスト [SR-INJ-001]。
-    conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_MS)}")
+def apply_busy_timeout(conn: sqlite3.Connection) -> None:
+    """SQLite 接続に busy_timeout PRAGMA を適用する。
+
+    PRAGMA はパラメータバインドできないため値が整数であることを int() で強制する。
+    現在 BUSY_TIMEOUT_MS は定数だが、将来 env 等から読まれた場合の PRAGMA
+    インジェクション (`5000; ATTACH ...`) を未然に防ぐ防衛的キャスト [SR-INJ-001]。
+    """
+    conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_MS)}")
+
+
+# 内部互換エイリアス（既存 17 箇所の呼び出しは無変更で動く）
+_apply_busy_timeout = apply_busy_timeout
+
+
+@contextlib.contextmanager
+def connect(
+    db_path: str | Path,
+    *,
+    wal: bool = False,
+    row_factory: Any | None = None,
+    busy_timeout_ms: int | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """c3.db への接続を確立し、PRAGMA を適用して yield する。close は必ず行う。
+
+    scripts/ ・ .claude/hooks/ ・ .claude/skills/*/scripts/ から再利用してよい公開 API。
+    commit は呼び出し側の責務（本 API は commit / rollback を行わない）。
+
+    Args:
+        db_path: SQLite DB ファイルのパス。
+        wal: True の場合、journal_mode=WAL を適用する（既定: False）。
+        row_factory: sqlite3.Row など、カスタム行ファクトリを指定。
+        busy_timeout_ms: ロック衝突時の待機時間（ms）。省略時は BUSY_TIMEOUT_MS。
+    """
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # PRAGMA 適用順序: busy_timeout → WAL → row_factory
+        # 後述「順序を変える理由」: busy_timeout が効く前の窓でロック競合に当たる経路を防ぐ
+        # busy_timeout_ms は常に int() でキャスト [SR-INJ-001]
+        timeout_ms = busy_timeout_ms if busy_timeout_ms is not None else BUSY_TIMEOUT_MS
+        conn.execute(f"PRAGMA busy_timeout={int(timeout_ms)}")
+        if wal:
+            conn.execute("PRAGMA journal_mode=WAL")
+        if row_factory is not None:
+            conn.row_factory = row_factory
+        yield conn
+    finally:
+        conn.close()
 
 
 def locate_c3_db(start: Path | None = None) -> Path | None:

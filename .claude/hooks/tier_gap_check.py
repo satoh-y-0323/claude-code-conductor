@@ -162,9 +162,9 @@ def _run_impl(payload: dict) -> None:
         return
 
     # role 別に M（記録数）と Z_role（NULL 非対称抑止補正）を取得
+    # c3-db-connect: pending(c3.db.connect への移行待ち)
     conn = sqlite3.connect(str(db_path))
-    # busy_timeout を適用。public 定数 BUSY_TIMEOUT_MS を参照し自前で PRAGMA 適用する
-    # （F-10: private _apply_busy_timeout のモジュール境界越し直接呼び出しを回避）。
+    # busy_timeout を適用。公開 `c3.db.connect()` へ移行予定。
     # PRAGMA はパラメータバインド不可のため int() で PRAGMA インジェクションを防ぐ。
     conn.execute(f"PRAGMA busy_timeout={int(c3_db.BUSY_TIMEOUT_MS)}")
     try:

@@ -81,6 +81,7 @@ def apply_pending_migrations(
     # migration ファイル一覧取得（FileNotFoundError は伝播させる）
     migrations = _list_migrations(migrations_dir)
 
+    # c3-db-connect: pending(c3.db.connect への移行待ち)
     conn = sqlite3.connect(str(db_path))
     try:
         # PRAGMA はパラメータバインドできないため int() で型を強制する

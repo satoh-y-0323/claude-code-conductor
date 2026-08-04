@@ -683,6 +683,7 @@ def _is_duplicate(
         params.append(f"{_escape_like_pattern(_task_note_marker(task))}%")
     sql += "ORDER BY ts DESC LIMIT 1"
     try:
+        # c3-db-connect: pending(c3.db.connect への移行待ち)
         conn = sqlite3.connect(str(db_path))
         try:
             conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")

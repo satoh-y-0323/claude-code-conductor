@@ -18,11 +18,15 @@
 
 from __future__ import annotations
 
-import argparse
-import subprocess
 import sys
 from pathlib import Path
 
+# c3-src-bootstrap: 配布元 repo の src/ を site-packages より優先する。
+# tests/conftest.py:14 と同型。scripts/ は wheel / sdist 非収録のため配布物に影響しない。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+import argparse
+import subprocess
 from c3._excludes import should_skip
 from c3.cli_update import _load_deletions
 

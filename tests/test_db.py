@@ -3876,3 +3876,136 @@ class TestMetricsHelpersEmptyDbSmoke:
         assert fix_cycles["total_sessions"] == 0
         cost = read_rework_session_cost(db_path=absent_db)
         assert cost["rework_session_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# R 群: connect() API & apply_busy_timeout() public alias (ADR-9)
+# ---------------------------------------------------------------------------
+
+
+class TestConnectAPI:
+    """R 群: c3.db.connect() context manager と apply_busy_timeout() public alias
+
+    ADR-9 で追加された公開 API のテスト。
+    """
+
+    def test_connect_is_public_name(self):
+        """R1: c3.db.connect が公開名として存在する。"""
+        from c3 import db as c3_db  # noqa: PLC0415
+        assert hasattr(c3_db, "connect"), "c3.db.connect が存在しません"
+        assert callable(c3_db.connect), "c3.db.connect は callable ではありません"
+
+    def test_connect_is_context_manager(self, tmp_path):
+        """R2: c3.db.connect が context manager として使える。"""
+        from c3.db import connect  # noqa: PLC0415
+        db_path = tmp_path / "test.db"
+
+        with connect(db_path=str(db_path)) as conn:
+            assert conn is not None
+            result = conn.execute("SELECT 1").fetchall()
+            assert result == [(1,)]
+
+        with pytest.raises(Exception):
+            conn.execute("SELECT 1")
+
+    def test_connect_closes_on_normal_exit(self, tmp_path):
+        """R3-1: 正常終了時に close が呼ばれる。"""
+        from c3.db import connect  # noqa: PLC0415
+        db_path = tmp_path / "test.db"
+
+        with connect(db_path=str(db_path)) as conn:
+            pass
+
+        with pytest.raises(Exception):
+            conn.execute("SELECT 1")
+
+    def test_connect_closes_on_exception_in_with_block(self, tmp_path):
+        """R3-2: with ブロック内で例外が送出された場合も close が呼ばれる。"""
+        from c3.db import connect  # noqa: PLC0415
+        db_path = tmp_path / "test.db"
+
+        conn = None
+        try:
+            with connect(db_path=str(db_path)) as c:
+                conn = c
+                raise ValueError("test error")
+        except ValueError:
+            pass
+
+        assert conn is not None
+        with pytest.raises(Exception):
+            conn.execute("SELECT 1")
+
+    def test_connect_closes_on_pragma_failure(self, tmp_path):
+        """R3-3: PRAGMA 適用中に失敗した場合も close が呼ばれる。"""
+        from c3.db import connect  # noqa: PLC0415
+        import sqlite3 as sqlite3_module  # noqa: PLC0415
+
+        bad_db = tmp_path / "not_sqlite.db"
+        bad_db.write_text("this is not a sqlite database")
+
+        conn = None
+        try:
+            with connect(db_path=str(bad_db)) as c:
+                conn = c
+        except sqlite3_module.DatabaseError:
+            pass
+
+        if conn is not None:
+            with pytest.raises(Exception):
+                conn.execute("SELECT 1")
+
+    def test_connect_applies_pragma_in_order(self, tmp_path):
+        """R4: PRAGMA 適用順序が busy_timeout → WAL → row_factory。"""
+        from c3.db import connect  # noqa: PLC0415
+        db_path = tmp_path / "test.db"
+
+        with connect(db_path=str(db_path), wal=True, busy_timeout_ms=3000) as conn:
+            result = conn.execute("PRAGMA busy_timeout").fetchone()
+            assert result[0] == 3000
+
+            wal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            assert wal_mode.upper() == "WAL"
+
+    def test_connect_casts_busy_timeout_to_int(self, tmp_path):
+        """R5: busy_timeout_ms に非整数を渡しても int() キャストが効く。"""
+        from c3.db import connect  # noqa: PLC0415
+        db_path = tmp_path / "test.db"
+
+        with connect(db_path=str(db_path), busy_timeout_ms="5000") as conn:
+            result = conn.execute("PRAGMA busy_timeout").fetchone()
+            assert result[0] == 5000
+
+    def test_apply_busy_timeout_is_public_alias(self):
+        """R6: c3.db.apply_busy_timeout が公開名として存在し、
+        c3.db._apply_busy_timeout と同一オブジェクトであること。
+        """
+        from c3 import db as c3_db  # noqa: PLC0415
+
+        assert hasattr(c3_db, "apply_busy_timeout"), (
+            "c3.db.apply_busy_timeout が存在しません"
+        )
+        assert hasattr(c3_db, "_apply_busy_timeout"), (
+            "c3.db._apply_busy_timeout が存在しません"
+        )
+
+        assert c3_db.apply_busy_timeout is c3_db._apply_busy_timeout, (
+            "public apply_busy_timeout と private _apply_busy_timeout が別物です"
+        )
+
+    def test_existing_j2_8_regression(self, tmp_path, monkeypatch):
+        """R7: 既存テスト J2-8 が無変更で通ること。"""
+        import c3.db as c3_db  # noqa: PLC0415
+        db = _make_c3_db_v003(tmp_path)
+
+        timeout_called = []
+        original = c3_db._apply_busy_timeout
+
+        def recording_apply_busy_timeout(conn):
+            timeout_called.append(True)
+            original(conn)
+
+        monkeypatch.setattr(c3_db, "_apply_busy_timeout", recording_apply_busy_timeout)
+
+        read_tier_cost_rate_summary(db_path=db)
+        assert timeout_called, "_apply_busy_timeout が呼ばれるべき"

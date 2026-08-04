@@ -1,14 +1,24 @@
 """tests/test_audit_review_decisions.py
 
-scripts/audit_review_decisions.py のテスト（Red フェーズ）。
-未実装のため import 失敗（ModuleNotFoundError）が期待される。
+scripts/audit_review_decisions.py のテスト。
+
+【訂正・2026-08-05】ADR-9（c3.db.connect() への移行）に伴う Red フェーズの追加・修正。
+plan-report-20260805-010530.md §4 に基づく。developer はテストファイルを変更できない
+制約下にあるため、A / A5 / B8 / D 群(summary 回帰) / E(banner・_untrusted) / F(入力検証) は
+本タスク（Red フェーズ）で完了させる。
 
 テストケース構成:
   A 群 (11 件): list サブコマンド（抽出・フォーマット・フィルタリング）
-  B 群 (10 件): resolve サブコマンド（書き込み・必須項目・異常系）
+  B 群 (10 件): resolve サブコマンド（書き込み・必須項目・異常系。B10 は本改訂で実装）
   C 群 (3 件): summary サブコマンド（集計）
-  D 群 (4 件): DB 共通オプション・異常系
+  C-R 群 (3 件・新規): summary の集計・凍結条件の回帰テスト（件数一致 / id>1232 除外 /
+                       decision 値域外除外。plan §4 の「D 群」に対応。緑期待＝回帰テスト）
+  D 群 (4 件): DB 共通オプション・異常系（_connect() 廃止後も exit code・stderr 文言が
+              非回帰であることを本改訂で追加検証）
   E 群 (2 件): プロセス境界の seam（exit code 検証）
+  UB 群 (5 件・新規): list の stderr バナー・各レコードの _untrusted キー（SR-AI-001 の
+                      2 層防御。Red 期待＝未実装）
+  F 群 (6 件・新規): resolve の入力検証（--note 切り詰め・--commit 形式検証。Red 期待＝未実装）
 """
 from __future__ import annotations
 
@@ -147,11 +157,15 @@ class TestAuditReviewDecisionsListBasic:
                 (id, checklist_id, finding_text, decision, decided_at, reviewer, severity, resolution)
                 VALUES (1233, 'CR-Q-004', 'test finding 4', 'accepted', '2026-01-04T00:00:00', 'reviewer3', 'High', NULL)
             """)
-            # 5. 既に判定済み（resolution != NULL）（対象外）
+            # 5. 既に判定済み（resolution != NULL）（対象外）。
+            # id を明示指定（105）する。record 4 が id=1233 を明示指定しているため、
+            # AUTOINCREMENT に任せると本レコードが id>1232 側にも該当してしまい、
+            # 「resolution 起因で除外される」ことを id 起因の除外と区別できなくなる
+            # （DC-GP-004・A5 の空の緑の原因の 1 つ）。
             conn.execute("""
                 INSERT INTO review_decisions
-                (checklist_id, finding_text, decision, decided_at, reviewer, severity, resolution)
-                VALUES ('CR-Q-005', 'test finding 5', 'accepted', '2026-01-05T00:00:00', 'reviewer1', 'High', 'resolved')
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity, resolution)
+                VALUES (105, 'CR-Q-005', 'test finding 5', 'accepted', '2026-01-05T00:00:00', 'reviewer1', 'High', 'resolved')
             """)
             conn.commit()
         finally:
@@ -246,7 +260,13 @@ class TestAuditReviewDecisionsListBasic:
         assert all(id <= 1232 for id in ids), "id > 1232 は除外されるはず"
 
     def test_list_a5_excludes_non_null_resolution(self, populated_db: Path):
-        """A5: list は resolution != NULL の行を除外する（既判定行）。"""
+        """A5: list は resolution != NULL の行を除外する（既判定行）。
+
+        【訂正・2026-08-05・DC-GP-004】前版は `.get('resolution')` を検査していたが、
+        list の出力レコードにそもそも 'resolution' キーが存在しないため常に None を返し、
+        assert が必ず緑になる「空の緑」だった。resolution='resolved' を仕込んだ行 (id=105)
+        自体が出力に含まれないことを直接 assert する形へ修正する。
+        """
         import io
         from contextlib import redirect_stdout
 
@@ -259,8 +279,10 @@ class TestAuditReviewDecisionsListBasic:
         lines = output.getvalue().strip().split('\n')
         non_empty_lines = [l for l in lines if l.strip()]
 
-        resolutions = [json.loads(line).get('resolution') for line in non_empty_lines]
-        assert all(r is None for r in resolutions), "resolution は NULL のはず（未判定のみ）"
+        ids = [json.loads(line)['id'] for line in non_empty_lines]
+        assert 105 not in ids, (
+            "resolution != NULL (id=105) の行は list の出力に含まれないはず"
+        )
 
     def test_list_a6_default_limit_10(self, tmp_path: Path):
         """A6: list のデフォルト limit は 10。"""
@@ -582,7 +604,12 @@ class TestAuditReviewDecisionsResolve:
         assert exit_code == 2, f"非 NULL 行の再書き込みは --force 必須で exit 2 のはず、得られた: {exit_code}"
 
     def test_resolve_b8_force_overwrites_all_three_columns(self, tmp_path: Path):
-        """B8: --force で既判定行の 3 列すべてが上書きされる。"""
+        """B8: --force で既判定行の 3 列すべてが上書きされる。
+
+        【訂正・2026-08-05】旧値 "newcommit456" は 16 進ですらないため、F 群の
+        --commit 形式検証（40 桁 16 進必須）を追加すると必ず exit 2 に赤化する。
+        40 桁 16 進の値へ差し替える。
+        """
         db_path = tmp_path / "c3.db"
         _create_test_db(db_path)
 
@@ -606,7 +633,7 @@ class TestAuditReviewDecisionsResolve:
             "--id", "100",
             "--resolution", "open",
             "--force",
-            "--commit", "newcommit456"
+            "--commit", "1111222233334444555566667777888899990000"
         ])
 
         assert exit_code == 0, f"--force での再書き込みは成功のはず、exit_code={exit_code}"
@@ -621,7 +648,9 @@ class TestAuditReviewDecisionsResolve:
 
         assert row[0] == "open", f"resolution が上書きされていない: {row[0]}"
         assert row[1] is None, f"resolution_note が上書きされていない（open では任意のため None のはず）: {row[1]}"
-        assert row[2] == "newcommit456", f"resolution_commit が上書きされていない: {row[2]}"
+        assert row[2] == "1111222233334444555566667777888899990000", (
+            f"resolution_commit が上書きされていない: {row[2]}"
+        )
 
     def test_resolve_b9_resolved_with_note_succeeds(self, simple_db: Path):
         """B9: resolve --id 100 --resolution resolved --note "..." で --commit 自動取得も可能。
@@ -638,16 +667,33 @@ class TestAuditReviewDecisionsResolve:
 
         assert exit_code == 0, f"--note 付き resolved は成功のはず、exit_code={exit_code}"
 
-    def test_resolve_b10_commit_is_required_for_all_resolution_types(self, simple_db: Path):
-        """B10: --commit は全 resolution タイプで必須（テスト時は明示指定）。
+    def test_resolve_b10_commit_is_required_for_all_resolution_types(
+        self, simple_db: Path, monkeypatch
+    ):
+        """B10: --commit は全 resolution タイプで必須（open でも必須）。
 
-        open でも --commit は必須とする。
-        git rev-parse HEAD が失敗するか --commit 自動取得がサポートされていない場合 exit 2。
-        テストでは常に --commit を明示するため、この観点は test-resolve-b9 で
-        --commit 明示ケースのみテストする。ここでは省略（テスト実装上の制約）。
+        【訂正・2026-08-05・DC-GP-004】前版は `pass` のみで実質未検証だった
+        （`tests/test_no_passonly_tests.py` の B10 として検出される）。
+        `--commit` 省略時の自動取得（git rev-parse HEAD）が失敗するケースを
+        `_head_commit` の monkeypatch で決定的に再現し、open でも exit 2 になることを検証する
+        （実 git を呼ばないことで、実行環境の HEAD 状態に依存しないテストにする）。
         """
-        # テスト実装上の制約により、このテストは現在スキップする
-        pass
+        import audit_review_decisions as ard_module  # noqa: PLC0415
+
+        monkeypatch.setattr(ard_module, "_head_commit", lambda: None)
+
+        exit_code = main([
+            "resolve",
+            "--db", str(simple_db),
+            "--id", "100",
+            "--resolution", "open",
+            # --commit を省略（自動取得を試みて失敗する想定）
+        ])
+
+        assert exit_code == 2, (
+            "commit 自動取得に失敗した場合、open でも --commit 必須のため exit 2 のはず"
+            f"（得られた: {exit_code}）"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -764,11 +810,179 @@ class TestAuditReviewDecisionsSummary:
 
 
 # ---------------------------------------------------------------------------
+# C-R 群（新規）: summary の集計・凍結条件の回帰テスト (3 件)
+#
+# plan-report §4 の「D 群: 件数一致 / id > 1232 除外 / decision 値域外除外」に対応する。
+# 既存の「D 群: DB 共通オプション・異常系」とラベルが衝突するため、本ファイル内では
+# C-R（Summary Regression）と命名する。
+#
+# CR（code-review-report-20260804-224558.md）の指摘「summary の集計・凍結条件に回帰テストを
+# 追加する」への対応。_cmd_summary の SQL（decision IN (...) AND id <= 1232）は現行実装で
+# 既に正しいため、これらは実データで動作確認済みの回帰テストとして緑を期待する。
+# ---------------------------------------------------------------------------
+
+
+class TestAuditReviewDecisionsSummaryRegression:
+    """C-R 群: summary の集計・凍結条件の回帰テスト（緑期待）。"""
+
+    @pytest.fixture()
+    def populated_db_with_resolution(self, tmp_path: Path) -> Path:
+        """C 群のフィクスチャと同内容（クラス間でフィクスチャを共有しないため複製）。"""
+        db_path = tmp_path / "c3.db"
+        _create_test_db(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # 対象外（id > 1232）
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity, resolution)
+                VALUES (1233, 'CR-Q-OUT', 'out', 'accepted', '2026-01-01T00:00:00', 'reviewer', 'High', 'resolved')
+            """)
+
+            # 未判定（対象）
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity)
+                VALUES (100, 'CR-Q-A', 'test', 'accepted', '2026-01-01T00:00:00', 'reviewer1', 'High')
+            """)
+
+            # resolved（対象）
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity, resolution)
+                VALUES (101, 'CR-Q-B', 'test', 'accepted', '2026-01-02T00:00:00', 'reviewer1', 'High', 'resolved')
+            """)
+
+            # open（対象）
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity, resolution)
+                VALUES (102, 'CR-Q-C', 'test', 'deferred', '2026-01-03T00:00:00', 'reviewer2', 'Medium', 'open')
+            """)
+
+            # unverifiable（対象）
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity, resolution)
+                VALUES (103, 'CR-Q-D', 'test', 'accepted', '2026-01-04T00:00:00', 'reviewer1', 'Medium', 'unverifiable')
+            """)
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        return db_path
+
+    @staticmethod
+    def _parse_total(output_str: str) -> int:
+        import re  # noqa: PLC0415
+        m = re.search(r"合計:\s*(\d+)\s*件", output_str)
+        assert m, f"summary の出力に「合計: N 件」行が見つかりません:\n{output_str}"
+        return int(m.group(1))
+
+    def test_summary_cr1_total_count_matches_target_rows(
+        self, populated_db_with_resolution: Path
+    ):
+        """CR1: summary の合計件数が対象行数（凍結条件・decision 値域内）と一致する。"""
+        import io
+        from contextlib import redirect_stdout
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["summary", "--db", str(populated_db_with_resolution)])
+        assert exit_code == 0
+
+        reported_total = self._parse_total(output.getvalue())
+
+        conn = sqlite3.connect(str(populated_db_with_resolution))
+        try:
+            actual = conn.execute(
+                "SELECT COUNT(*) FROM review_decisions"
+                " WHERE decision IN ('accepted','deferred') AND id <= 1232"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        assert reported_total == actual == 4, (
+            f"summary の合計件数が対象行数と一致しないはず: reported={reported_total}, actual={actual}"
+        )
+
+    def test_summary_cr2_excludes_id_gt_1232_from_aggregation(
+        self, populated_db_with_resolution: Path
+    ):
+        """CR2: id > 1232 の行は summary の集計から除外される（凍結条件）。"""
+        import io
+        from contextlib import redirect_stdout
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["summary", "--db", str(populated_db_with_resolution)])
+        assert exit_code == 0
+
+        reported_total = self._parse_total(output.getvalue())
+
+        conn = sqlite3.connect(str(populated_db_with_resolution))
+        try:
+            all_matching_decision = conn.execute(
+                "SELECT COUNT(*) FROM review_decisions WHERE decision IN ('accepted','deferred')"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        # fixture 前提の確認: id=1233（凍結条件外）を含めると 5 件になる
+        assert all_matching_decision == 5
+        assert reported_total == 4, (
+            "id > 1232 の行（id=1233）は summary の集計から除外されるはず"
+        )
+
+    def test_summary_cr3_excludes_out_of_scope_decision_values(self, tmp_path: Path):
+        """CR3: decision が accepted/deferred 以外（例: fixed）の行は集計対象外。"""
+        db_path = tmp_path / "c3.db"
+        _create_test_db(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity)
+                VALUES (200, 'CR-Q-FIXED', 'test', 'fixed', '2026-01-01T00:00:00', 'reviewer', 'Low')
+            """)
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity)
+                VALUES (201, 'CR-Q-ACC', 'test', 'accepted', '2026-01-02T00:00:00', 'reviewer', 'Low')
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+        import io
+        from contextlib import redirect_stdout
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["summary", "--db", str(db_path)])
+        assert exit_code == 0
+
+        reported_total = self._parse_total(output.getvalue())
+        assert reported_total == 1, (
+            "decision='fixed' は集計対象外で 'accepted' の 1 件のみのはず"
+            f"（得られた: {reported_total}）"
+        )
+
+
+# ---------------------------------------------------------------------------
 # D 群: DB 共通オプション・異常系 (4 件)
 # ---------------------------------------------------------------------------
 
 class TestAuditReviewDecisionsDbOption:
-    """D 群: --db オプション・DB 不在・未適用 DB などの異常系。"""
+    """D 群: --db オプション・DB 不在・未適用 DB などの異常系。
+
+    【訂正・2026-08-05】ADR-9 で `_connect()` が `c3.db.connect()` へ移行しても
+    観測可能な振る舞い（exit code・stderr 文言）が変わらないことを非回帰として検証する
+    （plan §4「A: `_connect()` 廃止後も観測可能な振る舞いが変わらないこと」）。
+    """
 
     def test_db_d4_non_sqlite_file_exits_2_all_subcommands(self, tmp_path: Path):
         """D4: --db に SQLite でない通常のテキストファイルを渡すと、
@@ -776,53 +990,89 @@ class TestAuditReviewDecisionsDbOption:
 
         E-0（test-report-20260804-215902.md）で検出された欠陥の回帰テスト。
         sqlite3.connect() 自体は遅延評価のため例外を出さず、直後の PRAGMA 実行時に
-        sqlite3.DatabaseError が送出される。この例外が _connect() 内で捕捉されず
+        sqlite3.DatabaseError が送出される。接続の確立処理内で捕捉されず
         main() の外まで伝播していた（未捕捉例外＝プロセス既定の exit 1）。
+
+        【訂正・2026-08-05】ADR-9 で接続確立が `c3.db.connect()` へ移行しても、
+        stderr の文言（「DB への接続に失敗しました」）が現行のまま維持されることを
+        非回帰として検証する（plan §4「A」）。
         """
+        import io
+        from contextlib import redirect_stderr
+
         not_a_db = tmp_path / "not_a_sqlite_file.txt"
         not_a_db.write_text(
             "this is not a sqlite database, just plain text\n" * 5,
             encoding="utf-8",
         )
 
-        exit_code = main(["list", "--db", str(not_a_db)])
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code = main(["list", "--db", str(not_a_db)])
         assert exit_code == 2, (
             f"list: 非 SQLite ファイルは exit 2 のはず、得られた: {exit_code}"
         )
+        assert "DB への接続に失敗しました" in err.getvalue(), (
+            f"list: 非 SQLite ファイルの stderr 文言が非回帰でないはず: {err.getvalue()!r}"
+        )
 
-        exit_code = main([
-            "resolve",
-            "--db", str(not_a_db),
-            "--id", "100",
-            "--resolution", "open",
-            "--commit", "abc123def456abc123def456abc123def456abc1",
-        ])
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code = main([
+                "resolve",
+                "--db", str(not_a_db),
+                "--id", "100",
+                "--resolution", "open",
+                "--commit", "abc123def456abc123def456abc123def456abc1",
+            ])
         assert exit_code == 2, (
             f"resolve: 非 SQLite ファイルは exit 2 のはず、得られた: {exit_code}"
         )
+        assert "DB への接続に失敗しました" in err.getvalue(), (
+            f"resolve: 非 SQLite ファイルの stderr 文言が非回帰でないはず: {err.getvalue()!r}"
+        )
 
-        exit_code = main(["summary", "--db", str(not_a_db)])
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code = main(["summary", "--db", str(not_a_db)])
         assert exit_code == 2, (
             f"summary: 非 SQLite ファイルは exit 2 のはず、得られた: {exit_code}"
+        )
+        assert "DB への接続に失敗しました" in err.getvalue(), (
+            f"summary: 非 SQLite ファイルの stderr 文言が非回帰でないはず: {err.getvalue()!r}"
         )
 
     def test_db_d1_missing_db_file_exits_2(self, tmp_path: Path):
         """D1: --db で指定した DB ファイルが存在しない場合、exit 2。
 
         あるいは --db 省略時に locate_c3_db が None を返す場合も exit 2。
+
+        【訂正・2026-08-05】stderr 文言（「DB ファイルが存在しません」）が
+        ADR-9 移行後も非回帰であることを検証する（plan §4「A」）。
         """
+        import io
+        from contextlib import redirect_stderr
+
         nonexistent_db = tmp_path / "nonexistent.db"
 
-        exit_code = main([
-            "list",
-            "--db", str(nonexistent_db)
-        ])
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code = main([
+                "list",
+                "--db", str(nonexistent_db)
+            ])
 
         assert exit_code == 2, f"DB 不在は exit 2 のはず、得られた: {exit_code}"
+        assert "DB ファイルが存在しません" in err.getvalue(), (
+            f"stderr 文言が非回帰でないはず: {err.getvalue()!r}"
+        )
 
     def test_db_d2_migration_007_not_applied_exits_2(self, tmp_path: Path):
         """D2: migration 007 未適用の DB（resolution 列なし）で実行すると、
         'no such column: resolution' 例外を捕捉して exit 2。
+
+        【訂正・2026-08-05】stderr 文言（「migration 007 が未適用の可能性があります」）が
+        ADR-9 移行後も非回帰であることを検証する（plan §4「A」）。
         """
         db_path = tmp_path / "c3.db"
         conn = sqlite3.connect(str(db_path))
@@ -850,12 +1100,20 @@ class TestAuditReviewDecisionsDbOption:
         finally:
             conn.close()
 
-        exit_code = main([
-            "list",
-            "--db", str(db_path)
-        ])
+        import io
+        from contextlib import redirect_stderr
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code = main([
+                "list",
+                "--db", str(db_path)
+            ])
 
         assert exit_code == 2, f"migration 未適用は exit 2 のはず、得られた: {exit_code}"
+        assert "migration 007" in err.getvalue(), (
+            f"stderr 文言が非回帰でないはず: {err.getvalue()!r}"
+        )
 
     def test_db_d3_db_option_required_to_avoid_real_db_modification(self, tmp_path: Path):
         """D3: --db オプションが指定可能であり、省略時は実 DB を探す（seam 確認）。
@@ -935,3 +1193,286 @@ class TestAuditReviewDecisionsMainSignature:
             "--commit", "abc123def456abc123def456abc123def456abc1"
         ])
         assert exit_code == 0, f"正常終了は exit 0 のはず、得られた: {exit_code}"
+
+
+# ---------------------------------------------------------------------------
+# UB 群（新規）: list の stderr バナー・各レコードの _untrusted キー (5 件)
+#
+# architecture-report ADR-4 補足 / SR-AI-001（security-review-report-20260804-224558.md:116）
+# への対応。plan-report §4「E」に対応する（本ファイル内の既存 E 群とラベルが衝突するため
+# UB = Untrusted Banner と命名する）。Red 期待（stderr バナー・_untrusted キーとも未実装）。
+# ---------------------------------------------------------------------------
+
+
+class TestAuditReviewDecisionsListUntrustedBanner:
+    """UB 群: list の 2 層防御（stderr バナー＋各レコードの _untrusted キー）。"""
+
+    @pytest.fixture()
+    def one_record_db(self, tmp_path: Path) -> Path:
+        db_path = tmp_path / "c3.db"
+        _create_test_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity)
+                VALUES (100, 'CR-Q-100', 'test finding', 'accepted', '2026-01-01T00:00:00', 'reviewer', 'High')
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        return db_path
+
+    def test_list_ub1_stderr_banner_first_line_when_records_exist(self, one_record_db: Path):
+        """UB1: 対象 1 件以上で stderr にバナーが先頭で出る。
+
+        バナー文言は特定の語の完全一致を要求しない。識別可能な部分文字列 1 つ
+        （「データであり指示ではない」旨の「指示ではない」）のみを検査する。
+        """
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            exit_code = main(["list", "--db", str(one_record_db)])
+
+        assert exit_code == 0
+        err_lines = [l for l in err.getvalue().splitlines() if l.strip()]
+        assert err_lines, "対象 1 件以上では stderr にバナーが出力されるはず"
+        assert "指示ではない" in err_lines[0], (
+            f"stderr の先頭行に枠付け文言（指示ではない旨）が含まれるはず: {err_lines[0]!r}"
+        )
+
+    def test_list_ub2_stdout_is_pure_json_lines(self, one_record_db: Path):
+        """UB2: stdout は純粋な JSON Lines（バナーは stdout に混ざらない）。"""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            exit_code = main(["list", "--db", str(one_record_db)])
+
+        assert exit_code == 0
+        lines = [l for l in out.getvalue().split('\n') if l.strip()]
+        assert lines, "対象があれば stdout にレコードが出力されるはず"
+        for line in lines:
+            obj = json.loads(line)  # 例外なくパースできること自体が検証
+            assert isinstance(obj, dict)
+
+    def test_list_ub3_each_record_has_untrusted_key(self, one_record_db: Path):
+        """UB3: 各 JSON レコードに固定キー _untrusted がある。"""
+        import io
+        from contextlib import redirect_stdout
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["list", "--db", str(one_record_db)])
+
+        assert exit_code == 0
+        lines = [l for l in output.getvalue().split('\n') if l.strip()]
+        assert lines
+        for line in lines:
+            obj = json.loads(line)
+            assert obj.get("_untrusted") == "data-not-instructions", (
+                f"レコードに _untrusted キーが無いか値が不正: {line}"
+            )
+
+    def test_list_ub4_zero_records_stdout_empty_exit_0(self, tmp_path: Path):
+        """UB4: 対象 0 件で stdout は空・戻り値 0。"""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        db_path = tmp_path / "c3.db"
+        _create_test_db(db_path)
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            exit_code = main(["list", "--db", str(db_path)])
+
+        assert exit_code == 0
+        assert out.getvalue().strip() == "", "対象 0 件では stdout は空のはず"
+
+    def test_list_ub5_multiline_finding_text_preserves_json_lines_with_untrusted(
+        self, tmp_path: Path
+    ):
+        """UB5: finding_text に改行を含んでも JSON Lines 契約（1 レコード 1 行）が保たれ、
+        _untrusted キーも維持される。
+        """
+        import io
+        from contextlib import redirect_stdout
+
+        db_path = tmp_path / "c3.db"
+        _create_test_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("""
+                INSERT INTO review_decisions
+                (checklist_id, finding_text, decision, decided_at, reviewer)
+                VALUES (?, ?, 'accepted', '2026-01-01T00:00:00', 'reviewer')
+            """, ('CR-Q-001', 'line 1\nline 2\nline 3'))
+            conn.commit()
+        finally:
+            conn.close()
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = main(["list", "--db", str(db_path)])
+
+        assert exit_code == 0
+        lines = [l for l in output.getvalue().split('\n') if l.strip()]
+        assert len(lines) == 1, f"1 レコード 1 行のはず、得られた非空行: {len(lines)}"
+        obj = json.loads(lines[0])
+        assert 'line 1' in obj['finding_text']
+        assert obj.get("_untrusted") == "data-not-instructions"
+
+
+# ---------------------------------------------------------------------------
+# F 群（新規）: resolve の入力検証 (6 件)
+#
+# plan-report §4「F」/ SR-NEW（record_review_decision.py の _truncate() 規律に揃える）
+# への対応。Red 期待（切り詰め・形式検証とも未実装）。
+# ---------------------------------------------------------------------------
+
+
+class TestAuditReviewDecisionsInputValidation:
+    """F 群: --note の切り詰め・--commit の形式検証。"""
+
+    @pytest.fixture()
+    def simple_db(self, tmp_path: Path) -> Path:
+        db_path = tmp_path / "c3.db"
+        _create_test_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("""
+                INSERT INTO review_decisions
+                (id, checklist_id, finding_text, decision, decided_at, reviewer, severity)
+                VALUES (100, 'CR-Q-100', 'test finding', 'accepted', '2026-01-01T00:00:00', 'reviewer', 'High')
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        return db_path
+
+    def test_resolve_f1_note_exceeding_char_length_is_truncated_with_warning(
+        self, simple_db: Path
+    ):
+        """F1: --note が 2000 文字を超える場合、切り詰め + stderr 警告。"""
+        import io
+        from contextlib import redirect_stderr
+
+        long_note = "a" * 2500
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code = main([
+                "resolve",
+                "--db", str(simple_db),
+                "--id", "100",
+                "--resolution", "resolved",
+                "--note", long_note,
+                "--commit", "abc123def456abc123def456abc123def456abc1",
+            ])
+
+        assert exit_code == 0, f"切り詰め後は成功のはず、exit_code={exit_code}"
+        assert err.getvalue().strip() != "", "--note 上限超過時は stderr 警告が出るはず"
+
+        conn = sqlite3.connect(str(simple_db))
+        try:
+            row = conn.execute(
+                "SELECT resolution_note FROM review_decisions WHERE id=100"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row[0] is not None
+        assert len(row[0]) <= 2000, f"note は 2000 文字以下に切り詰められるはず: len={len(row[0])}"
+
+    def test_resolve_f2_note_within_length_is_not_truncated(self, simple_db: Path):
+        """F2: 2000 文字以内の --note は切り詰められない。"""
+        note = "short note within limits"
+        exit_code = main([
+            "resolve",
+            "--db", str(simple_db),
+            "--id", "100",
+            "--resolution", "resolved",
+            "--note", note,
+            "--commit", "abc123def456abc123def456abc123def456abc1",
+        ])
+        assert exit_code == 0
+
+        conn = sqlite3.connect(str(simple_db))
+        try:
+            row = conn.execute(
+                "SELECT resolution_note FROM review_decisions WHERE id=100"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row[0] == note, "上限以内の note はそのまま保存されるはず"
+
+    def test_resolve_f3_note_byte_length_boundary_with_multibyte_chars(
+        self, simple_db: Path
+    ):
+        """F3: マルチバイト文字（日本語）を含む note は 8*1024 バイト境界でも
+        安全に切り詰められる（文字数上限 2000 とバイト数上限 8*1024 の両方を満たす）。
+        """
+        note = "あ" * 3000  # UTF-8 で 1 文字 3 バイト -> 9000 バイト（8*1024 超過）
+        exit_code = main([
+            "resolve",
+            "--db", str(simple_db),
+            "--id", "100",
+            "--resolution", "resolved",
+            "--note", note,
+            "--commit", "abc123def456abc123def456abc123def456abc1",
+        ])
+        assert exit_code == 0
+
+        conn = sqlite3.connect(str(simple_db))
+        try:
+            row = conn.execute(
+                "SELECT resolution_note FROM review_decisions WHERE id=100"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert row[0] is not None
+        assert len(row[0].encode("utf-8")) <= 8 * 1024, (
+            f"note は 8*1024 バイト以下に切り詰められるはず: {len(row[0].encode('utf-8'))} bytes"
+        )
+        assert len(row[0]) <= 2000
+
+    def test_resolve_f4_commit_invalid_hex_format_exits_2(self, simple_db: Path):
+        """F4: --commit が 16 進数以外の文字を含む場合、exit 2。"""
+        exit_code = main([
+            "resolve",
+            "--db", str(simple_db),
+            "--id", "100",
+            "--resolution", "open",
+            "--commit", "not-a-valid-sha-value-xyz-not-hex",
+        ])
+        assert exit_code == 2, f"不正形式の --commit は exit 2 のはず、得られた: {exit_code}"
+
+    def test_resolve_f5_commit_wrong_length_exits_2(self, simple_db: Path):
+        """F5: --commit が 40 桁でない場合（16 進文字のみでも）、exit 2。"""
+        exit_code = main([
+            "resolve",
+            "--db", str(simple_db),
+            "--id", "100",
+            "--resolution", "open",
+            "--commit", "abc123",  # 6 桁のみ
+        ])
+        assert exit_code == 2, f"40 桁でない --commit は exit 2 のはず、得られた: {exit_code}"
+
+    def test_resolve_f6_commit_valid_40_hex_succeeds(self, simple_db: Path):
+        """F6: 40 桁 16 進の --commit は成功する（非回帰）。"""
+        exit_code = main([
+            "resolve",
+            "--db", str(simple_db),
+            "--id", "100",
+            "--resolution", "open",
+            "--commit", "abc123def456abc123def456abc123def456abc1",
+        ])
+        assert exit_code == 0, f"正しい形式の --commit は成功のはず、得られた: {exit_code}"
