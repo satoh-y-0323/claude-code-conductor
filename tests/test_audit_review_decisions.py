@@ -7,7 +7,7 @@ scripts/audit_review_decisions.py のテスト（Red フェーズ）。
   A 群 (11 件): list サブコマンド（抽出・フォーマット・フィルタリング）
   B 群 (10 件): resolve サブコマンド（書き込み・必須項目・異常系）
   C 群 (3 件): summary サブコマンド（集計）
-  D 群 (3 件): DB 共通オプション・異常系
+  D 群 (4 件): DB 共通オプション・異常系
   E 群 (2 件): プロセス境界の seam（exit code 検証）
 """
 from __future__ import annotations
@@ -764,11 +764,47 @@ class TestAuditReviewDecisionsSummary:
 
 
 # ---------------------------------------------------------------------------
-# D 群: DB 共通オプション・異常系 (3 件)
+# D 群: DB 共通オプション・異常系 (4 件)
 # ---------------------------------------------------------------------------
 
 class TestAuditReviewDecisionsDbOption:
     """D 群: --db オプション・DB 不在・未適用 DB などの異常系。"""
+
+    def test_db_d4_non_sqlite_file_exits_2_all_subcommands(self, tmp_path: Path):
+        """D4: --db に SQLite でない通常のテキストファイルを渡すと、
+        list / resolve / summary のいずれも例外を送出せず exit 2 を返す。
+
+        E-0（test-report-20260804-215902.md）で検出された欠陥の回帰テスト。
+        sqlite3.connect() 自体は遅延評価のため例外を出さず、直後の PRAGMA 実行時に
+        sqlite3.DatabaseError が送出される。この例外が _connect() 内で捕捉されず
+        main() の外まで伝播していた（未捕捉例外＝プロセス既定の exit 1）。
+        """
+        not_a_db = tmp_path / "not_a_sqlite_file.txt"
+        not_a_db.write_text(
+            "this is not a sqlite database, just plain text\n" * 5,
+            encoding="utf-8",
+        )
+
+        exit_code = main(["list", "--db", str(not_a_db)])
+        assert exit_code == 2, (
+            f"list: 非 SQLite ファイルは exit 2 のはず、得られた: {exit_code}"
+        )
+
+        exit_code = main([
+            "resolve",
+            "--db", str(not_a_db),
+            "--id", "100",
+            "--resolution", "open",
+            "--commit", "abc123def456abc123def456abc123def456abc1",
+        ])
+        assert exit_code == 2, (
+            f"resolve: 非 SQLite ファイルは exit 2 のはず、得られた: {exit_code}"
+        )
+
+        exit_code = main(["summary", "--db", str(not_a_db)])
+        assert exit_code == 2, (
+            f"summary: 非 SQLite ファイルは exit 2 のはず、得られた: {exit_code}"
+        )
 
     def test_db_d1_missing_db_file_exits_2(self, tmp_path: Path):
         """D1: --db で指定した DB ファイルが存在しない場合、exit 2。

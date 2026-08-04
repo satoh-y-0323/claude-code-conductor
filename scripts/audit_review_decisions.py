@@ -102,9 +102,13 @@ def _connect(db_arg: str | None) -> sqlite3.Connection | None:
         print(f"エラー: DB ファイルが存在しません: {db_path}", file=sys.stderr)
         return None
 
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    except sqlite3.Error as exc:
+        print(f"エラー: DB への接続に失敗しました: {db_path}（{exc}）", file=sys.stderr)
+        return None
     return conn
 
 
