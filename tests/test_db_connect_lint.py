@@ -30,6 +30,22 @@ architecture-report-20260804-235224.md ADR-11 に基づく。
   どの呼び出しを指すかは原理的に決められないため、曖昧な帰属そのものを許さない。
   書き手は行を分けるしかなくなり、分ければマーカーは一意になる
 
+## 直前行マーカーの相関検証（E 周回 2 CR-NEW High・2026-08-05）
+
+(B) の対処後も「直前行」という帰属経路そのものの曖昧さが残っていた:
+`(lineno - 1 in markers)` は直前行の**中身**を一切見ないため、
+`sqlite3.connect` と無関係な行にマーカーを貼っただけで次行の `connect` が抑止される
+（`n = 1  # allow(...)` の次行に無警告の `sqlite3.connect(b)` を書ける・CR 実測）。
+
+対処（fail-closed。同型の考え方を直前行にも適用）: 直前行マーカーを有効とみなすのは
+**直前行がマーカー以外のトークンを持たない「マーカー専用のコメント行」であり、
+かつ対象行の `connect` が 1 件だけ**の場合に限る。実運用の正しいパターン
+（`migrate.py:84` 等: マーカーだけの行を `connect()` の直前に独立して置く）はこの形になっている。
+判定は `tokenize` で「コメント・改行・インデント制御以外のトークンを持つ行」の集合
+（`_find_code_line_numbers`）を作り、直前行がこの集合に含まれるかで行う。
+含まれる場合（トレーリングマーカー付きの無関係なコード行・別の `connect` 呼び出し行など）は
+**マーカーの有無によらず無条件で違反とする**（`unrelated_prev_line_marker`）。
+
 ## 走査範囲
 
 | 層 | 扱い |
@@ -225,6 +241,47 @@ _AMBIGUOUS_MARKER_REASON = (
     "無条件で違反。行を分けること"
 )
 
+#: 直前行にマーカーはあるが、対象行の connect() との相関が確認できないために
+#: fail-closed で違反にした場合の理由文言。直し方（対象行に直接置く／独立した
+#: コメント専用行にする）が読み取れることを完了条件 7 で要求されている。
+_UNRELATED_PREV_LINE_MARKER_REASON = (
+    "sqlite3.connect: 直前行にマーカーがあるが対象行との相関が確認できないため無効"
+    "（fail-closed）。マーカーは対象行に直接置くか、マーカーだけの独立したコメント行を"
+    "connect() の直前に置くこと"
+)
+
+_NON_CODE_TOKEN_TYPES = frozenset((
+    tokenize.COMMENT,
+    tokenize.NL,
+    tokenize.NEWLINE,
+    tokenize.INDENT,
+    tokenize.DEDENT,
+    tokenize.ENCODING,
+    tokenize.ENDMARKER,
+))
+
+
+def _find_code_line_numbers(text: str) -> set[int]:
+    """『コメント・改行・インデント制御以外のトークンを持つ行』の集合を返す。
+
+    直前行マーカーの相関検証に使う。この集合に含まれない行は「マーカー専用の
+    コメント行」であり、対象行の connect() を指していると判断できる。含まれる行
+    （コードと同居するトレーリングマーカー・別の connect() 呼び出し行など）は
+    相関が確認できないため、直前行マーカーとしては無効にする。
+    """
+    code_lines: set[int] = set()
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type in _NON_CODE_TOKEN_TYPES:
+                continue
+            # 複数行にまたがるトークン（三重引用符文字列等）は開始行から終了行まで
+            # すべてコード行として扱う。
+            code_lines.update(range(tok.start[0], tok.end[0] + 1))
+    except tokenize.TokenError:
+        pass  # tokenize 失敗は検査失敗ではなく処理スキップ（_extract_markers と同方針）
+
+    return code_lines
+
 
 def find_db_connect_violations(path: Path) -> list[tuple[int, int, str, str]]:
     """1 ファイルから `sqlite3.connect` 呼び出しの違反を検出。
@@ -239,6 +296,10 @@ def find_db_connect_violations(path: Path) -> list[tuple[int, int, str, str]]:
     マーカーは「どちらの呼び出しを指すか」原理的に決められないため、マーカーの
     有無によらず無条件で違反とする（fail-closed）。1 行に 1 つの `connect` であれば
     従来どおりマーカーで抑止される。
+
+    直前行マーカーの相関検証 (C・E 周回 2 CR-NEW High): 直前行にマーカーがあっても、
+    その行がマーカー専用のコメント行でない（＝対象行の connect() と無関係な可能性がある）
+    場合は無条件で違反とする（fail-closed）。
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -254,6 +315,7 @@ def find_db_connect_violations(path: Path) -> list[tuple[int, int, str, str]]:
 
     # マーカーを抽出
     markers = _extract_markers(text)
+    code_lines = _find_code_line_numbers(text)
 
     # `from sqlite3 import connect` は無条件で違反（列位置の曖昧性は対象外のため 0 固定）
     for lineno in _detect_from_sqlite3_import_connect(text):
@@ -272,7 +334,15 @@ def find_db_connect_violations(path: Path) -> list[tuple[int, int, str, str]]:
         lineno = call_info["line"]
         col = call_info["col"]
         ambiguous_line = calls_per_line[lineno] >= 2
-        marked = (lineno in markers) or (lineno - 1 in markers)
+
+        has_line_marker = lineno in markers
+        prev_line_has_marker = (lineno - 1) in markers
+        # (C) 直前行がマーカー専用のコメント行（コードを一切持たない）でなければ、
+        # そのマーカーはこの connect() を指しているとは判断できない。
+        prev_marker_is_correlated = prev_line_has_marker and (lineno - 1) not in code_lines
+        valid_prev_marker = prev_marker_is_correlated and not ambiguous_line
+
+        marked = has_line_marker or valid_prev_marker
 
         if marked and not ambiguous_line:
             # 通常の抑止: 1 行 1 呼び出し + マーカー（従来どおり）
@@ -281,6 +351,14 @@ def find_db_connect_violations(path: Path) -> list[tuple[int, int, str, str]]:
         if marked and ambiguous_line:
             # (B) 帰属が曖昧なマーカーは効かせない。fail-closed で違反にする
             violations.append((lineno, col, _AMBIGUOUS_MARKER_REASON, "ambiguous_marker_scope"))
+            continue
+
+        if prev_line_has_marker and not valid_prev_marker and not has_line_marker:
+            # (C) 直前行にマーカーはあるが、相関が確認できない（無関係なコード行・
+            # 別の connect() 行との同居・対象行自体が同一行複数呼び出しで曖昧、等）。
+            violations.append(
+                (lineno, col, _UNRELATED_PREV_LINE_MARKER_REASON, "unrelated_prev_line_marker")
+            )
             continue
 
         # マーカーなし → 違反（同一行に複数あっても (A) の col により個別に残る）
@@ -405,6 +483,13 @@ class TestNoDbConnectViolations:
         text = db_py.read_text(encoding="utf-8")
         count = text.count("sqlite3.connect")
 
+        # 内訳（E 周回 2 CR-NEW Low 是正）:
+        #   既存 17 箇所（fix-connect-dedup 以前からある呼び出し。migrate.py 等の
+        #   `# c3-db-connect: pending(...)` マーカー付き呼び出しは対象外＝db.py 内のみ数える）
+        # + connect() 自身の 1 箇所（ADR-9・`src/c3/db.py:111` の `sqlite3.connect(str(db_path))`）
+        # = 18（Green 時点の現在値）。
+        # S-C（pending 移行完了）時点の期待値は 1（connect() 自身のみが残り、
+        # 17 箇所は c3.db.connect() 経由に置き換わる想定）。
         _DB_PY_CONNECT_SITES = 18
         assert count == _DB_PY_CONNECT_SITES, (
             f"src/c3/db.py の sqlite3.connect 件数が不一致。\n"
@@ -493,3 +578,94 @@ class TestSameLineMarkerScopeAmbiguity:
         violations = find_db_connect_violations(f)
         assert violations, "曖昧な帰属が検出されていません"
         assert all("行を分け" in reason for _, _, reason, _ in violations), violations
+
+
+class TestPrevLineMarkerCorrelation:
+    """E 周回 2 CR-NEW High の回帰テスト: 直前行マーカーの相関未検証。
+
+    修正前は `(lineno - 1 in markers)` のみで判定しており、直前行の中身と
+    マーカーの相関を一切確認していなかった。無関係な行にマーカーを貼るだけで
+    次行の未マーカー `sqlite3.connect` を無警告で通せた（CR 実測の再現・plan §2）。
+    """
+
+    def test_marker_on_unrelated_code_line_does_not_suppress_next_line(self, tmp_path):
+        """直前行が connect と無関係なコード（トレーリングマーカー付き）の場合、
+        次の行の connect は抑止されず違反になる。
+
+        修正前は検出 0 件だった（plan 完了条件 1・親 Claude 実測の再現:
+        `n = 1  # allow(...)` の直後の `sqlite3.connect(b)`）。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "n = 1  # c3-db-connect: allow(connect と無関係な行に貼ったマーカー)\n"
+            "conn = sqlite3.connect(b)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert len(violations) == 1, violations
+        assert violations[0][3] == "unrelated_prev_line_marker"
+        assert violations[0][0] == 3  # conn の行
+
+    def test_marker_trailing_on_other_connect_line_does_not_suppress_next_line(self, tmp_path):
+        """直前行が『別の connect + トレーリングマーカー』の場合も、
+        次の行の connect は抑止されず違反になる（CR 実測ケース 1 の再現）。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "conn1 = sqlite3.connect(a)  # c3-db-connect: allow(reason for conn1 only)\n"
+            "conn2 = sqlite3.connect(b)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        # conn1 自身は同一行の直接マーカーで従来どおり抑止される。
+        # conn2 は無関係な直前行マーカーのため違反になる。
+        assert len(violations) == 1, violations
+        assert violations[0][3] == "unrelated_prev_line_marker"
+        assert violations[0][0] == 3  # conn2 の行
+
+    def test_marker_only_line_immediately_before_connect_is_still_suppressed(self, tmp_path):
+        """過剰対応の検出（plan 完了条件 2）: マーカーだけの独立したコメント行を
+        connect() の直前に置く実運用パターン（migrate.py:84 等）は、
+        引き続き抑止される。これが崩れたら不合格。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "# c3-db-connect: pending(c3.db.connect への移行待ち)\n"
+            "conn = sqlite3.connect(a)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert violations == []
+
+    def test_marker_only_line_before_ambiguous_target_line_is_still_a_violation(self, tmp_path):
+        """直前行がマーカー専用のコメント行でも、対象行自体に connect が 2 件あれば
+        どちらを指すか決められないため、引き続き違反になる（(B) との整合）。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "# c3-db-connect: allow(十分な理由文字列)\n"
+            "x, y = sqlite3.connect(a), sqlite3.connect(b)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert len(violations) == 2, violations
+        assert all(vtype == "unrelated_prev_line_marker" for _, _, _, vtype in violations)
+
+    def test_violation_message_tells_reader_how_to_fix(self, tmp_path):
+        """違反メッセージに直し方（対象行に置く／独立したコメント行にする）が
+        読み取れること（完了条件 1 の裏取り: plan §2 の要求）。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "n = 1  # c3-db-connect: allow(connect と無関係な行に貼ったマーカー)\n"
+            "conn = sqlite3.connect(a)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert violations, "無関係な直前行マーカーが検出されていません"
+        assert all("対象行" in reason for _, _, reason, _ in violations), violations

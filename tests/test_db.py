@@ -3936,24 +3936,63 @@ class TestConnectAPI:
         with pytest.raises(Exception):
             conn.execute("SELECT 1")
 
-    def test_connect_closes_on_pragma_failure(self, tmp_path):
-        """R3-3: PRAGMA 適用中に失敗した場合も close が呼ばれる。"""
+    def test_connect_closes_on_pragma_failure(self, tmp_path, monkeypatch):
+        """R3-3: PRAGMA 適用中に失敗した場合も close が呼ばれる。
+
+        【E 周回 2 CR-NEW §4-b 是正・2026-08-05】修正前は `busy_timeout` PRAGMA しか
+        実行されなかった。`PRAGMA busy_timeout` は SQLite ファイルヘッダを読まないため、
+        非 SQLite ファイルに対しても例外を出さず素通りする（親 Claude 実測:
+        `PRAGMA busy_timeout on 非SQLite -> 例外なし`）。そのため `with` ブロックは
+        正常終了し、修正前のテストは **PRAGMA 失敗経路を一度も通っていなかった**
+        （`if conn is not None:` の中の `pytest.raises` は「ファイルが SQLite でない」
+        という別の理由で `conn.execute("SELECT 1")` が失敗しているだけで、
+        close を検証できていなかった）。
+
+        また `with connect(...) as c:` の `c` は、PRAGMA 失敗が `yield` より前に
+        起きた場合はそもそも束縛されない（generator が `__enter__` 中に例外を
+        送出するため、with 文の本体には入らない）。したがって旧実装の
+        `conn = c` を with ブロック内に置くパターンでは、真の失敗経路を通っても
+        `conn` を観測できない。本修正では `sqlite3.connect` を monkeypatch で
+        ラップし、生成された接続オブジェクトを `c` の束縛に依存せず直接捕捉する。
+
+        `wal=True` を併用して `PRAGMA journal_mode=WAL` の適用を強制し、
+        実際に `sqlite3.DatabaseError` が送出される経路を通したうえで、
+        捕捉した接続が close されていることを条件なしで直接観測する。
+        """
         from c3.db import connect  # noqa: PLC0415
         import sqlite3 as sqlite3_module  # noqa: PLC0415
 
         bad_db = tmp_path / "not_sqlite.db"
         bad_db.write_text("this is not a sqlite database")
 
-        conn = None
-        try:
-            with connect(db_path=str(bad_db)) as c:
-                conn = c
-        except sqlite3_module.DatabaseError:
-            pass
+        real_sqlite3_connect = sqlite3_module.connect
+        captured = []
 
-        if conn is not None:
-            with pytest.raises(Exception):
-                conn.execute("SELECT 1")
+        def _capture_and_connect(*args, **kwargs):
+            c = real_sqlite3_connect(*args, **kwargs)
+            captured.append(c)
+            return c
+
+        monkeypatch.setattr(sqlite3_module, "connect", _capture_and_connect)
+
+        raised = None
+        try:
+            with connect(db_path=str(bad_db), wal=True):
+                pass
+        except sqlite3_module.DatabaseError as e:
+            raised = e
+
+        assert raised is not None, (
+            "PRAGMA journal_mode=WAL で sqlite3.DatabaseError が発生しませんでした。"
+            "wal=True 無しでは busy_timeout PRAGMA だけが実行され、非 SQLite ファイルでも"
+            "例外なく素通りしていた（修正前の状態の再現になっています）。"
+        )
+        assert len(captured) == 1, (
+            f"sqlite3.connect の捕捉回数が想定外です（実測: {len(captured)}）"
+        )
+        # close されたことを条件なしで直接観測する（if conn is not None: の廃止）。
+        with pytest.raises(Exception):
+            captured[0].execute("SELECT 1")
 
     def test_connect_applies_pragma_in_order(self, tmp_path):
         """R4: PRAGMA 適用順序が busy_timeout → WAL → row_factory。"""

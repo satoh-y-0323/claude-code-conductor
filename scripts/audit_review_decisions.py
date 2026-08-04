@@ -83,8 +83,12 @@ _LIST_COLUMNS = (
 )
 
 # 入力検証の定数（F 群・ADR-8(b)）
-# note の文字数・バイト数の上限（record_review_decision.py:64-68 を参照）
-# MAX_LEN * 4 > MAX_FIELD_BYTES の整合を保つ
+# note の文字数・バイト数の上限（record_review_decision.py の MAX_*_LEN / MAX_FIELD_BYTES と同型。
+# 定数定義は同ファイルの MAX_FINDING_LEN 群、切り詰めの根拠は _truncate の docstring）。
+# 現在の値は _NOTE_MAX_LEN * 4 = 8000 <= _NOTE_MAX_FIELD_BYTES = 8192 であり、
+# 4 バイト UTF-8 文字だけで埋めても文字数上限で切った時点でバイト数上限に届かない
+# （＝バイト数側の切り詰めは実質発火しない）。_NOTE_MAX_LEN を引き上げてこの関係が
+# 崩れると、バイト数側の切り詰めが実際に効き始める点に注意する。
 _NOTE_MAX_LEN = 2000  # 文字
 _NOTE_MAX_FIELD_BYTES = 8 * 1024  # バイト
 

@@ -61,14 +61,28 @@ BUSY_TIMEOUT_MS = 5000
 _BUSY_TIMEOUT_MS = BUSY_TIMEOUT_MS  # 内部互換エイリアス（既存コードへの影響なし）
 
 
-def apply_busy_timeout(conn: sqlite3.Connection) -> None:
+def apply_busy_timeout(
+    conn: sqlite3.Connection,
+    timeout_ms: int | None = None,
+) -> None:
     """SQLite 接続に busy_timeout PRAGMA を適用する。
 
     PRAGMA はパラメータバインドできないため値が整数であることを int() で強制する。
     現在 BUSY_TIMEOUT_MS は定数だが、将来 env 等から読まれた場合の PRAGMA
     インジェクション (`5000; ATTACH ...`) を未然に防ぐ防衛的キャスト [SR-INJ-001]。
+
+    本モジュールで busy_timeout の PRAGMA 文を組み立てるのはここ 1 箇所だけである
+    （int() キャストの二重定義を作らない）。:func:`connect` も override 値を
+    ``timeout_ms`` で渡してこの関数を経由する。
+
+    Args:
+        conn: PRAGMA を適用する接続。
+        timeout_ms: 待機時間（ms）の上書き値。``None``（既定）のときは
+            モジュール定数 ``BUSY_TIMEOUT_MS`` を使う。既存の引数なし呼び出しは
+            この既定により従来どおりの挙動を保つ。
     """
-    conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_MS)}")
+    effective_ms = BUSY_TIMEOUT_MS if timeout_ms is None else timeout_ms
+    conn.execute(f"PRAGMA busy_timeout={int(effective_ms)}")
 
 
 # 内部互換エイリアス（既存 17 箇所の呼び出しは無変更で動く）
@@ -96,11 +110,12 @@ def connect(
     """
     conn = sqlite3.connect(str(db_path))
     try:
-        # PRAGMA 適用順序: busy_timeout → WAL → row_factory
-        # 後述「順序を変える理由」: busy_timeout が効く前の窓でロック競合に当たる経路を防ぐ
-        # busy_timeout_ms は常に int() でキャスト [SR-INJ-001]
-        timeout_ms = busy_timeout_ms if busy_timeout_ms is not None else BUSY_TIMEOUT_MS
-        conn.execute(f"PRAGMA busy_timeout={int(timeout_ms)}")
+        # PRAGMA 適用順序: busy_timeout → WAL → row_factory。
+        # busy_timeout を最初に置く理由: journal_mode=WAL への切り替え自体がロックを取るため、
+        # 後に回すと busy_timeout が効く前の窓でロック競合に当たる経路ができる。
+        # PRAGMA 文の組み立てと int() キャスト [SR-INJ-001] は apply_busy_timeout に一本化しており
+        # ここでは再実装しない（override 値は timeout_ms 引数で渡す）。
+        apply_busy_timeout(conn, busy_timeout_ms)
         if wal:
             conn.execute("PRAGMA journal_mode=WAL")
         if row_factory is not None:
