@@ -73,7 +73,7 @@ def _has_no_code_fence_in_rule15_section(text: str) -> bool:
     「セクション内にフェンスが存在しないこと」をアサートする回帰ガードに留める。
     """
     section = _rule15_section(text)
-    return not any(line.lstrip().startswith("```") for line in section.splitlines())
+    return not any(line.lstrip().startswith(("```", "~~~")) for line in section.splitlines())
 
 
 def test_planner_agent_under_80_lines():
