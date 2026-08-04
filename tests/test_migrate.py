@@ -11,6 +11,7 @@ G 群 (4 件): 003 migration 適用テスト（v2.22.0 追加）
 H 群 (7 件): 004 migration 適用テスト
 I 群 (4 件): 005 migration 適用テスト
 J 群 (4 件): 006 migration 適用テスト（P4 c3 metrics・review_decisions.severity 追加）
+K 群 (4 件): 007 migration 適用テスト（負債台帳の機械検証・review_decisions に resolution 3 列追加）
 """
 from __future__ import annotations
 
@@ -1192,5 +1193,141 @@ class TestMigrate006ReviewDecisionsSeverity:
             conn.close()
 
         assert "severity" in columns, f"review_decisions に severity 列がない: {columns}"
-        assert row is not None, "既存の review_decisions 行が見つからない"
+        assert row is not None, "既存の review_decisions 行が見つかりません"
         assert row[0] is None, f"既存行の severity が NULL で保持されていない: {row[0]}"
+
+
+# ---------------------------------------------------------------------------
+# K 群: 007 migration 適用テスト (負債台帳の機械検証・resolution 3 列追加)
+# ---------------------------------------------------------------------------
+
+class TestMigrate007ReviewDecisionsResolution:
+    """K 群: 007_review_decisions_resolution.sql の適用テスト。
+
+    architecture-report-20260804-202004.md §2-1（ADR-1）に従い、review_decisions に
+    resolution TEXT（nullable・additive）、resolution_note TEXT（nullable・additive）、
+    resolution_commit TEXT（nullable・additive）の 3 列を追加する。
+    """
+
+    def test_apply_007_returns_version_in_applied(self, tmp_path: Path):
+        """K1: 新規 DB への 001→007 連続適用で戻り値に '007' が含まれ、006 より後に適用された。"""
+        db_path = tmp_path / "c3.db"
+        applied = apply_pending_migrations(db_path)
+
+        assert "007" in applied, f"007 が applied に含まれない: {applied}"
+        assert applied.index("006") < applied.index("007"), "006 が 007 より前に来るはず"
+
+    def test_apply_007_adds_resolution_columns(self, tmp_path: Path):
+        """K2: 007 適用後、review_decisions に resolution / resolution_note / resolution_commit 列が存在した。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(review_decisions)").fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "resolution" in columns, (
+            f"review_decisions に resolution 列がない: {columns}"
+        )
+        assert "resolution_note" in columns, (
+            f"review_decisions に resolution_note 列がない: {columns}"
+        )
+        assert "resolution_commit" in columns, (
+            f"review_decisions に resolution_commit 列がない: {columns}"
+        )
+
+    def test_apply_007_schema_migrations_records_007(self, tmp_path: Path):
+        """K3: 007 適用後 schema_migrations に '007' 行が記録された。"""
+        db_path = tmp_path / "c3.db"
+        apply_pending_migrations(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            migration_versions = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT version FROM schema_migrations"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert "007" in migration_versions, (
+            f"schema_migrations に '007' が記録されていない: {migration_versions}"
+        )
+
+    def test_upgrade_from_006_adds_resolution_columns_preserves_existing_null(
+        self, tmp_path: Path
+    ):
+        """K4: 006 適用済み・review_decisions に既存行ありの DB へ 007 を追適用すると、
+        3 列が追加され、既存行の resolution / resolution_note / resolution_commit は NULL のまま保持された。
+
+        006→007 upgrade 経路（負債台帳の機械検証の主眼）を固定する。
+        後方互換（additive な変更・既存行は NULL のまま）を保証する。
+        """
+        import shutil  # noqa: PLC0415
+
+        from c3.migrate import _DEFAULT_MIGRATIONS_DIR  # noqa: PLC0415
+
+        db_path = tmp_path / "c3.db"
+
+        # 001〜006 のみを含む一時 migrations ディレクトリを作り、006 相当の DB を再現する
+        mdir_006_only = tmp_path / "migrations_006_only"
+        mdir_006_only.mkdir()
+        for name in (
+            "001_initial.sql", "002_agent_cost_runs.sql", "003_tier_cost.sql",
+            "004_agent_outcomes.sql", "005_drop_agent_tier_bandit.sql",
+            "006_review_decisions_severity.sql",
+        ):
+            shutil.copy(_DEFAULT_MIGRATIONS_DIR / name, mdir_006_only / name)
+        apply_pending_migrations(db_path, migrations_dir=mdir_006_only)
+
+        # 006 段階の DB に review_decisions への既存データ
+        # （resolution 列なしの旧 8 列 INSERT）を投入する
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO review_decisions"
+                " (checklist_id, finding_text, decision, decided_at, reviewer, severity)"
+                " VALUES ('CR-Q-200', 'unresolved finding', 'accepted',"
+                " '2026-01-01T00:00:00+00:00', 'code-reviewer', 'High')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 実 migrations ディレクトリ（007 を含む）から続きを適用する
+        applied = apply_pending_migrations(db_path)
+        assert "007" in applied, f"007 が applied に含まれない: {applied}"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(review_decisions)").fetchall()
+            }
+            row = conn.execute(
+                "SELECT resolution, resolution_note, resolution_commit"
+                " FROM review_decisions WHERE checklist_id = 'CR-Q-200'"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert "resolution" in columns, (
+            f"review_decisions に resolution 列がない: {columns}"
+        )
+        assert "resolution_note" in columns, (
+            f"review_decisions に resolution_note 列がない: {columns}"
+        )
+        assert "resolution_commit" in columns, (
+            f"review_decisions に resolution_commit 列がない: {columns}"
+        )
+        assert row is not None, "既存の review_decisions 行が見つかりません"
+        assert row[0] is None, f"既存行の resolution が NULL で保持されていない: {row[0]}"
+        assert row[1] is None, f"既存行の resolution_note が NULL で保持されていない: {row[1]}"
+        assert row[2] is None, f"既存行の resolution_commit が NULL で保持されていない: {row[2]}"
