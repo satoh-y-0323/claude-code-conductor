@@ -15,6 +15,21 @@ architecture-report-20260804-235224.md ADR-11 に基づく。
 マーカー抽出は **`tokenize.COMMENT` トークン限定**（行テキストへの素当ては
 文字列リテラルと誤衝突するため不可・前例 test_nul_boundary_lint.py ADR-NB-5）。
 
+## マーカー帰属の曖昧性（E-0 差し戻し・2026-08-05）
+
+行単位のマーカー帰属には穴があった: 同一行に `X.connect(...)` が 2 件以上あると、
+マーカー 1 個が両方を黙らせてしまう（`x, y = connect(a), connect(b)  # allow(...)` → 検出 0 件）。
+列位置を持たないタプルが `set()` で重複排除される問題（過小報告）も併発していた。
+
+対処（fail-closed。前例: test_nul_boundary_lint.py の `_suppress_by_markers` / DC-AM-007
+`test_two_targets_same_line_one_marker_fail_closed`）:
+
+- (A) 違反タプルに列位置（`col_offset`）を含める → 同一行の複数呼び出しが別々に数えられる
+- (B) 同一行に 2 件以上の `connect` があり、その行（または直前行）にマーカーがある場合は
+  **マーカーの有無によらず無条件で違反とする**。行に 1 個しか書けないマーカーが
+  どの呼び出しを指すかは原理的に決められないため、曖昧な帰属そのものを許さない。
+  書き手は行を分けるしかなくなり、分ければマーカーは一意になる
+
 ## 走査範囲
 
 | 層 | 扱い |
@@ -136,11 +151,12 @@ def _find_connect_calls(tree: ast.Module, aliases: dict[str, str]) -> list[dict]
     """AST から `X.connect(...)` 呼び出しを収集。
 
     - `X` はエイリアスで解決
-    - 位置情報（行番号）を保持
+    - 位置情報（行番号・列位置）を保持。列位置は同一行に複数の呼び出しがある場合に
+      違反タプルを一意にするために使う（(A) の根拠。DC-AM-007 の前例に倣う）
     - `from sqlite3 import connect` は AST で直接判定不可なため、
       実装側で文字列スキャンで検出（後述）
 
-    returns: {'line': <lineno>, 'snippet': <コード断片>} のリスト
+    returns: {'line': <lineno>, 'col': <col_offset>, 'type': ..., 'receiver': ...} のリスト
     """
     calls: list[dict] = []
     for node in ast.walk(tree):
@@ -155,6 +171,7 @@ def _find_connect_calls(tree: ast.Module, aliases: dict[str, str]) -> list[dict]
             if name in aliases:
                 calls.append({
                     "line": node.lineno,
+                    "col": node.col_offset,
                     "type": "attribute_call",
                     "receiver": name,
                 })
@@ -200,10 +217,28 @@ def _extract_markers(text: str) -> dict[int, tuple[str, str]]:
     return markers
 
 
-def find_db_connect_violations(path: Path) -> list[tuple[int, str, str]]:
+#: 同一行に複数の connect があり、マーカーの帰属先が決まらないために
+#: fail-closed で違反にした場合の理由文言。「行を分ける」対処が読み取れることを
+#: plan-report fix-marker-scope 完了条件 7 で要求されている。
+_AMBIGUOUS_MARKER_REASON = (
+    "sqlite3.connect: 同一行に複数の接続がありマーカーの帰属先が決まらないため"
+    "無条件で違反。行を分けること"
+)
+
+
+def find_db_connect_violations(path: Path) -> list[tuple[int, int, str, str]]:
     """1 ファイルから `sqlite3.connect` 呼び出しの違反を検出。
 
-    returns: (行番号, 理由, タイプ) のリスト
+    returns: (行番号, 列位置, 理由, タイプ) のリスト
+
+    列位置を持たせる理由 (A): 同一行に複数の `X.connect(...)` があると、列位置なしでは
+    完全に同一のタプルになり、末尾の `set()` による重複排除で件数が過小報告される
+    （E-0 差し戻し [E0-2]）。
+
+    同一行に 2 件以上の `connect` がある場合の扱い (B): その行（または直前行）の
+    マーカーは「どちらの呼び出しを指すか」原理的に決められないため、マーカーの
+    有無によらず無条件で違反とする（fail-closed）。1 行に 1 つの `connect` であれば
+    従来どおりマーカーで抑止される。
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -215,30 +250,43 @@ def find_db_connect_violations(path: Path) -> list[tuple[int, str, str]]:
     except SyntaxError as e:
         raise AssertionError(f"{path}: ast.parse 失敗: {e}") from e
 
-    violations: list[tuple[int, str, str]] = []
+    violations: list[tuple[int, int, str, str]] = []
 
     # マーカーを抽出
     markers = _extract_markers(text)
 
-    # `from sqlite3 import connect` は無条件で違反
+    # `from sqlite3 import connect` は無条件で違反（列位置の曖昧性は対象外のため 0 固定）
     for lineno in _detect_from_sqlite3_import_connect(text):
-        violations.append((lineno, "from sqlite3 import connect", "from_import"))
+        violations.append((lineno, 0, "from sqlite3 import connect", "from_import"))
 
     # `X.connect(...)` を検出
     aliases = _get_sqlite3_alias(tree)
     calls = _find_connect_calls(tree, aliases)
 
+    # 同一行の connect 呼び出し数（マーカー帰属の曖昧性判定に使う）
+    calls_per_line: dict[int, int] = {}
+    for call_info in calls:
+        calls_per_line[call_info["line"]] = calls_per_line.get(call_info["line"], 0) + 1
+
     for call_info in calls:
         lineno = call_info["line"]
-        # マーカーがあれば抑止（同一行またはその直前行）
-        if lineno in markers:
-            continue
-        if lineno - 1 in markers:
-            continue
-        # マーカーなし → 違反
-        violations.append((lineno, "sqlite3.connect", "unmarked_call"))
+        col = call_info["col"]
+        ambiguous_line = calls_per_line[lineno] >= 2
+        marked = (lineno in markers) or (lineno - 1 in markers)
 
-    return sorted(set(violations), key=lambda x: x[0])
+        if marked and not ambiguous_line:
+            # 通常の抑止: 1 行 1 呼び出し + マーカー（従来どおり）
+            continue
+
+        if marked and ambiguous_line:
+            # (B) 帰属が曖昧なマーカーは効かせない。fail-closed で違反にする
+            violations.append((lineno, col, _AMBIGUOUS_MARKER_REASON, "ambiguous_marker_scope"))
+            continue
+
+        # マーカーなし → 違反（同一行に複数あっても (A) の col により個別に残る）
+        violations.append((lineno, col, "sqlite3.connect", "unmarked_call"))
+
+    return sorted(set(violations), key=lambda x: (x[0], x[1]))
 
 
 # ---------------------------------------------------------------------------
@@ -293,17 +341,17 @@ class TestNoDbConnectViolations:
         files = iter_target_files()
         assert files, "iter_target_files() が 1 件もファイルを返しませんでした"
 
-        all_violations: list[tuple[Path, int, str, str]] = []
+        all_violations: list[tuple[Path, int, int, str, str]] = []
         for f in files:
             violations = find_db_connect_violations(f)
-            for lineno, reason, vtype in violations:
-                all_violations.append((f, lineno, reason, vtype))
+            for lineno, col, reason, vtype in violations:
+                all_violations.append((f, lineno, col, reason, vtype))
 
         assert not all_violations, (
             f"未マーカーの sqlite3.connect が {len(all_violations)} 件見つかりました:\n"
             + "\n".join(
-                f"  {f.relative_to(REPO_ROOT)}:{lineno} - {reason}"
-                for f, lineno, reason, _ in all_violations
+                f"  {f.relative_to(REPO_ROOT)}:{lineno}:{col} - {reason}"
+                for f, lineno, col, reason, _ in all_violations
             )
         )
 
@@ -363,3 +411,85 @@ class TestNoDbConnectViolations:
             f"期待: {_DB_PY_CONNECT_SITES}\n"
             f"実測: {count}"
         )
+
+
+class TestSameLineMarkerScopeAmbiguity:
+    """E-0 差し戻し（欠陥 [E0-2]・plan-report fix-marker-scope）の回帰テスト。
+
+    合成ソースで `find_db_connect_violations()` を直接検証する
+    （前例: test_nul_boundary_lint.py の TestDetectsViolations /
+    TestDoesNotDetectViolations・DC-AM-007 `_suppress_by_markers`）。
+    """
+
+    def test_same_line_multiple_connects_with_marker_is_violation(self, tmp_path):
+        """(B) 同一行に 2 件の connect + allow マーカーは、マーカーが効かず違反になる。
+
+        修正前は行単位のマーカー帰属により検出 0 件だった（完了条件 1）。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "x, y = sqlite3.connect(a), sqlite3.connect(b)"
+            "  # c3-db-connect: allow(片方だけ許可したい)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert len(violations) == 2, violations
+        assert all(vtype == "ambiguous_marker_scope" for _, _, _, vtype in violations)
+        # (A): 列位置が異なるため 2 件とも別々のタプルとして残っている
+        cols = {col for _, col, _, _ in violations}
+        assert len(cols) == 2, violations
+
+    def test_same_line_multiple_connects_without_marker_is_two_violations(self, tmp_path):
+        """(A) 同一行に未マーカーの connect が 2 件あれば、違反も 2 件になる。
+
+        修正前は `sorted(set(violations))` の重複排除で 1 件に潰れていた
+        （完了条件 2・E-0 実測の [E0-2]）。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "x, y = sqlite3.connect(a), sqlite3.connect(b)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert len(violations) == 2, violations
+        assert all(vtype == "unmarked_call" for _, _, _, vtype in violations)
+        cols = {col for _, col, _, _ in violations}
+        assert len(cols) == 2, violations
+
+    def test_single_connect_per_line_with_marker_is_still_suppressed(self, tmp_path):
+        """過剰対応の検出（完了条件 3）: 1 行 1 connect + マーカーは従来どおり抑止される。"""
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "conn = sqlite3.connect(a)  # c3-db-connect: allow(十分な理由文字列)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert violations == []
+
+    def test_single_connect_per_line_without_marker_is_still_a_violation(self, tmp_path):
+        """非回帰: 1 行 1 connect・マーカーなしは引き続き通常どおり違反 1 件。"""
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "conn = sqlite3.connect(a)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert len(violations) == 1
+        assert violations[0][3] == "unmarked_call"
+
+    def test_ambiguous_violation_message_tells_reader_to_split_the_line(self, tmp_path):
+        """違反メッセージに「行を分ける」対処が読み取れること（完了条件 7 の裏取り）。"""
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "x, y = sqlite3.connect(a), sqlite3.connect(b)"
+            "  # c3-db-connect: allow(片方だけ許可したい)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert violations, "曖昧な帰属が検出されていません"
+        assert all("行を分け" in reason for _, _, reason, _ in violations), violations
