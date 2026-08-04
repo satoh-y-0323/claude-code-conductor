@@ -63,6 +63,19 @@ def _has_rule15_target_terms(text: str) -> bool:
     return all(term in section for term in RULE15_TARGET_TERMS)
 
 
+def _has_no_code_fence_in_rule15_section(text: str) -> bool:
+    """ルール 15 セクション内にコードフェンス（``` で始まる行）が存在しないか判定する純関数。
+
+    [CR-NEW]（code-review-report-20260804-163909.md）への fail-safe 対応。
+    `_has_rule15_table_header` はフェンスドコードブロックを区別しないため、将来
+    ルール 15 セクション内に説明用コード例（``` ブロック）を追加すると、実際の表が
+    無くても表ヘッダ検査が緑になりうる。フェンス除外の状態機械は実装せず、
+    「セクション内にフェンスが存在しないこと」をアサートする回帰ガードに留める。
+    """
+    section = _rule15_section(text)
+    return not any(line.lstrip().startswith("```") for line in section.splitlines())
+
+
 def test_planner_agent_under_80_lines():
     """planner.md は D-012 準拠で 80 行以内に収まる。"""
     content = _read(PLANNER_AGENT)
@@ -174,4 +187,24 @@ def test_direction_check_rule_lists_target_routes():
     assert _has_rule15_target_terms(content), (
         "ルール 15 セクション内に code-review / security-review / design-critic の"
         "いずれかが不足している"
+    )
+
+
+def test_direction_check_rule_has_no_code_fence():
+    """ルール 15 セクション内にコードフェンスが存在しない（[CR-NEW] への fail-safe 回帰ガード）。
+
+    `_has_rule15_table_header` は行単位の `|` 照合であり、``` コードブロックの中身を
+    区別しない。将来ルール 15 セクションに説明用のコード例（``` ブロック）を追加すると、
+    実際の表本体が削除されていても表ヘッダ検査（test_direction_check_table_header_has_four_columns）
+    が緑のまま残る可能性がある（fail-open クラス）。
+
+    現時点ではルール 15 セクションにコードフェンスは存在しないため、本テストは
+    Red 先行ではなく最初から緑（回帰ガード）。将来このテストが Red になった場合は、
+    フェンスの追加そのものを避けるか、`_has_rule15_table_header` 側にフェンス除外の
+    判定を追加するかを、そのタイミングで再検討すること。
+    """
+    content = _read(PLAN_DESIGN_GUIDELINES)
+    assert _has_no_code_fence_in_rule15_section(content), (
+        "ルール 15 セクション内にコードフェンス（``` で始まる行）が見つかった。"
+        "表ヘッダ検査がフェンス内の記述に誤って合格していないか確認してください。"
     )
