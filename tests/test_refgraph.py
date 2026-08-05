@@ -342,13 +342,27 @@ class TestUnreadableFiles:
 
             graph = build_graph(tmpdir_path)
 
-            reported = {
-                str(entry[0]).replace("\\", "/") if isinstance(entry, (tuple, list)) else str(entry)
+            reported = [
+                str(entry[0]) if isinstance(entry, (tuple, list)) else str(entry)
                 for entry in graph.unreadable
-            }
-            assert any(bad_rel in r for r in reported), (
+            ]
+
+            # 区切りはノード ID と同じ規約（ルート相対 POSIX・仕様§2）であること。
+            # バックスラッシュが混ざると Windows で node_id と突き合わせできず、
+            # 削除判定でこの報告を使えない。
+            assert all("\\" not in p for p in reported), (
+                "unreadable paths must use POSIX separators like node ids; "
+                f"got {reported!r}"
+            )
+
+            assert bad_rel in reported, (
                 "the undecodable file must be reported via Graph.unreadable; "
                 f"got {graph.unreadable!r}"
+            )
+
+            # 抽出器の数だけ同じファイルを重複報告しない（読み手のノイズになる）
+            assert reported.count(bad_rel) == 1, (
+                f"each unreadable file should be reported once; got {reported!r}"
             )
 
     def test_one_undecodable_file_does_not_suppress_other_edges(self):

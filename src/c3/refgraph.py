@@ -142,7 +142,10 @@ def build_graph(root: StdPath) -> Graph:
     edges.extend(_extract_subagent_types(root, md_files, unreadable))
     edges.extend(_extract_sql_tables(root, py_files, unreadable))
 
-    return Graph(edges, root, tuple(unreadable))
+    # The same file is walked by several extractors, so a single unreadable file
+    # would otherwise be reported once per extractor. Deduplicate while keeping
+    # the order of first observation.
+    return Graph(edges, root, tuple(dict.fromkeys(unreadable)))
 
 
 def _get_entry_points(root: StdPath) -> List[str]:
@@ -298,7 +301,9 @@ def _extract_c3_run(root: StdPath, md_files: List[StdPath], unreadable: list) ->
         try:
             content = md_file.read_text(encoding="utf-8")
         except Exception as e:
-            unreadable.append((str(md_file.relative_to(root)), type(e).__name__))
+            unreadable.append(
+                (str(md_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            )
             continue
 
         # Find all 'c3 run <path>' patterns
@@ -360,7 +365,9 @@ def _extract_code_span_paths(root: StdPath, md_files: List[StdPath], unreadable:
         try:
             content = md_file.read_text(encoding="utf-8")
         except Exception as e:
-            unreadable.append((str(md_file.relative_to(root)), type(e).__name__))
+            unreadable.append(
+                (str(md_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            )
             continue
 
         source_rel = md_file.relative_to(root)
@@ -466,7 +473,9 @@ def _extract_agent_variant_maps(root: StdPath, md_files: List[StdPath], unreadab
         try:
             content = md_file.read_text(encoding="utf-8")
         except Exception as e:
-            unreadable.append((str(md_file.relative_to(root)), type(e).__name__))
+            unreadable.append(
+                (str(md_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            )
             continue
 
         source_rel = md_file.relative_to(root)
@@ -517,7 +526,9 @@ def _extract_py_imports(root: StdPath, py_files: List[StdPath], unreadable: list
         try:
             content = py_file.read_text(encoding="utf-8")
         except Exception as e:
-            unreadable.append((str(py_file.relative_to(root)), type(e).__name__))
+            unreadable.append(
+                (str(py_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            )
             continue
 
         source_rel = py_file.relative_to(root)
@@ -563,7 +574,9 @@ def _extract_py_importlib(root: StdPath, py_files: List[StdPath], unreadable: li
         try:
             content = py_file.read_text(encoding="utf-8")
         except Exception as e:
-            unreadable.append((str(py_file.relative_to(root)), type(e).__name__))
+            unreadable.append(
+                (str(py_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            )
             continue
 
         source_rel = py_file.relative_to(root)
@@ -600,7 +613,9 @@ def _extract_py_subprocess_paths(root: StdPath, py_files: List[StdPath], unreada
         try:
             content = py_file.read_text(encoding="utf-8")
         except Exception as e:
-            unreadable.append((str(py_file.relative_to(root)), type(e).__name__))
+            unreadable.append(
+                (str(py_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            )
             continue
 
         source_rel = py_file.relative_to(root)
@@ -676,7 +691,9 @@ def _extract_subagent_types(root: StdPath, md_files: List[StdPath], unreadable: 
         try:
             content = md_file.read_text(encoding="utf-8")
         except Exception as e:
-            unreadable.append((str(md_file.relative_to(root)), type(e).__name__))
+            unreadable.append(
+                (str(md_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            )
             continue
 
         source_rel = md_file.relative_to(root)
@@ -729,7 +746,9 @@ def _extract_sql_tables(root: StdPath, py_files: List[StdPath], unreadable: list
         try:
             content = py_file.read_text(encoding="utf-8")
         except Exception as e:
-            unreadable.append((str(py_file.relative_to(root)), type(e).__name__))
+            unreadable.append(
+                (str(py_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            )
             continue
 
         source_rel = py_file.relative_to(root)
