@@ -63,7 +63,7 @@ _BUSY_TIMEOUT_MS = BUSY_TIMEOUT_MS  # 内部互換エイリアス（既存コー
 
 def apply_busy_timeout(
     conn: sqlite3.Connection,
-    timeout_ms: int | None = None,
+    busy_timeout_ms: int | None = None,
 ) -> None:
     """SQLite 接続に busy_timeout PRAGMA を適用する。
 
@@ -73,15 +73,20 @@ def apply_busy_timeout(
 
     本モジュールで busy_timeout の PRAGMA 文を組み立てるのはここ 1 箇所だけである
     （int() キャストの二重定義を作らない）。:func:`connect` も override 値を
-    ``timeout_ms`` で渡してこの関数を経由する。
+    ``busy_timeout_ms`` で渡してこの関数を経由する。
+
+    引数名は :func:`connect` の ``busy_timeout_ms`` に統一している
+    （E 周回 3 CR-N-004 是正・2026-08-05。是正前は本関数側のみ ``timeout_ms``
+    という別名だった。未リリースの新設 API のため破壊的変更にはあたらない
+    ・既存 17 箇所は引数なしの位置呼び出しのみで無影響）。
 
     Args:
         conn: PRAGMA を適用する接続。
-        timeout_ms: 待機時間（ms）の上書き値。``None``（既定）のときは
+        busy_timeout_ms: 待機時間（ms）の上書き値。``None``（既定）のときは
             モジュール定数 ``BUSY_TIMEOUT_MS`` を使う。既存の引数なし呼び出しは
             この既定により従来どおりの挙動を保つ。
     """
-    effective_ms = BUSY_TIMEOUT_MS if timeout_ms is None else timeout_ms
+    effective_ms = BUSY_TIMEOUT_MS if busy_timeout_ms is None else busy_timeout_ms
     conn.execute(f"PRAGMA busy_timeout={int(effective_ms)}")
 
 
@@ -114,7 +119,7 @@ def connect(
         # busy_timeout を最初に置く理由: journal_mode=WAL への切り替え自体がロックを取るため、
         # 後に回すと busy_timeout が効く前の窓でロック競合に当たる経路ができる。
         # PRAGMA 文の組み立てと int() キャスト [SR-INJ-001] は apply_busy_timeout に一本化しており
-        # ここでは再実装しない（override 値は timeout_ms 引数で渡す）。
+        # ここでは再実装しない（override 値は busy_timeout_ms 引数で渡す）。
         apply_busy_timeout(conn, busy_timeout_ms)
         if wal:
             conn.execute("PRAGMA journal_mode=WAL")

@@ -46,6 +46,22 @@ architecture-report-20260804-235224.md ADR-11 に基づく。
 含まれる場合（トレーリングマーカー付きの無関係なコード行・別の `connect` 呼び出し行など）は
 **マーカーの有無によらず無条件で違反とする**（`unrelated_prev_line_marker`）。
 
+## 分類優先順位の是正（E 周回 3 CR-NEW Medium・2026-08-05）
+
+上記 (B) と直前行相関検証の組み合わせに分類ずれがあった: 「対象行に `connect` が
+2 件以上（ambiguous_line）」かつ「直前行が相関の取れたマーカー専用行」の場合、
+修正前は `unrelated_prev_line_marker`（「マーカーは対象行に直接置くか、マーカー
+だけの独立したコメント行を直前に置け」）を返していたが、このケースは**まさに
+その対処を既に実行済み**であり、それでもなお解消しない（唯一の解決策は
+「行を分ける」）。読んだ人が既に満たしている対処を提示されて詰まる問題があった
+（CR 実測）。
+
+対処: `ambiguous_line` が真で、かつ何らかのマーカー（対象行直接 or 相関の取れた
+直前行）が適用され得る場合は、常に `ambiguous_marker_scope`（「行を分けること」）
+を優先する。マーカーが一切存在しない曖昧行（`unmarked_call`）や、マーカーはある
+が相関しない単一 connect 行（`unrelated_prev_line_marker`）の分類は変更しない
+（非回帰。`TestAmbiguousMarkerScopePriorityBothSides` で両側を検証）。
+
 ## 走査範囲
 
 | 層 | 扱い |
@@ -300,6 +316,12 @@ def find_db_connect_violations(path: Path) -> list[tuple[int, int, str, str]]:
     直前行マーカーの相関検証 (C・E 周回 2 CR-NEW High): 直前行にマーカーがあっても、
     その行がマーカー専用のコメント行でない（＝対象行の connect() と無関係な可能性がある）
     場合は無条件で違反とする（fail-closed）。
+
+    分類優先順位 (E 周回 3 CR-NEW Medium): `ambiguous_line` が真で、かつ何らかの
+    マーカー（対象行直接 or 相関の取れた直前行）が適用され得る場合は、
+    `unrelated_prev_line_marker` ではなく常に `ambiguous_marker_scope`
+    （「行を分けること」）を優先する。既に満たしている対処を提示して読み手を
+    惑わせないための分類是正（モジュール docstring 参照）。
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -340,28 +362,45 @@ def find_db_connect_violations(path: Path) -> list[tuple[int, int, str, str]]:
         # (C) 直前行がマーカー専用のコメント行（コードを一切持たない）でなければ、
         # そのマーカーはこの connect() を指しているとは判断できない。
         prev_marker_is_correlated = prev_line_has_marker and (lineno - 1) not in code_lines
-        valid_prev_marker = prev_marker_is_correlated and not ambiguous_line
+        # ambiguous_line の真偽によらず、まず「何らかのマーカーがこの呼び出しに
+        # 適用され得るか」を判定する（E 周回 3 CR-NEW Medium 是正・2026-08-05）。
+        # 修正前は `valid_prev_marker = prev_marker_is_correlated and not ambiguous_line`
+        # としており、対象行が曖昧（ambiguous_line=True）な時点で相関の取れた
+        # 直前行マーカーが「非相関」扱いに落とされ、unrelated_prev_line_marker
+        # （「マーカーだけの独立したコメント行を直前に置け」という、まさに
+        # このケースで既に満たされている対処）に誤分類されていた（CR 実測）。
+        marker_applies = has_line_marker or prev_marker_is_correlated
 
-        marked = has_line_marker or valid_prev_marker
-
-        if marked and not ambiguous_line:
-            # 通常の抑止: 1 行 1 呼び出し + マーカー（従来どおり）
-            continue
-
-        if marked and ambiguous_line:
-            # (B) 帰属が曖昧なマーカーは効かせない。fail-closed で違反にする
+        if ambiguous_line and marker_applies:
+            # (B) 同一行に 2 件以上の connect があり、かつ何らかのマーカーが
+            # 存在する場合は、そのマーカーがどちらの呼び出しを指すか原理的に
+            # 決められないため、常に「行を分ける」対処を示す
+            # ambiguous_marker_scope を優先する。
             violations.append((lineno, col, _AMBIGUOUS_MARKER_REASON, "ambiguous_marker_scope"))
             continue
 
-        if prev_line_has_marker and not valid_prev_marker and not has_line_marker:
-            # (C) 直前行にマーカーはあるが、相関が確認できない（無関係なコード行・
-            # 別の connect() 行との同居・対象行自体が同一行複数呼び出しで曖昧、等）。
+        if not ambiguous_line and marker_applies:
+            # 通常の抑止: 1 行 1 呼び出し + マーカー（従来どおり）
+            continue
+
+        if prev_line_has_marker and not prev_marker_is_correlated:
+            # (C) 直前行にマーカーはあるが、相関が確認できない
+            # （無関係なコード行・別の connect() 行との同居等）。
+            # ambiguous_line が真でもマーカーが一切適用され得ない
+            # （has_line_marker=False かつ prev_marker_is_correlated=False）
+            # ケースはここに落ちるが、それは「マーカーはあるが相関しない」
+            # という診断のほうが「行を分けろ」より的確なため、あえて
+            # ambiguous_marker_scope に統合しない。
             violations.append(
                 (lineno, col, _UNRELATED_PREV_LINE_MARKER_REASON, "unrelated_prev_line_marker")
             )
             continue
 
-        # マーカーなし → 違反（同一行に複数あっても (A) の col により個別に残る）
+        # マーカーなし（直前行にもマーカーが一切ない）→ 違反。
+        # ambiguous_line であってもマーカーが存在しなければ、これは
+        # 「行を分けろ」という診断ではなく単純な未マーカー呼び出しであるため
+        # unmarked_call のままにする（同一行に複数あっても (A) の col により
+        # 個別に残る・非回帰）。
         violations.append((lineno, col, "sqlite3.connect", "unmarked_call"))
 
     return sorted(set(violations), key=lambda x: (x[0], x[1]))
@@ -643,6 +682,11 @@ class TestPrevLineMarkerCorrelation:
     def test_marker_only_line_before_ambiguous_target_line_is_still_a_violation(self, tmp_path):
         """直前行がマーカー専用のコメント行でも、対象行自体に connect が 2 件あれば
         どちらを指すか決められないため、引き続き違反になる（(B) との整合）。
+
+        【E 周回 3 CR-NEW Medium 是正・2026-08-05】分類は `unrelated_prev_line_marker`
+        ではなく `ambiguous_marker_scope`（「行を分ける」対処）になる。修正前は
+        「マーカーだけの独立したコメント行を直前に置く」という、まさにこのケースで
+        既に満たされている対処を示してしまい、読んだ人を惑わせていた（CR 実測）。
         """
         f = tmp_path / "mod.py"
         f.write_text(
@@ -653,7 +697,8 @@ class TestPrevLineMarkerCorrelation:
         )
         violations = find_db_connect_violations(f)
         assert len(violations) == 2, violations
-        assert all(vtype == "unrelated_prev_line_marker" for _, _, _, vtype in violations)
+        assert all(vtype == "ambiguous_marker_scope" for _, _, _, vtype in violations)
+        assert all("行を分け" in reason for _, _, reason, _ in violations), violations
 
     def test_violation_message_tells_reader_how_to_fix(self, tmp_path):
         """違反メッセージに直し方（対象行に置く／独立したコメント行にする）が
@@ -669,3 +714,72 @@ class TestPrevLineMarkerCorrelation:
         violations = find_db_connect_violations(f)
         assert violations, "無関係な直前行マーカーが検出されていません"
         assert all("対象行" in reason for _, _, reason, _ in violations), violations
+
+
+class TestAmbiguousMarkerScopePriorityBothSides:
+    """E 周回 3 CR-NEW Medium 是正の両側テスト（plan §5・完了条件 2）。
+
+    - 見逃さない: 同一行 2 件 + 直前行に正しい（相関の取れた）マーカー →
+      ambiguous_marker_scope になること（既存の
+      test_marker_only_line_before_ambiguous_target_line_is_still_a_violation
+      で検証済みだが、ここでは境界ケースを追加で押さえる）
+    - 誤検出しない: 分類優先順位の変更が既存の他分類（unmarked_call /
+      unrelated_prev_line_marker）を巻き込んでいないこと
+    """
+
+    def test_ambiguous_line_without_any_marker_stays_unmarked_call(self, tmp_path):
+        """誤検出しない側: 同一行 2 件だがマーカーが一切無い場合は
+        ambiguous_marker_scope ではなく従来どおり unmarked_call のまま
+        （分類優先順位の変更が「マーカー無し」ケースを巻き込んでいないことの非回帰）。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "x, y = sqlite3.connect(a), sqlite3.connect(b)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert len(violations) == 2, violations
+        assert all(vtype == "unmarked_call" for _, _, _, vtype in violations), violations
+
+    def test_ambiguous_line_with_uncorrelated_prev_marker_stays_unrelated(self, tmp_path):
+        """誤検出しない側: 対象行が曖昧（2 件）でも、直前行マーカーが
+        コードと同居する非相関マーカーの場合は unrelated_prev_line_marker のまま
+        （ambiguous_marker_scope に無条件で丸め込まない）。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "n = 1  # c3-db-connect: allow(connect と無関係な行に貼ったマーカー)\n"
+            "x, y = sqlite3.connect(a), sqlite3.connect(b)\n",
+            encoding="utf-8",
+        )
+        violations = find_db_connect_violations(f)
+        assert len(violations) == 2, violations
+        assert all(vtype == "unrelated_prev_line_marker" for _, _, _, vtype in violations), violations
+
+    def test_fixing_by_splitting_the_line_resolves_the_violation(self, tmp_path):
+        """見逃さない側の実効性検証（plan confirm タスク §5 の要求と同型）:
+        `ambiguous_marker_scope` が示す「行を分ける」対処を実際に適用すると
+        違反が解消することを実測する。
+        """
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "import sqlite3\n"
+            "# c3-db-connect: allow(十分な理由文字列)\n"
+            "x, y = sqlite3.connect(a), sqlite3.connect(b)\n",
+            encoding="utf-8",
+        )
+        before = find_db_connect_violations(f)
+        assert before, "修正前は違反が検出されているはず"
+        assert all(vtype == "ambiguous_marker_scope" for _, _, _, vtype in before)
+
+        # 「行を分ける」対処を適用する
+        f.write_text(
+            "import sqlite3\n"
+            "x = sqlite3.connect(a)  # c3-db-connect: allow(十分な理由文字列)\n"
+            "y = sqlite3.connect(b)  # c3-db-connect: allow(十分な理由文字列)\n",
+            encoding="utf-8",
+        )
+        after = find_db_connect_violations(f)
+        assert after == [], f"行を分けても違反が解消していません: {after}"

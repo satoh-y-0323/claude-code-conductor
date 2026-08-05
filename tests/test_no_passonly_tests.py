@@ -132,6 +132,16 @@ def _skip_decorator_status(
         elif isinstance(dec, ast.Call):
             func_part = dec.func
             if isinstance(func_part, ast.Attribute) and func_part.attr == "skip":
+                # 位置引数形式 `@pytest.mark.skip("reason")` にも対応する
+                # （E 周回 3 CR-NEW Low 是正・2026-08-05）。pytest の skip マーカーは
+                # 第 1 位置引数を reason として受け付ける（実行確認済み）。
+                # 修正前はキーワード引数 `reason=` しか見ておらず、位置引数形式の
+                # 正当な skip を「reason= が必須」の違反として誤検出していた。
+                if dec.args:
+                    first_arg = dec.args[0]
+                    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+                        if first_arg.value.strip():
+                            return True, True
                 for kw in dec.keywords:
                     if kw.arg == "reason":
                         if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
@@ -533,4 +543,93 @@ class TestSkipReasonRequired:
         violations = find_empty_test_functions(f)
         assert len(violations) == 1
         assert violations[0][0] == "test_bar"
+        assert "reason=" in violations[0][1]
+
+
+class TestSkipPositionalReasonBothSides:
+    """E 周回 3 CR-NEW Low 是正の両側テスト（plan §5・完了条件 3）。
+
+    修正前は `dec.keywords`（キーワード引数）しか見ておらず、pytest が
+    受け付ける位置引数形式の reason（`@pytest.mark.skip("reason")`）を
+    「reason= が必須」の違反として誤検出していた（CR 実測: `python -c` で
+    `pytest.mark.skip(mark=Mark(name='skip', args=('a legit reason',), ...))`
+    に実際に解決されることを確認済み）。
+    """
+
+    # --- 誤検出しない（過剰の検出） ------------------------------------
+
+    def test_skip_positional_reason_is_accepted(self, tmp_path):
+        """位置引数形式の reason は違反にならない（CR 実測の反例そのもの）。"""
+        f = tmp_path / "test_mod.py"
+        f.write_text(
+            "import pytest\n"
+            "@pytest.mark.skip('valid reason positional')\n"
+            "def test_foo():\n"
+            "    pass\n",
+            encoding="utf-8"
+        )
+        violations = find_empty_test_functions(f)
+        assert violations == []
+
+    def test_skip_positional_reason_applies_to_class_methods_too(self, tmp_path):
+        """位置引数形式の reason はクラス内メソッドでも許容される。"""
+        f = tmp_path / "test_mod.py"
+        f.write_text(
+            "import pytest\n"
+            "class TestFoo:\n"
+            "    @pytest.mark.skip('valid reason positional')\n"
+            "    def test_bar(self):\n"
+            "        pass\n",
+            encoding="utf-8"
+        )
+        violations = find_empty_test_functions(f)
+        assert violations == []
+
+    # --- 見逃さない（fail-open の検出・非回帰） --------------------------
+
+    def test_skip_call_without_any_args_is_still_a_violation(self, tmp_path):
+        """引数なしの `@pytest.mark.skip()` は引き続き違反として検出される
+        （位置引数対応の追加が「引数無し」ケースを誤って許容していないこと）。
+        """
+        f = tmp_path / "test_mod.py"
+        f.write_text(
+            "import pytest\n"
+            "@pytest.mark.skip()\n"
+            "def test_foo():\n"
+            "    assert True\n",
+            encoding="utf-8"
+        )
+        violations = find_empty_test_functions(f)
+        assert len(violations) == 1
+        assert "reason=" in violations[0][1]
+
+    def test_skip_positional_empty_string_reason_is_a_violation(self, tmp_path):
+        """位置引数でも空文字の reason は違反として検出される。"""
+        f = tmp_path / "test_mod.py"
+        f.write_text(
+            "import pytest\n"
+            "@pytest.mark.skip('')\n"
+            "def test_foo():\n"
+            "    assert True\n",
+            encoding="utf-8"
+        )
+        violations = find_empty_test_functions(f)
+        assert len(violations) == 1
+        assert "reason=" in violations[0][1]
+
+    def test_skip_positional_non_string_reason_is_a_violation(self, tmp_path):
+        """位置引数が文字列リテラルでない（変数参照等）場合も違反として検出される
+        （静的解析の限界により reason の有効性を確認できないため fail-closed）。
+        """
+        f = tmp_path / "test_mod.py"
+        f.write_text(
+            "import pytest\n"
+            "REASON = 'not ready'\n"
+            "@pytest.mark.skip(REASON)\n"
+            "def test_foo():\n"
+            "    assert True\n",
+            encoding="utf-8"
+        )
+        violations = find_empty_test_functions(f)
+        assert len(violations) == 1
         assert "reason=" in violations[0][1]
