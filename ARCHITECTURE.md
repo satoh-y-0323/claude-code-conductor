@@ -131,7 +131,7 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 
 - Phase 1 `stop.py` — session ファイル生成・最終応答記録・パターン信用度再計算
 - Phase 2 `consolidate_memory.py` — セッション要約・昇格候補ログ・アーカイブ
-- Phase 3 `usage_ingester.py` + `db.sync_tier_bandit_cost()` — セッションログからコスト集計（worktree セッションでは起動しない。§4-1 参照）
+- Phase 3 `usage_ingester.py` — セッションログからコスト集計（worktree セッションでは起動しない。§4-1 参照）
 - 共通: `session_utils.py` / `_hook_utils.py`（複数 hook が共有するヘルパー）
 
 ### 設計原則

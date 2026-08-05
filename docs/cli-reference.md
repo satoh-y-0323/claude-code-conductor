@@ -132,7 +132,7 @@ c3 recall stats [--json]            # チャンク数・モデル名・最終 re
 
 ## `c3 tier stats` — Tier ルーティング統計
 
-tier-routing の効果計測用 CLI。`.claude/state/c3.db` の `tier_bandit` / `tier_recent_outcomes` / `agent_cost_runs` を可視化。
+tier-routing の効果計測用 CLI。`.claude/state/c3.db` の `agent_outcomes` / `agent_cost_runs` を可視化。
 
 ```bash
 c3 tier stats                 # 累積 + 直近 outcome + コストを表形式表示
@@ -143,13 +143,13 @@ c3 tier stats --recent N      # 直近 outcome の表示件数（デフォルト
 表示内容:
 
 - **学習データ収集状況**（X / 30 試行 + uniform/thompson モード）
-- **Tier 別累積**（complexity × tier × alpha / beta / trials / 期待成功率 / 累積コスト `total_cost_usd` / `cost_samples`（v2.25.0〜））
+- **Tier 別累積**（complexity × tier × alpha / beta / trials / 期待成功率）
 - **直近 outcome 履歴**（時系列降順、success/failure ラベル）
 - **Agent 別コスト集計**（agent_cost_runs・agent_type 別の runs / USD / トークン内訳。v2.21.0〜）
 - **Tier 別コストレート**（complexity × tier の USD/MTok レート。model 一致集計。v2.24.0〜）
 - **routing パラメータ**（現在有効な λ / ε / escalation threshold を環境変数名つきで表示。v2.27.0〜）
 
-学習データは dev-workflow フェーズ E（最終承認時）の `record_tier_outcome.py` でのみ記録されます。直接指示作業ではデータが溜まりません（設計通り）。コストデータは session 終了時に `session_stop.py` のセッションログ ingester（v2.21.0〜）が自動集計し、`tier_bandit` への materialize は v2.25.0〜（`sync_tier_bandit_cost`）。
+学習データは dev-workflow フェーズ E（最終承認時）の `record_agent_outcome.py` でのみ記録されます。直接指示作業ではデータが溜まりません（設計通り）。コストデータは session 終了時に `session_stop.py` のセッションログ ingester（v2.21.0〜）が自動集計します。
 
 ### Tier ルーティングのチューニング（環境変数）
 

@@ -62,7 +62,7 @@ tools:
 - Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/design-review-report-{timestamp}.md` に出力する
 
 ## Tools & Constraints
-制限: design-review-report の新規 Write 以外のファイル編集・書き込みは行わない（ソースファイル・既存レポート・その他ファイルへの Edit / Write は禁止）
+制限: design-review-report の新規 Write と `.claude/agent-memory/design-critic/MEMORY.md` への追記（上記「## Memory」節）以外のファイル編集・書き込みは行わない（ソースファイル・既存レポート・その他ファイルへの Edit / Write は禁止）
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）
