@@ -304,7 +304,7 @@ git commit -m "Wave {N}: {要約}"
 
 #### 2-F-3: worktree クリーンアップ（残留チェックのみ）
 
-Claude Code 2.1.x（少なくとも 2.1.150 で実測確認、2026-05-23）以降、`isolation:"worktree"` 付き Agent は完了時に worktree を auto-cleanup する仕様となっている（foreground / background / 並列 / 失敗ケース全パターンで検証済み。詳細: `.claude/reports/worktree-cleanup-verification-20260523-234110.md`）。ただし実測では **git 的に未変更の worktree は自動削除されるが、変更が残る worktree は残留しうる**（2026-07-26 実測）。
+Claude Code 2.1.x（少なくとも 2.1.150 で実測確認、2026-05-23）以降、`isolation:"worktree"` 付き Agent は完了時に worktree を auto-cleanup する仕様となっている（foreground / background / 並列 / 失敗ケース全パターンで検証済み。検証レポートは C3 配布元でのみ作成されたもので、現在は archive 済みのため利用先には存在しない）。ただし実測では **git 的に未変更の worktree は自動削除されるが、変更が残る worktree は残留しうる**（2026-07-26 実測）。
 
 したがって明示的な `git worktree remove` は基本的に不要だが、auto-cleanup が完全に走らなかった場合のセーフティとして残留チェック + 手動 cleanup で後始末する:
 
