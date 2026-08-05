@@ -1,781 +1,883 @@
-"""Reference graph extractor for reachability analysis.
+"""参照抽出器（refgraph）— C3 のファイル間参照を種類と出所つきで抽出しファイルへ出力する.
 
-Extract edges (function calls, imports, configurations) from C3 codebase
-and compute reachability from defined entry points.
+契約は `docs/refgraph-contract.md`（配布元専用資料・wheel には収録されない）。
+
+**この道具は判定をしない。** 削除してよいか・生きているかは、出力を読む側が決める。
+したがって本モジュールはルート集合・起点定義・出所によるフィルタを一切持たない
+（契約 §6 条件 5 が静的検査で機械強制している）。
+
+収集方針（契約 §2）:
+
+1. 落とさない — 出所（`CHANGELOG` / `_template/` / `.dev/` / `tmp/` / `reports/` / `tests/`）
+   でフィルタしない。採りすぎは読む側で絞れるが、採り漏らしは気づけない
+2. 出所を残す — すべての関係に `source` / `source_line` / `context` を付ける
+3. 拾えなかったものを残す — 読めなかったファイルは `skipped` へ、
+   実在しない参照先は `target_exists: false` の辺として出す
+
+本モジュールは配布 wheel に収録されるため **標準ライブラリのみ**で書く。
+またライブラリとして stdout / stderr へ一切書かない（print しない）。
 """
 
 from __future__ import annotations
 
+import ast
+import bisect
+import fnmatch
 import json
+import os
+import posixpath
 import re
-import sys
-from collections import deque
 from dataclasses import dataclass
-from pathlib import Path as StdPath
-from typing import Dict, List, Set, Tuple
+from pathlib import Path
 
-# Edge / Path are defined here and nowhere else. This module is shipped in the
-# wheel while tests/ is not, so it must never import from tests.
+# 出力スキーマのバージョン（契約 §3）。
+SCHEMA_VERSION = 1
+
+# `context` の長さ上限（契約 §3「長さ上限で切る」）。外部由来の 1 行をそのまま
+# 埋め込むと読む側の端末を壊すか JSON が肥大するため、抜粋として切る。
+CONTEXT_MAX_CHARS = 300
+
+# 走査しないディレクトリ名。
+# 契約 §2 原則 1 が禁じるのは「**出所**によるフィルタ」（誰が書いた参照かで捨てること）であり、
+# VCS の内部表現やバイトコードキャッシュは人が書いた参照元ではないので対象外にする。
+_SKIP_DIR_NAMES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        "node_modules",
+        ".venv",
+        "venv",
+    }
+)
+
+# 参照とみなす拡張子。これに当たらない文字列はパス参照として扱わない。
+_REFERENCE_SUFFIXES = (
+    "py",
+    "md",
+    "mdc",
+    "json",
+    "jsonl",
+    "txt",
+    "sql",
+    "sh",
+    "ps1",
+    "toml",
+    "yaml",
+    "yml",
+    "cfg",
+    "ini",
+    "flag",
+)
+
+# 文字列中からパスらしいトークンを取り出す。
+#   - 直前が識別子・パス構成文字なら開始しない（`a/b/c.py` の途中から拾わないため）
+#   - `${CLAUDE_PROJECT_DIR}/` のような変数プレフィクスを 1 つだけ許す
+#   - 本体に空白・引用符・括弧を含めない（末尾の `*)` や `,` を巻き込まない）
+_PATH_TOKEN_RE = re.compile(
+    r"(?<![\w./\\-])"
+    r"(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}/)?"
+    r"[A-Za-z0-9_.~-][A-Za-z0-9_./{}$~+-]*"
+    r"\.(?:" + "|".join(_REFERENCE_SUFFIXES) + r")"  # nul-boundary: allow(正規表現の選択肢の組み立て。区切りは正規表現の文法で固定されており、機械可読な行集合ではない)
+    r"(?![\w.])"
+)
+
+# md のコードスパン（改行をまたがない）。
+_CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+
+# md のマークダウンリンク `[表示](パス)`。
+_MD_LINK_RE = re.compile(r"\[[^\]\n]*\]\(\s*<?([^)>\s]+)")
+
+# md 本文の `c3 run <path>`。
+_C3_RUN_RE = re.compile(r"(?<![\w-])c3\s+run\s+(\S+)")
+
+# md の `subagent_type: <name>` / `agent: <name>`（frontmatter に限らず本文中も拾う。
+# C3 では起動手順が散文・コードスパンの中に書かれているため）。
+_SUBAGENT_RE = re.compile(
+    r"(?<![\w-])(?:subagent_type|agent)\s*[:=]\s*[\"']?([a-z][a-z0-9_-]*)"
+)
+
+# 表の区切り行（`| --- | --- |`）判定に使う文字集合。
+_TABLE_RULE_CHARS = set("|-: ")
+
+# 表セルから取り出す識別子（バッククォートは剥がしてから当てる）。
+_CELL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+# ノード ID から agent / skill の名前を逆引きする（実ツリーの棚卸しから作るため、
+# 名前の一覧をコードに焼き付けない）。
+_AGENT_ID_RE = re.compile(r"(?:.*/)?\.claude/agents/([^/]+)\.md")
+_SKILL_ID_RE = re.compile(r"(?:.*/)?\.claude/skills/([^/]+)/SKILL\.md")
+
+# 制御文字（C0 / DEL / C1 / 行区切り）。`context` から除去する。
+# エスケープ列をソースへ直書きすると実体文字に化けるため、行区切りは chr() で足す。
+_CONTROL_RE = re.compile(
+    "[" + chr(0) + "-" + chr(31)
+    + chr(127) + "-" + chr(159)
+    + chr(0x2028) + chr(0x2029) + "]"
+)
+
+# SQL 文字列中のテーブル名。
+_SQL_TABLE_RE = re.compile(
+    r"(?:(?<![\w.])(?:FROM|JOIN|INTO|UPDATE)\s+([A-Za-z_][A-Za-z0-9_]*))"
+    r"|(?:(?<![\w.])(?:CREATE|DROP)\s+TABLE\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
+    r"([A-Za-z_][A-Za-z0-9_]*))",
+    re.IGNORECASE,
+)
+
+# SQL 文らしさの判定。これを含まない文字列は SQL とみなさない
+# （`from x import y` を書いた docstring をテーブル参照と誤読しないため）。
+_SQL_VERB_RE = re.compile(
+    r"(?<![\w.])(?:SELECT|INSERT|UPDATE|DELETE|CREATE\s+TABLE|DROP\s+TABLE|"
+    r"ALTER\s+TABLE|REPLACE\s+INTO)(?![\w.])",
+    re.IGNORECASE,
+)
+
+# テーブル名として採らない SQL 予約語。
+_SQL_STOP_WORDS = frozenset(
+    {
+        "select",
+        "where",
+        "order",
+        "group",
+        "having",
+        "limit",
+        "offset",
+        "values",
+        "set",
+        "as",
+        "on",
+        "table",
+        "if",
+        "not",
+        "exists",
+        "import",
+        "and",
+        "or",
+        "by",
+        "distinct",
+        "union",
+        "returning",
+    }
+)
+
+# 動的ロード（`_load_module("x")` / `importlib.import_module("x")`）の呼び出し名。
+_DYNAMIC_LOAD_RE = re.compile(r"load_module|import_module")
+
+# `settings*.json` のどの節をどの relation にするか（契約 §4）。
+_SETTINGS_SECTIONS = (
+    ("hooks", "settings_hook"),
+    ("statusLine", "settings_statusline"),
+    ("permissions", "settings_permission"),
+)
+
+
+# ---------------------------------------------------------------------------
+# 出力の型（契約 §3 / §5）
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
-class Edge:
-    """Edge in the reference graph."""
+class Node:
+    """グラフのノード。ファイル、または `sqltable:<name>` のテーブル."""
 
+    id: str
     kind: str
-    source_file: str
-    source_line: int
-    target_node_id: str
+    exists: bool
 
 
 @dataclass(frozen=True)
-class Path:
-    """Path from an entry point to a node."""
+class Link:
+    """実在する参照関係 1 本。出所（source / source_line / context）を必ず持つ."""
 
-    edges: tuple[Edge, ...]
+    relation: str
+    source: str
+    source_line: int
+    context: str
+    target: str
+    target_exists: bool
+    resolution: str
+
+
+@dataclass(frozen=True)
+class Skipped:
+    """拾えなかったファイル（契約 §2 原則 3）."""
+
+    path: str
+    reason: str
 
 
 class Graph:
-    """Reference graph for reachability analysis."""
+    """抽出結果。判定 API は持たない（契約 §5 / §6 条件 5）."""
 
-    def __init__(self, edges: List[Edge], root: StdPath, unreadable: tuple = ()):
-        self.edges = edges
-        self.root = root
-        self.unreadable = unreadable  # tuple of (file_path, exception_type)
-        self._build_adjacency()
+    def __init__(self, root, file_count, nodes, links, skipped):
+        self.root = str(root)
+        self.file_count = int(file_count)
+        self.nodes = tuple(nodes)
+        self.links = tuple(links)
+        self.skipped = tuple(skipped)
 
-    def _build_adjacency(self):
-        """Build adjacency list from edges."""
-        self.adjacency: Dict[str, List[Edge]] = {}
-        for edge in self.edges:
-            if edge.source_file not in self.adjacency:
-                self.adjacency[edge.source_file] = []
-            self.adjacency[edge.source_file].append(edge)
+    def to_dict(self) -> dict:
+        """契約 §3 のスキーマの dict を返す."""
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "root": self.root,
+            "generated_from": {"file_count": self.file_count},
+            "nodes": [
+                {"id": node.id, "kind": node.kind, "exists": node.exists}
+                for node in self.nodes
+            ],
+            "links": [
+                {
+                    "relation": link.relation,
+                    "source": link.source,
+                    "source_line": link.source_line,
+                    "context": link.context,
+                    "target": link.target,
+                    "target_exists": link.target_exists,
+                    "resolution": link.resolution,
+                }
+                for link in self.links
+            ],
+            "skipped": [
+                {"path": entry.path, "reason": entry.reason} for entry in self.skipped
+            ],
+        }
 
-    def is_reachable(self, node_id: str) -> bool:
-        """Check if node is reachable from entry points."""
-        return len(self.paths_to(node_id)) > 0
 
-    def paths_to(self, node_id: str) -> List[Path]:
-        """Find all paths from entry points to node_id."""
-        entry_points = _get_entry_points(self.root)
-        paths = []
+# ---------------------------------------------------------------------------
+# 公開 API（契約 §5）
+# ---------------------------------------------------------------------------
+def build_graph(root) -> Graph:
+    """`root` 以下を走査して参照関係を抽出する.
 
-        for entry in entry_points:
-            found_paths = self._bfs_paths(entry, node_id)
-            paths.extend(found_paths)
+    引数は `root` のみ。起点集合・フィルタを外から差し込む余地は持たない
+    （判定はクエリ側の責務・契約 §5）。
+    """
+    collector = _Collector(Path(root).resolve())
+    collector.collect()
+    return collector.result()
 
-        return paths
 
-    def _bfs_paths(self, start: str, target: str) -> List[Path]:
-        """Find all paths from start to target using BFS."""
-        if start == target:
-            return [Path(edges=())]
+def write_graph(graph: Graph, path) -> None:
+    """`Graph` を UTF-8 の JSON としてファイルへ書く（契約 §6 条件 4）."""
+    out = Path(path)
+    if out.parent and not out.parent.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(graph.to_dict(), ensure_ascii=False, indent=2, sort_keys=False)
+    out.write_text(payload + "\n", encoding="utf-8")
 
-        visited_nodes = {start}  # Prevent cycles globally
-        paths_to = {start: [[]]}  # node -> list of paths to that node
-        queue = deque([start])
-        max_iterations = 10000  # Prevent infinite loops
 
-        iterations = 0
-        while queue and iterations < max_iterations:
-            iterations += 1
-            current = queue.popleft()
+def read_graph(path) -> Graph:
+    """`write_graph` が書いた JSON を読み戻す."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return Graph(
+        root=data["root"],
+        file_count=data["generated_from"]["file_count"],
+        nodes=[
+            Node(id=item["id"], kind=item["kind"], exists=item["exists"])
+            for item in data["nodes"]
+        ],
+        links=[
+            Link(
+                relation=item["relation"],
+                source=item["source"],
+                source_line=item["source_line"],
+                context=item["context"],
+                target=item["target"],
+                target_exists=item["target_exists"],
+                resolution=item["resolution"],
+            )
+            for item in data["links"]
+        ],
+        skipped=[
+            Skipped(path=item["path"], reason=item["reason"]) for item in data["skipped"]
+        ],
+    )
 
-            if current not in self.adjacency:
+
+# ---------------------------------------------------------------------------
+# 内部: テキスト中の位置解決
+# ---------------------------------------------------------------------------
+class _TextLocator:
+    """生テキスト中で「その値が書かれている行」を求める.
+
+    JSON は `json.loads` すると行番号が失われるため、パース済みの値を生テキストへ
+    突き合わせて出所を復元する（契約 §2 原則 2。旧実装は `source_line=1` 固定だった）。
+    """
+
+    def __init__(self, text: str):
+        self.text = text
+        self.lines = text.split("\n")
+        self.starts = []
+        pos = 0
+        for line in self.lines:
+            self.starts.append(pos)
+            pos += len(line) + 1
+        self.cursor = {}
+
+    def line_of(self, value: str):
+        """`value` が現れる行番号（1 始まり）。見つからなければ None."""
+        for needle in (
+            json.dumps(value, ensure_ascii=False),
+            json.dumps(value),
+            value,
+        ):
+            if not needle:
                 continue
-
-            for edge in self.adjacency[current]:
-                target_node = edge.target_node_id
-
-                if target_node == target:
-                    # Found paths
-                    if target not in paths_to:
-                        paths_to[target] = []
-                    for parent_path in paths_to[current]:
-                        paths_to[target].append(parent_path + [edge])
-                elif target_node not in visited_nodes:
-                    visited_nodes.add(target_node)
-                    paths_to[target_node] = []
-                    for parent_path in paths_to[current]:
-                        paths_to[target_node].append(parent_path + [edge])
-                    queue.append(target_node)
-
-        if target in paths_to:
-            return [Path(edges=tuple(path)) for path in paths_to[target]]
-        return []
-
-
-def build_graph(root: StdPath) -> Graph:
-    """Build reference graph from codebase."""
-    root = StdPath(root).resolve()
-    edges = []
-    unreadable = []
-
-    # Collect all Python and Markdown files once (avoid repeated rglob calls)
-    # Skip tests/ directory as per spec §3
-    py_files = []
-    md_files = []
-
-    for file_path in root.rglob("*"):
-        # Skip tests/ directory (not a root per spec §3)
-        if "tests" in file_path.parts:
-            continue
-        # Skip generated reports (not source per spec §7)
-        if ".claude" in file_path.parts and "reports" in file_path.parts:
-            continue
-        if ".git" in file_path.parts or "dist" in file_path.parts or "__pycache__" in file_path.parts:
-            continue
-
-        if file_path.is_file():
-            if file_path.suffix == ".py":
-                py_files.append(file_path)
-            elif file_path.suffix == ".md":
-                md_files.append(file_path)
-
-    # Extract all edge types
-    edges.extend(_extract_settings_hooks(root))
-    edges.extend(_extract_c3_run(root, md_files, unreadable))
-    edges.extend(_extract_code_span_paths(root, md_files, unreadable))
-    edges.extend(_extract_agent_variant_maps(root, md_files, unreadable))
-    edges.extend(_extract_py_imports(root, py_files, unreadable))
-    edges.extend(_extract_py_importlib(root, py_files, unreadable))
-    edges.extend(_extract_py_subprocess_paths(root, py_files, unreadable))
-    edges.extend(_extract_subagent_types(root, md_files, unreadable))
-    edges.extend(_extract_sql_tables(root, py_files, unreadable))
-
-    # The same file is walked by several extractors, so a single unreadable file
-    # would otherwise be reported once per extractor. Deduplicate while keeping
-    # the order of first observation.
-    return Graph(edges, root, tuple(dict.fromkeys(unreadable)))
-
-
-def _get_entry_points(root: StdPath) -> List[str]:
-    """Get list of entry point file paths (root relative, POSIX format)."""
-    entry_points = []
-
-    # settings.json / settings.local.json
-    for fname in [".claude/settings.json", ".claude/settings.local.json"]:
-        fpath = root / fname
-        if fpath.exists():
-            entry_points.append(fname)
-
-    # .claude/skills/*/SKILL.md
-    skills_dir = root / ".claude" / "skills"
-    if skills_dir.exists():
-        for skill_dir in skills_dir.iterdir():
-            if skill_dir.is_dir():
-                skill_md = skill_dir / "SKILL.md"
-                if skill_md.exists():
-                    rel_path = skill_md.relative_to(root)
-                    entry_points.append(str(rel_path).replace("\\", "/"))
-
-    # CLAUDE.md / .claude/CLAUDE.md / .claude/rules/**
-    for fname in ["CLAUDE.md", ".claude/CLAUDE.md"]:
-        fpath = root / fname
-        if fpath.exists():
-            entry_points.append(fname)
-
-    rules_dir = root / ".claude" / "rules"
-    if rules_dir.exists():
-        for rule_file in rules_dir.rglob("*"):
-            if rule_file.is_file():
-                rel_path = rule_file.relative_to(root)
-                entry_points.append(str(rel_path).replace("\\", "/"))
-
-    # src/c3/cli.py
-    cli_py = root / "src" / "c3" / "cli.py"
-    if cli_py.exists():
-        entry_points.append("src/c3/cli.py")
-
-    return entry_points
-
-
-def _extract_settings_hooks(root: StdPath) -> List[Edge]:
-    """Extract edges from settings.json hooks and statusLine."""
-    edges = []
-
-    for settings_fname in [".claude/settings.json", ".claude/settings.local.json"]:
-        settings_file = root / settings_fname
-        if not settings_file.exists():
-            continue
-
-        try:
-            data = json.loads(settings_file.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-
-        # Process hooks section
-        hooks_section = data.get("hooks", {})
-        line_num = 1
-
-        if isinstance(hooks_section, dict):
-            for matcher_key, matcher_config in hooks_section.items():
-                if not isinstance(matcher_config, list):
+            begin = self.cursor.get(needle, 0)
+            found = self.text.find(needle, begin)
+            if found < 0:
+                found = self.text.find(needle)
+                if found < 0:
                     continue
-
-                for config_item in matcher_config:
-                    if not isinstance(config_item, dict):
-                        continue
-
-                    hooks_list = config_item.get("hooks", [])
-                    if not isinstance(hooks_list, list):
-                        continue
-
-                    for hook in hooks_list:
-                        if isinstance(hook, dict) and hook.get("type") == "command":
-                            args = hook.get("args", [])
-                            if isinstance(args, list) and len(args) > 0:
-                                for arg in args:
-                                    if isinstance(arg, str):
-                                        target_node_id = _resolve_claude_project_dir(arg, root)
-                                        if target_node_id:
-                                            edges.append(Edge(
-                                                kind="settings_hook",
-                                                source_file=settings_fname,
-                                                source_line=1,  # JSON line numbers are not easily available
-                                                target_node_id=target_node_id,
-                                            ))
-
-        # Process statusLine section
-        status_line_section = data.get("statusLine", {})
-        if isinstance(status_line_section, dict):
-            for config_key, config_value in status_line_section.items():
-                if isinstance(config_value, dict):
-                    args = config_value.get("args", [])
-                    if isinstance(args, list):
-                        for arg in args:
-                            if isinstance(arg, str):
-                                target_node_id = _resolve_claude_project_dir(arg, root)
-                                if target_node_id:
-                                    edges.append(Edge(
-                                        kind="settings_hook",
-                                        source_file=settings_fname,
-                                        source_line=1,
-                                        target_node_id=target_node_id,
-                                    ))
-
-    return edges
-
-
-def _resolve_claude_project_dir(path_str: str, root: StdPath) -> str | None:
-    """Resolve ${CLAUDE_PROJECT_DIR} placeholder in path and return node ID."""
-    if not isinstance(path_str, str):
-        return None
-
-    # Remove placeholder and strip quotes
-    resolved = path_str.replace("${CLAUDE_PROJECT_DIR}", "").strip()
-    if not resolved:
-        return None
-
-    # Remove leading/trailing quotes if present
-    if resolved.startswith('"') or resolved.startswith("'"):
-        resolved = resolved[1:]
-    if resolved.endswith('"') or resolved.endswith("'"):
-        resolved = resolved[:-1]
-
-    # Normalize path separators
-    resolved = resolved.replace("\\", "/")
-
-    # Remove leading slash
-    if resolved.startswith("/"):
-        resolved = resolved[1:]
-
-    if not resolved:
-        return None
-
-    # Check if file exists and return relative path
-    target_path = root / resolved
-    if target_path.exists():
-        rel_path = target_path.relative_to(root)
-        return str(rel_path).replace("\\", "/")
-
-    return None
-
-
-def _extract_c3_run(root: StdPath, md_files: List[StdPath], unreadable: list) -> List[Edge]:
-    """Extract edges from 'c3 run <path>' in markdown files."""
-    edges = []
-    # Match: c3 run <path> where path may be quoted
-    pattern = re.compile(r'c3\s+run\s+(?:"([^"]+)"|\'([^\']+)\'|([^\s\)\]`\n]+))')
-
-    for md_file in md_files:
-        try:
-            content = md_file.read_text(encoding="utf-8")
-        except Exception as e:
-            unreadable.append(
-                (str(md_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
-            )
-            continue
-
-        # Find all 'c3 run <path>' patterns
-        for match in pattern.finditer(content):
-            # Get the path from one of the three capture groups
-            path_str = match.group(1) or match.group(2) or match.group(3)
-            if not path_str:
-                continue
-            path_str = path_str.strip()
-
-            # Resolve placeholders
-            if path_str.startswith("${CLAUDE_PROJECT_DIR}"):
-                path_str = path_str.replace("${CLAUDE_PROJECT_DIR}", "").lstrip("/")
-                target_path = root / path_str
-            elif path_str.startswith("${CLAUDE_SKILL_DIR}"):
-                # Resolve relative to the SKILL.md's directory
-                skill_dir = md_file.parent
-                path_str = path_str.replace("${CLAUDE_SKILL_DIR}", "").lstrip("/")
-                target_path = skill_dir / path_str
             else:
-                # Try to resolve as absolute path
-                path_str = path_str.replace("\\", "/")
-                target_path = root / path_str
+                self.cursor[needle] = found + 1
+            return bisect.bisect_right(self.starts, found)
+        return None
 
-            # Normalize path
-            path_str = path_str.replace("\\", "/")
+    def line_text(self, number: int) -> str:
+        if 1 <= number <= len(self.lines):
+            return self.lines[number - 1]
+        return ""
 
-            # Check if it resolves to an existing file
-            if target_path.exists():
+
+def _sanitize_context(line: str) -> str:
+    """該当行を `context` に使える形へ整える（契約 §3）."""
+    text = _CONTROL_RE.sub(" ", line).strip()
+    if len(text) > CONTEXT_MAX_CHARS:
+        text = text[:CONTEXT_MAX_CHARS]
+    text = text.strip()
+    if not text:
+        # 参照がある以上ここには来ないはずだが、context を空にすると
+        # 読む側が出所を追えなくなるので必ず何かを残す。
+        return "(no printable context)"
+    return text
+
+
+def _split_lines(text: str) -> list:
+    """行番号を安定させるため `\\n` だけで分割する（`splitlines` は垂直タブ等でも切る）."""
+    return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+
+
+# ---------------------------------------------------------------------------
+# 内部: 抽出本体
+# ---------------------------------------------------------------------------
+class _Collector:
+    """1 回の走査で全 relation を抽出する."""
+
+    def __init__(self, base: Path):
+        self.base = base
+        self.file_paths = []
+        self.file_ids = []
+        self.present = set()
+        self.by_basename = {}
+        self.agents = {}
+        self.skills = {}
+        self.packages = {}
+        self.links = []
+        self.skipped = []
+        self._skipped_paths = set()
+        self.agent_pattern = None
+        self.skill_pattern = None
+
+    # -- 走査 ------------------------------------------------------------
+    def collect(self) -> None:
+        self._walk()
+        self._index()
+        for path, node_id in zip(self.file_paths, self.file_ids):
+            self._process(path, node_id)
+
+    def _walk(self) -> None:
+        base = self.base
+        if not base.is_dir():
+            return
+        for dirpath, dirnames, filenames in os.walk(str(base)):
+            dirnames[:] = sorted(
+                name for name in dirnames if name not in _SKIP_DIR_NAMES
+            )
+            current = Path(dirpath)
+            for name in sorted(filenames):
+                path = current / name
                 try:
-                    rel_target = target_path.relative_to(root)
-                    target_node_id = str(rel_target).replace("\\", "/")
-
-                    # Find line number
-                    line_num = content[:match.start()].count('\n') + 1
-
-                    source_rel = md_file.relative_to(root)
-                    source_file = str(source_rel).replace("\\", "/")
-
-                    edges.append(Edge(
-                        kind="c3_run",
-                        source_file=source_file,
-                        source_line=line_num,
-                        target_node_id=target_node_id,
-                    ))
+                    node_id = path.relative_to(base).as_posix()
                 except ValueError:
-                    # Path is outside root, skip
-                    pass
+                    continue
+                self.file_paths.append(path)
+                self.file_ids.append(node_id)
 
-    return edges
+    def _index(self) -> None:
+        for path, node_id in zip(self.file_paths, self.file_ids):
+            self.present.add(node_id)
+            self.by_basename.setdefault(path.name, []).append(node_id)
+            agent = _AGENT_ID_RE.fullmatch(node_id)
+            if agent:
+                self.agents.setdefault(agent.group(1), []).append(node_id)
+            skill = _SKILL_ID_RE.fullmatch(node_id)
+            if skill:
+                self.skills.setdefault(skill.group(1), []).append(node_id)
+            if path.name == "__init__.py":
+                self.packages.setdefault(path.parent.name, []).append(path.parent)
+        self.agent_pattern = _name_pattern(self.agents)
+        self.skill_pattern = _name_pattern(self.skills, slash_prefix=True)
 
+    def _process(self, path: Path, node_id: str) -> None:
+        suffix = path.suffix.lower()
+        is_settings = fnmatch.fnmatchcase(path.name, "settings*.json")
+        if suffix not in (".md", ".py", ".sql") and not is_settings:
+            return
 
-def _extract_code_span_paths(root: StdPath, md_files: List[StdPath], unreadable: list) -> List[Edge]:
-    """Extract edges from bare paths in code spans in markdown."""
-    edges = []
-    pattern = re.compile(r'`([^\s`]+(?:\.py|\.md|\.json|\.txt)?)`')
-
-    for md_file in md_files:
         try:
-            content = md_file.read_text(encoding="utf-8")
-        except Exception as e:
-            unreadable.append(
-                (str(md_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            self._skip(node_id, type(exc).__name__)
+            return
+
+        if is_settings:
+            self._from_settings(node_id, text)
+        if suffix == ".md":
+            self._from_markdown(node_id, text)
+        elif suffix == ".py":
+            self._from_python(path, node_id, text)
+        elif suffix == ".sql":
+            self._from_sql_text(node_id, text, _split_lines(text), 0)
+
+    def _skip(self, node_id: str, reason: str) -> None:
+        if node_id in self._skipped_paths:
+            return
+        self._skipped_paths.add(node_id)
+        self.skipped.append(Skipped(path=node_id, reason=reason))
+
+    # -- 辺の登録 --------------------------------------------------------
+    def _emit(self, relation, source, line_number, line_text, reference):
+        """パス参照 1 件を解決して辺にする（候補が複数なら 1 本ずつ出す）."""
+        for target, resolution, exists in self._resolve(reference, source):
+            self._add(relation, source, line_number, line_text, target, resolution, exists)
+
+    def _add(self, relation, source, line_number, line_text, target, resolution, exists):
+        if target == source:
+            # 自己参照は関係として意味を持たない（自分の名前が本文に出るだけ）。
+            return
+        self.links.append(
+            Link(
+                relation=relation,
+                source=source,
+                source_line=max(1, int(line_number)),
+                context=_sanitize_context(line_text),
+                target=target,
+                target_exists=bool(exists),
+                resolution=resolution,
             )
-            continue
+        )
 
-        source_rel = md_file.relative_to(root)
-        source_file = str(source_rel).replace("\\", "/")
+    def _emit_names(self, relation, source, line_number, line_text, node_ids):
+        """名前解決で得た候補（実在するものだけ）を辺にする."""
+        resolution = "exact" if len(node_ids) == 1 else "ambiguous"
+        for target in node_ids:
+            self._add(relation, source, line_number, line_text, target, resolution, True)
 
-        # Find all code spans (backtick-delimited)
-        for match in pattern.finditer(content):
-            path_str = match.group(1).strip()
+    # -- パス解決（契約 §3 の resolution 4 値）---------------------------
+    def _resolve(self, reference: str, source: str):
+        """参照文字列を (target, resolution, exists) の列へ解決する."""
+        token = reference.strip().strip("`\"'")
+        if not token:
+            return []
+        token = token.replace("\\", "/")
 
-            # Skip if it looks like inline code (e.g., function names, variable names without path separators)
-            if "/" not in path_str and "." not in path_str:
+        source_dir = posixpath.dirname(source)
+        if token.startswith("${CLAUDE_SKILL_DIR}/"):
+            token = posixpath.join(source_dir, token[len("${CLAUDE_SKILL_DIR}/"):])
+        elif token.startswith("${CLAUDE_PROJECT_DIR}/"):
+            token = token[len("${CLAUDE_PROJECT_DIR}/"):]
+        elif token.startswith("${"):
+            # 解決できない変数を含む参照。どのファイルを指すか決められないので辺にしない。
+            return []
+        if "${" in token:
+            return []
+
+        if token.startswith("/") or re.match(r"^[A-Za-z]:", token):
+            # ルート外の絶対パスはルート相対 ID で表現できない。
+            return []
+
+        if "/" in token:
+            from_base = _normalize(token)
+            from_here = _normalize(posixpath.join(source_dir, token))
+            if from_base and from_base in self.present:
+                return [(from_base, "exact", True)]
+            if from_here and from_here in self.present:
+                return [(from_here, "exact", True)]
+            target = from_base or from_here
+            if not target:
+                return []
+            return [(target, "missing", False)]
+
+        sibling = _normalize(posixpath.join(source_dir, token))
+        if sibling and sibling in self.present:
+            return [(sibling, "exact", True)]
+        candidates = self.by_basename.get(token)
+        if not candidates:
+            return [(token, "missing", False)]
+        if len(candidates) == 1:
+            return [(candidates[0], "basename", True)]
+        return [(node_id, "ambiguous", True) for node_id in candidates]
+
+    # -- settings*.json --------------------------------------------------
+    def _from_settings(self, source: str, text: str) -> None:
+        try:
+            data = json.loads(text)
+        except (ValueError, RecursionError) as exc:
+            self._skip(source, type(exc).__name__)
+            return
+        if not isinstance(data, dict):
+            return
+
+        locator = _TextLocator(text)
+        for key, relation in _SETTINGS_SECTIONS:
+            if key not in data:
                 continue
+            for value in _iter_strings(data[key]):
+                line_number = locator.line_of(value)
+                if line_number is None:
+                    continue
+                line_text = locator.line_text(line_number)
+                for match in _PATH_TOKEN_RE.finditer(value):
+                    self._emit(relation, source, line_number, line_text, match.group(0))
 
-            # Resolve path
-            resolved_path = _resolve_code_span_path(root, md_file, path_str)
-            if resolved_path:
-                line_num = content[:match.start()].count('\n') + 1
-                edges.append(Edge(
-                    kind="code_span_path",
-                    source_file=source_file,
-                    source_line=line_num,
-                    target_node_id=str(resolved_path).replace("\\", "/"),
-                ))
+    # -- markdown --------------------------------------------------------
+    def _from_markdown(self, source: str, text: str) -> None:
+        lines = _split_lines(text)
+        for offset, line in enumerate(lines):
+            number = offset + 1
+            self._md_code_spans(source, number, line)
+            self._md_links(source, number, line)
+            self._md_c3_run(source, number, line)
+            self._md_table_row(source, number, line)
+            self._md_subagent(source, number, line)
+            self._md_bare_names(source, number, line)
 
-    return edges
+    def _md_code_spans(self, source, number, line):
+        for span in _CODE_SPAN_RE.finditer(line):
+            for match in _PATH_TOKEN_RE.finditer(span.group(1)):
+                self._emit("md_code_span_path", source, number, line, match.group(0))
+
+    def _md_links(self, source, number, line):
+        for match in _MD_LINK_RE.finditer(line):
+            target = match.group(1).split("#", 1)[0]
+            if not target or "://" in target or target.startswith("mailto:"):
+                continue
+            resolved = self._resolve(target, source)
+            if not resolved:
+                continue
+            if resolved[0][1] == "missing" and not _PATH_TOKEN_RE.fullmatch(target):
+                # 実在せず拡張子も持たない（ディレクトリ・アンカー等）リンクは
+                # どのファイルを指すか決められないので辺にしない。
+                continue
+            for node_id, resolution, exists in resolved:
+                self._add(
+                    "md_link", source, number, line, node_id, resolution, exists
+                )
+
+    def _md_c3_run(self, source, number, line):
+        for match in _C3_RUN_RE.finditer(line):
+            token = _PATH_TOKEN_RE.search(match.group(1))
+            if token is None:
+                continue
+            self._emit("md_c3_run", source, number, line, token.group(0))
+
+    def _md_table_row(self, source, number, line):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            return
+        if set(stripped) <= _TABLE_RULE_CHARS:
+            return
+        for cell in stripped.strip("|").split("|"):
+            name = cell.strip().strip("`*_ ").strip()
+            if not _CELL_NAME_RE.fullmatch(name):
+                continue
+            node_ids = self.agents.get(name)
+            if node_ids:
+                self._emit_names(
+                    "md_agent_variant_map", source, number, line, node_ids
+                )
+
+    def _md_subagent(self, source, number, line):
+        for match in _SUBAGENT_RE.finditer(line):
+            node_ids = self.agents.get(match.group(1))
+            if node_ids:
+                self._emit_names("md_subagent_type", source, number, line, node_ids)
+
+    def _md_bare_names(self, source, number, line):
+        if self.agent_pattern is not None:
+            for match in self.agent_pattern.finditer(line):
+                node_ids = self.agents.get(match.group(1))
+                if node_ids:
+                    self._emit_names(
+                        "md_bare_agent_name", source, number, line, node_ids
+                    )
+        if self.skill_pattern is not None:
+            for match in self.skill_pattern.finditer(line):
+                node_ids = self.skills.get(match.group(1))
+                if node_ids:
+                    self._emit_names(
+                        "md_bare_skill_name", source, number, line, node_ids
+                    )
+
+    # -- python ----------------------------------------------------------
+    def _from_python(self, path: Path, source: str, text: str) -> None:
+        lines = _split_lines(text)
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError, RecursionError) as exc:
+            self._skip(source, type(exc).__name__)
+            return
+
+        uses_subprocess = _uses_subprocess(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                self._py_import(path, source, lines, node)
+            elif isinstance(node, ast.Call):
+                self._py_dynamic_load(path, source, lines, node)
+                if uses_subprocess:
+                    self._py_script_path(source, lines, node)
+            elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                if uses_subprocess:
+                    self._py_script_path_operand(source, lines, node.right, node)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                self._py_sql(source, lines, node)
+
+    def _py_import(self, path, source, lines, node):
+        line_text = _line_at(lines, node.lineno)
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                self._emit_modules(path, source, node.lineno, line_text, alias.name, 0)
+            return
+        level = node.level or 0
+        if node.module:
+            self._emit_modules(path, source, node.lineno, line_text, node.module, level)
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            dotted = f"{node.module}.{alias.name}" if node.module else alias.name
+            self._emit_modules(path, source, node.lineno, line_text, dotted, level)
+
+    def _emit_modules(self, path, source, number, line_text, dotted, level):
+        node_ids = self._module_targets(path, dotted, level)
+        for target in node_ids:
+            self._add("py_import", source, number, line_text, target, "exact", True)
+
+    def _module_targets(self, path: Path, dotted, level):
+        """import 先をツリー内の実ファイルへ解決する（見つからなければ空）."""
+        parts = [part for part in (dotted or "").split(".") if part]
+        starts = []
+        if level:
+            base = path.parent
+            for _ in range(level - 1):
+                base = base.parent
+            starts.append(base)
+        elif parts:
+            # 同ディレクトリの素のモジュール（hook 群は package を作らずに import する）
+            starts.append(path.parent)
+            for package in self.packages.get(parts[0], ()):
+                starts.append(package.parent)
+        else:
+            return []
+
+        found = []
+        for start in starts:
+            current = start
+            ok = True
+            for part in parts[:-1] if parts else []:
+                current = current / part
+                if not current.is_dir():
+                    ok = False
+                    break
+            if not ok:
+                continue
+            if parts:
+                options = (current / f"{parts[-1]}.py", current / parts[-1] / "__init__.py")
+            else:
+                options = (current / "__init__.py",)
+            for option in options:
+                node_id = self._node_id_of(option)
+                if node_id is not None and node_id not in found:
+                    found.append(node_id)
+        return found
+
+    def _node_id_of(self, path: Path):
+        try:
+            node_id = path.resolve().relative_to(self.base).as_posix()
+        except (ValueError, OSError):
+            return None
+        return node_id if node_id in self.present else None
+
+    def _py_dynamic_load(self, path, source, lines, node):
+        name = _call_name(node)
+        if name is None or not _DYNAMIC_LOAD_RE.search(name):
+            return
+        if not node.args:
+            return
+        first = node.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            return
+        for target in self._module_targets(path, first.value, 0):
+            self._add(
+                "py_importlib",
+                source,
+                node.lineno,
+                _line_at(lines, node.lineno),
+                target,
+                "exact",
+                True,
+            )
+
+    def _py_script_path(self, source, lines, node):
+        """`os.path.join(DIR, "x.py")` のように組み立てたスクリプトパスを拾う."""
+        if _call_name(node) != "join":
+            return
+        for arg in node.args:
+            self._py_script_path_operand(source, lines, arg, node)
+
+    def _py_script_path_operand(self, source, lines, operand, node):
+        if not (isinstance(operand, ast.Constant) and isinstance(operand.value, str)):
+            return
+        if not operand.value.lower().endswith(".py"):
+            return
+        self._emit(
+            "py_subprocess_path",
+            source,
+            node.lineno,
+            _line_at(lines, node.lineno),
+            operand.value,
+        )
+
+    def _py_sql(self, source, lines, node):
+        value = node.value
+        if not _SQL_VERB_RE.search(value):
+            return
+        self._from_sql_text(source, value, lines, node.lineno - 1)
+
+    def _from_sql_text(self, source, text, lines, line_offset):
+        """SQL 文字列からテーブル参照を取り出す（`.sql` ファイルにも使う）."""
+        for match in _SQL_TABLE_RE.finditer(text):
+            name = match.group(1) or match.group(2)
+            if not name or name.lower() in _SQL_STOP_WORDS:
+                continue
+            number = line_offset + text.count("\n", 0, match.start()) + 1
+            self._add(
+                "py_sql_table",
+                source,
+                number,
+                _line_at(lines, number),
+                f"sqltable:{name}",
+                "exact",
+                True,
+            )
+
+    # -- 出力 ------------------------------------------------------------
+    def result(self) -> Graph:
+        links = _dedupe(self.links)
+        nodes = {}
+        for node_id in self.file_ids:
+            nodes[node_id] = Node(id=node_id, kind="file", exists=True)
+        for link in links:
+            for node_id, exists in ((link.source, True), (link.target, link.target_exists)):
+                if node_id in nodes:
+                    continue
+                if node_id.startswith("sqltable:"):
+                    # テーブルの実在はツリーから確かめられないため常に true とする。
+                    nodes[node_id] = Node(id=node_id, kind="table", exists=True)
+                else:
+                    nodes[node_id] = Node(id=node_id, kind="file", exists=exists)
+        return Graph(
+            root=self.base,
+            file_count=len(self.file_ids),
+            nodes=[nodes[key] for key in sorted(nodes)],
+            links=links,
+            skipped=list(self.skipped),
+        )
 
 
-def _resolve_code_span_path(root: StdPath, source_md: StdPath, path_str: str) -> str | None:
-    """Resolve code span path to absolute form."""
-    # Normalize path separators
-    path_str = path_str.replace("\\", "/")
-
-    # Handle ${CLAUDE_SKILL_DIR} placeholder
-    if path_str.startswith("${CLAUDE_SKILL_DIR}"):
-        # Resolve relative to the SKILL.md's directory
-        skill_dir = source_md.parent
-        relative_part = path_str.replace("${CLAUDE_SKILL_DIR}", "").lstrip("/")
-        target = skill_dir / relative_part
-        if target.exists():
-            try:
-                return str(target.relative_to(root)).replace("\\", "/")
-            except ValueError:
-                pass
+# ---------------------------------------------------------------------------
+# 内部: 小さな道具
+# ---------------------------------------------------------------------------
+def _normalize(token: str):
+    """ルート相対 POSIX へ正規化する。ルート外へ出るものは None."""
+    normalized = posixpath.normpath(token)
+    if normalized in (".", ""):
         return None
-
-    # Handle .claude/ absolute paths
-    if path_str.startswith(".claude/"):
-        target = root / path_str
-        if target.exists():
-            try:
-                return str(target.relative_to(root)).replace("\\", "/")
-            except ValueError:
-                pass
+    if normalized.startswith("/") or normalized == ".." or normalized.startswith("../"):
         return None
+    return normalized
 
-    # Handle src/ absolute paths
-    if path_str.startswith("src/"):
-        target = root / path_str
-        if target.exists():
-            try:
-                return str(target.relative_to(root)).replace("\\", "/")
-            except ValueError:
-                pass
+
+def _iter_strings(value):
+    """入れ子の dict / list から文字列だけを順に取り出す."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_strings(item)
+
+
+def _name_pattern(names, slash_prefix: bool = False):
+    """実ツリーにある名前だけから素の名前用の正規表現を作る（一覧を焼き付けない）."""
+    if not names:
         return None
+    ordered = sorted(names, key=lambda name: (-len(name), name))
+    body = "|".join(re.escape(name) for name in ordered)  # nul-boundary: allow(正規表現の選択肢の組み立て。区切りは正規表現の文法で固定されており、機械可読な行集合ではない)
+    prefix = "/?" if slash_prefix else ""
+    return re.compile(r"(?<![\w-])" + prefix + r"(" + body + r")(?![\w-])")
 
-    # Handle paths relative to skill directory (e.g., scripts/xxx.py in SKILL.md)
-    if "SKILL.md" in str(source_md):
-        skill_dir = source_md.parent
-        target = skill_dir / path_str
-        if target.exists():
-            try:
-                return str(target.relative_to(root)).replace("\\", "/")
-            except ValueError:
-                pass
 
-    # Resolve relative to source file directory
-    source_dir = source_md.parent
-    target = source_dir / path_str
-    try:
-        target = target.resolve()
-        if target.exists():
-            # Check if target is within root
-            try:
-                return str(target.relative_to(root)).replace("\\", "/")
-            except ValueError:
-                pass
-    except (OSError, ValueError):
-        # Can occur if path is invalid
-        pass
+def _line_at(lines, number: int) -> str:
+    if 1 <= number <= len(lines):
+        return lines[number - 1]
+    return ""
 
+
+def _call_name(node: ast.Call):
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
     return None
 
 
-def _extract_agent_variant_maps(root: StdPath, md_files: List[StdPath], unreadable: list) -> List[Edge]:
-    """Extract edges from agent variant mapping tables in SKILL.md files."""
-    edges = []
-    backtick_pattern = re.compile(r'`([^`]+)`')
+def _uses_subprocess(tree: ast.AST) -> bool:
+    """このファイルが子プロセスを起動しうるか（`py_subprocess_path` の絞り込み）."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name.split(".")[0] == "subprocess" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "subprocess":
+                return True
+        elif isinstance(node, ast.Name) and node.id in ("Popen", "subprocess"):
+            return True
+        elif isinstance(node, ast.Attribute) and node.attr in ("Popen", "check_output"):
+            return True
+    return False
 
-    for md_file in md_files:
-        if not md_file.name == "SKILL.md":
+
+def _dedupe(links):
+    """同じ (relation, source, target) は最初の 1 本だけ残す.
+
+    同じ名前が 1 ファイル内で何十回も出るため、そのまま出すと出所が増えるだけで
+    関係の種類は増えない。最初に現れた行を代表として残す。
+    """
+    seen = set()
+    out = []
+    for link in links:
+        key = (link.relation, link.source, link.target)
+        if key in seen:
             continue
-
-        try:
-            content = md_file.read_text(encoding="utf-8")
-        except Exception as e:
-            unreadable.append(
-                (str(md_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
-            )
-            continue
-
-        source_rel = md_file.relative_to(root)
-        source_file = str(source_rel).replace("\\", "/")
-
-        # Find all markdown tables with | delimiters
-        # Look for rows that map agent names to worktree variants
-        lines = content.split('\n')
-
-        for line_num, line in enumerate(lines, start=1):
-            # Skip header and separator rows
-            if not line.strip().startswith('|') or '---' in line:
-                continue
-
-            # Parse table row
-            cells = [cell.strip() for cell in line.split('|')[1:-1]]  # Remove first/last empty cells
-
-            if len(cells) < 2:
-                continue
-
-            # Look for pattern: | <name> | <wt_name> | ...
-            # wt_name starts with "wt_" (may be in backticks)
-            for i, cell in enumerate(cells):
-                # Extract agent name from backticks if present
-                agent_match = backtick_pattern.search(cell)
-                if agent_match:
-                    agent_name = agent_match.group(1)
-                    # Check if this agent name is a worktree variant
-                    if agent_name.startswith("wt_"):
-                        agent_file = f".claude/agents/{agent_name}.md"
-
-                        edges.append(Edge(
-                            kind="agent_variant_map",
-                            source_file=source_file,
-                            source_line=line_num,
-                            target_node_id=agent_file,
-                        ))
-
-    return edges
-
-
-def _extract_py_imports(root: StdPath, py_files: List[StdPath], unreadable: list) -> List[Edge]:
-    """Extract edges from Python import statements."""
-    edges = []
-    import_pattern = re.compile(r'\s*(?:from\s+(\S+)\s+import|import\s+(\S+))')
-
-    for py_file in py_files:
-        try:
-            content = py_file.read_text(encoding="utf-8")
-        except Exception as e:
-            unreadable.append(
-                (str(py_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
-            )
-            continue
-
-        source_rel = py_file.relative_to(root)
-        source_file = str(source_rel).replace("\\", "/")
-
-        # Find import statements
-        lines = content.split('\n')
-        for line_num, line in enumerate(lines, start=1):
-            # Skip comments
-            if line.strip().startswith('#'):
-                continue
-
-            # Match: import X or from X import ...
-            import_match = import_pattern.match(line)
-            if import_match:
-                module_name = import_match.group(1) or import_match.group(2)
-
-                # Get the first component of the module name
-                module_base = module_name.split('.')[0]
-
-                # Look for same-directory module
-                sibling_py = py_file.parent / f"{module_base}.py"
-                if sibling_py.exists() and sibling_py != py_file:
-                    target_rel = sibling_py.relative_to(root)
-                    target_node_id = str(target_rel).replace("\\", "/")
-
-                    edges.append(Edge(
-                        kind="py_import",
-                        source_file=source_file,
-                        source_line=line_num,
-                        target_node_id=target_node_id,
-                    ))
-
-    return edges
-
-
-def _extract_py_importlib(root: StdPath, py_files: List[StdPath], unreadable: list) -> List[Edge]:
-    """Extract edges from _load_module() calls in Python."""
-    edges = []
-    load_module_pattern = re.compile(r'_load_module\s*\(\s*["\']([^"\']+)["\']\s*\)')
-
-    for py_file in py_files:
-        try:
-            content = py_file.read_text(encoding="utf-8")
-        except Exception as e:
-            unreadable.append(
-                (str(py_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
-            )
-            continue
-
-        source_rel = py_file.relative_to(root)
-        source_file = str(source_rel).replace("\\", "/")
-
-        # Find _load_module("name") calls
-        lines = content.split('\n')
-        for line_num, line in enumerate(lines, start=1):
-            for match in load_module_pattern.finditer(line):
-                module_name = match.group(1)
-
-                # Look for same-directory module
-                sibling_py = py_file.parent / f"{module_name}.py"
-                if sibling_py.exists():
-                    target_rel = sibling_py.relative_to(root)
-                    target_node_id = str(target_rel).replace("\\", "/")
-
-                    edges.append(Edge(
-                        kind="py_importlib",
-                        source_file=source_file,
-                        source_line=line_num,
-                        target_node_id=target_node_id,
-                    ))
-
-    return edges
-
-
-def _extract_py_subprocess_paths(root: StdPath, py_files: List[StdPath], unreadable: list) -> List[Edge]:
-    """Extract edges from subprocess calls with os.path.join patterns."""
-    edges = []
-    join_pattern = re.compile(r'os\.path\.join\s*\(\s*([A-Z_]+)\s*,\s*["\']([^"\']+\.py)["\']\s*\)')
-
-    for py_file in py_files:
-        try:
-            content = py_file.read_text(encoding="utf-8")
-        except Exception as e:
-            unreadable.append(
-                (str(py_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
-            )
-            continue
-
-        source_rel = py_file.relative_to(root)
-        source_file = str(source_rel).replace("\\", "/")
-
-        # Find os.path.join patterns with subprocess calls nearby
-        lines = content.split('\n')
-        for line_num, line in enumerate(lines, start=1):
-            for match in join_pattern.finditer(line):
-                # Check if this is inside a subprocess or similar context
-                # Look at surrounding lines for subprocess keyword
-                context_start = max(0, line_num - 5)
-                context_end = min(len(lines), line_num + 5)
-                window = lines[context_start:context_end]
-
-                if any('subprocess' in l or 'Popen' in l or 'run(' in l for l in window):
-                    dir_const = match.group(1)
-                    filename = match.group(2)
-
-                    # Try to infer the directory from the constant name
-                    dir_path = _infer_dir_from_constant(py_file, dir_const)
-
-                    if dir_path:
-                        target = dir_path / filename
-                        if target.exists():
-                            target_rel = target.relative_to(root)
-                            target_node_id = str(target_rel).replace("\\", "/")
-
-                            edges.append(Edge(
-                                kind="py_subprocess_path",
-                                source_file=source_file,
-                                source_line=line_num,
-                                target_node_id=target_node_id,
-                            ))
-
-    return edges
-
-
-def _infer_dir_from_constant(py_file: StdPath, const_name: str) -> StdPath | None:
-    """Infer directory path from a constant name in a Python file."""
-    try:
-        content = py_file.read_text(encoding="utf-8")
-    except Exception:
-        return None
-
-    # Look for assignment like: CONST_NAME = Path(...) / __file__.parent / etc.
-    pattern = fr'{const_name}\s*=\s*([^\n]+)'
-    match = re.search(pattern, content)
-
-    if not match:
-        return None
-
-    assignment = match.group(1)
-
-    # Handle __file__.parent pattern
-    if "__file__" in assignment and "parent" in assignment:
-        return py_file.parent
-
-    # Handle hardcoded paths
-    if ".parent" in assignment:
-        # Could be StdPath(...).parent or similar
-        return py_file.parent
-
-    return None
-
-
-def _extract_subagent_types(root: StdPath, md_files: List[StdPath], unreadable: list) -> List[Edge]:
-    """Extract edges from subagent_type and agent fields in markdown."""
-    edges = []
-    field_pattern = re.compile(r'\s*(subagent_type|agent)\s*:\s*(.+)')
-
-    for md_file in md_files:
-        try:
-            content = md_file.read_text(encoding="utf-8")
-        except Exception as e:
-            unreadable.append(
-                (str(md_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
-            )
-            continue
-
-        source_rel = md_file.relative_to(root)
-        source_file = str(source_rel).replace("\\", "/")
-
-        # Find frontmatter and fields
-        lines = content.split('\n')
-        in_frontmatter = False
-
-        for line_num, line in enumerate(lines, start=1):
-            # Detect frontmatter boundaries
-            if line.strip() == '---':
-                in_frontmatter = not in_frontmatter
-                continue
-
-            if in_frontmatter:
-                # Match: subagent_type: <name> or agent: <name>
-                match = field_pattern.match(line)
-                if match:
-                    field_name = match.group(1)
-                    field_value = match.group(2).strip()
-
-                    # Remove quotes if present
-                    if field_value.startswith('"') or field_value.startswith("'"):
-                        field_value = field_value[1:-1]
-
-                    # Build agent file path
-                    agent_file = f".claude/agents/{field_value}.md"
-
-                    edges.append(Edge(
-                        kind="subagent_type",
-                        source_file=source_file,
-                        source_line=line_num,
-                        target_node_id=agent_file,
-                    ))
-
-    return edges
-
-
-def _extract_sql_tables(root: StdPath, py_files: List[StdPath], unreadable: list) -> List[Edge]:
-    """Extract edges from SQL table references in Python and SQL files."""
-    edges = []
-    patterns = [
-        re.compile(r'\b(?:FROM|INTO|UPDATE|DELETE FROM)\s+([a-zA-Z_][a-zA-Z0-9_]*)', re.IGNORECASE),
-        re.compile(r'\b(?:CREATE\s+TABLE|DROP\s+TABLE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?([a-zA-Z_][a-zA-Z0-9_]*)', re.IGNORECASE),
-    ]
-    sql_keywords = {'SELECT', 'WHERE', 'ORDER', 'GROUP', 'HAVING', 'LIMIT', 'OFFSET'}
-
-    for py_file in py_files:
-        try:
-            content = py_file.read_text(encoding="utf-8")
-        except Exception as e:
-            unreadable.append(
-                (str(py_file.relative_to(root)).replace("\\", "/"), type(e).__name__)
-            )
-            continue
-
-        source_rel = py_file.relative_to(root)
-        source_file = str(source_rel).replace("\\", "/")
-
-        # Find SQL table references in strings
-        lines = content.split('\n')
-        for line_num, line in enumerate(lines, start=1):
-            # Skip comments
-            if line.strip().startswith('#'):
-                continue
-
-            for pattern in patterns:
-                for match in pattern.finditer(line):
-                    table_name = match.group(1)
-
-                    # Filter out SQL keywords that might be matched
-                    if table_name.upper() in sql_keywords:
-                        continue
-
-                    target_node_id = f"sqltable:{table_name}"
-
-                    edges.append(Edge(
-                        kind="sql_table",
-                        source_file=source_file,
-                        source_line=line_num,
-                        target_node_id=target_node_id,
-                    ))
-
-    return edges
+        seen.add(key)
+        out.append(link)
+    out.sort(key=lambda link: (link.source, link.source_line, link.relation, link.target))
+    return out

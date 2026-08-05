@@ -1,568 +1,1175 @@
-"""
-参照抽出器（reference graph extractor）のベンチマークテスト。
+"""参照抽出器（refgraph）のベンチマークテスト。
 
-`.dev/refgraph-benchmark-20260805.md` §1-6 に基づく。
-到達可能性の機械判定で、削除フェーズの安全網として機能する。
+`docs/refgraph-contract.md`（2026-08-05 確定）に基づく。**旧契約
+（`.dev/refgraph-benchmark-20260805.md`）の到達可能性 API は失効した**ので、
+本ファイルは `is_reachable` / `paths_to` を一切呼ばない。
 
-完了条件（§6）:
-1. §1 の 7 行（採用条件）すべて期待どおり
-2. §5 の N-1〜N-3（負の対照）すべて期待どおり
-3. wt_systematic-debugger.md への経路に agent_variant_map の辺が含まれること
-4. stop.py への経路に settings_hook の辺が含まれていないこと
-5. フルスイート緑（基準: 2774 passed / 14 skipped）
-6. do-nothing スタブで API 型検査 3 件のみが緑（他は全て赤）
+この道具は **関係を漏れなく抽出してファイルへ出力する**だけで、判定はしない。
+したがってテストが見るのは「到達可能か」ではなく「**関係が出るか**」である。
+
+カバーする完成条件（契約 §6）:
+
+- 条件 1（形式カバレッジ）: `TestFormatCoverage`
+- 条件 2（既知の関係 8 行）: `TestKnownRelations`
+- 条件 3（取りこぼしの可視化）: `TestSkippedAndMissingTargets`
+- 条件 4（ファイル往復）: `TestFileRoundTrip`
+- 条件 5（判定を含まない・機械強制）: `TestNoJudgmentInExtractor` /
+  `TestSourceIsNotFiltered`
+- 条件 6（フルスイート緑）: 本ファイルの対象外（親が確認する）
+- 条件 7（do-nothing スタブ検査）: `TestApiShape` **のみ**がスタブで緑になってよい。
+  他クラスは全て「辺が 1 本以上出ること」を positive control として持つので、
+  何も抽出しない実装では必ず赤になる（契約 §7 規律 4）。
+
+旧テストからの移植（契約の言葉に翻訳して残したもの）:
+
+- 旧 N-1「`permissions.allow` は `settings_hook` 辺を作らない」
+  → `TestKnownRelations.test_settings_permission_records_stop_py_and_is_not_a_hook`
+    と `TestMigratedNegativeControls.test_permissions_entry_is_permission_not_hook`
+    （**捨てるのではなく `settings_permission` として記録する**）
+- 旧 N-2「散文の言及は `agent_variant_map` 辺を作らない」
+  → `TestMigratedNegativeControls.test_prose_mention_is_bare_agent_name_not_variant_map`
+    （**捨てるのではなく `md_bare_agent_name` として記録する**）
+- 旧「正の双子を同じ fixture に置く」→ 全ての「無いこと」検査で維持
+
+テスト作法（契約 §7）:
+
+1. 不在は `assert xs == []` で直接 assert する（空ループ内で assert しない）
+2. 合成入力では参照先のファイルを実際に作る
+3. ノード ID / `skipped` のパスはルート相対 POSIX
+4. 「無いこと」の検査は「在ること」の対照と同じ fixture に置く
+5. assert のないテストを書かない
+6. 機構を足したら同じ周回でその機構を検査するテストを足す
+
+Windows 注意: `write_text()` には必ず `encoding="utf-8"` を付ける
+（既定は cp932 で、UTF-8 で読む抽出器が黙って沈黙する事故が実際に起きた）。
 """
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
-import tempfile
-from pathlib import Path as StdPath
+import re
+from collections import Counter
+from pathlib import Path
 
 import pytest
 
-# Edge / Path の定義元は実装側（`src/c3/refgraph.py`）。
-# テストがローカルに dataclass を定義して isinstance で突き合わせると、
-# 実装側が「テストを import する」という依存の逆転を招く（配布物が tests/ に
-# 依存することになり、wheel には tests/ が入らない）。定義元は 1 つに保つ。
-from c3.refgraph import Edge, Path  # noqa: E402
+# モジュール属性経由で参照する。`from c3.refgraph import write_graph` と書くと
+# 未実装時に **collection error** になり全ケースが実行されず、
+# 「スタブで緑になるのは API 型検査だけ」（契約 §6 条件 7）の確認ができない。
+import c3.refgraph as refgraph  # noqa: E402
 
 
-@pytest.fixture
-def repo_root():
-    """C3 リポジトリルート."""
-    return StdPath(__file__).parent.parent
+# ---------------------------------------------------------------------------
+# 契約 §4 の relation 一覧。**実装から import しない**（実装が減らしたら赤になる）。
+# ---------------------------------------------------------------------------
+RELATIONS = (
+    "settings_hook",
+    "settings_statusline",
+    "settings_permission",
+    "md_code_span_path",
+    "md_link",
+    "md_c3_run",
+    "md_agent_variant_map",
+    "md_subagent_type",
+    "md_bare_agent_name",
+    "md_bare_skill_name",
+    "py_import",
+    "py_importlib",
+    "py_subprocess_path",
+    "py_sql_table",
+)
+
+# 契約 §3 の resolution 4 値
+RESOLUTIONS = ("exact", "basename", "ambiguous", "missing")
+
+# 契約 §6 条件 5: 抽出器の公開面に現れてはならない「判定」の語彙。
+# 完全一致で見る（`root` 単独は抽出ルートを指す正当な名前なので含めない）。
+FORBIDDEN_PUBLIC_NAMES = frozenset(
+    {
+        "is_reachable",
+        "paths_to",
+        "reachable",
+        "unreachable",
+        "reachable_from",
+        "is_dead",
+        "is_alive",
+        "dead_nodes",
+        "live_nodes",
+        "entry_points",
+        "entrypoints",
+        "ENTRY_POINTS",
+        "ENTRYPOINTS",
+        "roots",
+        "ROOTS",
+        "root_set",
+        "ROOT_SET",
+    }
+)
+
+# 同上をソース（AST）側で縛るための名前パターン。
+_JUDGMENT_NAME_RE = re.compile(
+    r"reachab|entry_?points?|root_set|rootset|dead_code|dead_node"
+    r"|is_alive|is_dead|paths_to",
+    re.IGNORECASE,
+)
 
 
-@pytest.fixture
-def graph(repo_root):
-    """build_graph を呼んだ結果の Graph オブジェクト."""
-    from c3.refgraph import build_graph
-    return build_graph(repo_root)
+# ---------------------------------------------------------------------------
+# ヘルパー
+# ---------------------------------------------------------------------------
+def _mkfile(root: Path, rel: str, text: str) -> Path:
+    """合成ツリーへ UTF-8 でファイルを作る（参照先も必ず実体を作る・§7 規律 2）."""
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
-class TestAdoptionConditions:
-    """採用条件（§1・9ケース）"""
-
-    def test_24_hook_files_reachable(self, graph):
-        """`.claude/hooks/*.py` 24 本が到達可能."""
-        hooks_dir = StdPath(__file__).parent.parent / ".claude" / "hooks"
-        py_files = sorted(hooks_dir.glob("*.py"))
-        assert len(py_files) == 24
-
-        for hook_file in py_files:
-            node_id = str(hook_file.relative_to(StdPath(__file__).parent.parent)).replace("\\", "/")
-            assert graph.is_reachable(node_id), f"{node_id} should be reachable"
-
-    def test_stop_py_reachable_via_importlib(self, graph):
-        """stop.py が importlib 経由で到達可能."""
-        assert graph.is_reachable(".claude/hooks/stop.py")
-
-    def test_consolidate_memory_py_reachable_via_importlib(self, graph):
-        """consolidate_memory.py が importlib 経由で到達可能."""
-        assert graph.is_reachable(".claude/hooks/consolidate_memory.py")
-
-    def test_tier_gap_check_py_reachable_via_importlib(self, graph):
-        """tier_gap_check.py が importlib 経由で到達可能."""
-        assert graph.is_reachable(".claude/hooks/tier_gap_check.py")
-
-    def test_permission_handler_toast_py_reachable_via_subprocess(self, graph):
-        """permission_handler_toast.py が subprocess 経由で到達可能."""
-        assert graph.is_reachable(".claude/hooks/permission_handler_toast.py")
-
-    def test_wt_systematic_debugger_md_reachable_via_agent_variant_map(self, graph):
-        """wt_systematic-debugger.md が写像表経由で到達可能."""
-        assert graph.is_reachable(".claude/agents/wt_systematic-debugger.md")
-
-    def test_7_skill_scripts_reachable(self, graph):
-        """`.claude/skills/*/scripts/*.py` 7 本が到達可能."""
-        skills_dir = StdPath(__file__).parent.parent / ".claude" / "skills"
-        script_files = sorted(skills_dir.glob("*/scripts/*.py"))
-        assert len(script_files) == 7
-
-        for script_file in script_files:
-            node_id = str(script_file.relative_to(StdPath(__file__).parent.parent)).replace("\\", "/")
-            assert graph.is_reachable(node_id)
-
-    def test_stop_exit2_test_flag_unreachable_with_positive_case(self, graph):
-        """`.claude/state/stop_exit2_test.flag` は到達不能。到達可能例と対にする.
-
-        仕様§5-1 注記 3: ノード ID はルート相対。存在しないノード ID を渡すと
-        実装に関係なく False を返すため、正確な ID が必須。
-        仕様§5-1 注記 4: 到達不能だけを見ると、何も到達可能と判定しない実装でも
-        緑になる。同じ graph 上で到達可能な既知ノードを対置して、判定自体が
-        働いていることを担保する。
-        """
-        # Positive case: settings.json の hooks に登録されている（必ず到達可能）
-        assert graph.is_reachable(".claude/hooks/session_start.py"), (
-            "session_start.py is registered in settings.json hooks and must be reachable"
-        )
-
-        # Negative case: 書き手も読み手も存在しないフラグ
-        assert not graph.is_reachable(".claude/state/stop_exit2_test.flag")
-
-    def test_agent_runs_table_unreachable_with_positive_case(self, graph):
-        """agent_runs テーブルは到達不能。同時に c3.db の到達可能を確認.
-
-        仕様§5-1 注記 4: 到達不能テストは同じ辺種の到達可能例と対にして、
-        辺の生成自体が働いていることを担保する。
-        """
-        # Positive case: production code が読み書きする db は到達可能
-        assert graph.is_reachable("src/c3/db.py"), (
-            "src/c3/db.py should be reachable (sql_table edges should exist)"
-        )
-
-        # Negative case: 参照のない agent_runs は到達不能
-        assert not graph.is_reachable("sqltable:agent_runs")
+def _links(graph, *, relation=None, source=None, target=None):
+    """条件に合う辺を list で返す（`== []` で不在を直接 assert するため）."""
+    out = []
+    for link in graph.links:
+        if relation is not None and link.relation != relation:
+            continue
+        if source is not None and link.source != source:
+            continue
+        if target is not None and link.target != target:
+            continue
+        out.append(link)
+    return out
 
 
-class TestNegativeControls:
-    """負の対照（§5・N-1）"""
+def _targets(graph, relation=None, source=None):
+    return {link.target for link in _links(graph, relation=relation, source=source)}
 
-    def test_n1_stop_py_has_no_terminal_settings_hook_edge(self, graph):
-        """N-1: stop.py を終点とする settings_hook 辺が 1 本も無いこと.
 
-        `settings.json` の `permissions.allow` にある
-        `"Bash(c3 run .claude/hooks/stop.py*)"` はポリシー行であって hook 登録ではない。
-        そこから辺を張ると「正しい答えを間違った経路で」出すことになる。
+def _node_ids(graph):
+    return {node.id for node in graph.nodes}
 
-        仕様§5 N-1 注記: **経路全体の辺種で判定してはならない**。正しい経路は
-        `settings.json --settings_hook--> session_stop.py --py_importlib--> stop.py`
-        であり、途中に settings_hook を含むのが正常。判定するのは終点に入る辺。
 
-        仕様§5-1 注記 1: paths が空ならループが 1 度も回らず緑になるため、
-        assert len(paths) > 0 で経路の存在を先に検査する。
-        """
-        node_id = ".claude/hooks/stop.py"
-        paths = graph.paths_to(node_id)
-        assert len(paths) > 0, "stop.py should be reachable"
+def _skipped_paths(graph):
+    return [entry.path for entry in graph.skipped]
 
-        for path in paths:
-            terminal = path.edges[-1]
-            assert terminal.target_node_id == node_id, (
-                "the last edge of a path must terminate at the queried node"
+
+@pytest.fixture(scope="session")
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(scope="session")
+def repo_graph(repo_root):
+    """実リポジトリ全体の抽出結果（session スコープ・1 回だけ構築する）."""
+    return refgraph.build_graph(repo_root)
+
+
+# ===========================================================================
+# 契約 §5 API の型検査
+#
+# ★ do-nothing スタブで緑になってよいのは **このクラスだけ**（契約 §6 条件 7）。
+#   他クラスが 1 件でも緑になったら、そのテストは空回りしている。
+# ===========================================================================
+class TestApiShape:
+    def test_build_graph_returns_graph_with_tuple_collections(self, tmp_path):
+        """`build_graph(root)` が nodes / links / skipped を tuple で返す（§5）."""
+        _mkfile(tmp_path, "README.md", "# empty\n")
+
+        graph = refgraph.build_graph(tmp_path)
+
+        assert isinstance(graph.nodes, tuple)
+        assert isinstance(graph.links, tuple)
+        assert isinstance(graph.skipped, tuple)
+
+    def test_to_dict_has_schema_shape(self, tmp_path):
+        """`Graph.to_dict()` が §3 のスキーマ形をしていること."""
+        _mkfile(tmp_path, "README.md", "# empty\n")
+
+        data = refgraph.build_graph(tmp_path).to_dict()
+
+        assert isinstance(data, dict)
+        missing_keys = [
+            key
+            for key in (
+                "schema_version",
+                "root",
+                "generated_from",
+                "nodes",
+                "links",
+                "skipped",
             )
-            assert terminal.kind != "settings_hook", (
-                "stop.py is not registered in the hooks section; a settings_hook "
-                f"edge into it means permissions.allow was treated as an invocation "
-                f"(source: {terminal.source_file}:{terminal.source_line})"
-            )
+            if key not in data
+        ]
+        assert missing_keys == []
+        assert data["schema_version"] == 1
+        assert isinstance(data["root"], str)
+        assert isinstance(data["generated_from"], dict)
+        assert isinstance(data["generated_from"]["file_count"], int)
+        assert isinstance(data["nodes"], list)
+        assert isinstance(data["links"], list)
+        assert isinstance(data["skipped"], list)
 
-        # 正の対照: 正解の機構（session_stop.py の importlib）で到達していること
-        assert any(path.edges[-1].kind == "py_importlib" for path in paths), (
-            "stop.py must be reachable via the importlib load in session_stop.py"
-        )
+    def test_write_graph_then_read_graph_returns_graph(self, tmp_path):
+        """`write_graph` がファイルを作り `read_graph` が Graph を返す（型のみ）."""
+        _mkfile(tmp_path, "README.md", "# empty\n")
+        out = tmp_path / "out" / "graph.json"
+
+        graph = refgraph.build_graph(tmp_path)
+        refgraph.write_graph(graph, out)
+
+        assert out.is_file()
+
+        restored = refgraph.read_graph(out)
+        assert isinstance(restored.nodes, tuple)
+        assert isinstance(restored.links, tuple)
+        assert isinstance(restored.skipped, tuple)
 
 
-class TestSyntheticInputs:
-    """合成入力での検査（§5・N-1/N-2）.
+# ===========================================================================
+# 契約 §6 条件 1: 形式カバレッジ
+# ===========================================================================
+class TestFormatCoverage:
+    def test_every_relation_has_at_least_one_edge_in_the_real_repo(self, repo_graph):
+        """§4 の 14 relation それぞれに、実リポジトリで 1 本以上の辺が出ること.
 
-    仕様§5-1 注記 2: 参照先ファイルを実際に作る。
-    作らないと「ノードが存在しない」ので必ず経路ゼロになり、空回りする。
-    """
-
-    def test_n1_synthetic_permissions_only_no_settings_hook(self):
-        """N-1 合成版: permissions.allow だけの .py には settings_hook 辺を張らない.
-
-        同じ合成 settings.json に **hooks 登録された .py** を対置する（仕様§5-1 注記 4）。
-        正の側が赤になるので、辺を 1 本も作らない実装ではこのテストを通過できない。
-        争点を「同じファイル形式・同じディレクトリで、hooks 節にあるか
-        permissions 節にあるか」だけに絞っている。
+        0 本の relation があれば、その形式を取りこぼしている
+        （14 種すべてが tracked ファイルに実在することは確認済み）。
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = StdPath(tmpdir)
+        counts = Counter(link.relation for link in repo_graph.links)
+        missing = [name for name in RELATIONS if counts[name] == 0]
+        assert missing == [], f"relation with zero edges: {missing}"
 
-            # 参照先の .py を 2 本とも実際に作成（仕様§5-1 注記 2）
-            settings_dir = tmpdir_path / ".claude"
-            settings_dir.mkdir()
-            hooks_dir = settings_dir / "hooks"
-            hooks_dir.mkdir()
-            (hooks_dir / "perm_only_hook.py").write_text("# synthetic\n", encoding="utf-8")
-            (hooks_dir / "registered_hook.py").write_text("# synthetic\n", encoding="utf-8")
+    def test_no_unknown_relation_names(self, repo_graph):
+        """§4 に無い relation 名が混ざっていないこと（正の対照つき）."""
+        assert len(repo_graph.links) > 0, "positive control: 辺が 1 本も無い"
 
-            # settings.json: 一方は permissions.allow のみ、他方は hooks に実登録
-            # （hooks 節の形は実 settings.json と同形式にする）
-            settings_file = settings_dir / "settings.json"
-            settings_data = {
-                "permissions": {
-                    "allow": ["Bash(c3 run .claude/hooks/perm_only_hook.py)"]
-                },
-                "hooks": {
-                    "PreToolUse": [
-                        {
-                            "matcher": "Bash",
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    "command": "c3",
-                                    "args": [
-                                        "run",
-                                        "${CLAUDE_PROJECT_DIR}/.claude/hooks/registered_hook.py",
-                                    ],
-                                }
-                            ],
-                        }
-                    ]
-                },
+        unknown = sorted({link.relation for link in repo_graph.links} - set(RELATIONS))
+        assert unknown == [], f"relation not defined in contract §4: {unknown}"
+
+    def test_resolution_values_are_within_the_contract(self, repo_graph):
+        """`resolution` が §3 の 4 値のいずれかであること."""
+        assert len(repo_graph.links) > 0, "positive control: 辺が 1 本も無い"
+
+        unknown = sorted({link.resolution for link in repo_graph.links} - set(RESOLUTIONS))
+        assert unknown == [], f"resolution not defined in contract §3: {unknown}"
+
+
+# ===========================================================================
+# 契約 §6 条件 2: 既知の関係が出ること（表 8 行）
+# ===========================================================================
+class TestKnownRelations:
+    def test_settings_hooks_section_produces_settings_hook_edges(self, repo_graph):
+        """行 1: `settings*.json` の hooks 登録 → hook `.py`（`settings_hook`）."""
+        hook_links = _links(repo_graph, relation="settings_hook")
+        assert len(hook_links) > 0, "settings_hook edge is missing entirely"
+
+        bad_sources = sorted(
+            {
+                link.source
+                for link in hook_links
+                if not link.source.endswith(("settings.json", "settings.local.json"))
             }
-            settings_file.write_text(json.dumps(settings_data, indent=2), encoding="utf-8")
+        )
+        assert bad_sources == [], f"settings_hook must originate from settings*.json: {bad_sources}"
 
-            from c3.refgraph import build_graph
-            graph_synth = build_graph(tmpdir_path)
+        targets = {link.target for link in hook_links}
+        assert ".claude/hooks/permission_handler.py" in targets
 
-            # Positive: hooks 節の登録は settings_hook 辺になる
-            registered_paths = graph_synth.paths_to(".claude/hooks/registered_hook.py")
-            assert len(registered_paths) > 0, (
-                "a hook registered in the hooks section must be reachable"
-            )
-            assert any(
-                "settings_hook" in [e.kind for e in p.edges] for p in registered_paths
-            ), "the path to a registered hook must contain a 'settings_hook' edge"
+    def test_session_stop_importlib_loads_produce_py_importlib_edges(self, repo_graph):
+        """行 2: `session_stop.py` の importlib → 4 モジュール（`py_importlib`）.
 
-            # Negative: permissions.allow だけの参照からは辺を張らない
-            perm_only_paths = graph_synth.paths_to(".claude/hooks/perm_only_hook.py")
-            assert perm_only_paths == [], (
-                "permissions.allow is a policy entry, not an invocation; "
-                f"expected no path, got {perm_only_paths}"
-            )
-
-    def test_n2_synthetic_prose_mention_no_agent_variant_map(self):
-        """N-2 合成版: 散文の言及には agent_variant_map 辺を張らない.
-
-        同じ SKILL.md に **写像表の行に出る agent** を対置する（仕様§5-1 注記 4）。
-        正の側が赤になるので、辺を 1 本も作らない実装ではこのテストを通過できない。
-        争点を「同じファイル・同じ agent 名の形で、表の行にあるか本文にあるか」
-        だけに絞っている。これは pivot §7 の誤判定 1（wt_systematic-debugger を
-        散文参照しか無いと読んで削除可と誤判定した）を機械化したもの。
+        `.dev/pivot-20260805.md` §9 の実測（80/87/97/111 行）を「関係が出るか」に
+        読み替えたもの。実測値は再測定しない。
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = StdPath(tmpdir)
+        expected = {
+            ".claude/hooks/stop.py",
+            ".claude/hooks/consolidate_memory.py",
+            ".claude/hooks/session_utils.py",
+            ".claude/hooks/tier_gap_check.py",
+        }
+        got = _targets(repo_graph, "py_importlib", ".claude/hooks/session_stop.py")
+        missing = sorted(expected - got)
+        assert missing == [], f"py_importlib edges missing from session_stop.py: {missing}"
 
-            # 参照先の agent .md を 2 本とも実際に作成（仕様§5-1 注記 2）
-            agents_dir = tmpdir_path / ".claude" / "agents"
-            agents_dir.mkdir(parents=True)
-            (agents_dir / "wt_prose_only.md").write_text(
-                "# Prose Only Agent\n", encoding="utf-8"
+    def test_permission_handler_subprocess_produces_py_subprocess_path_edge(self, repo_graph):
+        """行 3: `permission_handler.py` の subprocess → toast（`py_subprocess_path`）."""
+        hits = _links(
+            repo_graph,
+            relation="py_subprocess_path",
+            source=".claude/hooks/permission_handler.py",
+            target=".claude/hooks/permission_handler_toast.py",
+        )
+        assert len(hits) >= 1, "py_subprocess_path edge to permission_handler_toast.py is missing"
+
+    def test_parallel_agents_variant_table_produces_md_agent_variant_map_edges(self, repo_graph):
+        """行 4: `parallel-agents/SKILL.md` の写像表 → `wt_*.md`（`md_agent_variant_map`）."""
+        got = _targets(
+            repo_graph, "md_agent_variant_map", ".claude/skills/parallel-agents/SKILL.md"
+        )
+        expected = {
+            ".claude/agents/wt_tester.md",
+            ".claude/agents/wt_developer.md",
+            ".claude/agents/wt_systematic-debugger.md",
+        }
+        missing = sorted(expected - got)
+        assert missing == [], f"md_agent_variant_map edges missing: {missing}"
+
+    def test_c3_run_reaches_all_seven_skill_scripts(self, repo_graph, repo_root):
+        """行 5: SKILL.md の `c3 run` → skill scripts 7 本（`md_c3_run`）.
+
+        `${CLAUDE_SKILL_DIR}` / skill 相対 / ルート相対の 3 形式が混在しており、
+        1 形式でも解決できないと 7 本そろわない。
+        """
+        script_ids = sorted(
+            str(path.relative_to(repo_root)).replace("\\", "/")
+            for path in repo_root.glob(".claude/skills/*/scripts/*.py")
+        )
+        assert len(script_ids) == 7, f"repo fact changed: {script_ids}"
+
+        targets = _targets(repo_graph, "md_c3_run")
+        missing = [node_id for node_id in script_ids if node_id not in targets]
+        assert missing == [], f"md_c3_run edges missing for skill scripts: {missing}"
+
+    def test_cli_multiline_import_resolves_every_submodule(self, repo_graph):
+        """行 6: `cli.py` の複数行括弧付き import → `cli_*.py`（`py_import`）.
+
+        行単位の正規表現では 2 行目以降を取りこぼす。AST 解析の要求（§4 設計上の要点）を
+        機械で押さえる。
+        """
+        expected = {
+            f"src/c3/{name}.py"
+            for name in (
+                "cli_ask",
+                "cli_doctor",
+                "cli_init",
+                "cli_list",
+                "cli_metrics",
+                "cli_plan",
+                "cli_recall",
+                "cli_run",
+                "cli_tier",
+                "cli_update",
             )
-            (agents_dir / "wt_table_row.md").write_text(
-                "# Table Row Agent\n", encoding="utf-8"
-            )
+        }
+        got = _targets(repo_graph, "py_import", "src/c3/cli.py")
+        missing = sorted(expected - got)
+        assert missing == [], f"py_import edges missing from cli.py (AST 解析の欠落?): {missing}"
 
-            # SKILL.md: 一方は本文だけ、他方は写像表の行に出す
-            skill_dir = tmpdir_path / ".claude" / "skills" / "test-skill"
-            skill_dir.mkdir(parents=True)
-            skill_md = skill_dir / "SKILL.md"
-            skill_md.write_text(
-                "# Test Skill\n"
-                "\n"
-                "The `wt_prose_only` agent is useful for debugging.\n"  # ← 本文だけ
-                "\n"
-                "| 元 | 並列バリアント | 備考 |\n"
-                "| --- | --- | --- |\n"
-                "| `table_row` | `wt_table_row` | worktree 専用 |\n",
-                # Windows の既定は cp932。明示しないと日本語が cp932 で書かれ、
-                # UTF-8 で読む抽出器が UnicodeDecodeError で沈黙し、辺ゼロになる
-                # （実際にこれで 1 件落ちた。C3 の実 SKILL.md は日本語なので
-                # 非 ASCII を含む表を検査対象に残す意味がある）
-                encoding="utf-8",
-            )
+    def test_prose_mention_produces_md_bare_agent_name_edge(self, repo_graph):
+        """行 7: SKILL.md の散文 → `security-reviewer.md`（`md_bare_agent_name`）.
 
-            from c3.refgraph import build_graph
-            graph_synth = build_graph(tmpdir_path)
+        C3 の agent は親 Claude が散文の指示を読んで起動するため、パス形式の参照が
+        存在しない。旧契約でこの形式を切り捨てた結果、辺が 0 本になった（§9-3）。
+        """
+        hits = _links(
+            repo_graph,
+            relation="md_bare_agent_name",
+            target=".claude/agents/security-reviewer.md",
+        )
+        assert len(hits) >= 1, "md_bare_agent_name edge to security-reviewer.md is missing"
 
-            # Positive: 写像表の行は agent_variant_map 辺になる
-            table_paths = graph_synth.paths_to(".claude/agents/wt_table_row.md")
-            assert len(table_paths) > 0, (
-                "an agent named in a variant mapping table row must be reachable"
-            )
-            assert any(
-                "agent_variant_map" in [e.kind for e in p.edges] for p in table_paths
-            ), "the path to a table-row agent must contain an 'agent_variant_map' edge"
+        from_skill_md = [link for link in hits if link.source.endswith("SKILL.md")]
+        assert len(from_skill_md) >= 1, (
+            f"contract row 7 says the mention is in a SKILL.md; sources were "
+            f"{sorted({link.source for link in hits})}"
+        )
 
-            # Negative: 散文の言及からは agent_variant_map 辺を張らない
-            prose_paths = graph_synth.paths_to(".claude/agents/wt_prose_only.md")
-            assert not any(
-                "agent_variant_map" in [e.kind for e in p.edges] for p in prose_paths
-            ), (
-                "a prose mention is documentation, not an invocation; "
-                f"expected no 'agent_variant_map' edge, got {prose_paths}"
-            )
+    def test_settings_permission_records_stop_py_and_is_not_a_hook(self, repo_graph):
+        """行 8 ＋ 旧 N-1 の移植: `permissions.allow` → `stop.py`.
+
+        `"Bash(c3 run .claude/hooks/stop.py*)"` は**実在する関係**なので
+        `settings_permission` として記録する（旧契約は捨てていた）。
+        一方 `stop.py` は hooks 節に登録されていない（登録されているのは
+        `session_stop.py`）ので `settings_hook` にはならない。
+        `stop.py` は `session_stop.py` の**接尾辞**でもあるため、部分一致で
+        解決する実装はここで赤になる。
+        """
+        perm_links = _links(
+            repo_graph, relation="settings_permission", target=".claude/hooks/stop.py"
+        )
+        assert len(perm_links) >= 1, "settings_permission edge to stop.py is missing"
+
+        bad_sources = sorted(
+            {
+                link.source
+                for link in perm_links
+                if not link.source.endswith(("settings.json", "settings.local.json"))
+            }
+        )
+        assert bad_sources == []
+
+        hook_links = _links(
+            repo_graph, relation="settings_hook", target=".claude/hooks/stop.py"
+        )
+        assert hook_links == [], (
+            "stop.py is not registered in the hooks section; a settings_hook edge into it "
+            "means permissions.allow (or a suffix match on session_stop.py) leaked into the "
+            f"hook relation: {[(l.source, l.source_line, l.context) for l in hook_links]}"
+        )
 
 
-class TestUnreadableFiles:
-    """読めないファイルの扱い（削除安全網としての fail-closed）.
+class TestOtherRelationsInTheRealRepo:
+    """§6 条件 2 の表に無い §4 relation の実リポジトリ実測（形式カバレッジの内訳）."""
 
-    この道具は「削除してよいか」を判定する安全網なので、読めない・デコードできない
-    ファイルの発信辺が黙って消えると、そのファイルが参照している対象が
-    「到達不能」に見える＝**削除候補に化ける**。沈黙は許されない。
+    def test_statusline_produces_settings_statusline_edge(self, repo_graph):
+        """`statusLine` は `command` 文字列にパスが埋まる（hooks の `args` 形式と別）."""
+        hits = _links(
+            repo_graph,
+            relation="settings_statusline",
+            target=".claude/hooks/statusline.py",
+        )
+        assert len(hits) >= 1, "settings_statusline edge to statusline.py is missing"
 
-    2026-08-05: fail-open を潰す是正が、記録後の `continue` を落として
-    未代入変数に到達する `UnboundLocalError` を 8 箇所に作った。
-    実リポジトリが全ファイル UTF-8 で読めるため 2800 件のテストは緑のままだった。
-    ここを機械で押さえる。
-    """
+    def test_md_link_edge_exists(self, repo_graph):
+        """マークダウンリンク `[x](path)` が `md_link` になること."""
+        hits = _links(
+            repo_graph,
+            relation="md_link",
+            source=".claude/docs/taxonomy.md",
+            target=".claude/docs/platform-adapters.md",
+        )
+        assert len(hits) >= 1, "md_link edge taxonomy.md -> platform-adapters.md is missing"
 
-    def _build_tree_with_one_undecodable_file(self, tmpdir_path):
+    def test_md_subagent_type_edge_exists(self, repo_graph):
+        """`subagent_type: "design-critic"` / `agent: design-critic` が辺になること."""
+        hits = _links(
+            repo_graph,
+            relation="md_subagent_type",
+            target=".claude/agents/design-critic.md",
+        )
+        assert len(hits) >= 1, "md_subagent_type edge to design-critic.md is missing"
+
+    def test_md_bare_skill_name_edge_exists(self, repo_graph):
+        """`/start` のような素の skill 名が `md_bare_skill_name` になること."""
+        hits = _links(
+            repo_graph,
+            relation="md_bare_skill_name",
+            target=".claude/skills/start/SKILL.md",
+        )
+        assert len(hits) >= 1, "md_bare_skill_name edge to skills/start/SKILL.md is missing"
+
+    def test_py_sql_table_edge_and_node_exist(self, repo_graph):
+        """SQL 中のテーブル名が `sqltable:<name>` ノードへの辺になること（§3）."""
+        hits = _links(repo_graph, relation="py_sql_table", target="sqltable:agent_outcomes")
+        assert len(hits) >= 1, "py_sql_table edge to sqltable:agent_outcomes is missing"
+        assert "sqltable:agent_outcomes" in _node_ids(repo_graph)
+
+
+# ===========================================================================
+# 契約 §2 原則 1 / §6 条件 5 の実体: 出所でフィルタしない
+# ===========================================================================
+class TestSourceIsNotFiltered:
+    def test_no_directory_is_excluded_from_extraction(self, tmp_path):
+        """旧契約が「汚染源」と呼んだ 5 種すべてから辺が出ること（§2 原則 1）.
+
+        `CHANGELOG` / `_template/` / `.dev/` / `.claude/tmp/` / `.claude/reports/`
+        の計 1160 本（全体の 45%）を捨てたのが旧契約の失敗（§9-2）。
+        `tests/` も旧実装は走査対象外にしていたので併せて置く。
+        """
+        _mkfile(tmp_path, ".claude/hooks/target.py", "# target\n")
+        span = "参照: `.claude/hooks/target.py`\n"
+
+        sources = {
+            "CHANGELOG.md",
+            "src/c3/_template/.claude/skills/x/SKILL.md",
+            ".dev/notes.md",
+            ".claude/tmp/po-manifest.md",
+            ".claude/reports/plan-report-20260805-000000.md",
+            "tests/doc.md",
+        }
+        for rel in sources:
+            _mkfile(tmp_path, rel, "# doc\n\n" + span)
+
+        graph = refgraph.build_graph(tmp_path)
+
+        got = {
+            link.source
+            for link in _links(graph, target=".claude/hooks/target.py")
+        }
+        missing = sorted(sources - got)
+        assert missing == [], f"these locations were filtered out of extraction: {missing}"
+
+
+# ===========================================================================
+# 契約 §6 条件 3: 取りこぼしの可視化
+# ===========================================================================
+class TestSkippedAndMissingTargets:
+    @staticmethod
+    def _tree_with_one_undecodable_file(root: Path) -> str:
         """デコード不能な SKILL.md と、正常に辺を張る SKILL.md を 1 つずつ置く."""
-        agents_dir = tmpdir_path / ".claude" / "agents"
-        agents_dir.mkdir(parents=True)
-        (agents_dir / "wt_good.md").write_text("# ok\n", encoding="utf-8")
+        _mkfile(root, ".claude/agents/wt_good.md", "# ok\n")
 
-        # 正常側: UTF-8 で書かれ、写像表の行から辺を張る
-        good_dir = tmpdir_path / ".claude" / "skills" / "good-skill"
-        good_dir.mkdir(parents=True)
-        (good_dir / "SKILL.md").write_text(
-            "# Good Skill\n"
+        # 正常側（正の双子・§7 規律 4）
+        _mkfile(
+            root,
+            ".claude/skills/good-skill/SKILL.md",
+            "# Good Skill\n\n| base | variant |\n| --- | --- |\n| `good` | `wt_good` |\n",
+        )
+
+        # 異常側: cp932 の日本語は UTF-8 として不正なバイト列になる
+        bad = root / ".claude/skills/bad-skill/SKILL.md"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes("# 壊れた見出し\n".encode("cp932"))
+        return ".claude/skills/bad-skill/SKILL.md"
+
+    def test_undecodable_file_is_reported_once_in_skipped(self, tmp_path):
+        """読めなかったファイルが `skipped` に 1 度だけ出ること（§2 原則 3）.
+
+        沈黙して continue すると、その発信辺が消えたことに誰も気づけない。
+        2026-08-05 には fail-open を潰す是正が `UnboundLocalError` を 8 箇所に
+        作ったが、実リポジトリが全ファイル UTF-8 なので 2800 件の緑が見逃した。
+        """
+        bad_rel = self._tree_with_one_undecodable_file(tmp_path)
+
+        graph = refgraph.build_graph(tmp_path)
+        reported = _skipped_paths(graph)
+
+        assert bad_rel in reported, f"undecodable file must be in Graph.skipped; got {reported!r}"
+        assert reported.count(bad_rel) == 1, (
+            f"the same file must not be reported once per extractor; got {reported!r}"
+        )
+
+        bad_separators = [path for path in reported if "\\" in path]
+        assert bad_separators == [], (
+            f"skipped paths must use POSIX separators like node ids; got {reported!r}"
+        )
+
+        reasons = [entry.reason for entry in graph.skipped if entry.path == bad_rel]
+        assert reasons != [] and all(isinstance(r, str) and r for r in reasons)
+
+    def test_undecodable_file_does_not_suppress_other_edges(self, tmp_path):
+        """1 本読めなくても、他のファイルの辺は失われないこと（正の双子）."""
+        self._tree_with_one_undecodable_file(tmp_path)
+
+        graph = refgraph.build_graph(tmp_path)
+
+        hits = _links(
+            graph,
+            relation="md_agent_variant_map",
+            source=".claude/skills/good-skill/SKILL.md",
+            target=".claude/agents/wt_good.md",
+        )
+        assert len(hits) >= 1, "an unrelated readable SKILL.md must still produce its edges"
+
+    def test_missing_target_is_emitted_as_edge_with_target_exists_false(self, tmp_path):
+        """参照先が実在しなくても辺は出し、`target_exists: false` を立てること（§2 原則 3）.
+
+        「消したはずのものを参照している残骸がある」は有用な信号なので捨てない。
+        実在する参照（正の双子）を同じ fixture に置く。
+        """
+        _mkfile(tmp_path, ".claude/hooks/alive.py", "# alive\n")
+        _mkfile(
+            tmp_path,
+            ".claude/tmp/po-manifest.md",
+            "# manifest\n"
+            "\n"
+            "生きている参照: `.claude/hooks/alive.py`\n"
+            "消えた参照: `.claude/agents/tdd-develop.md`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        dead = _links(graph, target=".claude/agents/tdd-develop.md")
+        assert len(dead) >= 1, "an edge to a deleted file must still be emitted"
+        assert [link for link in dead if link.target_exists is not False] == []
+        assert [link for link in dead if link.resolution != "missing"] == []
+
+        alive = _links(graph, target=".claude/hooks/alive.py")
+        assert len(alive) >= 1, "positive control: the existing target must also produce an edge"
+        assert [link for link in alive if link.target_exists is not True] == []
+
+    def test_missing_target_appears_as_a_node_marked_not_existing(self, tmp_path):
+        """実在しない参照先も `nodes` に出て `exists: false` が立つこと（§3）."""
+        _mkfile(tmp_path, ".claude/hooks/alive.py", "# alive\n")
+        _mkfile(
+            tmp_path,
+            "CHANGELOG.md",
+            "# changelog\n\n`.claude/hooks/alive.py` と `.claude/agents/tdd-develop.md`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        by_id = {node.id: node for node in graph.nodes}
+
+        assert ".claude/agents/tdd-develop.md" in by_id
+        assert by_id[".claude/agents/tdd-develop.md"].exists is False
+        assert ".claude/hooks/alive.py" in by_id
+        assert by_id[".claude/hooks/alive.py"].exists is True
+
+    def test_real_repo_surfaces_at_least_one_dead_reference(self, repo_graph, repo_root):
+        """実リポジトリでも `target_exists: false` の辺が出ること（§6 条件 3）.
+
+        `CHANGELOG.md` は削除済みファイルをコードスパンで多数言及しており、
+        `.claude/agents/tdd-develop.md` はその 1 つ（tracked ファイルなので
+        CI のクリーンチェックアウトでも成立する）。
+        """
+        assert not (repo_root / ".claude/agents/tdd-develop.md").exists(), (
+            "premise changed: tdd-develop.md was resurrected"
+        )
+
+        dead = _links(repo_graph, target=".claude/agents/tdd-develop.md")
+        assert len(dead) >= 1, "the dead reference documented in CHANGELOG.md was dropped"
+        assert [link for link in dead if link.target_exists is not False] == []
+
+    def test_every_link_carries_its_provenance(self, repo_graph):
+        """すべての辺が `source` / `source_line` / `context` を持つこと（§2 原則 2）."""
+        assert len(repo_graph.links) > 0, "positive control: 辺が 1 本も無い"
+
+        bad_line = [
+            (link.source, link.relation, link.source_line)
+            for link in repo_graph.links
+            if not isinstance(link.source_line, int) or link.source_line < 1
+        ]
+        assert bad_line[:10] == []
+
+        bad_context = [
+            (link.source, link.source_line)
+            for link in repo_graph.links
+            if not isinstance(link.context, str) or link.context.strip() == ""
+        ]
+        assert bad_context[:10] == []
+
+    def test_every_link_endpoint_has_a_node(self, repo_graph):
+        """`links` の両端が `nodes` に載っていること（§3 の参照整合性）."""
+        assert len(repo_graph.links) > 0, "positive control: 辺が 1 本も無い"
+
+        node_ids = _node_ids(repo_graph)
+        dangling = sorted(
+            {link.source for link in repo_graph.links}
+            | {link.target for link in repo_graph.links}
+        )
+        dangling = [node_id for node_id in dangling if node_id not in node_ids]
+        assert dangling[:10] == []
+
+
+# ===========================================================================
+# 契約 §6 条件 4: 出力がファイルであること
+# ===========================================================================
+class TestFileRoundTrip:
+    @staticmethod
+    def _small_tree(root: Path) -> None:
+        _mkfile(root, ".claude/hooks/target.py", "# target\n")
+        _mkfile(root, ".claude/agents/wt_good.md", "# ok\n")
+        _mkfile(
+            root,
+            ".claude/skills/good-skill/SKILL.md",
+            "# 日本語の見出し\n"
+            "\n"
+            "参照: `.claude/hooks/target.py`\n"
             "\n"
             "| base | variant |\n"
             "| --- | --- |\n"
             "| `good` | `wt_good` |\n",
-            encoding="utf-8",
         )
 
-        # 異常側: cp932 で日本語を書く → UTF-8 としては不正なバイト列
-        bad_dir = tmpdir_path / ".claude" / "skills" / "bad-skill"
-        bad_dir.mkdir(parents=True)
-        (bad_dir / "SKILL.md").write_bytes("# 壊れた見出し\n".encode("cp932"))
-        return ".claude/skills/bad-skill/SKILL.md"
+    def test_write_then_read_restores_the_same_content(self, tmp_path):
+        """`write_graph` → `read_graph` で同じ内容が復元できること."""
+        self._small_tree(tmp_path)
+        out = tmp_path / "graph.json"
 
-    def test_undecodable_file_is_surfaced_to_the_caller(self):
-        """読めなかったファイルが呼び出し側から見えること（fail-closed）.
+        graph = refgraph.build_graph(tmp_path)
+        assert len(graph.links) > 0, "positive control: 往復させる辺が 1 本も無い"
 
-        沈黙して continue すると、その発信辺が消えたことに誰も気づけない。
-        build_graph が例外を漏らす（`UnboundLocalError` 等）場合もここで落ちるので、
-        クラッシュ回帰は本ケースが兼ねる（「落ちないこと」だけを見る単独テストは
-        do-nothing スタブでも緑になるため置かない・仕様§6 完了条件 6）。
+        refgraph.write_graph(graph, out)
+        restored = refgraph.read_graph(out)
+
+        assert restored.to_dict() == graph.to_dict()
+        assert len(restored.links) == len(graph.links)
+        assert len(restored.nodes) == len(graph.nodes)
+
+    def test_written_file_is_utf8_json_matching_to_dict(self, tmp_path):
+        """書かれたファイルが UTF-8 の JSON で、`to_dict()` と一致すること.
+
+        Windows 既定の cp932 で書くと、非 ASCII の `context` が
+        UTF-8 で読む側で壊れる（本リポジトリで実際に起きた事故）。
         """
-        from c3.refgraph import build_graph
+        self._small_tree(tmp_path)
+        out = tmp_path / "graph.json"
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = StdPath(tmpdir)
-            bad_rel = self._build_tree_with_one_undecodable_file(tmpdir_path)
+        graph = refgraph.build_graph(tmp_path)
+        refgraph.write_graph(graph, out)
 
-            graph = build_graph(tmpdir_path)
+        data = json.loads(out.read_bytes().decode("utf-8"))
+        assert data == graph.to_dict()
 
-            reported = [
-                str(entry[0]) if isinstance(entry, (tuple, list)) else str(entry)
-                for entry in graph.unreadable
-            ]
+        contexts = [link["context"] for link in data["links"]]
+        quoted = [c for c in contexts if "`.claude/hooks/target.py`" in c]
+        assert quoted != [], f"context should quote the referencing line; got {contexts!r}"
 
-            # 区切りはノード ID と同じ規約（ルート相対 POSIX・仕様§2）であること。
-            # バックスラッシュが混ざると Windows で node_id と突き合わせできず、
-            # 削除判定でこの報告を使えない。
-            assert all("\\" not in p for p in reported), (
-                "unreadable paths must use POSIX separators like node ids; "
-                f"got {reported!r}"
-            )
-
-            assert bad_rel in reported, (
-                "the undecodable file must be reported via Graph.unreadable; "
-                f"got {graph.unreadable!r}"
-            )
-
-            # 抽出器の数だけ同じファイルを重複報告しない（読み手のノイズになる）
-            assert reported.count(bad_rel) == 1, (
-                f"each unreadable file should be reported once; got {reported!r}"
-            )
-
-    def test_one_undecodable_file_does_not_suppress_other_edges(self):
-        """1 本読めなくても、他のファイルの辺は失われないこと（正の双子）.
-
-        仕様§5-1 注記 4: 到達不能側だけを見ると、辺を 1 本も作らない実装でも
-        緑になる。同じツリーに到達可能であるべき対照を置いて担保する。
-        """
-        from c3.refgraph import build_graph
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = StdPath(tmpdir)
-            self._build_tree_with_one_undecodable_file(tmpdir_path)
-
-            graph = build_graph(tmpdir_path)
-
-            paths = graph.paths_to(".claude/agents/wt_good.md")
-            assert len(paths) > 0, (
-                "an unrelated readable SKILL.md must still produce its edges"
-            )
-            assert any(
-                "agent_variant_map" in [e.kind for e in p.edges] for p in paths
-            )
-
-
-class TestPathVerification:
-    """経路検査（§6 完了条件 3, 4）"""
-
-    def test_wt_systematic_debugger_has_agent_variant_map_edge(self, graph):
-        """wt_systematic-debugger.md への経路に agent_variant_map が含まれる."""
-        node_id = ".claude/agents/wt_systematic-debugger.md"
-        paths = graph.paths_to(node_id)
-        assert len(paths) > 0
-
-        has_edge = any(
-            "agent_variant_map" in [e.kind for e in path.edges]
-            for path in paths
+        # 非 ASCII を含む行が JSON 経由で壊れずに戻ること（cp932 書き込みの検出）。
+        # fixture の参照行は「参照: `...`」なので、日本語が生きていれば context に残る。
+        assert [c for c in quoted if "参照" in c] != [], (
+            f"non-ASCII text was lost on the way to the file: {quoted!r}"
         )
-        assert has_edge
 
-    def test_stop_py_has_no_terminal_settings_hook_edge(self, graph):
-        """stop.py を終点とする settings_hook 辺が無い（仕様§6 完了条件 4）."""
-        node_id = ".claude/hooks/stop.py"
-        paths = graph.paths_to(node_id)
-        assert len(paths) > 0
+    def test_written_ids_are_root_relative_posix(self, tmp_path):
+        """書き出した JSON のノード ID / source / target が POSIX 相対であること."""
+        self._small_tree(tmp_path)
+        out = tmp_path / "graph.json"
 
-        for path in paths:
-            assert path.edges[-1].kind != "settings_hook"
+        graph = refgraph.build_graph(tmp_path)
+        refgraph.write_graph(graph, out)
+        data = json.loads(out.read_bytes().decode("utf-8"))
 
+        assert data["nodes"] != []
+        assert data["links"] != []
 
-class TestEdgeTypes:
-    """辺のデータ構造（developer の契約）"""
-
-    def test_edge_is_dataclass_instance(self, graph):
-        """Edge が Edge dataclass のインスタンスであること."""
-        node_id = ".claude/hooks/stop.py"
-        paths = graph.paths_to(node_id)
-        assert len(paths) > 0
-
-        for path in paths:
-            for edge in path.edges:
-                assert isinstance(edge, Edge), (
-                    f"Edge must be Edge dataclass instance, got {type(edge)}"
-                )
-
-    def test_edge_kind_valid(self, graph):
-        """Edge.kind が 9 種のいずれかであること."""
-        valid_kinds = {
-            "settings_hook", "c3_run", "code_span_path", "agent_variant_map",
-            "py_import", "py_importlib", "py_subprocess_path", "subagent_type", "sql_table"
-        }
-
-        node_id = ".claude/hooks/stop.py"
-        paths = graph.paths_to(node_id)
-        assert len(paths) > 0
-
-        for path in paths:
-            for edge in path.edges:
-                assert edge.kind in valid_kinds
+        ids = (
+            [node["id"] for node in data["nodes"]]
+            + [link["source"] for link in data["links"]]
+            + [link["target"] for link in data["links"]]
+            + [entry["path"] for entry in data["skipped"]]
+        )
+        bad = sorted({i for i in ids if not _is_root_relative_posix(i)})
+        assert bad == [], f"ids must be root-relative POSIX: {bad}"
 
 
-class TestGraphInterface:
-    """API 型検査（§2・仕様§6 完了条件 6）.
+def _is_root_relative_posix(node_id: str) -> bool:
+    """ノード ID がルート相対 POSIX（または `sqltable:<name>`）であること（§3）."""
+    if node_id.startswith("sqltable:"):
+        return bool(node_id[len("sqltable:"):])
+    if "\\" in node_id:
+        return False
+    if node_id.startswith("/") or node_id.startswith("./") or node_id.startswith("../"):
+        return False
+    if re.match(r"^[A-Za-z]:", node_id):
+        return False
+    return bool(node_id)
 
-    注: この 3 ケースのみ do-nothing スタブで緑になってよい。
-    他が緑になったら空回りしている。
+
+# ===========================================================================
+# 契約 §6 条件 5: 判定を含まないこと（機械強制）
+# ===========================================================================
+class TestNoJudgmentInExtractor:
+    """判定が抽出器へ再混入したら赤になること.
+
+    §7 規律 4 に従い、いずれのケースにも「辺が 1 本以上出ている」positive control を
+    置く。これが無いと、何も抽出しない実装でも「判定が無い」ので緑になってしまう。
     """
 
-    def test_build_graph_returns_object(self, repo_root):
-        """build_graph(root) が Graph を返す."""
-        from c3.refgraph import build_graph
-        g = build_graph(repo_root)
-        assert g is not None
+    def test_public_surface_has_no_reachability_question(self, repo_graph):
+        """モジュール / Graph の公開面に到達可能性の問いが無いこと."""
+        assert len(repo_graph.links) > 0, "positive control: 辺が 1 本も無い"
 
-    def test_is_reachable_returns_bool(self, graph):
-        """Graph.is_reachable(node_id) が bool を返す."""
-        result = graph.is_reachable(".claude/hooks/stop.py")
-        assert isinstance(result, bool)
+        names = set(dir(refgraph)) | set(dir(type(repo_graph))) | set(vars(repo_graph))
+        found = sorted(names & FORBIDDEN_PUBLIC_NAMES)
+        assert found == [], f"judgment leaked back into the extractor surface: {found}"
 
-    def test_paths_to_returns_list_of_path(self, graph):
-        """Graph.paths_to(node_id) が list[Path] を返す."""
-        result = graph.paths_to(".claude/hooks/stop.py")
-        assert isinstance(result, list)
-        if result:
-            assert all(isinstance(p, Path) for p in result)
+    def test_module_source_defines_no_entry_point_or_reachability_symbol(self, repo_graph):
+        """ソース中に判定・ルート集合を示す定義名が無いこと（AST・非公開名も含む）.
+
+        文字列 grep は docstring / コメントに誤マッチするので使わない
+        （契約自身が §9 で `is_reachable` に言及するため、説明の記述は許す）。
+        """
+        assert len(repo_graph.links) > 0, "positive control: 辺が 1 本も無い"
+
+        source_path = Path(refgraph.__file__)
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+        defined = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                defined.append(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        defined.append(target.id)
+                    elif isinstance(target, ast.Attribute):
+                        defined.append(target.attr)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                defined.append(node.target.id)
+            elif isinstance(node, ast.arg):
+                defined.append(node.arg)
+
+        # 走査そのものが働いていることの担保
+        assert "build_graph" in defined, f"AST scan found nothing usable: {defined[:20]}"
+
+        offending = sorted({name for name in defined if _JUDGMENT_NAME_RE.search(name)})
+        assert offending == [], f"judgment-shaped definitions in the extractor: {offending}"
+
+    def test_build_graph_takes_only_the_root(self, repo_graph, repo_root):
+        """`build_graph(root)` の引数が `root` だけであること（§5）.
+
+        ルート集合・エントリポイント・フィルタを引数で外から差し込む余地を残さない。
+        判定はクエリ側の責務であり、抽出器は「どこを起点に見るか」を知らない。
+        """
+        assert len(repo_graph.links) > 0, "positive control: 辺が 1 本も無い"
+
+        params = list(inspect.signature(refgraph.build_graph).parameters)
+        assert params == ["root"], f"build_graph must take only 'root'; got {params}"
 
 
-class TestUserReflections:
-    """ユーザー反例（自作）"""
+# ===========================================================================
+# 旧テストから移植した負の対照（契約の言葉に翻訳）
+# ===========================================================================
+class TestMigratedNegativeControls:
+    def test_permissions_entry_is_permission_not_hook(self, tmp_path):
+        """旧 N-1 の翻訳: `permissions` は `settings_permission`・`settings_hook` ではない.
 
-    def test_counterexample_1_db_reachable_via_import(self, graph):
-        """反例1: c3.db は import 経由で到達可能（settings 非登録）."""
-        node_id = "src/c3/db.py"
-        repo_root = StdPath(__file__).parent.parent
-        assert (repo_root / node_id).exists()
+        争点を「同じファイル・同じディレクトリで、hooks 節にあるか permissions 節に
+        あるか」だけに絞る。正の側（hooks 登録）が同じ fixture にあるので、
+        辺を 1 本も作らない実装ではこのケースを通過できない（§7 規律 4）。
+        `deny` も `permissions` なので併せて対照に置く。
+        """
+        _mkfile(tmp_path, ".claude/hooks/perm_only_hook.py", "# synthetic\n")
+        _mkfile(tmp_path, ".claude/hooks/denied_hook.py", "# synthetic\n")
+        _mkfile(tmp_path, ".claude/hooks/registered_hook.py", "# synthetic\n")
 
-        assert graph.is_reachable(node_id)
+        settings = {
+            "permissions": {
+                "allow": ["Bash(c3 run .claude/hooks/perm_only_hook.py*)"],
+                "deny": ["Bash(c3 run .claude/hooks/denied_hook.py*)"],
+            },
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "c3",
+                                "args": [
+                                    "run",
+                                    "${CLAUDE_PROJECT_DIR}/.claude/hooks/registered_hook.py",
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        _mkfile(tmp_path, ".claude/settings.json", json.dumps(settings, indent=2) + "\n")
 
-        # settings_hook ではなく import 経由
-        paths = graph.paths_to(node_id)
-        assert len(paths) > 0
-        for path in paths:
-            if "settings_hook" in [e.kind for e in path.edges]:
-                raise AssertionError(
-                    "db.py should not be reachable via settings_hook (imported, not registered)"
-                )
+        graph = refgraph.build_graph(tmp_path)
 
-    def test_counterexample_2_cli_entry_point(self, graph):
-        """反例2: cli.py はエントリポイント経由で到達可能."""
-        node_id = "src/c3/cli.py"
-        repo_root = StdPath(__file__).parent.parent
-        assert (repo_root / node_id).exists()
+        # Positive: hooks 節の登録は settings_hook になる
+        registered = _links(
+            graph, relation="settings_hook", target=".claude/hooks/registered_hook.py"
+        )
+        assert len(registered) >= 1, "a hook registered in the hooks section must yield settings_hook"
 
-        assert graph.is_reachable(node_id)
+        # Positive: permissions は捨てず settings_permission として記録する
+        for target in (".claude/hooks/perm_only_hook.py", ".claude/hooks/denied_hook.py"):
+            recorded = _links(graph, relation="settings_permission", target=target)
+            assert len(recorded) >= 1, f"permissions entry must be recorded: {target}"
 
-    def test_counterexample_3_hook_utils_shared_import(self, graph):
-        """反例3: _hook_utils.py は複数フックから import される."""
-        node_id = ".claude/hooks/_hook_utils.py"
-        repo_root = StdPath(__file__).parent.parent
+        # Negative: permissions は settings_hook にはならない
+        leaked = _links(
+            graph, relation="settings_hook", target=".claude/hooks/perm_only_hook.py"
+        ) + _links(graph, relation="settings_hook", target=".claude/hooks/denied_hook.py")
+        assert leaked == [], (
+            "permissions is a policy section, not a hook registration; "
+            f"got {[(l.source, l.context) for l in leaked]}"
+        )
 
-        if not (repo_root / node_id).exists():
-            pytest.skip(f"{node_id} does not exist")
+        # Negative（逆向き）: hooks 節の登録は settings_permission にはならない
+        misfiled = _links(
+            graph, relation="settings_permission", target=".claude/hooks/registered_hook.py"
+        )
+        assert misfiled == []
 
-        assert graph.is_reachable(node_id), (
-            "_hook_utils.py should be reachable (shared utility)"
+    def test_settings_edges_quote_the_reference_in_context(self, tmp_path):
+        """`settings*.json` 由来の辺も出所を持つこと（旧実装は `source_line=1` 固定だった）."""
+        _mkfile(tmp_path, ".claude/hooks/registered_hook.py", "# synthetic\n")
+        settings = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "c3",
+                                "args": [
+                                    "run",
+                                    "${CLAUDE_PROJECT_DIR}/.claude/hooks/registered_hook.py",
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        _mkfile(tmp_path, ".claude/settings.json", json.dumps(settings, indent=2) + "\n")
+
+        graph = refgraph.build_graph(tmp_path)
+        hits = _links(
+            graph, relation="settings_hook", target=".claude/hooks/registered_hook.py"
+        )
+        assert len(hits) >= 1
+
+        without_reference = [
+            (link.source_line, link.context)
+            for link in hits
+            if "registered_hook.py" not in link.context
+        ]
+        assert without_reference == [], (
+            "context must quote the referencing line, otherwise the reader cannot narrow "
+            f"down the relation (§2 原則 2); got {without_reference}"
+        )
+
+    def test_prose_mention_is_bare_agent_name_not_variant_map(self, tmp_path):
+        """旧 N-2 の翻訳: 散文の言及は `md_bare_agent_name`・`md_agent_variant_map` ではない.
+
+        写像表の行だけが `md_agent_variant_map`。散文は**捨てず**に
+        `md_bare_agent_name` として記録する（旧契約はここで
+        `security-reviewer.md` への辺を 0 本にした・§9-3）。
+        """
+        _mkfile(tmp_path, ".claude/agents/prose_only.md", "# Prose Only Agent\n")
+        _mkfile(tmp_path, ".claude/agents/wt_table_row.md", "# Table Row Agent\n")
+        _mkfile(
+            tmp_path,
+            ".claude/skills/test-skill/SKILL.md",
+            "# Test Skill\n"
+            "\n"
+            "困ったときは prose_only を起動してデバッグする。\n"
+            "\n"
+            "| 元 | 並列バリアント | 備考 |\n"
+            "| --- | --- | --- |\n"
+            "| `table_row` | `wt_table_row` | worktree 専用 |\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        # Positive: 写像表の行は md_agent_variant_map になる
+        table = _links(
+            graph,
+            relation="md_agent_variant_map",
+            source=".claude/skills/test-skill/SKILL.md",
+            target=".claude/agents/wt_table_row.md",
+        )
+        assert len(table) >= 1, "a table row must yield md_agent_variant_map"
+
+        # Positive: 散文は捨てずに md_bare_agent_name として記録される
+        prose = _links(
+            graph,
+            relation="md_bare_agent_name",
+            source=".claude/skills/test-skill/SKILL.md",
+            target=".claude/agents/prose_only.md",
+        )
+        assert len(prose) >= 1, "a prose mention must be recorded as md_bare_agent_name"
+
+        # Negative: 散文は md_agent_variant_map にはならない
+        misfiled = _links(
+            graph,
+            relation="md_agent_variant_map",
+            target=".claude/agents/prose_only.md",
+        )
+        assert misfiled == [], (
+            "a prose mention is not a variant mapping row; "
+            f"got {[(l.source, l.source_line, l.context) for l in misfiled]}"
         )
 
 
-class TestCompletionCriteria:
-    """§6 完了条件の統合検査"""
+# ===========================================================================
+# tester 自作の反例
+# ===========================================================================
+class TestCounterexamples:
+    def test_counterexample_1_all_four_resolution_values(self, tmp_path):
+        """反例 1: 曖昧な参照でどれかを選ばず候補ごとに 1 本ずつ出すこと（§3）.
 
-    def test_all_adoption_conditions_met(self, graph, repo_root):
-        """完了条件 1: 採用条件 7 行すべて期待どおり."""
-        # 24 フック
-        hooks = sorted((repo_root / ".claude" / "hooks").glob("*.py"))
-        assert len(hooks) == 24
-        for hook in hooks:
-            node_id = str(hook.relative_to(repo_root)).replace("\\", "/")
-            assert graph.is_reachable(node_id)
+        `exact` / `basename` / `ambiguous` / `missing` を 1 つの fixture に同居させる。
+        素朴な実装は「最初に見つかった候補」を 1 本だけ出して曖昧さを潰す。
+        """
+        _mkfile(tmp_path, ".claude/hooks/exact_target.py", "# exact\n")
+        _mkfile(tmp_path, ".claude/hooks/unique_name.py", "# unique\n")
+        _mkfile(tmp_path, ".claude/hooks/dup.py", "# dup A\n")
+        _mkfile(tmp_path, ".claude/skills/s/scripts/dup.py", "# dup B\n")
+        _mkfile(
+            tmp_path,
+            ".claude/skills/s/SKILL.md",
+            "# S\n"
+            "\n"
+            "- exact: `.claude/hooks/exact_target.py`\n"
+            "- basename: `unique_name.py`\n"
+            "- ambiguous: `dup.py`\n"
+            "- missing: `.claude/hooks/gone.py`\n",
+        )
 
-        # 3 つの importlib
-        for name in ["stop.py", "consolidate_memory.py", "tier_gap_check.py"]:
-            assert graph.is_reachable(f".claude/hooks/{name}")
+        graph = refgraph.build_graph(tmp_path)
+        src = ".claude/skills/s/SKILL.md"
 
-        # subprocess
-        assert graph.is_reachable(".claude/hooks/permission_handler_toast.py")
+        exact = _links(graph, source=src, target=".claude/hooks/exact_target.py")
+        assert len(exact) == 1, f"expected exactly one exact edge; got {exact}"
+        assert exact[0].resolution == "exact"
+        assert exact[0].target_exists is True
 
-        # 写像表
-        assert graph.is_reachable(".claude/agents/wt_systematic-debugger.md")
+        basename = _links(graph, source=src, target=".claude/hooks/unique_name.py")
+        assert len(basename) == 1, f"expected exactly one basename edge; got {basename}"
+        assert basename[0].resolution == "basename"
 
-        # 7 スキル
-        skills = sorted((repo_root / ".claude" / "skills").glob("*/scripts/*.py"))
-        assert len(skills) == 7
-        for skill in skills:
-            node_id = str(skill.relative_to(repo_root)).replace("\\", "/")
-            assert graph.is_reachable(node_id)
+        ambiguous = sorted(
+            link.target
+            for link in graph.links
+            if link.source == src and link.resolution == "ambiguous"
+        )
+        assert ambiguous == [
+            ".claude/hooks/dup.py",
+            ".claude/skills/s/scripts/dup.py",
+        ], f"an ambiguous reference must emit one edge per candidate; got {ambiguous}"
 
-        # 到達不能 2 件
-        assert not graph.is_reachable(".claude/state/stop_exit2_test.flag")
-        assert not graph.is_reachable("sqltable:agent_runs")
+        missing = _links(graph, source=src, target=".claude/hooks/gone.py")
+        assert len(missing) == 1, f"expected one missing edge; got {missing}"
+        assert missing[0].resolution == "missing"
+        assert missing[0].target_exists is False
 
-    def test_negative_controls_met(self, graph):
-        """完了条件 2: 負の対照 N-1/N-2/N-3 すべて期待どおり."""
-        # N-1: stop.py を終点とする settings_hook 辺が無い
-        paths = graph.paths_to(".claude/hooks/stop.py")
-        assert len(paths) > 0
-        for path in paths:
-            assert path.edges[-1].kind != "settings_hook"
+    def test_counterexample_2_context_is_sanitised_and_bounded(self, tmp_path):
+        """反例 2: `context` に制御文字を残さず、長さ上限で切ること（§3）.
 
-        # N-3
-        assert not graph.is_reachable(".claude/state/stop_exit2_test.flag")
+        外部由来文字列をそのまま埋め込むと、読む側の端末を壊すか JSON を肥大させる。
+        20 万文字の 1 行を用意し、上限で切られることを機械で押さえる。
+        """
+        _mkfile(tmp_path, ".claude/hooks/target.py", "# target\n")
+        padding = "x" * 200_000
+        _mkfile(
+            tmp_path,
+            ".dev/notes.md",
+            "# notes\n"
+            "\n"
+            "参照 `.claude/hooks/target.py` \x07 \x1b " + padding + "\n",
+        )
 
-    def test_wt_systematic_debugger_agent_variant_map(self, graph):
-        """完了条件 3: wt_systematic-debugger への agent_variant_map 辺."""
-        paths = graph.paths_to(".claude/agents/wt_systematic-debugger.md")
-        assert any("agent_variant_map" in [e.kind for e in p.edges] for p in paths)
+        graph = refgraph.build_graph(tmp_path)
+        hits = _links(graph, source=".dev/notes.md", target=".claude/hooks/target.py")
+        assert len(hits) >= 1, "positive control: 辺が出ていない"
 
-    def test_stop_py_no_terminal_settings_hook(self, graph):
-        """完了条件 4: stop.py を終点とする settings_hook 辺なし."""
-        paths = graph.paths_to(".claude/hooks/stop.py")
-        assert len(paths) > 0, "stop.py should be reachable"
-        for path in paths:
-            assert path.edges[-1].kind != "settings_hook"
+        for link in hits:
+            control = sorted({repr(c) for c in link.context if ord(c) < 32})
+            assert control == [], f"context must strip control characters; got {control}"
+            # 上限値そのものは契約に数値がないため、tester が「どんな妥当な上限でも
+            # 通る」値として 10000 を置く。無切り詰め実装だけが赤になる。
+            assert len(link.context) <= 10_000, (
+                f"context must be truncated; got {len(link.context)} chars"
+            )
+
+    def test_counterexample_3_ids_are_root_relative_posix_in_the_real_repo(self, repo_graph):
+        """反例 3: Windows で ID にバックスラッシュや絶対パスが混ざらないこと（§3）.
+
+        `str(path.relative_to(root))` は Windows で `\\` を返す。混ざると読む側で
+        突合できず、出力ファイルの価値が消える。実リポジトリの深い階層で確かめる。
+        """
+        assert len(repo_graph.nodes) > 0 and len(repo_graph.links) > 0
+
+        ids = (
+            _node_ids(repo_graph)
+            | {link.source for link in repo_graph.links}
+            | {link.target for link in repo_graph.links}
+            | set(_skipped_paths(repo_graph))
+        )
+        bad = sorted({i for i in ids if not _is_root_relative_posix(i)})
+        assert bad[:10] == [], f"ids must be root-relative POSIX: {bad[:10]}"
+
+        # 平坦な名前だけを出す実装（階層を潰した実装）を弾く
+        assert any("/" in i for i in ids), "no nested id at all — separators were flattened?"
+
+    def test_counterexample_4_ast_import_ignores_comments_and_strings(self, tmp_path):
+        """反例 4: import は AST で取り、コメント・文字列中の import を拾わないこと（§4）.
+
+        複数行括弧付き import（拾うべき）と、コメント / 文字列リテラルの中の
+        import（拾ってはいけない）を同じファイルに置いて両側を測る。
+        """
+        for name in ("alpha", "beta", "gamma", "delta"):
+            _mkfile(tmp_path, f"pkg/{name}.py", f"# {name}\n")
+        _mkfile(tmp_path, "pkg/__init__.py", "")
+        _mkfile(
+            tmp_path,
+            "pkg/main.py",
+            "from . import (\n"
+            "    alpha,\n"
+            "    beta,\n"
+            ")\n"
+            "# import gamma\n"
+            'DOC = "from . import delta"\n',
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        got = _targets(graph, "py_import", "pkg/main.py")
+
+        missing = sorted({"pkg/alpha.py", "pkg/beta.py"} - got)
+        assert missing == [], (
+            f"a line-based regex drops everything after the opening paren; missing {missing}"
+        )
+
+        leaked = _links(graph, relation="py_import", source="pkg/main.py", target="pkg/gamma.py")
+        leaked += _links(graph, relation="py_import", source="pkg/main.py", target="pkg/delta.py")
+        assert leaked == [], (
+            "an import inside a comment or a string literal is not an import; "
+            f"got {[(l.source_line, l.context) for l in leaked]}"
+        )
+
+    def test_counterexample_5_bare_names_resolve_against_the_actual_inventory(self, tmp_path):
+        """反例 5: 素の名前は実在する agent / skill にだけ解決すること.
+
+        `md_bare_agent_name` / `md_bare_skill_name` は「散文中の語」を拾うため、
+        agent 名を**ハードコードした一覧**で解決する実装だと、その一覧に載っている
+        名前が本ツリーに存在しなくても辺を作ってしまう。実リポジトリに実在する
+        `tester` / `dev-workflow` を囮に置き、本ツリーには置かないことで検出する。
+        """
+        _mkfile(tmp_path, ".claude/agents/real_agent.md", "# real\n")
+        _mkfile(tmp_path, ".claude/skills/known-skill/SKILL.md", "# known\n")
+        _mkfile(
+            tmp_path,
+            ".dev/notes.md",
+            "# notes\n"
+            "\n"
+            "real_agent を起動し、その後 /known-skill を使う。\n"
+            "なお tester や nonexistent_agent、/dev-workflow はこのツリーに存在しない。\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        agent_hit = _links(
+            graph, relation="md_bare_agent_name", target=".claude/agents/real_agent.md"
+        )
+        assert len(agent_hit) >= 1, "positive control: 実在 agent への辺が無い"
+
+        skill_hit = _links(
+            graph,
+            relation="md_bare_skill_name",
+            target=".claude/skills/known-skill/SKILL.md",
+        )
+        assert len(skill_hit) >= 1, "positive control: 実在 skill への辺が無い"
+
+        phantom = [
+            link
+            for link in graph.links
+            if link.target
+            in {
+                ".claude/agents/tester.md",
+                ".claude/agents/nonexistent_agent.md",
+                ".claude/skills/dev-workflow/SKILL.md",
+            }
+        ]
+        assert phantom == [], (
+            "bare names must resolve against the agents/skills that actually exist in the "
+            f"scanned tree, not a hardcoded list; got {[(l.relation, l.target) for l in phantom]}"
+        )
+
+    def test_counterexample_6_source_line_points_at_the_referencing_line(self, tmp_path):
+        """反例 6: `source_line` が参照している行を指すこと（§2 原則 2）.
+
+        定数（1 等）を入れる実装でも、辺の本数を見るテストは全部緑になる。
+        出所が嘘なら読む側は絞れないので、行番号そのものを固定する。
+        """
+        _mkfile(tmp_path, ".claude/hooks/a.py", "# a\n")
+        _mkfile(tmp_path, ".claude/hooks/b.py", "# b\n")
+        _mkfile(
+            tmp_path,
+            ".dev/notes.md",
+            "# notes\n"  # 1
+            "\n"  # 2
+            "最初の参照 `.claude/hooks/a.py`\n"  # 3
+            "\n"  # 4
+            "間に挟まる本文\n"  # 5
+            "二番目の参照 `.claude/hooks/b.py`\n",  # 6
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        lines = {
+            link.target: link.source_line
+            for link in _links(graph, source=".dev/notes.md")
+            if link.target in {".claude/hooks/a.py", ".claude/hooks/b.py"}
+        }
+        assert lines == {".claude/hooks/a.py": 3, ".claude/hooks/b.py": 6}, (
+            f"source_line must point at the referencing line; got {lines}"
+        )
