@@ -1,7 +1,9 @@
 """C3 SQLite write/read helpers.
 
 review-hint: review_decisions の INSERT / SELECT ヘルパー（review_hint_inject.py から利用）。
-tier-routing: tier_bandit / tier_recent_outcomes ヘルパー（select_tier.py / record_tier_outcome.py から）。
+tier-routing: agent_outcomes ヘルパー（select_tier.py / record_agent_outcome.py から）。
+              旧 tier_bandit / tier_recent_outcomes は migration 004/005 で DROP 済みで、
+              α/β と escalation 判定は agent_outcomes からの読み取り時導出に統一されている。
 
 DB が見つからない場合・書き込みエラー時は静かにスキップし、呼び出し側の本体は
 止めない（観測機能の失敗で全体を止めない方針）。
@@ -970,14 +972,15 @@ def read_rework_session_cost(
 
 
 # ---------------------------------------------------------------------------
-# tier-routing: tier_bandit ヘルパー（Tier 自動ルーティング Thompson Sampling）
+# tier-routing 共通定数（Tier 自動ルーティング Thompson Sampling）
+#
+# 旧 tier_bandit / tier_recent_outcomes テーブルは migration 004/005 で DROP 済み。
+# 定数だけが agent_outcomes 導出集計の側で使われ続けている。
 # ---------------------------------------------------------------------------
 
-# 学習対象の Tier 一覧（schema.sql のコメントと整合）
+# 学習対象の Tier 一覧
 _TIER_BANDIT_TIERS: tuple[str, ...] = ("haiku", "sonnet", "opus")
 
-
-# Phase 2-B 用: tier_recent_outcomes ヘルパー（直近 N 件の outcome 履歴）
 
 # escalation 判定の最小サンプル数。これより少ないと escalation しない（統計的に弱い）。
 _FAILURE_RATE_MIN_SAMPLES = 5
@@ -1473,7 +1476,7 @@ def _compute_tier_cost_rate_summary(
     cost_rows: list[tuple],
     outcome_rows: list[tuple],
 ) -> list[dict]:
-    """agent_cost_runs 行リストと tier_recent_outcomes 行リストから
+    """agent_cost_runs 行リストと agent_outcomes 行リストから
     (complexity, tier) 別 USD/MTok レートを集計して返す（DB 非依存の純関数）。
 
     DB に依存しないため、単体テストで任意のデータを直接渡せる。
@@ -1506,7 +1509,7 @@ def _compute_tier_cost_rate_summary(
     Args:
         cost_rows: agent_cost_runs の行タプル。
             各要素: (session_id, model, total_cost_usd, input_tokens, output_tokens)。
-        outcome_rows: tier_recent_outcomes の行タプル。
+        outcome_rows: agent_outcomes の行タプル（v2.41.0 で tier_recent_outcomes から差替）。
             各要素: (session_id, task_complexity, tier)。
             DISTINCT 化・session_id NOT NULL フィルタ済み想定。
 

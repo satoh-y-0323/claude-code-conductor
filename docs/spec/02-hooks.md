@@ -1,5 +1,9 @@
 # C3 仕様目次 — hook 層
 
+> **⛔ 凍結: 2026-08-05 時点のスナップショット。**
+> 実装を変更しても更新しない（2026-08-05 裁定）。**現行仕様として読まないこと。**
+> 理由と、現在の姿を知る方法は [`00-index.md`](00-index.md) の冒頭を参照。
+
 対象: `.claude/hooks/*.py`（24 ファイル）+ `.dev/hooks/*.py`（5 ファイル・配布元専用 / gitignored）
 登録先: `.claude/settings.json` / `.claude/settings.local.json`
 作成方法: 全ファイルを静的に Read（hook は一切発火させていない）。実 `c3.db` は読んでいない。
