@@ -188,7 +188,7 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 
 | # | カテゴリ | 配布 | c3 update が更新 | 理由 |
 |---|---|---|---|---|
-| 1 | `.claude/hooks/*.py` | ○ | ○ | Claude Code lifecycle hook の実体。配布先で動作する。例外: `subagent_log.py` のみ除外（個人デバッグ用）。v2.20.0 で `hooks/schema.sql` を削除し SQLite スキーマは `src/c3/migrations/` に移管 |
+| 1 | `.claude/hooks/*.py` | ○ | ○ | Claude Code lifecycle hook の実体。配布先で動作する。例外は `_excludes.py` の `hooks/subagent_log.py` のみだが、**同ファイルは PO 廃止に伴い削除済み**（`decisions.md` D-010「D-005 との差分」）で、現在は除外パターンだけが残る空振り規則である。v2.20.0 で `hooks/schema.sql` を削除し SQLite スキーマは `src/c3/migrations/` に移管 |
 | 2 | `.claude/agents/*.md` | ○ | ○ | ペルソナ定義。配布先で読まれる。例外: `tdd-develop.md` のみ除外（v2.1.0 廃止） |
 | 3 | `.claude/skills/*/` | ○ | ○ | オーケストレーション/ユーティリティ skill 定義（`scripts/` / `templates/` 等サブディレクトリ含む）。例外: `worktree-tdd-workflow/*` のみ除外（v2.1.0 廃止） |
 | 4 | `.claude/rules/*.md` | ○ | ○ | C3 配布デフォルトルール（常時注入対象）。**配布元では 0 件**（`.claude/rules/` 直下に `.md` は無く `promoted/` のみ）。利用先が `/setup` で `coding-standards.md` を生成した時点でこのカテゴリが成立する |

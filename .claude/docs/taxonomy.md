@@ -265,7 +265,7 @@ Claude Code のライフサイクルイベントに登録される自動実行�
 |---|---|---|
 | **イベントフック** | Claude Code のライフサイクルイベントに登録し自動実行。`settings.json` の `hooks` セクションに登録必須 | `session_start.py` / `pre_tool.py` / `post_tool.py` |
 | **Hook ワーカー** | イベントフックから `importlib` 等で内部呼び出しされるヘルパーモジュール。単独でイベント登録しない | `stop.py` / `consolidate_memory.py` / `session_utils.py` |
-| **リソースファイル** | フックスクリプトが参照する DDL・設定ファイルなど。Python スクリプトではなく hooks/ に同居するが、イベント登録も内部呼び出しもしない | `schema.sql` |
+| **リソースファイル** | フックスクリプトが参照する DDL・設定ファイルなど。Python スクリプトではなく hooks/ に同居するが、イベント登録も内部呼び出しもしない | 旧 `schema.sql`（v2.20.0 で廃止し `src/c3/migrations/*.sql` へ移管。**現在このカテゴリに該当する実体は 0 件**） |
 
 対応イベント: `SessionStart` / `PreToolUse` / `PostToolUse` / `Stop` / `PreCompact` / `PermissionRequest` / `UserPromptSubmit` 等
 
