@@ -51,7 +51,7 @@ import inspect
 import json
 import re
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -639,6 +639,126 @@ class TestSkippedAndMissingTargets:
         )
         dangling = [node_id for node_id in dangling if node_id not in node_ids]
         assert dangling[:10] == []
+
+
+# ===========================================================================
+# 契約 §3「解決の順序」/「トークン境界」（2026-08-05 追記）
+#
+# 実リポジトリでの実測から出た 2 件の欠陥を機械で押さえる:
+#   - 部分パス（`dev-workflow/SKILL.md`）を解決せず missing と報告していた
+#     （上位 20 件だけで 331 件・読む側が「残骸だ」と誤読する）
+#   - 許容集合外の文字でトークンが途切れた続きを独立した参照として採っていた
+#     （`-{timestamp}.md` 等・missing 辺の 6%）
+# ===========================================================================
+class TestResolutionOrder:
+    # 題材について: skill 名 / agent 名と衝突する語を使うと `md_bare_skill_name` /
+    # `md_bare_agent_name` が発火し、**パス解決を測っているつもりで名前解決を測る**
+    # ことになる（実際に初版でこれを踏んだ）。また参照元を対象の祖先ディレクトリ配下に
+    # 置くと source 相対で解決してしまい、末尾一致の穴を突けない。
+    # そのため「skill でも agent でもない場所」×「祖先関係にない参照元」で組む。
+
+    def test_unique_suffix_match_resolves_and_is_not_missing(self, tmp_path):
+        """部分パスが一意なら解決し `basename` になる（契約 §3 解決の順序 3）.
+
+        正の対照（解決できる部分パス）と負の対照（どこにも当たらない部分パス）を
+        **同じ fixture** に置く（契約 §7 規律 4）。
+        """
+        _mkfile(tmp_path, ".claude/docs/deep/note.md", "# deep note\n")
+        _mkfile(
+            tmp_path,
+            ".claude/agent-memory/observer/memo.md",
+            "# memo\n"
+            "\n"
+            "- resolvable partial path: `deep/note.md`\n"
+            "- nowhere partial path: `nosuch/note.md`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = ".claude/agent-memory/observer/memo.md"
+
+        # Positive: 一意な末尾一致は実在ファイルへ解決する
+        resolved = _links(graph, source=src, target=".claude/docs/deep/note.md")
+        assert len(resolved) == 1, (
+            f"a unique suffix match must resolve to the real file; got {resolved}"
+        )
+        assert resolved[0].resolution == "basename"
+        assert resolved[0].target_exists is True
+
+        # 未解決の生トークンが別途 missing で残っていないこと
+        stray = _links(graph, source=src, target="deep/note.md")
+        assert stray == [], f"the raw partial path must not remain as its own node; got {stray}"
+
+        # Negative: どこにも当たらない部分パスは missing のまま
+        nowhere = _links(graph, source=src, target="nosuch/note.md")
+        assert len(nowhere) == 1, f"an unresolvable partial path must stay missing; got {nowhere}"
+        assert nowhere[0].resolution == "missing"
+        assert nowhere[0].target_exists is False
+
+    def test_suffix_match_with_two_candidates_is_ambiguous(self, tmp_path):
+        """末尾一致の候補が複数なら候補ごとに 1 本ずつ出す（§3・選ばない）.
+
+        C3 では `src/c3/_template/` が `.claude/` の複製なので、この形が実際に多発する。
+
+        **distractor を置いてディレクトリ成分が効いていることを識別する。**
+        `dup/` を無視して basename `note.md` だけで解決する実装だと、
+        `other/note.md` まで候補に入って赤になる（これが無いと「たまたま 2 件」で
+        緑になり、解決の質を測れない）。
+        """
+        _mkfile(tmp_path, ".claude/docs/dup/note.md", "# a\n")
+        _mkfile(tmp_path, "src/c3/_template/.claude/docs/dup/note.md", "# b\n")
+        _mkfile(tmp_path, ".claude/docs/other/note.md", "# distractor\n")
+        _mkfile(
+            tmp_path,
+            ".claude/agent-memory/observer/memo.md",
+            "# memo\n\n- ambiguous partial path: `dup/note.md`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = ".claude/agent-memory/observer/memo.md"
+
+        got = sorted(
+            link.target
+            for link in graph.links
+            if link.source == src and link.resolution == "ambiguous"
+        )
+        assert got == [
+            ".claude/docs/dup/note.md",
+            "src/c3/_template/.claude/docs/dup/note.md",
+        ], f"both candidates must be emitted; got {got}"
+
+    def test_token_broken_by_placeholder_does_not_emit_a_fragment(self, tmp_path):
+        """許容集合外の文字で途切れた続きを独立した参照にしない（契約 §3 トークン境界）.
+
+        実在しない参照先の捏造であり「採りすぎ」ではない。
+        正の対照（同じファイル内の正常なパス）を同居させ、
+        何も抽出しない実装では赤になるようにする。
+        """
+        _mkfile(tmp_path, ".claude/hooks/real.py", "# real\n")
+        _mkfile(
+            tmp_path,
+            ".claude/skills/caller/SKILL.md",
+            "# caller\n"
+            "\n"
+            "- normal: `.claude/hooks/real.py`\n"
+            "- japanese placeholder: `.claude/reports/doc-{名前}-{timestamp}.md`\n"
+            "- shell substitution: `.claude/state/e0-$(date +%s)-$$-$RANDOM.txt`\n"
+            "- angle placeholder: `.claude/skills/<skill>/templates/<name>-template.md`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = ".claude/skills/caller/SKILL.md"
+
+        # Positive: 同じファイルの正常なパスは辺になる
+        normal = _links(graph, source=src, target=".claude/hooks/real.py")
+        assert len(normal) == 1, f"the normal path in the same file must be an edge; got {normal}"
+
+        # Negative: 断片が出ていないこと
+        fragments = sorted(
+            link.target
+            for link in _links(graph, source=src)
+            if PurePosixPath(link.target).name.startswith("-")
+        )
+        assert fragments == [], f"token fragments must not be emitted as targets; got {fragments}"
 
 
 # ===========================================================================

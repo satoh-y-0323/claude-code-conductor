@@ -27,6 +27,7 @@ import json
 import os
 import posixpath
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,12 +76,20 @@ _REFERENCE_SUFFIXES = (
     "flag",
 )
 
+# トークンを開始してよい ASCII の区切り文字（契約 §3「トークン境界」）。
+# ここに無い ASCII（英数字・`_ . / \ - ~ + $ { } < > % ) ] & # @` など）は
+# 「同じトークンの途中」とみなし、そこから新しい参照を開始しない。
+_ASCII_BOUNDARY = frozenset(" \t\r\n\x0b\x0c`\"'([,;:=|")
+
+# `*` の直前がこれらならグロブの途中（`reports/*-{ts}.md`）。
+# 空白や別の `*` に続く `*` は Markdown の強調（`**stop.py**`）なので区切り扱いにする。
+_GLOB_BODY_RE = re.compile(r"[/A-Za-z0-9_.~{}$+-]")
+
 # 文字列中からパスらしいトークンを取り出す。
-#   - 直前が識別子・パス構成文字なら開始しない（`a/b/c.py` の途中から拾わないため）
 #   - `${CLAUDE_PROJECT_DIR}/` のような変数プレフィクスを 1 つだけ許す
 #   - 本体に空白・引用符・括弧を含めない（末尾の `*)` や `,` を巻き込まない）
+#   - 開始位置の妥当性は `_starts_at_boundary` が判定する（後読みでは書けないため）
 _PATH_TOKEN_RE = re.compile(
-    r"(?<![\w./\\-])"
     r"(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}/)?"
     r"[A-Za-z0-9_.~-][A-Za-z0-9_./{}$~+-]*"
     r"\.(?:" + "|".join(_REFERENCE_SUFFIXES) + r")"  # nul-boundary: allow(正規表現の選択肢の組み立て。区切りは正規表現の文法で固定されており、機械可読な行集合ではない)
@@ -344,6 +353,33 @@ class _TextLocator:
         return ""
 
 
+def _starts_at_boundary(text: str, index: int) -> bool:
+    """その位置から参照トークンを開始してよいか（契約 §3「トークン境界」）.
+
+    許容集合外の文字でトークンが途切れたとき、その**続き**を独立した参照として
+    採らないための判定。`doc-{名前}-{timestamp}.md` の `-{timestamp}.md` や
+    `e0-$(date +%s)-$$-$RANDOM.txt` の `-$$-$RANDOM.txt` はここで落ちる。
+    """
+    if index <= 0:
+        return True
+    previous = text[index - 1]
+    if previous == "*":
+        # Markdown の強調（`**stop.py**`）は区切り、グロブ（`x/*-y.md`）は途中。
+        return index < 2 or not _GLOB_BODY_RE.match(text[index - 2])
+    if previous.isascii():
+        return previous in _ASCII_BOUNDARY
+    # 非 ASCII は句読点・空白だけを区切りとする（日本語の `。` `、` `（` など）。
+    # 文字（漢字・かな）はトークンが途切れただけなので区切りにしない。
+    return unicodedata.category(previous)[0] in ("P", "Z")
+
+
+def _path_tokens(text: str):
+    """境界から始まるパストークンだけを順に返す."""
+    for match in _PATH_TOKEN_RE.finditer(text):
+        if _starts_at_boundary(text, match.start()):
+            yield match
+
+
 def _sanitize_context(line: str) -> str:
     """該当行を `context` に使える形へ整える（契約 §3）."""
     text = _CONTROL_RE.sub(" ", line).strip()
@@ -508,11 +544,35 @@ class _Collector:
                 return [(from_base, "exact", True)]
             if from_here and from_here in self.present:
                 return [(from_here, "exact", True)]
+            tail_hits = self._suffix_matches(from_base)
+            if len(tail_hits) == 1:
+                return [(tail_hits[0], "basename", True)]
+            if tail_hits:
+                return [(node_id, "ambiguous", True) for node_id in tail_hits]
             target = from_base or from_here
             if not target:
                 return []
             return [(target, "missing", False)]
 
+        return self._by_name(token, source_dir)
+
+    def _suffix_matches(self, partial):
+        """パス末尾が `/<partial>` に一致する実在ファイルを返す（契約 §3 解決の順序 3）.
+
+        C3 の文書は `dev-workflow/SKILL.md` のような**部分パス**で参照を書くため、
+        この段が無いと参照元の位置しだいで実在するものが `missing` になる。
+        """
+        if not partial:
+            return []
+        tail = "/" + partial
+        return [
+            node_id
+            for node_id in self.by_basename.get(posixpath.basename(partial), ())
+            if node_id.endswith(tail)
+        ]
+
+    def _by_name(self, token, source_dir):
+        """ファイル名のみの参照を解決する（同ディレクトリ → 名前索引）."""
         sibling = _normalize(posixpath.join(source_dir, token))
         if sibling and sibling in self.present:
             return [(sibling, "exact", True)]
@@ -542,7 +602,7 @@ class _Collector:
                 if line_number is None:
                     continue
                 line_text = locator.line_text(line_number)
-                for match in _PATH_TOKEN_RE.finditer(value):
+                for match in _path_tokens(value):
                     self._emit(relation, source, line_number, line_text, match.group(0))
 
     # -- markdown --------------------------------------------------------
@@ -559,7 +619,7 @@ class _Collector:
 
     def _md_code_spans(self, source, number, line):
         for span in _CODE_SPAN_RE.finditer(line):
-            for match in _PATH_TOKEN_RE.finditer(span.group(1)):
+            for match in _path_tokens(span.group(1)):
                 self._emit("md_code_span_path", source, number, line, match.group(0))
 
     def _md_links(self, source, number, line):
@@ -581,7 +641,7 @@ class _Collector:
 
     def _md_c3_run(self, source, number, line):
         for match in _C3_RUN_RE.finditer(line):
-            token = _PATH_TOKEN_RE.search(match.group(1))
+            token = next(_path_tokens(match.group(1)), None)
             if token is None:
                 continue
             self._emit("md_c3_run", source, number, line, token.group(0))
