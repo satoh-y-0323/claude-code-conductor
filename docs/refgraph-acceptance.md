@@ -1,0 +1,524 @@
+# refgraph 受け入れ条件（AC）— 唯一の正
+
+> **本ファイルが AC-1 〜 AC-62 の条文・分類・AC-40 / AC-41 の判定規則の唯一の正である。**
+> 設計レポート（`.claude/reports/architecture-report-*.md`）は設計判断の経緯を持つが、**条文の正はここにある。**
+> **齟齬があれば本ファイルが勝つ。**
+
+## 0. このファイルがある理由
+
+**AC の条文は 16 本の設計レポートに散っており、そのすべてが `.gitignore` の `.claude/reports/*` で追跡対象外だった。**
+帰結は 3 つ観測された:
+
+1. **改訂のたびに他レポートの散文を指し直すことになり、指し直すたびに語が増減して外延がずれた**（設計フェーズで繰り返し出た High の主因）
+2. **AC-56（写像表の網羅）は静的検査として成立しなかった**——照合対象が gitignored なレポート内にしか無く、CI・新規 clone で恒久赤か skip（空の緑）になる
+3. **所在表そのものが古くなった**（実例: AC-4 の所在は「改訂 13 §7」と書かれていたが、実際は改訂 5 `architecture-report-20260806-120312.md:600`）
+
+**本ファイルの条文は、各レポートの該当行をスクリプトで機械的に写して組み立てた**（手で書き写していない）。
+各条文に**出所（版・ファイル・行）**を付けてあるので、決定の経緯を辿るときはそちらを読む。
+
+**「現行実装で緑か赤か」は本ファイルに書かない。** 実装フェーズの入口（D-1）で現行実装に当てて実測し、test-report に残す。
+設計時点の推測より実測のほうが正確であることは実証済み（設計文書の「現行＝赤」が実測で 8/8 緑と判明した実績がある）。
+
+---
+
+## 1. 欠番
+
+**AC-13 / AC-14 / AC-22 / AC-23 は欠番。**
+AC-13 / 14 は `py_string_composed` を採らないため削除（改訂 6 §3-2c）。AC-22 / 23 は改訂 5 で削除。
+**AC-22 が測っていた回帰は AC-47 として復活済み。**
+
+---
+
+## 2. 分類表（**AC-40 / AC-41 の判定はこの表から導出する**）
+
+| 分類 | 内容 | 該当 AC | 実装フェーズでの扱い |
+|---|---|---|---|
+| **A. 出力に当てる条件** | **合成ツリーまたは実リポジトリに `build_graph` またはクエリ層関数を当て、その AC が assert する出力（辺・ノード・`skipped`・クエリ層の戻り値）を判定する** | **AC-1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 10 / 11 / 12 / 15 / 17 / 19 / 20 / 21 / 24 / 25 / 26 / 27 / 28 / 29 / 30 / 31 / 32 / 33 / 34 / 35 / 36 / 37 / 39 / 42 / 43 / 44 / 45 / 46 / 47 / 48 / 49 / 50 / 51 / 52 / 53 / 54 / 55 / 57 / 58 / 59 / 60 / 62** | **入口タスク（§5）で現行実装に当てて Red/Green を確定する** |
+| **B. 前後比較型** | **「前」を現行実装で凍結してから実装し、前後の差を見る** | **AC-16 / AC-38** | **実装前に「前」を凍結する**（**凍結時点は HEAD `36a48f0` の現行実装で得た集合を逐語リテラルで凍結する**・§4-4）。**Red/Green の判定対象にしない**（凍結前は判定できず、凍結後は自明に緑） |
+| **C. スタブ検査型** | **実装を空スタブに差し替えて、赤になるべき条件が赤になるかを見る** | **AC-40**（抽出器のスタブ）／**AC-41**（クエリ層のスタブ） | **実装が一通り緑になった後に実施する** |
+| **D. 文書・ソース照合型** | **契約文書・設計文書・ソースを突き合わせる**（`build_graph` もクエリ層関数も呼ばず、fixture を持たない） | **AC-18**（契約 §4 の relation 表・`resolution` 4 値・`kind` 3 値と実装の値域の双方向一致）／**AC-56**（写像表に「引き受け先なし」の行が 0 行）／**AC-61**（**負の対照と正の対照の両方。1 つの静的検査テストである**） | **静的検査として実装する。AC-61 は改訂 11 §9-2 #2 の 3 分割に従う**（検出器（純粋関数）／本検査／検出器の単体テスト。**改訂 11 `…-160002.md:397` が名指ししているのは AC-61 のみ**）。**AC-18 / AC-56 の実装形は tester の裁量**（表の行の突合・値域集合の比較であり、違反位置を返す検出器を必要としない可能性がある）。**入口タスクの Red/Green 確定の対象外**（§4-5） |
+
+**分類 A のうちクエリ層側**: **AC-19 / AC-34 / AC-35 / AC-36 / AC-44 / AC-45 / AC-46 の 7 件**。
+**分類 A に属することは「`build_graph` を通る」ことを意味しない。**
+**根拠**: 契約 §5-1 クエリ層の完成条件 1（`docs/refgraph-contract.md:271`「カテゴリ判定が純粋関数で、パス文字列だけを入力に取ること」）。
+
+**この分類は現行実装の挙動に依存しない**（＝版が進んでも陳腐化しない）。
+**網を狭めるには本表を書き換えるという目に見える設計判断が要る。**
+
+---
+
+## 3. 写像表（**AC-56 の検査対象**・改訂 7 §5-1 から移設）
+
+**トークナイザ仕様を書き換える周回では、現行の構成要素を 1 つずつ新仕様のどこが引き受けるかを表にする。**
+
+| 現行 `_PATH_TOKEN_RE`（`refgraph.py:92-97`）の構成要素 | 新仕様のどこが引き受けるか | 状態 |
+|---|---|---|
+| `(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}/)?`（変数プレフィクス） | **S1 の開始クラスに `$` / 本体クラスに `{` `}`** | **本版で是正**（改訂 6 で欠落していた） |
+| `[A-Za-z0-9_.~-]`（開始 1 文字） | S1 の開始クラス | 引き受け済み（`$` と非 ASCII を追加） |
+| `[A-Za-z0-9_./{}$~+-]*`（本体） | S1 の本体クラス | 引き受け済み（`*` と非 ASCII を追加） |
+| `\.(?:py|md|…)`（既知拡張子で終わる） | **R1**（`<名前>.<既知拡張子>`） | 引き受け済み。**「拡張子の前に名前が必要」という含意も R1 が引き受ける**（試作で退化トークン 0 件を確認） |
+| `(?![\w.])`（拡張子の後に単語文字が続かない） | **S1 の最長一致**（`.py.bak` は run 全体になり R1 に当たらない） | 引き受け済み |
+| `_starts_at_boundary` による棄却（`:379`） | **S4**（棄却された断片は T-5 にも掛けない） | 引き受け済み（T-6・変更しない） |
+| `_resolve` の変数プレフィクス処理（`:526-535`） | **§3-3(i) の #1〜#4** | **本版で明文化**（改訂 6 で記述が無かった） |
+| `_resolve` の絶対パス棄却（`:536-538`） | **§3-3(i) の #5 ＋ 契約 C-16** | **本版で明文化** |
+| `_resolve` の `strip("`\"'")`（`:520`） | S1 の本体クラス（引用符は本体外なので run が切れる）＋ `_resolve` 側は**そのまま維持** | 引き受け済み |
+| `token.replace("\\", "/")`（`:523`） | `_resolve` 側で**そのまま維持** | 引き受け済み |
+
+**AC-56 はこの表を照合する。**「引き受け先なし」の行が 0 行であり、かつ「引き受け先あり」の行が 1 行以上あること。
+
+---
+
+## 4. 受け入れ条件の条文
+
+### AC-1
+
+`agents/tdd-develop.md` が辺になる（**正の対照**）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:915`
+
+### AC-2
+
+`.claude/docs/` が辺になり **`exact`** で解決する。期待 `target` は **`.claude/docs`**（末尾 `/` 無し）・**`kind: "dir"`**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:916`
+
+### AC-3
+
+`skills/worktree-tdd-workflow/*` が辺になり **`missing`** になる（残骸の信号）。期待 `target` は **`skills/worktree-tdd-workflow`**・**`kind: "dir"`**・**`reference == "skills/worktree-tdd-workflow/*"`**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:917`
+
+### AC-4
+
+`.claude/reports/plan-report-*.md` が辺になり、**`missing` 1 本**で出る（`target` はグロブ原文）
+
+> 出所: 改訂 5 `architecture-report-20260806-120312.md:600`
+
+### AC-5
+
+`state/c3.db` が `basename` で `.claude/state/c3.db` へ解決する
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:918`
+
+### AC-6
+
+`recall.hnsw` が `basename` で `.claude/state/recall.hnsw` へ解決する
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:919`
+
+### AC-7
+
+`docs/c3候補機能採用.md`（非 ASCII）が辺になる
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:920`
+
+### AC-8
+
+**AC-8（分割後・辺単位）**
+
+**走査ツリー**: **AC-8 専用の独立した走査ツリー**（`tmp_path` を 1 つ作り、そこで `build_graph` を呼ぶ）。
+**他の AC の fixture と同居させない**（§5）。`stop.py` をルート直下に**実在させる**。
+
+| # | ファイル | 本文 | 条件 |
+|---|---|---|---|
+| 1 | `a1.md` | `` `**stop.py**` `` | **`source == "a1.md"` かつ `target == "stop.py"` の辺が 1 本以上** |
+| 2 | `a2.md` | `` `*stop.py` `` | **`source == "a2.md"` かつ `target == "stop.py"` の辺が 1 本以上** |
+| 3 | `a3.md` | 1 行目: `` `*.md` ``／2 行目: `` `docs/real.md` ``（**`docs/real.md` を実在させる**） | **(a) `source == "a3.md"` かつ `target == ".md"` の辺が 0 本**（負の対照・`assert xs == []` 形）<br>**(b) `source == "a3.md"` かつ `target == "docs/real.md"` の辺が 1 本以上**（**正の双子**）<br>**状態値は (a) AND (b)** |
+
+**「各ファイルの本文はコードスパン 1 個のみ」は AC-62 (iii) の指定であり、AC-8 には適用しない**
+（`a3.md` は 2 行になる）。
+
+**状態列**: **現行＝緑**（親の実測: `**stop.py**` → `['stop.py']` / `*stop.py` → `['stop.py']` / `*.md` → `[]`。
+`docs/real.md` は R1 で受理される）／改訂 16・17＝**赤**（同一 fixture で 1 形目と 2 形目が `_dedupe` で潰れる）／**本版＝緑**。
+
+> 出所: 改訂 19 `architecture-report-20260807-174641.md:165-180` §4
+
+### AC-9
+
+`python -m pytest tests/test_refgraph.py -q` から `tests/test_refgraph.py` が出る（**回帰**）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:922`
+
+### AC-10
+
+`hook/SKILL.md/release 運用` から **`hook/SKILL.md`**（末尾 `/` を含まない）が出る（**成分境界で刻む**・T-5）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:923`
+
+### AC-11
+
+`{SKILL.md,scripts/mode_line.py}` から `scripts/mode_line.py` の解決先が出る
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:924`
+
+### AC-12
+
+`f"docs/{name}.md"` から **`target == "docs/{name}.md"` の `py_string` 辺が 1 本**出る。同じ fixture に **`f"docs/{ name }.md"`（空白あり）・`f"docs/{name!r}.md"`（変換指定）** を置き、**`target` が `docs/{name}.md` の辺はそれらから出ない**（原文断片どおりに切れる）。**`target` がちょうど `-v2.md` の辺は 0 本**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:925`
+
+### AC-15
+
+旧スキーマの JSON を `read_graph` が読める。**期待: `Link.reference == ""`**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:926`
+
+### AC-16
+
+既存 4 relation（`py_import` / `py_importlib` / `py_subprocess_path` / `py_sql_table`）について、合成ツリーで得た**修正前の `(relation, source, source_line, target, resolution)` の集合が、修正後の集合に完全に含まれる（喪失 0）。増加は許す。** `reference` と `context`、および **`py_sql_table` の `resolution` / `target_exists` は比較対象から外す**（§3-5 で意図的に変えるため）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:927`
+
+### AC-17
+
+`build_graph` は例外を投げない（200 段ネストの f-string・500 成分のパス）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:928`
+
+### AC-18
+
+契約 §4 の relation 一覧と実装が出す relation 名が**双方向で一致**。あわせて **`resolution` の値域（4 値）と `kind` の値域（3 値）も双方向一致**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:929`
+
+### AC-19
+
+クエリ層の 6 関数が動く（`by_relation` / `by_resolution` / `by_target_kind` / `to_targets` / `settled_links` / `glob_matches`）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:930`
+
+### AC-20
+
+`copy` / `bash` / `push` が R1 で受理されない（**負の対照**）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:931`
+
+### AC-21
+
+拡張子を持たない md リンク（`[x](foo/bar)`）から **`md_link` の辺が 0 本**（**負の対照**）。同じ fixture に**正の双子**として **非 ASCII を含む実在しないリンク先（`[x](docs/日本語.md)`）から `md_link` の `missing` 辺が 1 本**出ることを置く
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:932`
+
+### AC-24
+
+`.claude/deletions.txt` を source とする辺が 1 本以上出る
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:940`
+
+### AC-25
+
+`pyproject.toml` を source とする辺が 1 本以上出る
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:941`
+
+### AC-26
+
+`.github/workflows/` 配下の `.yml` を source とする辺が 1 本以上出る
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:942`
+
+### AC-27
+
+合成ツリーのバイナリファイルが `skipped` に**1 度だけ**載り、**同じツリーの他の辺を抑止しない**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:943`
+
+### AC-28
+
+**合成ツリー**に `CREATE TABLE t_present` を持つ `.sql` と `SELECT * FROM t_absent` を持つ `.py` を同じ fixture に置き、**`sqltable:t_present` が `target_exists: true` / `resolution: "exact"`、`sqltable:t_absent` が `target_exists: false` / `resolution: "missing"`**。ノードの `exists` も同じ。**実リポジトリ側（`sqltable:the` が false・`sqltable:agent_runs` が true）は補助的な確認として残す**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:944`
+
+### AC-29
+
+md 散文（コードスパン外・フェンス外）の裸パスが `md_prose_path` として辺になる
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:945`
+
+### AC-30
+
+md フェンス本体（` ``` ` と `~~~` の両方）のパスが `md_fence_path` として辺になる。**同じ fixture のフェンス内に `c3 run <path>` を 1 行置き、`md_c3_run` の辺が消えないことを対照として測る**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:946`
+
+### AC-31
+
+末尾 `/` 無しの多成分ディレクトリ参照（`.claude/hooks`）が **`kind: "dir"`** のノードへ **`exact`** で解決し、**ID に末尾 `/` が付かない**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:947`
+
+### AC-32
+
+**AC-32**: **(a) 存在**——`CONTEXT_MAX_CHARS` を超えるトークンを置いた行から出る辺が **1 本以上**ある。
+**(b) 一致**——その辺の `reference` が原文の run と**逐語一致し、全長が保たれる**（切り詰められていない）。
+**(c)** 全辺について `reference` が非空である。**状態値は (a) AND (b) AND (c)。**
+
+**改訂 6 の「すべての辺が `reference` を持ち、…全長が保たれる」は、
+対象の辺が 0 本のとき真になる（∀ 型の空の緑）。**
+
+> 出所: 改訂 18 `architecture-report-20260807-170006.md:248-253` §5-1
+
+### AC-33
+
+**AC-33**: 「`` `*.md` `` を含むコードスパンから `target == ".md"` の辺が 0 本（**負の対照**）。
+**同じ fixture に正の双子（実在パス 1 本）を置く**」「**AC-8 と同じ fixture に置く**」
+
+**本版の裁定: AC-33 が指す fixture は `a3.md` である。**
+**AC-8 (3) の (a)(b) が AC-33 の条件（負の対照＋正の双子の同居）をそのまま満たす。**
+**AC-33 と AC-8 (3) は同一の検査であり、二重に書かない。**
+
+**監査が Medium と判定した根拠（「改訂 6 の AC-33 逐語が生きている」）は正しい。
+ただし本版で逐語に書いたので、以後この整合は暗黙の依存ではない。**
+
+> 出所: 改訂 19 `architecture-report-20260807-174641.md:186-194` §4-1
+
+### AC-34
+
+`categorize(".claude/state/recall_meta.json") == "generated"` ／ `.claude/logs/agent-runs.jsonl` も同じ ／ **`.claude/statement.md` は `live`**（成分境界の負の対照）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:950`
+
+### AC-35
+
+`settled_links` が畳んだ後 1 候補のグループの辺を返し、**`resolution` を書き換えない**（`ambiguous` のまま）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:951`
+
+### AC-36
+
+`glob_matches("docs/*.md", ids)` が **1 成分内でのみ**一致する（`docs/a/b.md` に一致しない）。**加えて `glob_matches(".claude/reports/**", ids)` も 1 成分内でのみ一致し、`.claude/reports/a/b.md` に一致しない**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:952`
+
+### AC-37
+
+py のコメントに書かれたパスが `py_comment` として辺になる
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:953`
+
+### AC-38
+
+**不変**（監査 12 周目 観点 1「B / C は正しい」）
+
+> 出所: 改訂 22 `architecture-report-20260807-195404.md:480`
+
+### AC-39
+
+走査対象拡大後も `_SKIP_DIR_NAMES` の 11 個以外のディレクトリが 1 つも除外されない
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:955`
+
+### AC-40
+
+**do-nothing スタブ検査（抽出器）**: `build_graph` が空の `Graph` を返す実装を当てたとき、緑のままでよいのは次の 2 つに限る。
+
+- **(1) `TestApiShape`（API の型検査）**
+- **(2) §2 の分類表で、分類 A のうちクエリ層側・分類 C・分類 D に属する受け入れ条件**
+
+**それ以外の受け入れ条件は、どう実装しても全件赤になること。**
+
+**判定はテストの実装形ではなく、その受け入れ条件が §2 でどの分類に属するかで行う。本条文は許可される AC 番号を列挙しない。**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:956` の条文を、改訂 24〜26 で列挙から導出規則へ改めたもの。
+> **述語を「テストが `build_graph` を呼ぶか」に置いてはならない**——実装形に錨を打つと、書き方を選ぶだけで網から外れる
+> （例: AC-49 は条文が `_dedupe` を名指ししており、`_dedupe` に直接当てて書けば `build_graph` を呼ばない）。
+> **列挙で持つと網が静かに縮む**（3 周連続で High が出た: 多すぎる誤り 1 回・少なすぎる誤り 1 回）。
+
+### AC-41
+
+**do-nothing スタブ検査（クエリ層）**: `categorize` / `filter_links` / `fold_target` / `fold_links` / `settled_links` / `by_relation` / `by_resolution` / `by_target_kind` / `to_targets` / `glob_matches` を**何も絞らない実装**（入力をそのまま返す）に置き換えたとき、**§2 の分類表で分類 A のうちクエリ層側に属する受け入れ条件と AC-57 / AC-58 が全件赤**になること。
+
+**抽出器側の受け入れ条件は本条件の判定対象に含めない。**
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:962`。**改訂 26 で 2 点是正した**——
+> ①差し替え対象に `categorize` / `fold_target` を追加（`scripts/refgraph_query.py:55,147` に実在するのに旧条文の 8 関数から漏れていた）
+> ②「緑になるテストが 1 件も無い」を分類由来の射程へ改めた。**旧条文は恒久的に偽だった**——クエリ層をスタブ化しても
+> 抽出器側テストは無傷で緑のままであり、「1 件も無い」は数十件差で成立しない。
+
+### AC-42
+
+**本スライスの発端を測る**: 実リポジトリで **`src/c3/_excludes.py` を source とする `py_string` 辺が `agents/tdd-develop.md` を target に 1 本以上**出る（`resolution == "missing"`）。**`hatch_build.py` も同じ**（現行の辺は 0 本）。かつ **`agents/tdd-develop.md` を target とする全辺の source を `categorize` すると `live` が 2 件以上**含まれる（現行は 0 件・33 本すべて history）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:963`
+
+### AC-43
+
+**マスクの二重帰属の負の対照**: 同一行にコードスパン内のパス 1 本と散文の裸パス 1 本を置き、**コードスパン側が `md_code_span_path` 1 本のみ・散文側が `md_prose_path` 1 本のみ**で出る（どちらも相手の relation で重複しない）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:964`
+
+### AC-44
+
+**`fold_links` の 8 フィールド化**: `reference` だけが異なる 2 本の `Link` を `fold_links` に通すと **2 本のまま残る**（7 フィールドキーの実装なら赤）。**同じ fixture に、8 フィールドすべてが同一の 2 本が 1 本に潰れる正の対照**を置く
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:965`
+
+### AC-45
+
+**`settled_links` のグループキーの負の対照**: 同一 `(relation, source, reference)` から出る辺が 2 本あるとき、**`settled_links` がそれを返さない**。同じ fixture に、`reference` が異なるが `source_line` が同じ 2 グループを置き、**それぞれ 1 本ずつなら両方返る**ことを正の対照にする（`source_line` をキーに含めた実装・`reference` を落とした実装のどちらでも赤になる）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:966`
+
+### AC-46
+
+**クエリ層の fail-loud**: `by_relation` / `by_resolution` / `by_target_kind` が**未知値で `ValueError`** を上げる（各 1 ケース）。`to_targets` / `settled_links` / `glob_matches` は未知値の概念が無いため対象外である旨をテストの docstring に書く
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:967`
+
+### AC-47
+
+**DC-AS-001 の回帰条件（旧 AC-22 相当）**: 実リポジトリで **`.claude/settings.json` から `.claude/hooks/stop.py` への `settings_permission` 辺が 1 本以上**出て、**`resolution == "exact"` かつ `target_exists: true`**。**`reference` は `.claude/hooks/stop.py*`**（`*` を含む原文）。合成ツリーにも同型の対照（`x/y.py*` → `x/y.py` が `exact`）を置く
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:968`
+
+### AC-48
+
+**真の断片の負の対照**: `` `reports/*-{ts}.md` `` を含むコードスパンから **`target` が `-{ts}.md` の辺が 0 本**。同じ fixture に**正の双子**として **`target == "reports/*-{ts}.md"` の `missing` 辺が 1 本**出ることを置く（現行は 0 本＝R3 の回復を同時に測る）
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:969`
+
+### AC-49
+
+**`_dedupe` のキー拡張（抽出器側）**: 同じ source の**異なる 2 トークン**が同じ target を指す合成入力（例: 10 行目 `` `docs/a.md` `` と 50 行目 `` `a.md` ``）で、**`reference` の異なる 2 本が残る**（3 フィールドキーの実装なら 1 本になり赤）。同じ fixture に、**同じ reference が同じファイル内で 2 回出るときは 1 本に潰れる**正の対照を置く
+
+> 出所: 改訂 6 `architecture-report-20260806-131756.md:970`
+
+### AC-50
+
+**`${CLAUDE_PROJECT_DIR}/` の回帰条件**: 実リポジトリで **`.claude/settings.json` から `.claude/hooks/pre_tool.py` への `settings_hook` 辺が 1 本以上**出て、**`resolution == "exact"` / `target_exists: true` / `reference == "${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_tool.py"`**。加えて **`settings_hook` が 39 本以上・`settings_statusline` が 2 本以上**（実測値・§2-1）。合成ツリーにも同型の対照（`${CLAUDE_PROJECT_DIR}/x/y.py` → `x/y.py` が `exact`）を置く
+
+> 出所: 改訂 7 `architecture-report-20260806-141500.md:355`
+
+### AC-51
+
+**`${CLAUDE_SKILL_DIR}/` の回帰条件**: 合成ツリーで `.claude/skills/x/SKILL.md` に `c3 run ${CLAUDE_SKILL_DIR}/scripts/y.py` を書き、**`.claude/skills/x/scripts/y.py`（source のディレクトリ相対）へ `exact` で解決する**。同じ fixture に `${CLAUDE_PROJECT_DIR}/` 形を置き、**2 変数が別の基準で解決されること**を対照にする
+
+> 出所: 改訂 7 `architecture-report-20260806-141500.md:356`
+
+### AC-52
+
+**未知変数の沈黙禁止**: `${UNKNOWN_VAR}/x.py` から **`missing` 辺が 1 本**出る（`target` は原文トークン・`target_exists: false`）。同じ fixture に**正の双子**として `${CLAUDE_PROJECT_DIR}/x.py`（実体を作る）から `exact` 辺が出ることを置く
+
+> 出所: 改訂 7 `architecture-report-20260806-141500.md:357`
+
+### AC-53
+
+**剥がすと空になるトークンの負の対照**: `${CLAUDE_PROJECT_DIR}/` 単独（R2 で受理される形）から**辺が 0 本**。同じ fixture に**正の双子**として `${CLAUDE_PROJECT_DIR}/.claude/`（実ディレクトリ）から `kind: "dir"` の `exact` 辺が 1 本出ることを置く
+
+> 出所: 改訂 7 `architecture-report-20260806-141500.md:358`
+
+### AC-54
+
+**`MemoryError` の記録**: 合成ツリーの 1 ファイルについて `Path.read_text` が `MemoryError` を送出するようにし、**そのファイルが `skipped` に理由 `MemoryError` で 1 度だけ載る**。**同じツリーの他のファイルの辺は出続ける**（`build_graph` がクラッシュしない）
+
+> 出所: 改訂 7 `architecture-report-20260806-141500.md:359`
+
+### AC-55
+
+**`tokenize` 失敗時の縮退**: 合成ツリーの 1 つの `.py` について `tokenize` が例外を送出するようにし、**そのファイルの `py_comment` 辺が 0 本**になる一方で、**同じファイルの `py_import` 辺は出続け、`skipped` には載らない**。同じ fixture に、`tokenize` が成功する `.py` から `py_comment` 辺が 1 本出る正の対照を置く
+
+> 出所: 改訂 7 `architecture-report-20260806-141500.md:360`
+
+### AC-56
+
+**写像表の網羅（設計レベルの回帰）**: 現行 `_PATH_TOKEN_RE`（`refgraph.py:92-97`）と `_resolve` の先頭処理（`:518-538`）の各構成要素に対し、**新仕様のどの段が引き受けるかを列挙した表**（§2-6）が設計文書に存在し、**「引き受け先なし」の行が 0 行**であること
+
+> 出所: 改訂 7 `architecture-report-20260806-141500.md:361`
+
+**担い手（改訂 26 の裁定）**: **静的検査として実装する**（改訂 7 §5-1 の「tester ではなく reviewer / planner が確認する設計レベルの条件」を上書きする）。
+**検査対象の写像表は本ファイル §3 に置く**（追跡対象。`.claude/reports/` は gitignored のため CI・新規 clone では参照できず、静的検査が恒久赤か skip になっていた）。
+
+**正の対照**: 同じ検査で**「引き受け先あり」の行が 1 行以上あること**を assert する。
+**根拠**: 契約 §7 規律 4（`docs/refgraph-contract.md:337`「「無いこと」の検査は「在ること」の対照と同じ fixture に置く」）。
+**「引き受け先なしの行が 0 行」は表の行が 0 行のときにも真になる**（∀ 型の空の緑）。
+
+### AC-57
+
+**T-5b の正の対照**: 合成ツリーで `.claude/hooks/stop.py` の実体を作り、コードスパンに `.claude/hooks/stop.py/../../../malicious.py` を置く。**(i) 正規化後の target への `missing` 辺が 1 本**、**(ii) `.claude/hooks/stop.py` への解決済み辺（`exact`）が 1 本**、**両方**出る。同じ fixture に**負の対照**として、解決できる前置詞が 1 つも無い run（`nope/absent.md`・`nope` を作らない）を置き、**そこからは辺が 1 本だけ**（追加されない）ことを測る
+
+> 出所: 改訂 8 `architecture-report-20260806-152000.md:263`
+
+### AC-58
+
+**T-5b と `settled_links` の相互作用**: AC-57 と同じ 2 本の辺（同一 `(relation, source, reference)`）を `fold_links` → `settled_links` に通すと、**そのグループが返らない**（辺が 2 本あるため）。同じ fixture に、T-5b が発火せず 1 本だけになるグループを置き、**そちらは返る**ことを正の対照にする
+
+> 出所: 改訂 8 `architecture-report-20260806-152000.md:264`
+
+### AC-59
+
+**T-5b を実リポジトリで測る**: **`.claude/docs/config-policy.md` を source とし `.claude/hooks/stop.py` を target とする辺が 1 本以上**出る（`resolution == "exact"` / `target_exists: true` / **`reference` は `.claude/hooks/stop.py/../../../malicious.py`**）。**同じ source から正規化後の target（`malicious.py`）への `missing` 辺も残っている。** あわせて **`md_link` 経路でも T-5b が効くこと**を実リポジトリまたは合成ツリーで 1 件測る（DC-AM-102 の適用範囲の決定を固定する）
+
+> 出所: 改訂 9 `architecture-report-20260806-151248.md:522`
+
+### AC-60
+
+**T-5b が `md_link` 経路でも効く（合成ツリー）**: 合成ツリーに **`[x](foo.md/bar.md)`** を含む md を置き、**`foo.md` も `bar.md` もリンクの示す位置には作らない**。ただし **`foo.md` を別の場所（例: `sub/foo.md`）に実在させる**。期待は **`md_link` の辺として (i) 正規化後 target への `missing` 1 本と (ii) `sub/foo.md` への解決済み辺（`basename`）の両方が出る**こと。**AC 本文に「リンク先が既知拡張子（`.md`）を持つので `_md_links` の抑止ガードを通る」ことを 1 行書く**（持たない題材では辺自体が出ず T-5b も回らないため成立しない）
+
+> 出所: 改訂 10 `architecture-report-20260806-154949.md:360`
+
+### AC-61
+
+**抽出器に出所条件が混入しないことの静的検査**: **`src/c3/refgraph.py` のソースに、出所カテゴリを表すパス接頭辞リテラル（`.claude/reports/` / `.claude/memory/` / `.claude/agent-memory/` / `.claude/tmp/` / `src/c3/_template/` / `.dev/` / `tests/` / `CHANGELOG.md`）が 1 つも現れない**ことを assert する。**正の対照**として、**`scripts/refgraph_query.py` には同じリテラルが現れる**ことを同じテストで assert する（検査自体が空回りしていないことを示す）
+
+> 出所: 改訂 10 `architecture-report-20260806-154949.md:361`
+
+### AC-62
+
+**(i)** **(i) グロブの原文が 1 トークン（合成・4 形）**
+
+次の 4 形を同じ fixture の別行の**コードスパン内**に置き、**形ごとに独立して**「その原文文字列を `target` とする辺が 1 本以上」出る:<br>`reports/*-{ts}.md` / `src/*/x.py` / `src/**/*.py` / `.claude/skills/*/scripts/**/*.py`<br>形と辺の対応は `source_line` で固定する
+
+**(ii)** **(ii) 断片の扱い（合成）**
+
+`` `nox/**/why.md` `` を置き **`nox` も `why.md` も作らない**。<br>**(a) 正の対照**: `target == "nox/**/why.md"` の `missing` 辺が **1 本**（読み A 由来）<br>**(b) 正の対照**: `target == "nox"` の `missing` 辺が **1 本**（**読み B の前置トークン由来。出るのが正しい**・§4-1）<br>**(c) 負の対照**: `target == "why.md"` および `target == "/why.md"` の辺が **0 本**<br>**状態値は (a) AND (b) AND (c)**
+
+**(iv)** **(iv) 実リポジトリ**
+
+**前提 assert**: `CHANGELOG.md:28` に `` `.claude/skills/*/scripts/**/*.py` `` が存在。**本体**: **`source == "CHANGELOG.md"` かつ `source_line == 28` かつ `reference == ".claude/skills/*/scripts/**/*.py"` の辺**について、**(a) `target == ".claude/skills/*/scripts/**/*.py"` が 1 本以上 かつ (b) `target == ".claude/skills/*/scripts"` が 0 本**。**relation は `md_code_span_path`**。**代替題材**: `.claude/docs/taxonomy.md:147-148`（**YAML フェンス内なので relation は `md_fence_path`**）
+
+**(vi)** **(vi) 2 読みが同じ target を出したとき 2 本残る（合成）**
+
+**`.claude/hooks/stop.py` を実在させ**、コードスパンに `` `.claude/hooks/stop.py*` `` を **1 か所**置く。**`target == ".claude/hooks/stop.py"` の辺が 2 本**あり、**その `reference` の集合が `{".claude/hooks/stop.py*", ".claude/hooks/stop.py"}`**。**同じ fixture に `` `.claude/hooks/other.py` ``（実在させる）を置き、そちらは 1 本のまま**
+
+**(iii)**
+
+**(iii) 強調側（合成・`stop.py` 系 8 形・形ごとに別 source）**
+
+**fixture**: **8 形を 1 形につき 1 ファイル、計 8 つの別 md ファイルに置く**（`source` を分ける）。
+各ファイルの本文はコードスパン 1 個のみとし、`stop.py` を fixture のルート直下に**実在させる**。
+
+| # | ファイル | 題材（コードスパン内） |
+|---|---|---|
+| 1 | `t1.md` | `` `*stop.py*` `` |
+| 2 | `t2.md` | `` `実装*stop.py*を読む` `` |
+| 3 | `t3.md` | `` `*stop.py*foo` `` |
+| 4 | `t4.md` | `` `*stop.py*-bar` `` |
+| 5 | `t5.md` | `` `*stop.py* 次` `` |
+| 6 | `t6.md` | `` `実装**stop.py**を読む` `` |
+| 7 | `t7.md` | `` `**stop.py**` `` |
+| 8 | `t8.md` | `` `**stop.py**foo` `` |
+
+**条件**: **8 ファイルそれぞれについて独立に、`source == "tN.md"` かつ `target == "stop.py"` の辺が 1 本以上**出る。
+**`foo` は fixture に作らない**（R4 で自壊させない）。
+
+**(v)**
+
+**(v) S3 の固定点（合成・読み A を `reference` で識別する）**
+
+**fixture**: `stop.py` を fixture のルート直下に**実在させる**。次の 3 行を別行のコードスパン内に置く
+（**先頭に `{` などの境界外文字を置かない**）。
+
+| 行 | 題材 | 役割 |
+|---|---|---|
+| 1 | `` `stop.py*.` `` | **判別ケース** |
+| 2 | `` `stop.py*}` `` | **判別ケース** |
+| 3 | `` `stop.py**` `` | **正の対照**（S3 が 1 回でも固定点でも緑。fixture 自体が壊れていないことを示す） |
+
+**条件（各行について独立に判定する）**:
+
+- **(v-1) 存在**: `reference` がその行の原文文字列（`stop.py*.` / `stop.py*}` / `stop.py**`）である辺が
+  **1 本以上存在する**（`assert len(...) >= 1` を**先に**書く）
+- **(v-2) 一致**: **その辺の `target` がすべて `stop.py` である**
+- **状態値は (v-1) AND (v-2)**
+
+> 出所: (i)(ii)(iv)(vi)=改訂 16 `architecture-report-20260806-184908.md:212-217` §5-1 ／ (iii)=改訂 18 `architecture-report-20260807-170006.md:138-155` §3-2 ／ (v)=改訂 17 `architecture-report-20260806-185813.md:135-151` §3-2
