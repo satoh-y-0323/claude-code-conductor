@@ -681,28 +681,39 @@ raise SystemExit(pytest.main([
 
 
 def _run_junit(runner_source: str, tmp_path: Path) -> dict:
-    """`runner_source` を子プロセスで実行し `{テスト名: 'red'|'green'}` を返す."""
+    """`runner_source` を子プロセスで実行し `{テスト名: 'red'|'green'|'skipped'}` を返す.
+
+    `skipped`（`pytest.skip()` 由来。例: symlink 作成が権限的に不可能な環境）は
+    `failure` / `error` のどちらの子要素も持たないため、区別しないと誤って
+    `green` に分類される（実際に緑になったのではなく判定不能なだけ）。
+    """
     junit_path = tmp_path / "junit.xml"
     runner = tmp_path / "run_stubbed_suite.py"
     runner.write_text(runner_source, encoding="utf-8")
 
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, str(runner)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(REPO_ROOT),
     )
 
     assert junit_path.is_file(), (
         f"junit report was not produced (runner crashed before pytest ran?); "
-        f"runner={runner}"
+        f"runner={runner}; stdout={result.stdout}\nstderr={result.stderr}"
     )
     tree = ElementTree.parse(junit_path)
     outcomes = {}
     for case in tree.iter("testcase"):
         name = f"{case.get('classname')}::{case.get('name')}"
-        failed = case.find("failure") is not None or case.find("error") is not None
-        outcomes[name] = "red" if failed else "green"
+        if case.find("failure") is not None or case.find("error") is not None:
+            outcomes[name] = "red"
+        elif case.find("skipped") is not None:
+            outcomes[name] = "skipped"
+        else:
+            outcomes[name] = "green"
     return outcomes
 
 

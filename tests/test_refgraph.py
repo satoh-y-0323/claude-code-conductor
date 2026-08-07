@@ -50,6 +50,7 @@ import ast
 import inspect
 import json
 import re
+import sys
 import tokenize
 from collections import Counter
 from pathlib import Path, PurePosixPath
@@ -60,6 +61,20 @@ import pytest
 # 未実装時に **collection error** になり全ケースが実行されず、
 # 「スタブで緑になるのは API 型検査だけ」（契約 §6 条件 7）の確認ができない。
 import c3.refgraph as refgraph  # noqa: E402
+
+# クエリ層（`scripts/refgraph_query.py`）を遅延ロードするための sys.path 設定
+# （改訂 5: TestMdLinkT5bSharesReferenceWithBody が settled_links を検査するため）。
+# モジュールレベルでは import しない（tests/test_refgraph_query.py と同じ流儀）。
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+
+def query_module():
+    """`scripts/refgraph_query.py` をモジュールとして返す(実行時に遅延ロード)."""
+    import refgraph_query
+
+    return refgraph_query
 
 
 # ---------------------------------------------------------------------------
@@ -2619,3 +2634,274 @@ class TestGlobRawTokenInTheRealRepo:
         assert shortened_dir == [], (
             f"(b) the glob must not be shortened to a directory-only target: {shortened_dir}"
         )
+
+
+# ===========================================================================
+# E 周回 1 findings（改訂 5・最終実行版）
+# ===========================================================================
+class TestMdLinkT5bSharesReferenceWithBody:
+    """DC-AM-001/DC-AM-002: `md_link` の T-5b 追加辺が本体 missing 辺と同一の
+    非空 `reference` を持ち、その組が `settled_links` から排除されること.
+
+    fixture は AC-57 の正の対照（`tests/test_refgraph.py:2417-2473`
+    `test_positive_control_ambiguous_prefix_adds_one_edge_per_candidate`）と同型
+    （`skills/x.md/absent.txt` ＋ `p1/skills/x.md` / `p2/skills/x.md` の 2 実体）だが、
+    経路を `md_code_span_path` ではなく `md_link`（`[t](...)`）にする。
+    """
+
+    def test_missing_and_t5b_edges_share_a_nonempty_reference_and_are_excluded_from_settled(
+        self, tmp_path
+    ):
+        _mkfile(tmp_path, "p1/skills/x.md", "# x1\n")
+        _mkfile(tmp_path, "p2/skills/x.md", "# x2\n")
+        _mkfile(tmp_path, "notes.md", "# notes\n\n[t](skills/x.md/absent.txt)\n")
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        missing = _links(graph, relation="md_link", source=src, target="skills/x.md/absent.txt")
+        assert len(missing) >= 1, "positive control: 本体 missing 辺が出ていない"
+        assert all(link.resolution == "missing" for link in missing)
+
+        added = _links(graph, relation="md_link", source=src, target="p1/skills/x.md") + _links(
+            graph, relation="md_link", source=src, target="p2/skills/x.md"
+        )
+        assert len(added) == 2, (
+            f"positive control: T-5b が候補ごとに 1 本ずつ追加するはず(AC-57); got {added}"
+        )
+        assert all(link.resolution == "ambiguous" for link in added)
+
+        assert missing[0].reference != "", (
+            "md_link の reference は「解決に使った文字列」であるべき(C-25); "
+            "現行は _add() の既定値 '' のまま"
+        )
+        references = {link.reference for link in missing + added}
+        assert references == {"skills/x.md/absent.txt"}, (
+            f"本体辺と T-5b 辺は同一のリンク先文字列を reference に持つはず; got {references}"
+        )
+
+        folded = query_module().fold_links(graph.links)
+        settled = query_module().settled_links(folded)
+        settled_group = [
+            link
+            for link in settled
+            if link.source == src and link.reference == "skills/x.md/absent.txt"
+        ]
+        assert settled_group == [], (
+            "3 候補(本体 + T-5b 2 本)を持つグループは settled_links から排除されるべき; "
+            f"got {settled_group}"
+        )
+
+    def test_hash_fragment_does_not_split_the_shared_reference(self, tmp_path):
+        """`#` 断片つきでも本体辺と T-5b 辺の reference が同一(非空)であること.
+
+        断片の前後で reference が割れると、settled_links のグループキー
+        (relation, source, reference) が分裂し missing 本体辺が単独グループになって
+        settled をすり抜ける(CR High の再開・DC-AM-002)。
+        """
+        _mkfile(tmp_path, "p1/skills/x.md", "# x1\n")
+        _mkfile(tmp_path, "p2/skills/x.md", "# x2\n")
+        _mkfile(tmp_path, "notes.md", "# notes\n\n[t](skills/x.md/absent.txt#sec)\n")
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        missing = _links(graph, relation="md_link", source=src, target="skills/x.md/absent.txt")
+        added = _links(graph, relation="md_link", source=src, target="p1/skills/x.md") + _links(
+            graph, relation="md_link", source=src, target="p2/skills/x.md"
+        )
+        assert len(missing) >= 1 and len(added) == 2, (
+            f"positive control: T-5b の発火自体は # 断片の有無で変わらない; "
+            f"missing={missing} added={added}"
+        )
+
+        references = {link.reference for link in missing + added}
+        assert len(references) == 1, (
+            f"本体辺と T-5b 辺の reference が # 断片の前後で割れてはいけない; got {references}"
+        )
+        (only_reference,) = references
+        assert only_reference != "", "reference は非空であること"
+
+
+class TestPyJoinedStrMultibyteRegressionGuard:
+    """DC-AS-001/DC-AS-002: `_py_joined_str` の UTF-8 バイトスライス化後も、日本語を
+    含む f-string の `reference`（原文断片）が正しく切れること（現行緑を維持する正の対照）.
+
+    `col_offset` / `end_col_offset` は UTF-8 **バイト**単位（CPython `Lib/ast.py`）。
+    行頭に日本語（マルチバイト）の識別子を置くと、文字インデックスとバイトインデックスの
+    値が乖離する（`名前` は 2 文字＝6 バイト）。単一行・複数行の 2 形を検査する。
+    """
+
+    def test_single_line_fstring_with_japanese_prefix_and_body(self, tmp_path):
+        _mkfile(
+            tmp_path,
+            "pkg/strings2.py",
+            'x = "z"\n'
+            '名前 = f"docs/日本語-{x}.md"\n',
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        source = "pkg/strings2.py"
+
+        hits = [
+            link
+            for link in graph.links
+            if link.relation == "py_string"
+            and link.source == source
+            and link.reference == "docs/日本語-{x}.md"
+        ]
+        assert hits != [], (
+            "f-string 原文断片 'docs/日本語-{x}.md' が reference と逐語一致しない "
+            f"(見つかった py_string の reference: "
+            f"{[l.reference for l in graph.links if l.source == source]})"
+        )
+        assert {link.source_line for link in hits} == {2}
+
+    def test_multiline_fstring_with_japanese_prefix_and_body(self, tmp_path):
+        _mkfile(
+            tmp_path,
+            "pkg/strings3.py",
+            'x = "z"\n'
+            '名前 = f"""docs/report.md\n'
+            '日本語-{x}のパス.txt"""\n',
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        source = "pkg/strings3.py"
+
+        first_line_hit = [
+            link
+            for link in graph.links
+            if link.relation == "py_string"
+            and link.source == source
+            and link.reference == "docs/report.md"
+        ]
+        assert first_line_hit != [], (
+            "先頭行の断片 'docs/report.md' が reference と逐語一致しない(col_offset は "
+            f"バイト単位であること・名前 = の日本語プレフィクスでバイト/文字インデックスが乖離する); "
+            f"got {[l.reference for l in graph.links if l.source == source]}"
+        )
+        assert {link.source_line for link in first_line_hit} == {2}
+
+        last_line_hit = [
+            link
+            for link in graph.links
+            if link.relation == "py_string"
+            and link.source == source
+            and link.reference == "日本語-{x}のパス.txt"
+        ]
+        assert last_line_hit != [], (
+            "末尾行の断片 '日本語-{x}のパス.txt' が reference と逐語一致しない(end_col_offset は "
+            f"バイト単位であること); got {[l.reference for l in graph.links if l.source == source]}"
+        )
+        assert {link.source_line for link in last_line_hit} == {3}
+
+
+class TestSymlinkFilesAreIndexedButNotRead:
+    """SR-V-002 L-1: symlink は索引(ノード)に残るが内容は読まず skipped(reason=Symlink)."""
+
+    def test_symlink_file_is_present_as_node_but_content_is_not_read(self, tmp_path):
+        real = tmp_path / "secret.md"
+        real.write_text("# secret\n\n参照: `should-not-be-read.py`\n", encoding="utf-8")
+        link_path = tmp_path / "link.md"
+        try:
+            link_path.symlink_to(real)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unsupported on this platform: {exc}")
+
+        # 正の双子: symlink でない通常ファイルも同じツリーに置く（§7 規律 4）
+        _mkfile(tmp_path, "normal.md", "# normal\n\n参照: `alive.py`\n")
+        _mkfile(tmp_path, "alive.py", "# alive\n")
+
+        graph = refgraph.build_graph(tmp_path)
+
+        assert "link.md" in _node_ids(graph), (
+            "symlink 自身はノードとして索引に残るはず(SR-V-002 是正後の仕様)"
+        )
+
+        leaked = _links(graph, source="link.md", target="should-not-be-read.py")
+        assert leaked == [], (
+            f"symlink 先の内容が読まれ辺が出ている(内容を読んではいけない): {leaked}"
+        )
+
+        reported = _skipped_paths(graph)
+        assert "link.md" in reported, (
+            "symlink は内容不読として skipped に記録されるはず(現行は symlink をそのまま "
+            f"path.read_text() で読む実装のため未記録); got {reported!r}"
+        )
+        reasons = [entry.reason for entry in graph.skipped if entry.path == "link.md"]
+        assert reasons == ["Symlink"], f"skipped reason は 'Symlink' のはず; got {reasons}"
+
+        alive_hits = _links(graph, source="normal.md", target="alive.py")
+        assert len(alive_hits) >= 1, "symlink 対応が他ファイルの辺を壊してはいけない(正の双子)"
+
+
+class TestOversizedFilesAreSkippedNotRead:
+    """SR-NEW L-2: `_MAX_TEXT_BYTES` を超えるファイルは読まず skipped(reason=TooLarge)."""
+
+    def test_file_over_the_size_limit_is_skipped_and_its_content_not_parsed(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(refgraph, "_MAX_TEXT_BYTES", 10, raising=False)
+
+        big = tmp_path / "big.md"
+        big.write_text("参照: `should-not-be-read.py`\n" + ("x" * 200), encoding="utf-8")
+        _mkfile(tmp_path, "normal.md", "# normal\n\n参照: `alive.py`\n")
+        _mkfile(tmp_path, "alive.py", "# alive\n")
+
+        graph = refgraph.build_graph(tmp_path)
+
+        leaked = _links(graph, source="big.md", target="should-not-be-read.py")
+        assert leaked == [], f"上限超過ファイルの内容が読まれ辺が出ている: {leaked}"
+
+        reported = _skipped_paths(graph)
+        assert "big.md" in reported, (
+            "サイズ上限を超えるファイルは読み込み前チェックで skipped に記録されるはず "
+            f"(現行は '_MAX_TEXT_BYTES' を参照する事前チェックが無い); got {reported!r}"
+        )
+        reasons = [entry.reason for entry in graph.skipped if entry.path == "big.md"]
+        assert reasons == ["TooLarge"], f"skipped reason は 'TooLarge' のはず; got {reasons}"
+
+        alive_hits = _links(graph, source="normal.md", target="alive.py")
+        assert len(alive_hits) >= 1, "サイズ上限対応が他ファイルの辺を壊してはいけない(正の双子)"
+
+
+class TestT5AndT5bPickFirstVsAllSymmetry:
+    """impl 10.（DRY / `_resolve` 分割）の回帰ガード: T-5 は最初の 1 つだけ、T-5b は
+    全件を試すという非対称性が、共通ジェネレータ化後も保たれること（現行緑の正の対照）.
+
+    `a.md/b.md/c.md/d.unknown` は直接受理されない。T-5（`_chop_to_accepted`）は
+    末尾から刻んで**最初に受理できた** `a.md/b.md/c.md`（3 成分）を採る——2 成分の
+    `a.md/b.md` や 1 成分の `a.md` も単独では受理できるが、T-5 はそこまで見ない
+    （最初の 1 つで停止する）。`a.md/b.md/c.md` 自体は実在せず missing になるため
+    T-5b が発火し、そこから**全ての**受理できる前置詞（`a.md/b.md` と `a.md`）を
+    候補ごとに追加する（`a.md` はディレクトリとして実在）。
+    """
+
+    def test_t5_picks_the_longest_prefix_while_t5b_adds_every_shorter_one(self, tmp_path):
+        (tmp_path / "a.md").mkdir()
+        _mkfile(tmp_path, "a.md/b.md", "# b\n")
+        _mkfile(tmp_path, "notes.md", "# notes\n\n参照: `a.md/b.md/c.md/d.unknown`\n")
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        t5_pick = _links(graph, source=src, target="a.md/b.md/c.md")
+        assert len(t5_pick) >= 1, (
+            "T-5 は末尾から刻んで最初に受理できた前置詞 'a.md/b.md/c.md'(3 成分) を "
+            f"採るはず; got {[l.target for l in graph.links if l.source == src]}"
+        )
+        assert all(link.resolution == "missing" for link in t5_pick)
+
+        t5b_two_component = _links(graph, source=src, target="a.md/b.md")
+        assert len(t5b_two_component) >= 1, (
+            "T-5b は resolved_input 'a.md/b.md/c.md' から更に刻み、2 成分 'a.md/b.md' "
+            f"も追加辺にするはず; got {[l.target for l in graph.links if l.source == src]}"
+        )
+        assert all(link.resolution == "exact" for link in t5b_two_component)
+
+        t5b_one_component = _links(graph, source=src, target="a.md")
+        assert len(t5b_one_component) >= 1, (
+            "T-5b は 1 成分 'a.md'(ディレクトリとして実在) も追加辺にするはず"
+        )
+        assert all(link.resolution == "exact" for link in t5b_one_component)
