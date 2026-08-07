@@ -87,17 +87,6 @@ _ASCII_BOUNDARY = frozenset(" \t\r\n\x0b\x0c`\"'([,;:=|")
 # 空白や別の `*` に続く `*` は Markdown の強調（`**stop.py**`）なので区切り扱いにする。
 _GLOB_BODY_RE = re.compile(r"[/A-Za-z0-9_.~{}$+-]")
 
-# 文字列中からパスらしいトークンを取り出す。
-#   - `${CLAUDE_PROJECT_DIR}/` のような変数プレフィクスを 1 つだけ許す
-#   - 本体に空白・引用符・括弧を含めない（末尾の `*)` や `,` を巻き込まない）
-#   - 開始位置の妥当性は `_starts_at_boundary` が判定する（後読みでは書けないため）
-_PATH_TOKEN_RE = re.compile(
-    r"(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}/)?"
-    r"[A-Za-z0-9_.~-][A-Za-z0-9_./{}$~+-]*"
-    r"\.(?:" + "|".join(_REFERENCE_SUFFIXES) + r")"  # nul-boundary: allow(正規表現の選択肢の組み立て。区切りは正規表現の文法で固定されており、機械可読な行集合ではない)
-    r"(?![\w.])"
-)
-
 # 参照拡張子の選択肢（正規表現の組み立てに使い回す）。
 _SUFFIX_ALTERNATION = "|".join(_REFERENCE_SUFFIXES)  # nul-boundary: allow(正規表現の選択肢の組み立て。区切りは正規表現の文法で固定されており、機械可読な行集合ではない)
 
@@ -156,6 +145,13 @@ _CONTROL_RE = re.compile(
     "[" + chr(0) + "-" + chr(31)
     + chr(127) + "-" + chr(159)
     + chr(0x2028) + chr(0x2029) + "]"
+)
+
+# SQL 文字列中の `CREATE TABLE`（実在索引の材料・契約 C-12）。
+# `DROP TABLE` は実在の根拠にならないので含めない。
+_CREATE_TABLE_RE = re.compile(
+    r"(?<![\w.])CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
 )
 
 # SQL 文字列中のテーブル名。
@@ -417,10 +413,13 @@ class _Token:
 
     `reference` は S3 正規化前の run 原文（辺の出所として残す）、
     `text` は解決に掛ける正規化後の文字列。
+    `dir_form` は R2（末尾 `/`）で受理されたか（実在しないノードの `kind` を
+    決めるのに使う・契約 C-3「R2 由来の辺が 1 本でもあれば `dir`」）。
     """
 
     reference: str
     text: str
+    dir_form: bool = False
 
 
 def _is_run_body(char: str, with_star: bool) -> bool:
@@ -495,6 +494,23 @@ def _accepts(token: str) -> bool:
     return False
 
 
+def _chop_to_accepted(token: str) -> str:
+    """T-5: 受理できない run を成分境界（`/`）で刻み、最初に受理できた前置詞を返す.
+
+    末尾から 1 成分ずつ落とし、`_accepts`（R1 / R2 / R3）で最初に通ったものを採る。
+    **前置詞は末尾の `/` を含めない形にする。** 刻んだ候補に `/` を足して R2
+    （ディレクトリ形）として受理し直すと、原文に書かれていないディレクトリ参照を
+    捏造することになる（契約 §3「トークン境界」の断片禁止と同じ理由）。
+    受理できる前置詞が 1 つも無ければ空文字を返す（何も出さない）。
+    """
+    parts = token.split("/")
+    for count in range(len(parts) - 1, 0, -1):
+        prefix = "/".join(parts[:count])  # nul-boundary: allow(POSIX パスの成分を組み直す。区切りは POSIX パスの文法で固定されており、機械可読な行集合ではない)
+        if prefix and _accepts(prefix):
+            return prefix
+    return ""
+
+
 def _path_tokens(text: str):
     """2 通りの読みでパストークンを切り出す（改訂 14 §4-6）.
 
@@ -508,7 +524,10 @@ def _path_tokens(text: str):
         for run in _runs(text, with_star):
             token = _normalize_run(run)
             if not _accepts(token):
-                continue
+                # T-5: 受理できない run は成分境界で刻み、最初に受理できた前置詞を採る。
+                token = _chop_to_accepted(token)
+                if not token:
+                    continue
             # R2（ディレクトリ形）の末尾 `/` は解決前に落とす。付けたまま渡すと
             # `CLAUDE.md/` のような 1 成分の参照が「パス形」の枝に入り、名前索引で
             # 出ていた候補（`ambiguous`）が消える。解決の 4 段は変えない。
@@ -517,7 +536,9 @@ def _path_tokens(text: str):
             if key in seen:
                 continue
             seen.add(key)
-            yield _Token(reference=run, text=resolvable)
+            yield _Token(
+                reference=run, text=resolvable, dir_form=token.endswith("/")
+            )
 
 
 def _sanitize_context(line: str) -> str:
@@ -549,6 +570,8 @@ class _Collector:
         self.file_paths = []
         self.file_ids = []
         self.present = set()
+        # ディレクトリ索引（契約 C-11）。実在判定はファイル索引との**和**で行う。
+        self.dir_ids = set()
         self.by_basename = {}
         self.agents = {}
         self.skills = {}
@@ -558,6 +581,13 @@ class _Collector:
         self._skipped_paths = set()
         self.agent_pattern = None
         self.skill_pattern = None
+        # 走査ツリー内の `CREATE TABLE` 索引と、その索引で解決を待つテーブル参照
+        # （索引は全ファイルを読み終わるまで完成しないため保留する・契約 C-12）。
+        self.tables = set()
+        self._pending_tables = []
+        # R2（末尾 `/`）由来の辺を持った target。実在しないノードの `kind` を
+        # `dir` にする根拠になる（契約 C-3）。
+        self.dir_form_targets = set()
 
     # -- 走査 ------------------------------------------------------------
     def collect(self) -> None:
@@ -565,6 +595,7 @@ class _Collector:
         self._index()
         for path, node_id in zip(self.file_paths, self.file_ids):
             self._process(path, node_id)
+        self._flush_table_links()
 
     def _walk(self) -> None:
         base = self.base
@@ -575,6 +606,12 @@ class _Collector:
                 name for name in dirnames if name not in _SKIP_DIR_NAMES
             )
             current = Path(dirpath)
+            if current != base:
+                try:
+                    # ディレクトリ ID は末尾 `/` を付けない（契約 C-2）。
+                    self.dir_ids.add(current.relative_to(base).as_posix())
+                except ValueError:
+                    pass
             for name in sorted(filenames):
                 path = current / name
                 try:
@@ -596,8 +633,16 @@ class _Collector:
                 self.skills.setdefault(skill.group(1), []).append(node_id)
             if path.name == "__init__.py":
                 self.packages.setdefault(path.parent.name, []).append(path.parent)
+        # 名前索引にもディレクトリを入れる（契約 C-11。解決 4 段のすべてで
+        # 「実在」はファイル索引 ∪ ディレクトリ索引で判定する）。
+        for dir_id in sorted(self.dir_ids):
+            self.by_basename.setdefault(posixpath.basename(dir_id), []).append(dir_id)
         self.agent_pattern = _name_pattern(self.agents)
         self.skill_pattern = _name_pattern(self.skills, slash_prefix=True)
+
+    def _exists(self, node_id) -> bool:
+        """ノード ID がツリーに実在するか（ファイル索引 ∪ ディレクトリ索引・契約 C-11）."""
+        return bool(node_id) and (node_id in self.present or node_id in self.dir_ids)
 
     def _process(self, path: Path, node_id: str) -> None:
         """1 ファイルに経路を当てる.
@@ -613,7 +658,10 @@ class _Collector:
 
         try:
             text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+        except (OSError, UnicodeDecodeError, ValueError, MemoryError) as exc:
+            # `MemoryError` は `Exception` 直下（`OSError` の派生ではない）ため
+            # 明示的に並べる。捕捉しないと巨大ファイル 1 本で走査全体が落ち、
+            # 「読めなかった」ことすら残らない（契約 §2 原則 3「沈黙しない」）。
             self._skip(node_id, type(exc).__name__)
             return
 
@@ -639,6 +687,7 @@ class _Collector:
                     line,
                     token.reference,
                     token.text,
+                    token.dir_form,
                 )
 
     def _skip(self, node_id: str, reason: str) -> None:
@@ -648,15 +697,23 @@ class _Collector:
         self.skipped.append(Skipped(path=node_id, reason=reason))
 
     # -- 辺の登録 --------------------------------------------------------
-    def _emit(self, relation, source, line_number, line_text, reference, token=None):
+    def _emit(
+        self, relation, source, line_number, line_text, reference, token=None,
+        dir_form=False,
+    ):
         """パス参照 1 件を解決して辺にする（候補が複数なら 1 本ずつ出す）.
 
         `token` は解決に掛ける文字列（S3 正規化後）。省略時は `reference` をそのまま
         使う。辺には `reference`（正規化前の原文断片）を残す。
+        `dir_form` は R2（末尾 `/`）で受理されたトークンかどうか（契約 C-3）。
         """
-        resolved = reference if token is None else token
-        for target, resolution, exists in self._resolve(resolved, source):
-            self._add(
+        resolved_input = reference if token is None else token
+        resolved = self._resolve(resolved_input, source)
+        emitted = False
+        for target, resolution, exists in resolved:
+            if dir_form:
+                self.dir_form_targets.add(target)
+            if self._add(
                 relation,
                 source,
                 line_number,
@@ -665,7 +722,45 @@ class _Collector:
                 resolution,
                 exists,
                 reference,
+            ):
+                emitted = True
+        if emitted and resolved[0][1] == "missing":
+            self._add_prefix_edges(
+                relation, source, line_number, line_text, resolved_input, reference
             )
+
+    def _add_prefix_edges(
+        self, relation, source, line_number, line_text, resolved_input, reference
+    ):
+        """T-5b: 前置詞のうち受理でき解決できるものを追加の辺にする（契約 C-17）.
+
+        発火条件は**解決結果が `missing` で、その辺を実際に出したとき**であり、
+        呼び出し元では条件を付けない（トークナイザを経由しない `md_link` にも
+        同じ規則が適用される）。**解決に渡した文字列そのもの**を成分境界で末尾から
+        1 成分ずつ落として前置詞を作り、受理でき（R1 / R2 / R3）かつ `missing` 以外に
+        解決できるものを**すべて**辺にする（1 つに絞らない・`ambiguous` なら候補ごとに
+        1 本）。元の `missing` 辺は残したままで、変わるのは `target` / `resolution` /
+        `target_exists` だけ。刻む前に正規化はしない（正規化は各前置詞を解決 4 段へ
+        入れる直前＝`_resolve` の中で行われる）。
+        """
+        parts = resolved_input.split("/")
+        for count in range(len(parts) - 1, 0, -1):
+            prefix = "/".join(parts[:count])  # nul-boundary: allow(POSIX パスの成分を組み直す。区切りは POSIX パスの文法で固定されており、機械可読な行集合ではない)
+            if not prefix or not _accepts(prefix):
+                continue
+            for target, resolution, exists in self._resolve(prefix, source):
+                if resolution == "missing":
+                    continue
+                self._add(
+                    relation,
+                    source,
+                    line_number,
+                    line_text,
+                    target,
+                    resolution,
+                    exists,
+                    reference,
+                )
 
     def _add(
         self,
@@ -678,9 +773,10 @@ class _Collector:
         exists,
         reference="",
     ):
+        """辺を 1 本積む。実際に積んだら True を返す（T-5b の発火判定に使う）."""
         if target == source:
             # 自己参照は関係として意味を持たない（自分の名前が本文に出るだけ）。
-            return
+            return False
         self.links.append(
             Link(
                 relation=relation,
@@ -693,6 +789,7 @@ class _Collector:
                 reference=reference,
             )
         )
+        return True
 
     def _emit_names(self, relation, source, line_number, line_text, node_ids):
         """名前解決で得た候補（実在するものだけ）を辺にする."""
@@ -709,30 +806,45 @@ class _Collector:
         token = token.replace("\\", "/")
 
         source_dir = posixpath.dirname(source)
-        if token.startswith("${CLAUDE_SKILL_DIR}/"):
-            token = posixpath.join(source_dir, token[len("${CLAUDE_SKILL_DIR}/"):])
-        elif token.startswith("${CLAUDE_PROJECT_DIR}/"):
-            token = token[len("${CLAUDE_PROJECT_DIR}/"):]
-        elif token.startswith("${"):
-            # 解決できない変数を含む参照。どのファイルを指すか決められないので辺にしない。
-            return []
+        original = token
+        # 既知の変数プレフィクス（契約 C-15）。剥がした残りを、`${CLAUDE_SKILL_DIR}`
+        # なら source のディレクトリ相対、`${CLAUDE_PROJECT_DIR}` ならルート相対として
+        # 解決 4 段へ渡す。末尾 `/` は S3 の後段（`_path_tokens`）で既に落ちていることが
+        # あるので、`${NAME}` 単独の形も同じ枝で受ける。
+        for prefix, base in (
+            ("${CLAUDE_SKILL_DIR}", source_dir),
+            ("${CLAUDE_PROJECT_DIR}", ""),
+        ):
+            if token == prefix or token.startswith(prefix + "/"):
+                rest = token[len(prefix) + 1:] if token != prefix else ""
+                if not rest:
+                    # プレフィクスを剥がすと空になる参照（`${CLAUDE_PROJECT_DIR}/`
+                    # 単独）。どのファイルも指しておらず、空の ID は出せない。
+                    return []
+                token = posixpath.join(base, rest) if base else rest
+                break
         if "${" in token:
-            return []
-        if not token:
-            # 変数プレフィクスだけの参照（`${CLAUDE_PROJECT_DIR}/` 単独）。
-            # 残りが無いのでどのファイルも指しておらず、空の ID は出せない。
-            return []
+            # 上記 2 変数以外の `${...}` を含む参照。どのファイルを指すかは決められないが、
+            # 黙って捨てると参照そのものが消える（契約 §2 原則 3「沈黙しない」/ C-15）。
+            # **剥がさず原文トークン全体**を `missing` の辺として 1 本出す。
+            # ただしルート外（絶対パス・`..` で root を突き抜ける形）はルート相対 POSIX の
+            # ノード ID で表現できないので辺にしない（契約 C-16。C-15 に優先する）。
+            # 変数を含む原文は解決 4 段に入らないため、ここで `..` も見る
+            # （通常の枝では source 相対で root 内へ戻りうるので `_normalize` に任せる）。
+            if _is_absolute(original) or _normalize(original) is None:
+                return []
+            return [(original, "missing", False)]
 
-        if token.startswith("/") or re.match(r"^[A-Za-z]:", token):
+        if _is_absolute(token):
             # ルート外の絶対パスはルート相対 ID で表現できない。
             return []
 
         if "/" in token:
             from_base = _normalize(token)
             from_here = _normalize(posixpath.join(source_dir, token))
-            if from_base and from_base in self.present:
+            if self._exists(from_base):
                 return [(from_base, "exact", True)]
-            if from_here and from_here in self.present:
+            if self._exists(from_here):
                 return [(from_here, "exact", True)]
             tail_hits = self._suffix_matches(from_base)
             if len(tail_hits) == 1:
@@ -747,10 +859,11 @@ class _Collector:
         return self._by_name(token, source_dir)
 
     def _suffix_matches(self, partial):
-        """パス末尾が `/<partial>` に一致する実在ファイルを返す（契約 §3 解決の順序 3）.
+        """パス末尾が `/<partial>` に一致する実在ノードを返す（契約 §3 解決の順序 3）.
 
         C3 の文書は `dev-workflow/SKILL.md` のような**部分パス**で参照を書くため、
         この段が無いと参照元の位置しだいで実在するものが `missing` になる。
+        名前索引はファイルとディレクトリの両方を持つ（契約 C-11）。
         """
         if not partial:
             return []
@@ -764,7 +877,7 @@ class _Collector:
     def _by_name(self, token, source_dir):
         """ファイル名のみの参照を解決する（同ディレクトリ → 名前索引）."""
         sibling = _normalize(posixpath.join(source_dir, token))
-        if sibling and sibling in self.present:
+        if self._exists(sibling):
             return [(sibling, "exact", True)]
         candidates = self.by_basename.get(token)
         if not candidates:
@@ -800,6 +913,7 @@ class _Collector:
                         line_text,
                         token.reference,
                         token.text,
+                        token.dir_form,
                     )
 
     # -- markdown --------------------------------------------------------
@@ -849,7 +963,10 @@ class _Collector:
     def _md_path_text(self, relation, source, number, line):
         """散文 / フェンス本体のパス参照（コードスパン領域はマスクして除く）."""
         for token in _path_tokens(_mask_code_spans(line)):
-            self._emit(relation, source, number, line, token.reference, token.text)
+            self._emit(
+                relation, source, number, line,
+                token.reference, token.text, token.dir_form,
+            )
 
     def _md_code_spans(self, source, number, line):
         for span in _CODE_SPAN_RE.finditer(line):
@@ -861,6 +978,7 @@ class _Collector:
                     line,
                     token.reference,
                     token.text,
+                    token.dir_form,
                 )
 
     def _md_links(self, source, number, line):
@@ -871,14 +989,23 @@ class _Collector:
             resolved = self._resolve(target, source)
             if not resolved:
                 continue
-            if resolved[0][1] == "missing" and not _PATH_TOKEN_RE.fullmatch(target):
-                # 実在せず拡張子も持たない（ディレクトリ・アンカー等）リンクは
-                # どのファイルを指すか決められないので辺にしない。
+            if resolved[0][1] == "missing" and not _accepts(target):
+                # 実在せず、受理条件（R1 / R2 / R3）も満たさない（拡張子が無く
+                # ディレクトリ形でもない）リンクは、どのファイルを指すか決められない
+                # ので辺にしない。判定は S4 の受理条件（SSOT）に委ねる。ASCII だけの
+                # 正規表現で判定すると `docs/日本語.md` のような正当な参照まで
+                # 落ちる（契約 §3「境界として許す側の列挙が本体」）。
                 continue
+            emitted = False
             for node_id, resolution, exists in resolved:
-                self._add(
+                if self._add(
                     "md_link", source, number, line, node_id, resolution, exists
-                )
+                ):
+                    emitted = True
+            if emitted and resolved[0][1] == "missing":
+                # T-5b は「`missing` の辺を実際に出した経路すべて」に適用する
+                # （契約 C-17。抑止ガードで辺を出さないリンクには回らない）。
+                self._add_prefix_edges("md_link", source, number, line, target, "")
 
     def _md_c3_run(self, source, number, line):
         for match in _C3_RUN_RE.finditer(line):
@@ -886,7 +1013,8 @@ class _Collector:
             if token is None:
                 continue
             self._emit(
-                "md_c3_run", source, number, line, token.reference, token.text
+                "md_c3_run", source, number, line,
+                token.reference, token.text, token.dir_form,
             )
 
     def _md_table_row(self, source, number, line):
@@ -966,7 +1094,7 @@ class _Collector:
             )
             self._emit(
                 "py_string", source, number, _line_at(lines, number),
-                token.reference, token.text,
+                token.reference, token.text, token.dir_form,
             )
 
     def _py_joined_str(self, source, lines, text, node):
@@ -985,7 +1113,7 @@ class _Collector:
             )
             self._emit(
                 "py_string", source, number, _line_at(lines, number),
-                token.reference, token.text,
+                token.reference, token.text, token.dir_form,
             )
 
     def _py_comments(self, source, lines, text):
@@ -1006,7 +1134,7 @@ class _Collector:
             for token in _path_tokens(item.string):
                 self._emit(
                     "py_comment", source, number, _line_at(lines, number),
-                    token.reference, token.text,
+                    token.reference, token.text, token.dir_form,
                 )
 
     def _py_import(self, path, source, lines, node):
@@ -1121,23 +1249,60 @@ class _Collector:
         self._from_sql_text(source, value, lines, node.lineno - 1)
 
     def _from_sql_text(self, source, text, lines, line_offset):
-        """SQL 文字列からテーブル参照を取り出す（`.sql` ファイルにも使う）."""
+        """SQL 文字列からテーブル参照を取り出す（`.sql` ファイルにも使う）.
+
+        `CREATE TABLE` は実在索引の材料でもある（契約 C-12）。索引は全ファイルを
+        読み終わるまで完成しないので、参照側は保留して走査後に解決する。
+        """
+        for match in _CREATE_TABLE_RE.finditer(text):
+            name = match.group(1)
+            if name and name.lower() not in _SQL_STOP_WORDS:
+                self.tables.add(name)
         for match in _SQL_TABLE_RE.finditer(text):
             name = match.group(1) or match.group(2)
             if not name or name.lower() in _SQL_STOP_WORDS:
                 continue
             number = line_offset + text.count("\n", 0, match.start()) + 1
+            self._pending_tables.append(
+                (source, number, _line_at(lines, number), name)
+            )
+
+    def _flush_table_links(self) -> None:
+        """保留したテーブル参照を `CREATE TABLE` 索引で解決して辺にする（契約 C-12）.
+
+        索引にあれば `exact` / 無ければ `missing`。
+        `exact` かつ `target_exists: false` の組は作らない。
+        """
+        for source, number, line_text, name in self._pending_tables:
+            exists = name in self.tables
             self._add(
                 "py_sql_table",
                 source,
                 number,
-                _line_at(lines, number),
+                line_text,
                 f"sqltable:{name}",
-                "exact",
-                True,
+                "exact" if exists else "missing",
+                exists,
             )
 
     # -- 出力 ------------------------------------------------------------
+    def _node_for(self, node_id: str, exists) -> Node:
+        """ノード 1 個の `kind` / `exists` を決める（契約 C-3 / C-4 / C-12）.
+
+        **実在するノードは実体（ファイル・ディレクトリ・テーブル）で決める。**
+        実在しないノードは、R2 由来（正規化後のトークンが `/` で終わる）の辺が
+        1 本でもあれば `dir`、無ければ `file` とする。テーブルの `exists` は
+        `CREATE TABLE` 索引で決まった値（辺の `target_exists`）をそのまま使う。
+        """
+        if node_id.startswith("sqltable:"):
+            return Node(id=node_id, kind="table", exists=bool(exists))
+        if node_id in self.dir_ids:
+            return Node(id=node_id, kind="dir", exists=True)
+        if node_id in self.present:
+            return Node(id=node_id, kind="file", exists=True)
+        kind = "dir" if node_id in self.dir_form_targets else "file"
+        return Node(id=node_id, kind=kind, exists=bool(exists))
+
     def result(self) -> Graph:
         links = _dedupe(self.links)
         nodes = {}
@@ -1147,11 +1312,7 @@ class _Collector:
             for node_id, exists in ((link.source, True), (link.target, link.target_exists)):
                 if node_id in nodes:
                     continue
-                if node_id.startswith("sqltable:"):
-                    # テーブルの実在はツリーから確かめられないため常に true とする。
-                    nodes[node_id] = Node(id=node_id, kind="table", exists=True)
-                else:
-                    nodes[node_id] = Node(id=node_id, kind="file", exists=exists)
+                nodes[node_id] = self._node_for(node_id, exists)
         return Graph(
             root=self.base,
             file_count=len(self.file_ids),
@@ -1164,6 +1325,11 @@ class _Collector:
 # ---------------------------------------------------------------------------
 # 内部: 小さな道具
 # ---------------------------------------------------------------------------
+def _is_absolute(token: str) -> bool:
+    """ルート外の絶対パス（`/…` / `C:\\…`）か（契約 C-16）."""
+    return token.startswith("/") or re.match(r"^[A-Za-z]:", token) is not None
+
+
 def _normalize(token: str):
     """ルート相対 POSIX へ正規化する。ルート外へ出るものは None."""
     normalized = posixpath.normpath(token)

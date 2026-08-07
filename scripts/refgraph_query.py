@@ -74,6 +74,33 @@ _TABLE_PREFIX = "sqltable:"
 # `by_target_kind` が受け付ける kind。クエリ層が自分で定義する閉じた語彙。
 _TARGET_KINDS = ("file", "table")
 
+# 契約 §4 の relation 一覧・契約 §3 の resolution 4 値。
+# 契約 C-9 が「未知の値（未知のカテゴリ名・relation 名・resolution 名・kind 名）を
+# 渡すと `ValueError`」と定めているため、クエリ層が閉じた語彙として持つ。
+# 抽出器から import しない（クエリ層は `read_graph` の結果を読むだけ・完成条件 4）。
+_RELATIONS = (
+    "settings_hook",
+    "settings_statusline",
+    "settings_permission",
+    "md_code_span_path",
+    "md_link",
+    "md_c3_run",
+    "md_agent_variant_map",
+    "md_subagent_type",
+    "md_bare_agent_name",
+    "md_bare_skill_name",
+    "py_import",
+    "py_importlib",
+    "py_subprocess_path",
+    "py_sql_table",
+    "md_prose_path",
+    "md_fence_path",
+    "py_string",
+    "py_comment",
+    "text_path",
+)
+_RESOLUTIONS = ("exact", "basename", "ambiguous", "missing")
+
 # driver が読み書きするグラフファイルの既定名。
 _GRAPH_FILENAME = "graph.json"
 
@@ -237,13 +264,15 @@ def fold_links(links) -> tuple[refgraph.Link, ...]:
 def settled_links(links) -> tuple[refgraph.Link, ...]:
     """候補が 1 つへ収束した辺だけを返す（畳んだ後に呼ぶ・契約 §5-1 軸 2）.
 
-    グループキーは `(relation, source, reference)`（設計 C-9）。同じ読みの同じ原文から
+    グループキーは `(relation, source, reference)`（契約 C-9）。同じ読みの同じ原文から
     出た辺が 1 つのグループで、その中の **target の異なり数**が候補の数になる。
 
-    - 候補が 1 つのグループ（畳んで収束した `ambiguous`）→ 返す
+    - 候補が 1 つのグループ → 返す
     - 候補が 2 つ以上のグループ（どれを指すか決まっていない）→ 返さない
-    - `ambiguous` でない辺（`exact` / `basename` / `missing`）は候補の概念を持たないので
-      そのまま返す
+
+    **各辺自身の `resolution` は判定に使わない。** T-5b の追加辺（契約 C-17）は
+    同じ `(relation, source, reference)` から `missing` と `exact` の 2 本を出すので、
+    `ambiguous` だけを見る実装ではこの 2 本組が両方とも「収束済み」として通ってしまう。
 
     `resolution` は書き換えない（契約 §5-1「情報を消さない」）。曖昧だった事実は
     出所の記録として残り、本関数は**絞るだけ**である。
@@ -252,16 +281,11 @@ def settled_links(links) -> tuple[refgraph.Link, ...]:
 
     candidates = {}
     for link in links:
-        if link.resolution != "ambiguous":
-            continue
         key = (link.relation, link.source, link.reference)
         candidates.setdefault(key, set()).add(link.target)
 
     result = []
     for link in links:
-        if link.resolution != "ambiguous":
-            result.append(link)
-            continue
         key = (link.relation, link.source, link.reference)
         if len(candidates[key]) == 1:
             result.append(link)
@@ -324,18 +348,23 @@ def glob_matches(pattern: str, path: str) -> bool:
 def by_relation(links, relation: str) -> tuple[refgraph.Link, ...]:
     """`relation` で辺を絞る（契約 §4 の関係の種類）.
 
-    未知値で `ValueError` を上げない。relation の語彙は**抽出器側**が持つもので、
-    クエリ層に写すと抽出器へ relation を足した日に「正しい値を拒む」側へ倒れる
-    （設計書に記載が無いので、語彙の二重管理を避ける方を採ると判断した）。
+    未知の relation 名は `ValueError` で落とす（契約 C-9）。黙って空を返すと
+    綴り間違いが「その relation は 0 件」に化け、読む側が「関係が無い」と誤読する。
     """
+    if relation not in _RELATIONS:
+        raise ValueError(f"unknown relation: {relation!r} (expected one of {_RELATIONS})")
     return tuple(link for link in links if link.relation == relation)
 
 
 def by_resolution(links, resolution: str) -> tuple[refgraph.Link, ...]:
     """`resolution` で辺を絞る（契約 §3 の 4 値）.
 
-    `by_relation` と同じ理由で未知値を拒まない（値の定義は抽出器側にある）。
+    `by_relation` と同じく、未知の resolution 名は `ValueError` で落とす（契約 C-9）。
     """
+    if resolution not in _RESOLUTIONS:
+        raise ValueError(
+            f"unknown resolution: {resolution!r} (expected one of {_RESOLUTIONS})"
+        )
     return tuple(link for link in links if link.resolution == resolution)
 
 
