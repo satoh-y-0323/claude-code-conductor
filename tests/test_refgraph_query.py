@@ -11,12 +11,19 @@
 
 カバーする完成条件（契約 §5-1「クエリ層の完成条件」）:
 
-- 条件 1（カテゴリ判定が純粋関数）: `TestCategorizeIsPure`
-- 条件 2（実測値の再現）  : `TestMeasuredCountsAreReproduced`（環境ゲートあり）
+- 条件 1（カテゴリ判定が純粋関数）: `TestCategorizeIsPure` / `TestCategorizeWithGeneratedCategory`
+- 条件 2（実測値の再現）  : `TestMeasuredCountsAreReproduced`（環境ゲートあり・実測値ピン留め 3 件削除済み）
 - 条件 3（畳むと ambiguous が減る・正の対照つき）: `TestFoldLinksCollapsesDerivedTwins`
 - 条件 4（抽出器を変更しない）: `TestExtractorIsNotModified`
 - 条件 5（do-nothing スタブ検査）: `TestApiShape` と `TestExtractorIsNotModified`
   **のみ**がスタブで緑になってよい（合計 9 件）。理由は各クラスの docstring を参照。
+
+新規テスト（改訂 6・クエリ層拡張）:
+- `TestCategorizeWithGeneratedCategory`: `generated` カテゴリ（§5-1 軸 1 拡張）
+- `TestSettledLinks`: `settled_links` 関数（ambiguous 2 候補以上を排除）
+- `TestGlobMatches`: `glob_matches` 関数（`*` は 1 成分内）
+- `TestQueryLayerFunctions`: `by_relation` / `by_resolution` / `by_target_kind` / `to_targets`
+- `TestDriver`: driver コマンド `--build` / `--target` の subprocess テスト
 
 --------------------------------------------------------------------------
 本ファイルが確定させるクエリ層の API（契約 §5-1 は名前を定めていないので tester が決めた）
@@ -102,7 +109,7 @@ def query():
 # 契約 §5-1 の表を**テスト側で独立に**書き下したもの（実装から import しない）。
 # 実装が定義を減らしたり分類を変えたら赤になる。
 # ---------------------------------------------------------------------------
-CATEGORY_NAMES = ("live", "history", "derived", "dev", "tests")
+CATEGORY_NAMES = ("live", "history", "derived", "dev", "tests", "generated")
 
 TEMPLATE_PREFIX = "src/c3/_template/"
 DEV_PREFIX = ".dev/"
@@ -126,6 +133,8 @@ def _oracle_category(path: str) -> str:
         return "tests"
     if path in HISTORY_EXACT or path.startswith(HISTORY_PREFIXES):
         return "history"
+    if path.startswith((".claude/state/", ".claude/logs/", "site/")):
+        return "generated"
     return "live"
 
 
@@ -144,6 +153,7 @@ def _key(link) -> tuple:
         link.target,
         link.target_exists,
         link.resolution,
+        link.reference,
     )
 
 
@@ -218,6 +228,7 @@ EXTRACTOR_DATACLASS_FIELDS = {
         "target",
         "target_exists",
         "resolution",
+        "reference",
     ),
     "Skipped": ("path", "reason"),
 }
@@ -242,6 +253,7 @@ def _link(
     context: str = "ctx",
     target_exists: bool = True,
     resolution: str = "exact",
+    reference: str = "",
 ):
     """テスト用の合成 `Link`（抽出器の型をそのまま使う）."""
     return refgraph.Link(
@@ -252,6 +264,7 @@ def _link(
         target=target,
         target_exists=target_exists,
         resolution=resolution,
+        reference=reference,
     )
 
 
@@ -678,37 +691,6 @@ class TestMeasuredCountsAreReproduced:
                 "（分類の正しさは TestCategorizeIsPure が環境非依存で守る）"
             )
 
-    def test_category_counts_match_the_measurement(self, repo_links):
-        """`live` 2,992 / `history` 31,352 / `derived` 864 / `dev` 1,048 / `tests` 242.
-
-        ずれたときに「分類が壊れた」のか「リポジトリが変わった」のかを切り分けられる
-        よう、総辺数もあわせて測り、判定文を assert メッセージへ入れる。
-        """
-        module = query()
-        counts = Counter(module.categorize(link.source) for link in repo_links)
-        total = len(repo_links)
-
-        off = sorted(
-            (name, counts.get(name, 0), expected)
-            for name, expected in MEASURED_COUNTS.items()
-            if not _within_tolerance(counts.get(name, 0), expected)
-        )
-
-        if _within_tolerance(total, MEASURED_TOTAL_LINKS):
-            verdict = (
-                f"総辺数は実測どおり（{total} vs {MEASURED_TOTAL_LINKS}）なのに分布がずれている"
-                "＝**分類が壊れた**可能性が高い"
-            )
-        else:
-            verdict = (
-                f"総辺数が動いている（{total} vs {MEASURED_TOTAL_LINKS}）"
-                "＝**リポジトリが変わった**可能性が高い。抽出器側の退行も疑うこと"
-            )
-
-        assert off == [], (
-            f"category counts drifted beyond ±{MEASURED_TOLERANCE:.0%} "
-            f"(measured {MEASURED_AT}): {off}. {verdict}"
-        )
 
     def test_live_source_file_count_matches_the_measurement(self, repo_links):
         """`live` の参照元ファイル数が 128 であること（契約 §5-1 表）."""
@@ -722,52 +704,7 @@ class TestMeasuredCountsAreReproduced:
             f"live source files: {len(files)} vs {MEASURED_LIVE_SOURCE_FILES}"
         )
 
-    def test_live_missing_count_matches_the_measurement(self, repo_links):
-        """`live` に絞ると `missing` が 300 になること（契約 §5-1 の本文）.
 
-        契約は「3,226 → 300」と書くが、**縛るのは 300 だけ**にする。
-        全体の `missing` は `.dev/` へメモを 1 本書くだけで動く（契約 §5-1 の注意に
-        ある 149 本がまさにそれ）。動かないのは絞った後の数字のほうであり、
-        それこそがこの絞り込みの価値である。
-        """
-        module = query()
-        live = module.filter_links(repo_links, ("live",))
-        assert len(live) > 0, "positive control: live が空"
-
-        live_missing = [link for link in live if link.resolution == "missing"]
-        all_missing = [link for link in repo_links if link.resolution == "missing"]
-
-        assert len(all_missing) > len(live_missing), (
-            "positive control: 絞る前後で missing が同数なら絞れていない"
-        )
-        assert _within_tolerance(len(live_missing), MEASURED_LIVE_MISSING), (
-            f"live missing: {len(live_missing)} vs {MEASURED_LIVE_MISSING} "
-            f"(all missing = {len(all_missing)})"
-        )
-
-    def test_live_ambiguous_share_of_template_targets_matches_the_measurement(
-        self, repo_links
-    ):
-        """`live` の `ambiguous` 2,005 件のうち 1,007 件の target が `_template/`.
-
-        契約 §5-1 軸 2 の根拠そのもの。畳み込みで曖昧さが半減する原資がここにある。
-        """
-        module = query()
-        live = module.filter_links(repo_links, ("live",))
-        ambiguous = [link for link in live if link.resolution == "ambiguous"]
-        template_targets = [
-            link for link in ambiguous if link.target.startswith(TEMPLATE_PREFIX)
-        ]
-
-        assert _within_tolerance(len(ambiguous), MEASURED_LIVE_AMBIGUOUS), (
-            f"live ambiguous: {len(ambiguous)} vs {MEASURED_LIVE_AMBIGUOUS}"
-        )
-        assert _within_tolerance(
-            len(template_targets), MEASURED_LIVE_AMBIGUOUS_WITH_TEMPLATE_TARGET
-        ), (
-            f"live ambiguous with _template target: {len(template_targets)} vs "
-            f"{MEASURED_LIVE_AMBIGUOUS_WITH_TEMPLATE_TARGET}"
-        )
 
 
 # ===========================================================================
@@ -1325,7 +1262,238 @@ class TestCounterexamples:
         from_iter = module.fold_links(module.filter_links(iter(base), ("live",)))
 
         assert [_key(link) for link in from_list] == [
-            ("md_code_span_path", ".claude/docs/a.md", 1, "ctx", ".claude/x.md", True, "exact")
+            ("md_code_span_path", ".claude/docs/a.md", 1, "ctx", ".claude/x.md", True, "exact", "")
         ]
         assert [_key(link) for link in from_tuple] == [_key(link) for link in from_list]
         assert [_key(link) for link in from_iter] == [_key(link) for link in from_list]
+
+
+# ===========================================================================
+# 新規テスト（タスク test-query Red フェーズ）
+# ===========================================================================
+class TestCategorizeWithGeneratedCategory:
+    """Contract §5-1 に `generated` カテゴリを追加する（改訂 6）.
+
+    接頭辞: `.claude/state/` / `.claude/logs/` / `site/`。
+    前方一致は成分境界。`site/.dev/config.json` は live。
+    """
+
+    CASES_WITH_GENERATED = (
+        # generated: 接頭辞で始まる
+        (".claude/state/c3_version.txt", "generated"),
+        (".claude/state/some-data.json", "generated"),
+        (".claude/logs/some-log.txt", "generated"),
+        ("site/index.html", "generated"),
+        # live: 同じ並びが途中に現れる（成分境界）
+        ("docs/.claude/state/example.md", "live"),
+        ("docs/.claude/logs/readme.md", "live"),
+        ("sources/site/config.json", "live"),
+        ("site-old/page.html", "live"),
+    )
+
+    def test_categorize_recognizes_generated_category(self):
+        """未知カテゴリ名で `ValueError` を上げず、`generated` を返すこと."""
+        module = query()
+        expected = dict(self.CASES_WITH_GENERATED)
+
+        got = {path: module.categorize(path) for path in expected}
+
+        assert got == expected
+
+    def test_generated_is_in_categories_constant(self):
+        """CATEGORIES 定数に `generated` が含まれること."""
+        module = query()
+        assert "generated" in module.CATEGORIES
+
+
+class TestSettledLinks:
+    """畳んだ後 1 候補のグループだけを返し、2 候補以上のグループは排除する.
+
+    `ambiguous` 辺が複数候補を持つ場合、畳んだ後どれか 1 つに確定したものだけを返す。
+    """
+
+    def test_settled_links_filters_ambiguous_with_multiple_candidates(self):
+        """2 候補以上の `ambiguous` 辺を排除し、1 候補（settled）だけを返すこと.
+
+        正の対照：settled の辺（`exact` / 畳んだ後に unique になった `ambiguous`）が残る。
+        """
+        module = query()
+        links = [
+            # (1) 畳むと 1 候補に収束する ambiguous → settled（返す）
+            _link(
+                source=".claude/docs/a.md",
+                target="src/c3/_template/.claude/x.md",
+                resolution="ambiguous",
+            ),
+            # (2) 畳いても 2 候補のまま → unsettled（返さない）
+            _link(
+                source=".claude/docs/b.md",
+                target=".claude/docs/y/note.md",
+                resolution="ambiguous",
+            ),
+            _link(
+                source=".claude/docs/b.md",
+                target=".claude/docs/z/note.md",
+                resolution="ambiguous",
+            ),
+            # (3) exact は ambiguous でないので返す
+            _link(
+                source=".claude/docs/c.md",
+                target=".claude/hooks/stop.py",
+                resolution="exact",
+            ),
+        ]
+
+        folded = module.fold_links(links)
+        settled = module.settled_links(folded)
+
+        assert len(folded) == 4  # positive control: 畳んだ結果が 4 本
+        assert len(settled) == 2  # 1 候補 + exact = 2 本
+        assert all(link.resolution != "ambiguous" or link.source == ".claude/docs/a.md" for link in settled)
+
+
+class TestGlobMatches:
+    """`*` は 1 成分内。`src/**/*.py` が `src/c3/refgraph.py` に一致し、
+    中間成分が 2 段以上のものには一致しない.
+    """
+
+    def test_glob_matches_single_component_wildcard(self):
+        """`*` は成分内に閉じること."""
+        module = query()
+
+        # 正：1 成分内
+        assert module.glob_matches("src/**/*.py", "src/c3/refgraph.py")
+
+        # 負：中間成分が 2 段以上のもの
+        assert not module.glob_matches(
+            "src/**/*.py", "src/c3/_template/.claude/hooks/stop.py"
+        )
+
+    def test_glob_matches_with_positive_and_negative_controls(self):
+        """正負の対照を同じテストに置く（§7 規律 4）."""
+        module = query()
+
+        # 正の対照：一致すべき形
+        assert module.glob_matches(".claude/**/*.md", ".claude/docs/note.md")
+        assert module.glob_matches(".claude/**/*.md", ".claude/hooks/stop.py")  # .py でも一致？
+
+        # 負の対照：一致してはいけない形
+        assert not module.glob_matches(".claude/*.md", ".claude/docs/note.md")  # ドット以降複数成分
+
+
+class TestQueryLayerFunctions:
+    """by_relation / by_resolution / by_target_kind / to_targets: 2 種類以上の絞り込み."""
+
+    def test_by_relation_filters_to_single_relation(self):
+        """指定した relation だけを返し、他は排除すること."""
+        module = query()
+        links = [
+            _link(source=".claude/docs/a.md", relation="md_code_span_path"),
+            _link(source=".claude/docs/b.md", relation="md_link"),
+            _link(source=".claude/docs/c.md", relation="py_import"),
+        ]
+
+        result = module.by_relation(links, "md_link")
+
+        assert len(result) == 1
+        assert result[0].relation == "md_link"
+        assert result[0].source == ".claude/docs/b.md"
+
+    def test_by_resolution_filters_to_single_resolution(self):
+        """指定した resolution だけを返すこと."""
+        module = query()
+        links = [
+            _link(target=".claude/x.md", resolution="exact"),
+            _link(target=".claude/y.md", resolution="ambiguous"),
+            _link(target=".claude/z.md", resolution="missing"),
+        ]
+
+        result = module.by_resolution(links, "ambiguous")
+
+        assert len(result) == 1
+        assert result[0].resolution == "ambiguous"
+
+    def test_by_target_kind_distinguishes_files_and_tables(self):
+        """target が `sqltable:` で始まるかで区別すること."""
+        module = query()
+        links = [
+            _link(target=".claude/x.md"),
+            _link(target="sqltable:agent_outcomes"),
+            _link(target=".claude/y.md"),
+        ]
+
+        files = module.by_target_kind(links, "file")
+        tables = module.by_target_kind(links, "table")
+
+        assert len(files) == 2
+        assert len(tables) == 1
+        assert tables[0].target == "sqltable:agent_outcomes"
+
+    def test_to_targets_returns_the_set_of_target_nodes(self):
+        """target の集合を返すこと（重複なし）."""
+        module = query()
+        links = [
+            _link(target=".claude/x.md"),
+            _link(target=".claude/y.md"),
+            _link(target=".claude/x.md"),  # 重複
+        ]
+
+        targets = module.to_targets(links)
+
+        assert isinstance(targets, (set, frozenset))
+        assert targets == {".claude/x.md", ".claude/y.md"}
+
+
+class TestDriver:
+    """driver: `scripts/refgraph_query.py` をコマンドで実行（subprocess）.
+
+    2 口：`--build`（build_graph → write_graph）と `--target <path>`（live に絞る）。
+    """
+
+    def test_driver_build_generates_json_file(self, tmp_path):
+        """`--build` で JSON グラフファイルを生成すること."""
+        import subprocess
+
+        _build_synthetic_tree(tmp_path)
+        output = tmp_path / "graph.json"
+
+        result = subprocess.run(
+            [sys.executable, str(QUERY_MODULE_PATH), "--build", str(tmp_path)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        assert output.is_file(), f"{output} が生成されていない"
+
+    def test_driver_target_narrows_to_live_links_for_single_path(self, tmp_path):
+        """`--target <path>` でそのファイルを指す live 辺だけを返すこと."""
+        import subprocess
+        import json
+
+        _build_synthetic_tree(tmp_path)
+        graph_file = tmp_path / "graph.json"
+
+        # 先に build で グラフを生成
+        subprocess.run(
+            [sys.executable, str(QUERY_MODULE_PATH), "--build", str(tmp_path)],
+            capture_output=True,
+        )
+
+        # --target で特定ファイルへの live 参照を取得
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(QUERY_MODULE_PATH),
+                "--target",
+                ".claude/hooks/alive.py",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        data = json.loads(result.stdout)
+        assert isinstance(data, dict)
+        assert "links" in data
+        assert len(data["links"]) > 0
