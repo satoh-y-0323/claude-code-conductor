@@ -23,10 +23,12 @@ from __future__ import annotations
 import ast
 import bisect
 import fnmatch
+import io
 import json
 import os
 import posixpath
 import re
+import tokenize
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,6 +123,9 @@ _HAS_KNOWN_SUFFIX_RE = re.compile(
 
 # md のコードスパン（改行をまたがない）。
 _CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+
+# md のフェンス区切り行（``` / ~~~。CommonMark に倣い先頭 3 スペースまで許す）。
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 # md のマークダウンリンク `[表示](パス)`。
 _MD_LINK_RE = re.compile(r"\[[^\]\n]*\]\(\s*<?([^)>\s]+)")
@@ -595,10 +600,16 @@ class _Collector:
         self.skill_pattern = _name_pattern(self.skills, slash_prefix=True)
 
     def _process(self, path: Path, node_id: str) -> None:
+        """1 ファイルに経路を当てる.
+
+        走査対象を**ファイル種別で絞らない**（契約 §2 原則 1。種別が決めるのは
+        「どの経路を当てるか」だけ）。`.md` / `.py` は専用経路が全文を覆うので
+        汎用テキスト経路を当てない。`settings*.json` / `.sql` は専用経路が
+        一部の節しか見ないので汎用経路も当てる（同じパスが 2 relation で
+        2 本出るのは契約 §4 冒頭「種類が違うだけ」に沿う）。
+        """
         suffix = path.suffix.lower()
         is_settings = fnmatch.fnmatchcase(path.name, "settings*.json")
-        if suffix not in (".md", ".py", ".sql") and not is_settings:
-            return
 
         try:
             text = path.read_text(encoding="utf-8")
@@ -612,8 +623,23 @@ class _Collector:
             self._from_markdown(node_id, text)
         elif suffix == ".py":
             self._from_python(path, node_id, text)
-        elif suffix == ".sql":
-            self._from_sql_text(node_id, text, _split_lines(text), 0)
+        else:
+            if suffix == ".sql":
+                self._from_sql_text(node_id, text, _split_lines(text), 0)
+            self._from_text(node_id, text)
+
+    def _from_text(self, source: str, text: str) -> None:
+        """汎用テキスト経路（relation `text_path`）— 行単位でトークナイザを当てる."""
+        for offset, line in enumerate(_split_lines(text)):
+            for token in _path_tokens(line):
+                self._emit(
+                    "text_path",
+                    source,
+                    offset + 1,
+                    line,
+                    token.reference,
+                    token.text,
+                )
 
     def _skip(self, node_id: str, reason: str) -> None:
         if node_id in self._skipped_paths:
@@ -779,14 +805,51 @@ class _Collector:
     # -- markdown --------------------------------------------------------
     def _from_markdown(self, source: str, text: str) -> None:
         lines = _split_lines(text)
+        # フェンスの開閉を行ベースの状態機械で追う（``` と ~~~ の両方）。
+        fence_char = None
+        fence_size = 0
         for offset, line in enumerate(lines):
             number = offset + 1
+            delimiter = _fence_delimiter(line)
+            is_delimiter = False
+            if fence_char is None:
+                # 開始側: ``` の info string にバッククォートを含む行はフェンスでない
+                # （CommonMark）。~~~ にはこの制限が無い。
+                if delimiter is not None and not (
+                    delimiter[0] == "`" and "`" in delimiter[2]
+                ):
+                    fence_char, fence_size = delimiter[0], delimiter[1]
+                    is_delimiter = True
+            elif (
+                delimiter is not None
+                and delimiter[0] == fence_char
+                and delimiter[1] >= fence_size
+                and not delimiter[2].strip()
+            ):
+                fence_char = None
+                fence_size = 0
+                is_delimiter = True
+
+            # 既存 6 経路は全行に当て続ける（フェンス本体も含む・抽出条件は不変）。
             self._md_code_spans(source, number, line)
             self._md_links(source, number, line)
             self._md_c3_run(source, number, line)
             self._md_table_row(source, number, line)
             self._md_subagent(source, number, line)
             self._md_bare_names(source, number, line)
+
+            # 設計書に記載なし: フェンスの区切り行自体（``` / ```python）は
+            # 「本体」でも「フェンス外の散文」でもない。落とすと契約 §2 原則 1 に
+            # 反するため、フェンス側（`md_fence_path`）に含めると判断した。
+            in_fence = is_delimiter or fence_char is not None
+            self._md_path_text(
+                "md_fence_path" if in_fence else "md_prose_path", source, number, line
+            )
+
+    def _md_path_text(self, relation, source, number, line):
+        """散文 / フェンス本体のパス参照（コードスパン領域はマスクして除く）."""
+        for token in _path_tokens(_mask_code_spans(line)):
+            self._emit(relation, source, number, line, token.reference, token.text)
 
     def _md_code_spans(self, source, number, line):
         for span in _CODE_SPAN_RE.finditer(line):
@@ -874,6 +937,9 @@ class _Collector:
             return
 
         uses_subprocess = _uses_subprocess(tree)
+        # f-string 配下の `Constant` は原文に無い断片（`f"a/{x}-v2.md"` の `-v2.md`）を
+        # 生むため素の文字列としては見ない。`JoinedStr` は原文断片ごと扱う。
+        in_fstring = _constants_in_fstrings(tree)
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 self._py_import(path, source, lines, node)
@@ -884,8 +950,64 @@ class _Collector:
             elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
                 if uses_subprocess:
                     self._py_script_path_operand(source, lines, node.right, node)
+            elif isinstance(node, ast.JoinedStr):
+                self._py_joined_str(source, lines, text, node)
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                 self._py_sql(source, lines, node)
+                if node not in in_fstring:
+                    self._py_string(source, lines, node)
+        self._py_comments(source, lines, text)
+
+    def _py_string(self, source, lines, node):
+        """文字列リテラルのパス参照（relation `py_string`）."""
+        for token in _path_tokens(node.value):
+            number = _locate_line(
+                lines, node.lineno, getattr(node, "end_lineno", None), token.reference
+            )
+            self._emit(
+                "py_string", source, number, _line_at(lines, number),
+                token.reference, token.text,
+            )
+
+    def _py_joined_str(self, source, lines, text, node):
+        """f-string の**原文断片**にトークナイザを当てる（relation `py_string`）.
+
+        `ast.unparse` は空白・変換指定・暗黙連結を正規化してしまい原文に無い形を
+        作るため使わない。原文が取れなければ諦める（ファイル自体は読めているので
+        `skipped` には載せない）。
+        """
+        segment = ast.get_source_segment(text, node)
+        if segment is None:
+            return
+        for token in _path_tokens(segment):
+            number = _locate_line(
+                lines, node.lineno, getattr(node, "end_lineno", None), token.reference
+            )
+            self._emit(
+                "py_string", source, number, _line_at(lines, number),
+                token.reference, token.text,
+            )
+
+    def _py_comments(self, source, lines, text):
+        """コメントのパス参照（relation `py_comment`）.
+
+        `ast` はコメントを持たないため `tokenize` で拾う。失敗した場合は
+        **コメント経路だけ諦める**（他の relation は正常に出ており、
+        契約 §2 原則 3 の `skipped` はファイル単位の読み取り失敗を指す）。
+        """
+        try:
+            tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+        except (tokenize.TokenError, SyntaxError, ValueError, UnicodeDecodeError):
+            return
+        for item in tokens:
+            if item.type != tokenize.COMMENT:
+                continue
+            number = item.start[0]
+            for token in _path_tokens(item.string):
+                self._emit(
+                    "py_comment", source, number, _line_at(lines, number),
+                    token.reference, token.text,
+                )
 
     def _py_import(self, path, source, lines, node):
         line_text = _line_at(lines, node.lineno)
@@ -1078,6 +1200,49 @@ def _line_at(lines, number: int) -> str:
     if 1 <= number <= len(lines):
         return lines[number - 1]
     return ""
+
+
+def _locate_line(lines, start: int, end, needle: str) -> int:
+    """複数行にまたがるリテラルで、その断片が実際に書かれている行を返す.
+
+    docstring のように 1 つのノードが数十行にわたることがあり、`node.lineno`
+    固定では出所が先頭行に潰れる（契約 §2 原則 2）。見つからなければ先頭行。
+    """
+    if not needle:
+        return start
+    last = end if isinstance(end, int) and end >= start else start
+    for number in range(max(1, start), min(last, len(lines)) + 1):
+        if needle in _line_at(lines, number):
+            return number
+    return start
+
+
+def _constants_in_fstrings(tree: ast.AST):
+    """`JoinedStr` 配下に現れる `Constant` ノードの集合を返す."""
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Constant):
+                found.add(child)
+    return found
+
+
+def _fence_delimiter(line: str):
+    """md のフェンス区切り行なら (記号, 長さ, 残り) を返す。違えば None."""
+    match = _FENCE_RE.match(line)
+    if not match:
+        return None
+    run = match.group(1)
+    return run[0], len(run), match.group(2)
+
+
+def _mask_code_spans(line: str) -> str:
+    """コードスパン領域を同じ長さの空白に置き換える（`md_code_span_path` と排他にする）."""
+    if "`" not in line:
+        return line
+    return _CODE_SPAN_RE.sub(lambda match: " " * (match.end() - match.start()), line)
 
 
 def _call_name(node: ast.Call):

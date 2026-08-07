@@ -188,6 +188,11 @@ C3 の負債棚卸しにおける **削除判定の補助**。削除判定その
 | `py_importlib` | py の動的ロード（`_load_module("name")` 等） | 同ディレクトリの `name.py` |
 | `py_subprocess_path` | py の subprocess で組み立てるスクリプトパス | `.py` |
 | `py_sql_table` | py / sql の SQL 文字列中のテーブル名 | `sqltable:<name>` |
+| `md_prose_path` | md のフェンス外かつコードスパン外の本文 | ファイルまたはディレクトリ（§3 の 4 段で解決） |
+| `md_fence_path` | md のフェンス本体のうち、コードスパン領域を除いた部分 | ファイルまたはディレクトリ（§3 の 4 段で解決） |
+| `py_string` | py の文字列リテラル（`ast.Constant`）と f-string（`ast.JoinedStr`）の原文断片 | ファイルまたはディレクトリ（§3 の 4 段で解決） |
+| `py_comment` | py のコメント（`tokenize` の `COMMENT`） | ファイルまたはディレクトリ（§3 の 4 段で解決） |
+| `text_path` | `.md` / `.py` 以外のテキストファイルの本文（`settings*.json` / `.sql` にも当てる） | ファイルまたはディレクトリ（§3 の 4 段で解決） |
 
 ### 設計上の要点
 
