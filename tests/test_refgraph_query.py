@@ -575,6 +575,8 @@ class TestCategorizeIsPure:
         ("tests/test_refgraph.py", "tests"),
         ("tests/conftest.py", "tests"),
         ("tests/hooks/test_record_agent_outcome.py", "tests"),
+        # --- generated（改訂 6） -------------------------------------------
+        (".claude/state/c3_version.txt", "generated"),
     )
 
     def test_categorize_classifies_every_contract_path_shape(self):
@@ -1375,9 +1377,10 @@ class TestGlobMatches:
 
         # 正の対照：一致すべき形
         assert module.glob_matches(".claude/**/*.md", ".claude/docs/note.md")
-        assert module.glob_matches(".claude/**/*.md", ".claude/hooks/stop.py")  # .py でも一致？
 
-        # 負の対照：一致してはいけない形
+        # 負の対照：一致してはいけない形（`glob_matches` docstring: `*` は 1 成分内のみ・
+        # `*.md` は末尾 `.md` を要求するので拡張子違いの `.py` には一致しない）
+        assert not module.glob_matches(".claude/**/*.md", ".claude/hooks/stop.py")  # .py は .md と不一致
         assert not module.glob_matches(".claude/*.md", ".claude/docs/note.md")  # ドット以降複数成分
 
 
@@ -1388,9 +1391,9 @@ class TestQueryLayerFunctions:
         """指定した relation だけを返し、他は排除すること."""
         module = query()
         links = [
-            _link(source=".claude/docs/a.md", relation="md_code_span_path"),
-            _link(source=".claude/docs/b.md", relation="md_link"),
-            _link(source=".claude/docs/c.md", relation="py_import"),
+            _link(source=".claude/docs/a.md", target=".claude/docs/target-a.md", relation="md_code_span_path"),
+            _link(source=".claude/docs/b.md", target=".claude/docs/target-b.md", relation="md_link"),
+            _link(source=".claude/docs/c.md", target=".claude/docs/target-c.md", relation="py_import"),
         ]
 
         result = module.by_relation(links, "md_link")
@@ -1403,9 +1406,9 @@ class TestQueryLayerFunctions:
         """指定した resolution だけを返すこと."""
         module = query()
         links = [
-            _link(target=".claude/x.md", resolution="exact"),
-            _link(target=".claude/y.md", resolution="ambiguous"),
-            _link(target=".claude/z.md", resolution="missing"),
+            _link(source=".claude/docs/a.md", target=".claude/x.md", resolution="exact"),
+            _link(source=".claude/docs/b.md", target=".claude/y.md", resolution="ambiguous"),
+            _link(source=".claude/docs/c.md", target=".claude/z.md", resolution="missing"),
         ]
 
         result = module.by_resolution(links, "ambiguous")
@@ -1417,9 +1420,9 @@ class TestQueryLayerFunctions:
         """target が `sqltable:` で始まるかで区別すること."""
         module = query()
         links = [
-            _link(target=".claude/x.md"),
-            _link(target="sqltable:agent_outcomes"),
-            _link(target=".claude/y.md"),
+            _link(source=".claude/docs/a.md", target=".claude/x.md"),
+            _link(source=".claude/docs/b.md", target="sqltable:agent_outcomes"),
+            _link(source=".claude/docs/c.md", target=".claude/y.md"),
         ]
 
         files = module.by_target_kind(links, "file")
@@ -1433,9 +1436,9 @@ class TestQueryLayerFunctions:
         """target の集合を返すこと（重複なし）."""
         module = query()
         links = [
-            _link(target=".claude/x.md"),
-            _link(target=".claude/y.md"),
-            _link(target=".claude/x.md"),  # 重複
+            _link(source=".claude/docs/a.md", target=".claude/x.md"),
+            _link(source=".claude/docs/b.md", target=".claude/y.md"),
+            _link(source=".claude/docs/c.md", target=".claude/x.md"),  # 重複
         ]
 
         targets = module.to_targets(links)
@@ -1480,13 +1483,17 @@ class TestDriver:
             capture_output=True,
         )
 
-        # --target で特定ファイルへの live 参照を取得
+        # --target で特定ファイルへの live 参照を取得（`--graph` で tmp_path のグラフを明示指定。
+        # 省略すると実装は既定でカレントディレクトリの graph.json を見に行くため、
+        # このリポジトリ実体の既定グラフを誤って参照してしまう）
         result = subprocess.run(
             [
                 sys.executable,
                 str(QUERY_MODULE_PATH),
                 "--target",
                 ".claude/hooks/alive.py",
+                "--graph",
+                str(graph_file),
             ],
             capture_output=True,
             text=True,
