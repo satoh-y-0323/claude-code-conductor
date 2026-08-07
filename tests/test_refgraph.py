@@ -79,6 +79,11 @@ RELATIONS = (
     "py_importlib",
     "py_subprocess_path",
     "py_sql_table",
+    "md_prose_path",
+    "md_fence_path",
+    "py_string",
+    "py_comment",
+    "text_path",
 )
 
 # 契約 §3 の resolution 4 値

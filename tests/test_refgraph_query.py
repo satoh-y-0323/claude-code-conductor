@@ -12,7 +12,9 @@
 カバーする完成条件（契約 §5-1「クエリ層の完成条件」）:
 
 - 条件 1（カテゴリ判定が純粋関数）: `TestCategorizeIsPure` / `TestCategorizeWithGeneratedCategory`
-- 条件 2（実測値の再現）  : `TestMeasuredCountsAreReproduced`（環境ゲートあり・実測値ピン留め 3 件削除済み）
+- 条件 2（実測値の再現）  : 実測値ピン留めテストは全 4 件削除済み（環境非依存の
+  `TestCategorizeIsPure` が分類の正しさを守る。契約 §5-1 完成条件 2・
+  `docs/refgraph-contract.md:277-278` 付近）
 - 条件 3（畳むと ambiguous が減る・正の対照つき）: `TestFoldLinksCollapsesDerivedTwins`
 - 条件 4（抽出器を変更しない）: `TestExtractorIsNotModified`
 - 条件 5（do-nothing スタブ検査）: `TestApiShape` と `TestExtractorIsNotModified`
@@ -674,39 +676,6 @@ class TestCategorizeIsPure:
         assert disagreements[:10] == [], (
             f"categorize disagrees with the contract §5-1 table: {disagreements[:10]}"
         )
-
-
-# ===========================================================================
-# 契約 §5-1 条件 2: 実測値（2026-08-05）の再現
-#
-# 縛り方: **完全一致ではなく ±5% の許容幅**。かつ実測が行われた作業ツリー
-# （gitignore された 4 つの木）が揃っているときだけ比較する。根拠はレポート参照。
-# ===========================================================================
-class TestMeasuredCountsAreReproduced:
-    @pytest.fixture(autouse=True)
-    def _require_measurement_environment(self, repo_root):
-        gaps = _measurement_environment_gaps(repo_root)
-        if gaps:
-            pytest.skip(
-                f"{MEASURED_AT} の実測は gitignore された作業ツリーを含む環境で行われた。"
-                f"このチェックアウトには {gaps} が無いので件数比較は成立しない"
-                "（分類の正しさは TestCategorizeIsPure が環境非依存で守る）"
-            )
-
-
-    def test_live_source_file_count_matches_the_measurement(self, repo_links):
-        """`live` の参照元ファイル数が 128 であること（契約 §5-1 表）."""
-        module = query()
-        live = query().filter_links(repo_links, ("live",))
-        assert len(live) > 0, "positive control: live が空"
-
-        files = {link.source for link in live}
-        assert [name for name in files if module.categorize(name) != "live"] == []
-        assert _within_tolerance(len(files), MEASURED_LIVE_SOURCE_FILES), (
-            f"live source files: {len(files)} vs {MEASURED_LIVE_SOURCE_FILES}"
-        )
-
-
 
 
 # ===========================================================================

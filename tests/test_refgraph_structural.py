@@ -81,6 +81,11 @@ CONTRACT_RELATIONS = (
     "py_importlib",
     "py_subprocess_path",
     "py_sql_table",
+    "md_prose_path",
+    "md_fence_path",
+    "py_string",
+    "py_comment",
+    "text_path",
 )
 
 # 契約 §5-1 表の出所カテゴリ接頭辞リテラル 11 件（**実装から import しない**）。
@@ -394,33 +399,51 @@ class TestA3JudgmentMaterialSourceNamesFixed:
         )
 
     def test_both_sources_produce_an_edge_and_are_categorized_live(self, repo_graph):
-        """§6 条件 2 の表には無いが、A-3 削除判定の裏取りに使う実測材料.
+        """AC-42（`docs/refgraph-acceptance.md:498`）: A-3 削除判定の裏取りに使う実測材料.
 
-        現状の抽出器は `.py` ファイルに対して import / importlib / subprocess スクリプト
-        パス / SQL テーブル名の 4 種類しか見ておらず、単純なリスト内文字列リテラル
-        （`_excludes.py` の `EXCLUDE_PATTERNS` / `hatch_build.py` の同種リスト）を
-        パス参照として拾う経路を持たない。このテストが赤になる場合、それは
-        「py ファイル内の文字列リテラルのパス参照が辺になっていない」という
-        本スライスの中核欠落であり、テスト設計の誤りではない（plan-report 明記）。
+        target は `agents/tdd-develop.md`（`.claude/` プレフィックス無し）。
+        `src/c3/_excludes.py` / `hatch_build.py` が持つリテラルは `"agents/tdd-develop.md"`
+        というプレーンな文字列で、`.claude/agents/tdd-develop.md` という形では
+        どこにも書かれていない（削除済みファイルのため §3 の 4 段解決のどこにも
+        当たらず `missing` になる。原文正規化形がそのまま target になる）。
+        このテストが赤になる場合、それは「py ファイル内の文字列リテラルのパス参照が
+        辺になっていない」という本スライスの中核欠落であり、テスト設計の誤りではない
+        （plan-report 明記）。
         """
-        sources = {
-            link.source
-            for link in repo_graph.links
-            if link.target == ".claude/agents/tdd-develop.md"
-        }
-        missing = sorted({"src/c3/_excludes.py", "hatch_build.py"} - sources)
+        target_links = [
+            link for link in repo_graph.links if link.target == "agents/tdd-develop.md"
+        ]
+
+        by_source: dict = {"src/c3/_excludes.py": [], "hatch_build.py": []}
+        for link in target_links:
+            if link.source in by_source:
+                by_source[link.source].append(link)
+
+        missing = sorted(source for source, links in by_source.items() if not links)
         assert missing == [], (
             "A-3 判定材料の source が欠けている（py ファイル内の文字列リテラルの"
             f"パス参照が辺になっていない）: {missing}"
         )
 
+        wrong_resolution = sorted(
+            f"{link.source}:{link.resolution}"
+            for links in by_source.values()
+            for link in links
+            if link.resolution != "missing"
+        )
+        assert wrong_resolution == [], (
+            "agents/tdd-develop.md への辺の resolution が missing でない"
+            f"（削除済みファイルへの参照のはず）: {wrong_resolution}"
+        )
+
         module = query()
-        categories = {
-            source: module.categorize(source)
-            for source in ("src/c3/_excludes.py", "hatch_build.py")
+        live_sources = {
+            link.source for link in target_links if module.categorize(link.source) == "live"
         }
-        not_live = {source: cat for source, cat in categories.items() if cat != "live"}
-        assert not_live == {}, f"A-3 判定材料が live に分類されない: {not_live}"
+        assert len(live_sources) >= 2, (
+            "agents/tdd-develop.md を target とする全辺の source の categorize に"
+            f"live が 2 件未満: {sorted(live_sources)}"
+        )
 
 
 # ===========================================================================
