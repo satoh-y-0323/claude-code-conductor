@@ -2415,21 +2415,61 @@ class TestT5bPrefixTruncationAddsResolvedEdges:
         )
 
     def test_positive_control_ambiguous_prefix_adds_one_edge_per_candidate(self, tmp_path):
-        """正の対照: 前置詞が 2 候補に当たる場合、候補ごとに 1 本ずつ追加すること."""
-        _mkfile(tmp_path, "dup/skills/x.md", "# x\n")
-        _mkfile(tmp_path, "other/skills/y.md", "# y\n")
-        _mkfile(tmp_path, "notes.md", "# notes\n\n参照: `skills/absent/z.md`\n")
+        """正の対照: 前置詞が 2 候補に当たる場合、候補ごとに 1 本ずつ追加すること.
+
+        是正の経緯（元テストの不発火の理由）: 元 fixture は参照 `skills/absent/z.md` の
+        末尾成分を落として作る前置詞が `skills/absent` → `skills` の 2 通りしかなく、
+        どちらも契約の受理条件（`docs/refgraph-contract.md` の T-5b 節、行 155-157・
+        「受理でき `missing` 以外に解決できるものを追加の辺として出す」）が指す
+        R1（既知拡張子で終わる）/ R2（`/` で終わる）/ R3（`*` を含む）のいずれも
+        満たさない（`_accepts()`、`src/c3/refgraph.py:477-494`）。したがって
+        `_add_prefix_edges`（同 732-763）はどの前置詞でも `continue` し、追加辺は
+        恒久的に 0 本になる。これは T-5b 未実装（旧 D4）とは別の、テスト設計側の
+        不備だった。
+
+        是正: 参照そのものは複合成分にし、**その中間に位置する前置詞が単独で R1 を
+        満たす**ように組む: `skills/x.md/absent.txt`。
+        - 参照全体は `.txt`（既知拡張子）で終わるため R1 で直接受理され、実在しないので
+          いったん `missing` の辺が出る（T-5b の発火条件）
+        - 前置詞候補は `skills/x.md`（R1: `.md` で終わる → 受理）→ `skills`
+          （R1/R2/R3 いずれも満たさず不受理）の順。`skills/x.md` はそれ自体が
+          リポジトリに存在しないが、`p1/skills/x.md` / `p2/skills/x.md` という
+          末尾一致する実体を 2 つ置くことで、解決の第 3 段
+          （契約 `docs/refgraph-contract.md:128-129`・パス末尾が `/<参照>` に一致する
+          もの）が 2 候補を返し `ambiguous` になる（`test_suffix_match_with_two_candidates_is_ambiguous`
+          と同型の distractor パターン。前置詞そのものを実体パスとして直接置くと
+          解決の第 1 段（ルート相対で実在）が先に確定してしまい `ambiguous` を作れない
+          ため、深い場所に実体を 2 つ置く設計にした）
+        """
+        _mkfile(tmp_path, "p1/skills/x.md", "# x1\n")
+        _mkfile(tmp_path, "p2/skills/x.md", "# x2\n")
+        _mkfile(tmp_path, "notes.md", "# notes\n\n参照: `skills/x.md/absent.txt`\n")
 
         graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
 
+        # (c) 元の missing 辺は必ず残る（契約 T-5b 節・行 163）。
+        original_missing = _links(graph, source=src, target="skills/x.md/absent.txt")
+        assert len(original_missing) >= 1, (
+            "(c) the original unresolvable reference must still be emitted as a missing edge"
+        )
+        assert all(link.resolution == "missing" for link in original_missing)
+
+        # (a)(b) 前置詞 `skills/x.md` は R1（既知拡張子 `.md`）で受理され、
+        # ambiguous（p1/skills/x.md・p2/skills/x.md の 2 候補）に解決する。
         added = sorted(
             link.target
             for link in graph.links
-            if link.source == "notes.md" and link.target != "skills/absent/z.md"
+            if link.source == src and link.target != "skills/x.md/absent.txt"
         )
-        assert added == ["dup/skills/x.md", "other/skills/y.md"], (
-            "an ambiguous resolvable prefix must add one edge per candidate (T-5b); this is "
-            f"empty under the current implementation (T-5b is not implemented at all); got {added}"
+        assert added == ["p1/skills/x.md", "p2/skills/x.md"], (
+            "an ambiguous resolvable prefix ('skills/x.md', accepted by R1) must add one edge "
+            f"per candidate (T-5b, contract docs/refgraph-contract.md:155-162); got {added}"
+        )
+        assert all(
+            link.resolution == "ambiguous"
+            for link in graph.links
+            if link.source == src and link.target in added
         )
 
 
