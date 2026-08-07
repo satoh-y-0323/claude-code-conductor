@@ -50,6 +50,7 @@ import ast
 import inspect
 import json
 import re
+import tokenize
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
@@ -1692,4 +1693,889 @@ class TestNonAsciiTokenBoundaryRegression:
         assert len(hits) >= 1, (
             "SKILL.md must be extracted as its own token right after the Japanese "
             "punctuation '。', not silently merged into the preceding run"
+        )
+
+
+# ===========================================================================
+# test-ac-gaps タスク: `.claude/reports/test-report-ac-reconcile.md` の
+# 「要追加」27 件のテスト化（Red フェーズ）。
+#
+# 契約は `docs/refgraph-contract.md`（C-1〜C-24 反映済み）。AC 条文は
+# `docs/refgraph-acceptance.md`（凍結済み素材集）。実装（`src/c3/refgraph.py`）は
+# 編集していない。以下は実測の結果、複数の genuine な実装欠陥を発見している
+# （kind が "dir" を一切返さない・ディレクトリが実在索引に入らない・T-5/T-5b が
+# 未実装・sqltable の CREATE TABLE 索引が無い・未知の変数プレフィクスが沈黙する等）。
+# これらはテストを弱めず、契約の言葉のまま assert している（Red の帰属は
+# test-report を参照）。
+# ===========================================================================
+class TestNodeKindDirectoryTrailingSlashForm(object):
+    """AC-2: `.claude/docs/`（R2・末尾 `/` 付き原文）が `exact`・`kind: "dir"` へ解決すること."""
+
+    def test_trailing_slash_directory_reference_resolves_exact_with_dir_kind(self, tmp_path):
+        _mkfile(tmp_path, ".claude/docs/note.md", "# note\n")
+        _mkfile(
+            tmp_path,
+            "caller.md",
+            "# caller\n\n参照: `.claude/docs/` を見よ。\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        hits = _links(graph, source="caller.md", target=".claude/docs")
+        assert len(hits) >= 1, (
+            "a trailing-slash directory reference must resolve to '.claude/docs'; this is "
+            "missing under the current implementation, which indexes only files "
+            "(directories never appear in self.present)"
+        )
+        assert [link for link in hits if link.resolution != "exact"] == [], (
+            f"an existing directory reference must resolve exact; got {hits}"
+        )
+
+        by_id = {node.id: node for node in graph.nodes}
+        assert ".claude/docs" in by_id, "the directory must appear as a node"
+        assert by_id[".claude/docs"].kind == "dir", (
+            "an existing directory node must have kind == 'dir' (contract C-3); the current "
+            f"implementation never assigns kind='dir' anywhere; got {by_id['.claude/docs'].kind!r}"
+        )
+
+
+class TestNoTrailingSlashDirectoryReference:
+    """AC-31: 末尾 `/` 無しの多成分ディレクトリ参照が `exact`・`kind: "dir"` へ解決すること."""
+
+    def test_directory_reference_without_trailing_slash_resolves_exact_with_dir_kind(
+        self, tmp_path
+    ):
+        _mkfile(tmp_path, ".claude/hooks/stop.py", "# stop\n")
+        _mkfile(
+            tmp_path,
+            "caller.md",
+            "# caller\n\n[hooks ディレクトリ](.claude/hooks) を見よ。\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        hits = _links(graph, relation="md_link", source="caller.md", target=".claude/hooks")
+        assert len(hits) >= 1, (
+            "a directory reference without a trailing slash must still resolve to the "
+            "existing directory (contract §3 ノード ID・C-11); this is missing entirely under "
+            "the current implementation (no directory index is ever built, and _md_links "
+            "suppresses extensionless 'missing' targets so nothing survives)"
+        )
+        assert all(link.resolution == "exact" for link in hits)
+
+        by_id = {node.id: node for node in graph.nodes}
+        assert ".claude/hooks" in by_id
+        assert by_id[".claude/hooks"].kind == "dir"
+        assert not any(node.id == ".claude/hooks/" for node in graph.nodes), (
+            "the node id must not carry a trailing slash"
+        )
+
+
+class TestGlobResidueDirectoryReference:
+    """AC-3: `skills/worktree-tdd-workflow/*` の残骸が `missing`・`kind: "dir"` で辺になること."""
+
+    def test_excludes_py_glob_residue_is_a_missing_dir_edge_with_original_reference(
+        self, repo_root, repo_graph
+    ):
+        text = (repo_root / "src" / "c3" / "_excludes.py").read_text(encoding="utf-8")
+        assert '"skills/worktree-tdd-workflow/*"' in text, (
+            "premise gone: _excludes.py から skills/worktree-tdd-workflow/* の記載が消えた"
+        )
+        assert not (repo_root / ".claude" / "skills" / "worktree-tdd-workflow").exists(), (
+            "premise changed: worktree-tdd-workflow が復活した（v2.1.0 で廃止済みのはず）"
+        )
+
+        hits = _links(
+            repo_graph,
+            source="src/c3/_excludes.py",
+            target="skills/worktree-tdd-workflow",
+        )
+        assert len(hits) >= 1, (
+            "the glob residue must survive as a missing edge to the directory prefix"
+        )
+        bad_resolution = [link for link in hits if link.resolution != "missing"]
+        assert bad_resolution == [], f"expected missing; got {bad_resolution}"
+
+        references = {link.reference for link in hits}
+        assert "skills/worktree-tdd-workflow/*" in references, (
+            f"the original glob token must be preserved verbatim as reference; got {references}"
+        )
+
+        by_id = {node.id: node for node in repo_graph.nodes}
+        assert "skills/worktree-tdd-workflow" in by_id
+        assert by_id["skills/worktree-tdd-workflow"].kind == "dir", (
+            "a residue directory reference must be classified as kind == 'dir' "
+            f"(contract C-3); got {by_id['skills/worktree-tdd-workflow'].kind!r}"
+        )
+        assert not any(
+            node.id == "skills/worktree-tdd-workflow/" for node in repo_graph.nodes
+        ), "the node id must not carry a trailing slash"
+
+
+class TestGlobExtensionOnlyNegativeControl:
+    """AC-8(3) / AC-33: `*.md` から `target == ".md"` の辺が出ないこと（負の対照＋正の双子）.
+
+    `docs/refgraph-acceptance.md` の AC-33 は「AC-8(3) と同一の検査であり、二重に書かない」
+    と明記しているため、AC-33 専用のテストは別途起こさない（本テストで両方を担保する）。
+    AC-8 の走査ツリー条件（`stop.py` をルート直下に実在させる）も満たす。
+    """
+
+    def test_bare_extension_glob_produces_no_edge_while_the_real_twin_does(self, tmp_path):
+        _mkfile(tmp_path, "stop.py", "# stop\n")
+        _mkfile(tmp_path, "docs/real.md", "# real\n")
+        _mkfile(
+            tmp_path,
+            "a3.md",
+            "# a3\n\n`*.md`\n\n`docs/real.md`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "a3.md"
+
+        bare = _links(graph, source=src, target=".md")
+        assert bare == [], f"a bare extension-only glob must not produce a '.md' edge; got {bare}"
+
+        real = _links(graph, source=src, target="docs/real.md")
+        assert len(real) >= 1, "positive control: the real file reference must produce an edge"
+
+
+class TestPrefixTruncationComponentBoundary:
+    """AC-10: T-5 が成分境界で刻み、末尾 `/` を含まない前置詞を辺にすること."""
+
+    def test_component_followed_by_word_truncates_to_the_accepted_prefix(self, tmp_path):
+        _mkfile(tmp_path, "other/hook/SKILL.md", "# hook skill doc\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n参照: `hook/SKILL.md/release 運用` を見よ。\n",
+        )
+        graph = refgraph.build_graph(tmp_path)
+        hits = _links(
+            graph,
+            relation="md_code_span_path",
+            source="notes.md",
+            target="other/hook/SKILL.md",
+        )
+        assert len(hits) >= 1, (
+            "T-5 must truncate the unacceptable run at a component boundary and emit an edge "
+            "for 'hook/SKILL.md' (without a trailing slash); this is missing because the "
+            "current tokenizer only accepts a run in full (R1/R2/R3 on the whole run) and has "
+            "no fallback that retries shorter component-boundary prefixes"
+        )
+        assert all(link.resolution == "basename" for link in hits)
+        assert all(not link.target.endswith("/") for link in hits)
+
+
+class TestBraceGroupToken:
+    """AC-11: `{SKILL.md,scripts/mode_line.py}` から `scripts/mode_line.py` が解決されること."""
+
+    def test_brace_group_second_member_resolves(self, tmp_path):
+        _mkfile(tmp_path, ".claude/skills/x/SKILL.md", "# x skill\n")
+        _mkfile(tmp_path, ".claude/skills/x/scripts/mode_line.py", "# mode line\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n変更対象: `{SKILL.md,scripts/mode_line.py}`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        hits = _links(
+            graph, source="notes.md", target=".claude/skills/x/scripts/mode_line.py"
+        )
+        assert len(hits) >= 1, (
+            "the second brace-group member 'scripts/mode_line.py' must resolve to an "
+            "existing script; this is missing because '{' is not a valid start-of-run "
+            "boundary character (_ASCII_BOUNDARY), so nothing inside '{...}' is reachable "
+            "as a token at all"
+        )
+
+
+class TestFStringSourceSegmentPreservation:
+    """AC-12: f-string 断片が `ast.get_source_segment` の原文通りに切れること."""
+
+    def test_original_fstring_form_survives_verbatim_while_variants_and_fragments_do_not(
+        self, tmp_path
+    ):
+        _mkfile(
+            tmp_path,
+            "pkg/strings.py",
+            "name = 'x'\n"
+            "x = 'y'\n"
+            'A = f"docs/{name}.md"\n'  # line 3: 正確な形（原文どおり）
+            'B = f"docs/{ name }.md"\n'  # line 4: 空白ありの変種
+            'C = f"docs/{name!r}.md"\n'  # line 5: 変換指定ありの変種
+            'D = f"a/{x}-v2.md"\n',  # line 6: 断片捏造の負の対照
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        source = "pkg/strings.py"
+
+        exact = _links(graph, source=source, target="docs/{name}.md")
+        assert len(exact) >= 1, (
+            "the exact f-string form 'docs/{name}.md' must survive verbatim as a py_string edge"
+        )
+        lines = {link.source_line for link in exact}
+        assert lines == {3}, (
+            f"only the exact (unformatted) f-string line must produce this target; got {lines}"
+        )
+
+        fragment = _links(graph, source=source, target="-v2.md")
+        assert fragment == [], (
+            f"a literal chunk inside an f-string must not leak as its own target: {fragment}"
+        )
+
+
+class TestOldSchemaBackwardCompat:
+    """AC-15: `reference` を持たない旧スキーマの JSON を `read_graph` が読め、既定値 "" になること."""
+
+    def test_read_graph_defaults_missing_reference_field_to_empty_string(self, tmp_path):
+        old_schema = {
+            "schema_version": 1,
+            "root": str(tmp_path),
+            "generated_from": {"file_count": 1},
+            "nodes": [{"id": "a.md", "kind": "file", "exists": True}],
+            "links": [
+                {
+                    "relation": "md_link",
+                    "source": "a.md",
+                    "source_line": 1,
+                    "context": "ctx",
+                    "target": "b.md",
+                    "target_exists": False,
+                    "resolution": "missing",
+                    # NOTE: 旧スキーマは `reference` フィールドを持たない
+                }
+            ],
+            "skipped": [],
+        }
+        out = tmp_path / "old.json"
+        out.write_text(json.dumps(old_schema), encoding="utf-8")
+
+        graph = refgraph.read_graph(out)
+
+        assert len(graph.links) == 1
+        assert graph.links[0].reference == "", (
+            f"a link read from a reference-less schema must default reference to ''; "
+            f"got {graph.links[0].reference!r}"
+        )
+
+
+class TestNoExceptionOnPathologicalInputs:
+    """AC-17: 200 段ネスト f-string・500 成分パスで `build_graph` が例外を投げないこと."""
+
+    def test_two_hundred_chained_fstrings_do_not_raise(self, tmp_path):
+        """AC-17 の「200 段ネスト f-string」の代替.
+
+        Python 3.11（本実行環境）では f-string の同一引用符を再利用する真のネストは
+        構文的に作れない（PEP 701 以前の制約。4 種の引用符をローテーションしても
+        depth 5 で `SyntaxError: unterminated ... string` になることを実測済み）。
+        同等の負荷として、200 個の f-string を連鎖させたファイル（各行が直前の変数を
+        式に含む）で代替する。
+        """
+        lines = ["v0 = 'leaf.md'\n"]
+        for i in range(1, 201):
+            lines.append(f'v{i} = f"a/{{v{i - 1}}}/{i}.md"\n')
+        _mkfile(tmp_path, "deep.py", "".join(lines))
+
+        graph = refgraph.build_graph(tmp_path)
+        assert isinstance(graph.links, tuple)
+
+    def test_500_component_path_does_not_raise(self, tmp_path):
+        deep_rel = "/".join(f"d{i}" for i in range(500)) + "/leaf.md"
+        _mkfile(
+            tmp_path,
+            "caller.md",
+            "# caller\n\n参照: `" + deep_rel + "`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        assert isinstance(graph.links, tuple)
+
+
+class TestR1RejectsExtensionlessNames:
+    """AC-20: `copy` / `bash` / `push` のような拡張子を持たない語が R1 で受理されないこと（負の対照）."""
+
+    def test_extensionless_words_are_not_captured_as_targets(self, tmp_path):
+        _mkfile(tmp_path, ".claude/hooks/real.py", "# real\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n"
+            "`copy` と `bash` と `push` の話。参照は `.claude/hooks/real.py`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        real = _links(graph, source=src, target=".claude/hooks/real.py")
+        assert len(real) >= 1, "positive control: 同じ行の実在パスが辺にならない"
+
+        leaked = []
+        for word in ("copy", "bash", "push"):
+            leaked += _links(graph, source=src, target=word)
+        assert leaked == [], f"extensionless words must not be captured: {leaked}"
+
+
+class TestMdLinkExtensionlessNegativeControl:
+    """AC-21: 拡張子を持たない md リンクが `md_link` にならないこと（負の対照＋正の双子）."""
+
+    def test_extensionless_link_target_produces_no_md_link_edge(self, tmp_path):
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n"
+            "[extensionless](foo/bar)\n"
+            "[japanese missing](docs/日本語.md)\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        no_ext = _links(graph, relation="md_link", source=src, target="foo/bar")
+        assert no_ext == [], f"an extensionless md link target must not become md_link: {no_ext}"
+
+        jp = _links(graph, relation="md_link", source=src, target="docs/日本語.md")
+        assert len(jp) >= 1, "positive control: 非 ASCII の実在しないリンク先が md_link にならない"
+        assert jp[0].resolution == "missing"
+
+
+class TestSqlTableExistenceSyntheticContrast:
+    """AC-28: 合成ツリーで `sqltable:` の存在判定が両側とも正しく出ること."""
+
+    def test_present_and_absent_tables_resolve_correctly(self, tmp_path):
+        _mkfile(
+            tmp_path,
+            "schema.sql",
+            "CREATE TABLE t_present (id INTEGER PRIMARY KEY);\n",
+        )
+        _mkfile(
+            tmp_path,
+            "query.py",
+            "import sqlite3\n"
+            'SQL = "SELECT * FROM t_absent"\n',
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        present = _links(graph, relation="py_sql_table", target="sqltable:t_present")
+        assert len(present) >= 1, "positive control: t_present への辺が無い"
+        assert all(link.target_exists is True for link in present)
+        assert all(link.resolution == "exact" for link in present)
+
+        absent = _links(graph, relation="py_sql_table", target="sqltable:t_absent")
+        assert len(absent) >= 1, "t_absent への辺が無い"
+        assert all(link.target_exists is False for link in absent), (
+            "a table absent from the CREATE TABLE index must have target_exists=False "
+            "(contract C-12); the current implementation has no CREATE TABLE index at all — "
+            f"every py_sql_table edge is hardcoded exact/exists=True: {absent}"
+        )
+        assert all(link.resolution == "missing" for link in absent), (
+            f"a table absent from the CREATE TABLE index must resolve missing: {absent}"
+        )
+
+        by_id = {node.id: node for node in graph.nodes}
+        assert by_id["sqltable:t_present"].exists is True
+        assert by_id["sqltable:t_absent"].exists is False, (
+            "a table node absent from the CREATE TABLE index must have exists == False "
+            "(contract C-3/C-4/C-12); the current implementation hardcodes "
+            "exists=True for every sqltable node (comment: テーブルの実在はツリーから "
+            "確かめられないため常に true とする — this predates C-12)"
+        )
+
+
+class TestMdFenceBothDelimiterStyles:
+    """AC-30: ``` と ~~~ の両方のフェンス本体が `md_fence_path` になり、`md_c3_run` と共存すること."""
+
+    def test_both_fence_styles_produce_md_fence_path_and_c3_run_survives(self, tmp_path):
+        _mkfile(tmp_path, ".claude/hooks/target_a.py", "# a\n")
+        _mkfile(tmp_path, ".claude/hooks/target_b.py", "# b\n")
+        _mkfile(tmp_path, ".claude/hooks/run_me.py", "# run\n")
+        _mkfile(
+            tmp_path,
+            "doc.md",
+            "# doc\n\n"
+            "```text\n"
+            "参照: .claude/hooks/target_a.py\n"
+            "c3 run .claude/hooks/run_me.py\n"
+            "```\n\n"
+            "~~~text\n"
+            "参照: .claude/hooks/target_b.py\n"
+            "~~~\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "doc.md"
+
+        backtick_hits = _links(
+            graph, relation="md_fence_path", source=src, target=".claude/hooks/target_a.py"
+        )
+        assert len(backtick_hits) >= 1, "backtick fence body path must be md_fence_path"
+
+        tilde_hits = _links(
+            graph, relation="md_fence_path", source=src, target=".claude/hooks/target_b.py"
+        )
+        assert len(tilde_hits) >= 1, "tilde fence body path must be md_fence_path"
+
+        run_hits = _links(
+            graph, relation="md_c3_run", source=src, target=".claude/hooks/run_me.py"
+        )
+        assert len(run_hits) >= 1, "c3 run inside a fence must still produce md_c3_run"
+
+
+class TestMaskingDoesNotDoubleAttribute:
+    """AC-43: 同一行のコードスパン内パスと散文裸パスが互いの relation に漏れないこと."""
+
+    def test_code_span_and_prose_path_on_the_same_line_stay_in_their_own_relation(
+        self, tmp_path
+    ):
+        _mkfile(tmp_path, ".claude/hooks/span_target.py", "# span\n")
+        _mkfile(tmp_path, ".claude/hooks/prose_target.py", "# prose\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n"
+            "コードスパン `.claude/hooks/span_target.py` と "
+            "散文 .claude/hooks/prose_target.py が同居する。\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        span = _links(graph, source=src, target=".claude/hooks/span_target.py")
+        assert len(span) >= 1
+        assert {link.relation for link in span} == {"md_code_span_path"}, (
+            f"the code-span path must only be md_code_span_path; got {[l.relation for l in span]}"
+        )
+
+        prose = _links(graph, source=src, target=".claude/hooks/prose_target.py")
+        assert len(prose) >= 1
+        assert {link.relation for link in prose} == {"md_prose_path"}, (
+            f"the prose path must only be md_prose_path; got {[l.relation for l in prose]}"
+        )
+
+
+class TestVariablePrefixResolutionBases:
+    """AC-51: `${CLAUDE_SKILL_DIR}/` と `${CLAUDE_PROJECT_DIR}/` が異なる基準で解決されること."""
+
+    def test_skill_dir_is_source_relative_and_project_dir_is_root_relative(self, tmp_path):
+        _mkfile(tmp_path, ".claude/skills/x/scripts/y.py", "# y\n")
+        _mkfile(tmp_path, ".claude/hooks/z.py", "# z\n")
+        _mkfile(
+            tmp_path,
+            ".claude/skills/x/SKILL.md",
+            "# x\n\n"
+            "`c3 run ${CLAUDE_SKILL_DIR}/scripts/y.py`\n"
+            "`c3 run ${CLAUDE_PROJECT_DIR}/.claude/hooks/z.py`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = ".claude/skills/x/SKILL.md"
+
+        skill_relative = _links(
+            graph, relation="md_c3_run", source=src, target=".claude/skills/x/scripts/y.py"
+        )
+        assert len(skill_relative) >= 1, (
+            "${CLAUDE_SKILL_DIR}/ must resolve relative to the source's directory"
+        )
+        assert all(link.resolution == "exact" for link in skill_relative)
+
+        root_relative = _links(
+            graph, relation="md_c3_run", source=src, target=".claude/hooks/z.py"
+        )
+        assert len(root_relative) >= 1, (
+            "${CLAUDE_PROJECT_DIR}/ must resolve relative to the repo root"
+        )
+        assert all(link.resolution == "exact" for link in root_relative)
+
+
+class TestUnknownVariablePrefixDoesNotVanishSilently:
+    """AC-52: 未知の変数プレフィクスが沈黙せず `missing` 辺として残ること."""
+
+    def test_unknown_variable_prefix_emits_missing_edge(self, tmp_path):
+        _mkfile(tmp_path, "x.py", "# x\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n"
+            "`${UNKNOWN_VAR}/x.py` と `${CLAUDE_PROJECT_DIR}/x.py`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        known = _links(graph, source=src, target="x.py")
+        exact_hits = [link for link in known if link.resolution == "exact"]
+        assert len(exact_hits) >= 1, "positive control: ${CLAUDE_PROJECT_DIR}/x.py must resolve exact"
+
+        unknown = _links(graph, source=src, target="${UNKNOWN_VAR}/x.py")
+        assert len(unknown) >= 1, (
+            "an unknown variable prefix must not silently vanish; it must be emitted as a "
+            "missing edge carrying the original token as target (contract §3 変数プレフィクスの "
+            "解決 表 3 行目); the current implementation returns [] for any unrecognized "
+            "'${...}' prefix (src/c3/refgraph.py _resolve), which silently drops the reference"
+        )
+        assert all(link.resolution == "missing" for link in unknown)
+        assert all(link.target_exists is False for link in unknown)
+
+
+class TestEmptyAfterStrippingVariablePrefixProducesNoEdge:
+    """AC-53: `${CLAUDE_PROJECT_DIR}/` 単独が空になり辺にならないこと（負の対照＋正の双子）."""
+
+    def test_bare_project_dir_variable_produces_no_edge_while_directory_form_does(
+        self, tmp_path
+    ):
+        _mkfile(tmp_path, ".claude/marker.md", "# marker\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n"
+            "`${CLAUDE_PROJECT_DIR}/` だけ\n"
+            "`${CLAUDE_PROJECT_DIR}/.claude/` はディレクトリ\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        bare_prefix_hits = [
+            link
+            for link in graph.links
+            if link.source == src and link.reference == "${CLAUDE_PROJECT_DIR}/"
+        ]
+        assert bare_prefix_hits == [], (
+            f"a bare ${{CLAUDE_PROJECT_DIR}}/ must not produce any edge; got {bare_prefix_hits}"
+        )
+
+        dir_hits = _links(graph, source=src, target=".claude")
+        assert len(dir_hits) >= 1, (
+            "positive control: ${CLAUDE_PROJECT_DIR}/.claude/ must resolve to the existing "
+            "directory; missing under the current implementation (directories are never "
+            "indexed as present, see AC-2/AC-31)"
+        )
+        assert all(link.resolution == "exact" for link in dir_hits)
+
+        by_id = {node.id: node for node in graph.nodes}
+        assert ".claude" in by_id
+        assert by_id[".claude"].kind == "dir"
+
+
+class TestMemoryErrorDuringReadIsRecordedAndNonFatal:
+    """AC-54: `Path.read_text` が `MemoryError` を送出しても `build_graph` がクラッシュしないこと."""
+
+    def test_memory_error_on_one_file_is_skipped_while_others_survive(
+        self, tmp_path, monkeypatch
+    ):
+        _mkfile(tmp_path, ".claude/hooks/alive.py", "# alive\n")
+        _mkfile(tmp_path, "bad.md", "# bad\n\n参照: `.claude/hooks/alive.py`\n")
+        _mkfile(tmp_path, "good.md", "# good\n\n参照: `.claude/hooks/alive.py`\n")
+
+        real_read_text = Path.read_text
+
+        def fake_read_text(self, *args, **kwargs):
+            if self.name == "bad.md":
+                raise MemoryError("synthetic out-of-memory during read")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+        # NOTE (Red の帰属): `_process` の except 節は
+        # `(OSError, UnicodeDecodeError, ValueError)` のみを捕捉し、`MemoryError`
+        # （`Exception` を直接継承・`OSError` の派生ではない）は捕捉しない。
+        # したがって現行実装ではこの呼び出し自体が `MemoryError` を送出して
+        # 未処理のまま伝播し、build_graph がクラッシュする（契約 §6 条件 3 違反）。
+        graph = refgraph.build_graph(tmp_path)
+
+        skipped_paths = [entry.path for entry in graph.skipped]
+        assert "bad.md" in skipped_paths, (
+            f"a file whose read raises MemoryError must be recorded in skipped; got {skipped_paths!r}"
+        )
+        assert skipped_paths.count("bad.md") == 1
+
+        reasons = [entry.reason for entry in graph.skipped if entry.path == "bad.md"]
+        assert reasons == ["MemoryError"], f"expected reason MemoryError; got {reasons}"
+
+        alive = _links(graph, source="good.md", target=".claude/hooks/alive.py")
+        assert len(alive) >= 1, "an unrelated readable file must still produce its edges"
+
+
+class TestTokenizeFailureDegradesGracefully:
+    """AC-55: `tokenize` が例外を送出しても `py_comment` だけが失われ、`py_import` は生き残ること."""
+
+    def test_tokenize_failure_drops_only_py_comment_for_that_file(self, tmp_path, monkeypatch):
+        _mkfile(tmp_path, "pkg/target.py", "# target\n")
+        _mkfile(tmp_path, "pkg/__init__.py", "")
+        _mkfile(
+            tmp_path,
+            "pkg/broken.py",
+            "import pkg.target  # BREAK_TOKENIZE marker: pkg/target.py\n",
+        )
+        _mkfile(
+            tmp_path,
+            "pkg/ok.py",
+            "# 参照: pkg/target.py\n",
+        )
+
+        real_generate_tokens = tokenize.generate_tokens
+
+        def fake_generate_tokens(readline):
+            stream = getattr(readline, "__self__", None)
+            content = stream.getvalue() if stream is not None else ""
+            if "BREAK_TOKENIZE" in content:
+                raise tokenize.TokenError("synthetic tokenize failure")
+            return real_generate_tokens(readline)
+
+        monkeypatch.setattr(tokenize, "generate_tokens", fake_generate_tokens)
+
+        graph = refgraph.build_graph(tmp_path)
+
+        broken_comments = _links(graph, relation="py_comment", source="pkg/broken.py")
+        assert broken_comments == [], (
+            f"py_comment must be empty for the file whose tokenize call failed; got {broken_comments}"
+        )
+
+        ok_comments = _links(
+            graph, relation="py_comment", source="pkg/ok.py", target="pkg/target.py"
+        )
+        assert len(ok_comments) >= 1, (
+            "positive control: tokenize が成功するファイルからは py_comment が出るはず"
+        )
+
+        imports = _links(
+            graph, relation="py_import", source="pkg/broken.py", target="pkg/target.py"
+        )
+        assert len(imports) >= 1, "py_import must survive a tokenize failure in the same file"
+
+        skipped_paths = [entry.path for entry in graph.skipped]
+        assert "pkg/broken.py" not in skipped_paths, (
+            "a tokenize-only failure is not a file-level read failure; skipped is for that"
+        )
+        assert "pkg/ok.py" not in skipped_paths
+
+
+class TestT5bPrefixTruncationAddsResolvedEdges:
+    """AC-57: T-5b が正規化後 missing 辺に加え、解決できる前置詞への辺を追加すること."""
+
+    def test_normalization_residue_and_resolved_prefix_both_appear(self, tmp_path):
+        _mkfile(tmp_path, ".claude/hooks/stop.py", "# stop\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n参照: `.claude/hooks/stop.py/../../../malicious.py`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        normalized_missing = _links(graph, source=src, target="malicious.py")
+        assert len(normalized_missing) >= 1, (
+            "(i) the normalized-but-unresolvable target must still be emitted as missing"
+        )
+        assert all(link.resolution == "missing" for link in normalized_missing)
+
+        prefix_resolved = _links(graph, source=src, target=".claude/hooks/stop.py")
+        assert len(prefix_resolved) >= 1, (
+            "(ii) T-5b must add a resolved edge for the accepted prefix '.claude/hooks/stop.py' "
+            "(contract §3 前置詞の追加辺・T-5b); this edge is missing under the current "
+            "implementation, which only collapses '..' within a single token via `_normalize` "
+            "(posixpath.normpath) and has no mechanism that retries truncated prefixes at all"
+        )
+        assert all(link.resolution == "exact" for link in prefix_resolved)
+
+    def test_negative_control_1_no_resolvable_prefix_adds_nothing(self, tmp_path):
+        """負の対照(1): 受理できる前置詞が無い run は追加されない（`nope` を作らない）."""
+        _mkfile(tmp_path, "notes.md", "# notes\n\n参照: `nope/absent.md`\n")
+
+        graph = refgraph.build_graph(tmp_path)
+        hits = _links(graph, source="notes.md", target="nope/absent.md")
+        assert len(hits) == 1, f"exactly one missing edge, no additions; got {hits}"
+        assert hits[0].resolution == "missing"
+
+        stray = [
+            link
+            for link in graph.links
+            if link.source == "notes.md" and link.target == "nope"
+        ]
+        assert stray == [], f"a nonexistent prefix must not produce an edge: {stray}"
+
+    def test_negative_control_2_prefix_that_only_resolves_to_missing_adds_nothing(
+        self, tmp_path
+    ):
+        """負の対照(2): 前置詞 `foo.md` は R1 で受理されるが missing にしか解決しないので追加しない."""
+        _mkfile(tmp_path, "notes.md", "# notes\n\n参照: `foo.md/bar.md`\n")
+
+        graph = refgraph.build_graph(tmp_path)
+        hits = _links(graph, source="notes.md", target="foo.md/bar.md")
+        assert len(hits) == 1, f"exactly one missing edge for the raw token; got {hits}"
+        assert hits[0].resolution == "missing"
+
+        prefix_hits = [
+            link
+            for link in graph.links
+            if link.source == "notes.md" and link.target == "foo.md"
+        ]
+        assert prefix_hits == [], (
+            f"a prefix that itself resolves to missing must not be added: {prefix_hits}"
+        )
+
+    def test_positive_control_ambiguous_prefix_adds_one_edge_per_candidate(self, tmp_path):
+        """正の対照: 前置詞が 2 候補に当たる場合、候補ごとに 1 本ずつ追加すること."""
+        _mkfile(tmp_path, "dup/skills/x.md", "# x\n")
+        _mkfile(tmp_path, "other/skills/y.md", "# y\n")
+        _mkfile(tmp_path, "notes.md", "# notes\n\n参照: `skills/absent/z.md`\n")
+
+        graph = refgraph.build_graph(tmp_path)
+
+        added = sorted(
+            link.target
+            for link in graph.links
+            if link.source == "notes.md" and link.target != "skills/absent/z.md"
+        )
+        assert added == ["dup/skills/x.md", "other/skills/y.md"], (
+            "an ambiguous resolvable prefix must add one edge per candidate (T-5b); this is "
+            f"empty under the current implementation (T-5b is not implemented at all); got {added}"
+        )
+
+
+class TestT5bInTheRealRepo:
+    """AC-59: T-5b が実リポジトリで効くこと（`.claude/docs/config-policy.md` の実例）.
+
+    `md_link` 経路での確認は AC-60（`TestT5bViaMdLink`）が合成ツリーで独立に担う
+    （AC-59 本文の「あわせて md_link 経路でも…1 件測る」は AC-60 と同一検査のため
+    重複させない）。
+    """
+
+    def test_config_policy_reference_resolves_to_stop_py_via_t5b(self, repo_root, repo_graph):
+        text = (repo_root / ".claude" / "docs" / "config-policy.md").read_text(encoding="utf-8")
+        assert "stop.py/../../../malicious.py" in text, (
+            "premise gone: config-policy.md から T-5b 題材の記述が消えた"
+        )
+
+        source = ".claude/docs/config-policy.md"
+        reference = ".claude/hooks/stop.py/../../../malicious.py"
+
+        resolved = [
+            link
+            for link in repo_graph.links
+            if link.source == source
+            and link.reference == reference
+            and link.target == ".claude/hooks/stop.py"
+        ]
+        assert len(resolved) >= 1, (
+            "T-5b must resolve this reference to .claude/hooks/stop.py with resolution == "
+            "exact (contract AC-59); this edge is missing under the current implementation, "
+            "which has no T-5b mechanism (only single-token '..' normalization via _normalize)"
+        )
+        assert all(link.resolution == "exact" and link.target_exists for link in resolved)
+
+        normalized_missing = [
+            link
+            for link in repo_graph.links
+            if link.source == source
+            and link.reference == reference
+            and link.target == "malicious.py"
+        ]
+        assert len(normalized_missing) >= 1, (
+            "the normalized-but-unresolved target must also survive as a missing edge"
+        )
+        assert all(link.resolution == "missing" for link in normalized_missing)
+
+
+class TestT5bViaMdLink:
+    """AC-60: T-5b が `md_link` 経路でも効くこと（合成ツリー）.
+
+    リンク先が既知拡張子（`.md`）を持つので `_md_links` の抑止ガードを通る
+    （持たない題材では辺自体が出ず T-5b も回らないため成立しない）。
+    """
+
+    def test_link_target_prefix_resolves_via_t5b_while_original_stays_missing(self, tmp_path):
+        _mkfile(tmp_path, "sub/foo.md", "# foo\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n[link](foo.md/bar.md)\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        original_missing = _links(graph, relation="md_link", source=src, target="foo.md/bar.md")
+        assert len(original_missing) >= 1, (
+            "(i) the original unresolvable link target must still appear as a missing edge"
+        )
+        assert all(link.resolution == "missing" for link in original_missing)
+
+        prefix_resolved = _links(graph, relation="md_link", source=src, target="sub/foo.md")
+        assert len(prefix_resolved) >= 1, (
+            "(ii) T-5b must add a basename-resolved edge for the truncated prefix 'foo.md' "
+            "(contract AC-60); missing because T-5b is not implemented for any "
+            "reference-emitting path, md_link included"
+        )
+        assert all(link.resolution == "basename" for link in prefix_resolved)
+
+
+class TestGlobFragmentBehaviorNoxWhyMd:
+    """AC-62 (ii): `nox/**/why.md` の断片挙動（合成・読み A/B の前置トークン）."""
+
+    def test_nox_why_md_produces_full_token_and_prefix_but_no_bare_fragment(self, tmp_path):
+        _mkfile(
+            tmp_path,
+            "ii.md",
+            "# ii\n\n参照: `nox/**/why.md`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "ii.md"
+
+        full = _links(graph, source=src, target="nox/**/why.md")
+        assert len(full) == 1, f"(a) reading A の原文まるごとの missing 辺が 1 本のはず; got {full}"
+        assert full[0].resolution == "missing"
+
+        prefix = _links(graph, source=src, target="nox")
+        assert len(prefix) == 1, (
+            f"(b) reading B の前置トークン 'nox' の missing 辺が 1 本のはず; got {prefix}"
+        )
+        assert prefix[0].resolution == "missing"
+
+        why_md = _links(graph, source=src, target="why.md")
+        slash_why_md = _links(graph, source=src, target="/why.md")
+        assert why_md == [] and slash_why_md == [], (
+            f"(c) 'why.md' / '/why.md' は断片として出てはいけない; got {why_md + slash_why_md}"
+        )
+
+
+class TestGlobRawTokenInTheRealRepo:
+    """AC-62 (iv): 実リポジトリで `.claude/skills/*/scripts/**/*.py` のグロブ原文が確認できること.
+
+    題材が CHANGELOG.md の特定行を指すため、CHANGELOG.md が先頭へ追記される慣習で
+    行番号がずれるとこのテストの前提が崩れる。前提 assert が失敗したら、AC-62 (iv) が
+    明記する代替題材（`.claude/docs/taxonomy.md:147-148`・フェンス内なので relation は
+    `md_fence_path`）へ差し替えてよい。
+    """
+
+    def test_changelog_line_28_reference_produces_the_raw_glob_and_not_a_shortened_dir(
+        self, repo_root, repo_graph
+    ):
+        text = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
+        lines = text.split("\n")
+        assert len(lines) >= 28 and "`.claude/skills/*/scripts/**/*.py`" in lines[27], (
+            "premise gone: CHANGELOG.md:28 の記載が変わった "
+            "(代替題材: .claude/docs/taxonomy.md:147-148・relation は md_fence_path)"
+        )
+
+        hits = [
+            link
+            for link in repo_graph.links
+            if link.relation == "md_code_span_path"
+            and link.source == "CHANGELOG.md"
+            and link.source_line == 28
+            and link.reference == ".claude/skills/*/scripts/**/*.py"
+        ]
+
+        full_glob = [
+            link for link in hits if link.target == ".claude/skills/*/scripts/**/*.py"
+        ]
+        assert len(full_glob) >= 1, (
+            "(a) the raw glob token must survive as its own missing-resolution target"
+        )
+
+        shortened_dir = [link for link in hits if link.target == ".claude/skills/*/scripts"]
+        assert shortened_dir == [], (
+            f"(b) the glob must not be shortened to a directory-only target: {shortened_dir}"
         )

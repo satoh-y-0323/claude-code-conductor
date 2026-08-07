@@ -708,12 +708,29 @@ def _run_junit(runner_source: str, tmp_path: Path) -> dict:
 
 class TestExtractorDoNothingStubDetection:
     """`build_graph` を何も抽出しない実装に差し替え、`tests/test_refgraph.py` の
-    54 件のうち `TestApiShape`（API の型検査・3 件）だけが緑に残ることを検証する.
+    うち `TestApiShape`（API の型検査）＋ `_STUB_SAFE_CLASS_NAME_FRAGMENTS`
+    （§2-1 が「∀ 型でない」と明記した AC-15 / AC-17 相当のクラス）だけが
+    緑に残ることを検証する.
 
-    `TestApiShape` 以外の全クラスは「辺が 1 本以上出ている」という positive
+    それ以外の全クラスは「辺が 1 本以上出ている」という positive
     control を持つ設計（`tests/test_refgraph.py` 自身の docstring・契約 §7 規律 4）
     なので、何も抽出しないスタブでは必ず赤になる。
+
+    `_STUB_SAFE_CLASS_NAME_FRAGMENTS` の根拠（`docs/refgraph-acceptance.md` §2-1）:
+    - AC-15（`TestOldSchemaBackwardCompat`）: 「∀ 型でない（`Link.reference == ""`
+      を assert する）」。`read_graph` だけを当てるテストで `build_graph` の出力を
+      見ないため、`build_graph` を空スタブに差し替えても影響を受けない
+    - AC-17（`TestNoExceptionOnPathologicalInputs`）: 「∀ 型でない（明示した入力で
+      例外が出ないことを assert する）」。出力を見ず「クラッシュしないこと」だけを
+      見るため、スタブの下でも真になる（`build_graph` が例外を投げない実装なら
+      何であれ成立する）
     """
+
+    _STUB_SAFE_CLASS_NAME_FRAGMENTS = (
+        "TestApiShape",
+        "TestOldSchemaBackwardCompat",
+        "TestNoExceptionOnPathologicalInputs",
+    )
 
     def test_build_graph_stub_leaves_only_api_shape_green(self, tmp_path):
         outcomes = _run_junit(
@@ -731,7 +748,11 @@ class TestExtractorDoNothingStubDetection:
 
         assert len(red) >= 1, "positive control: スタブ下で 1 件も赤にならない"
 
-        unexpected_green = sorted(name for name in green if "TestApiShape" not in name)
+        unexpected_green = sorted(
+            name
+            for name in green
+            if not any(fragment in name for fragment in self._STUB_SAFE_CLASS_NAME_FRAGMENTS)
+        )
         assert unexpected_green == [], (
             "these tests stayed green under a do-nothing build_graph stub "
             f"(V-15 個別確認対象・出力を assert していない疑い): {unexpected_green}"
@@ -1015,3 +1036,87 @@ class TestSettingsResolutionRegression:
         assert len(hits) >= 1, "settings_permission edge (settings.json -> stop.py) is missing"
         bad = [link for link in hits if link.resolution != "exact"]
         assert bad == [], f"settings_permission resolution regressed from exact: {bad}"
+
+
+# ===========================================================================
+# 11. AC-18: resolution / kind の双方向一致（test-ac-gaps タスク）
+#
+# `TestFormatCoverageBothSidesNonempty` は relation のみを双方向で見ている
+# （§1 の項目のまま）。AC-18 はこれに加えて `resolution`（4 値）と `kind`
+# （3 値）の双方向一致も要求する。実測: `kind` は現行実装では常に "file" か
+# "table" にしかならず、"dir" を一切割り当てない（契約 C-3 / §3 ノード ID の
+# 未実装）。この節の kind テストは genuine な Red になる。
+# ===========================================================================
+CONTRACT_RESOLUTIONS = ("exact", "basename", "ambiguous", "missing")
+CONTRACT_KINDS = ("file", "dir", "table")
+
+
+class TestResolutionAndKindBidirectional:
+    """AC-18: `resolution` の 4 値・`kind` の 3 値が契約と実装で双方向一致すること."""
+
+    def test_resolution_values_match_both_directions(self, repo_graph):
+        expected = set(CONTRACT_RESOLUTIONS)
+        actual = {link.resolution for link in repo_graph.links}
+        assert len(expected) > 0 and len(actual) > 0
+
+        missing_in_impl = sorted(expected - actual)
+        assert missing_in_impl == [], f"契約にあるが実装が 0 本の resolution: {missing_in_impl}"
+
+        unknown_in_impl = sorted(actual - expected)
+        assert unknown_in_impl == [], f"実装にあるが契約に無い resolution: {unknown_in_impl}"
+
+    def test_kind_values_match_both_directions(self, repo_graph):
+        expected = set(CONTRACT_KINDS)
+        actual = {node.kind for node in repo_graph.nodes}
+        assert len(expected) > 0 and len(actual) > 0
+
+        missing_in_impl = sorted(expected - actual)
+        assert missing_in_impl == [], (
+            "契約にあるが実装が 0 個の kind（現行実装は kind='dir' を一切割り当てない・"
+            f"契約 C-3 の未実装）: {missing_in_impl}"
+        )
+
+        unknown_in_impl = sorted(actual - expected)
+        assert unknown_in_impl == [], f"実装にあるが契約に無い kind: {unknown_in_impl}"
+
+
+# ===========================================================================
+# 12. AC-56: 写像表（`docs/refgraph-acceptance.md` §3）の網羅静的検査
+#
+# 分類 D（文書・ソース照合型）。`build_graph` もクエリ層関数も呼ばない・fixture を
+# 持たない。「引き受け先なし」の行が 0 行であることと、正の対照として「引き受け先
+# あり」の行が 1 行以上あることを同じテストで縛る（契約 §7 規律 4）。
+# ===========================================================================
+class TestMappingTableHasNoUnclaimedRows:
+    """AC-56: `docs/refgraph-acceptance.md` §3 写像表に「引き受け先なし」の行が 0 行なこと."""
+
+    @staticmethod
+    def _mapping_table_rows():
+        text = (REPO_ROOT / "docs" / "refgraph-acceptance.md").read_text(encoding="utf-8")
+        start = text.index("## 3. 写像表")
+        end = text.index("## 4. 受け入れ条件の条文", start)
+        section = text[start:end]
+
+        rows = []
+        for line in section.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                continue
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if not cells or set("".join(cells)) <= set("-: "):
+                continue
+            rows.append(cells)
+        # 先頭はヘッダ行
+        return rows[1:]
+
+    def test_no_row_has_an_unclaimed_assignment(self):
+        rows = self._mapping_table_rows()
+        assert len(rows) > 0, "positive control: 写像表の行が 1 行も取れていない（パーサが壊れている）"
+
+        unclaimed = [row for row in rows if not row[1] or "引き受け先なし" in row[1]]
+        assert unclaimed == [], f"写像表に「引き受け先なし」の行がある: {unclaimed}"
+
+    def test_at_least_one_row_is_claimed(self):
+        rows = self._mapping_table_rows()
+        claimed = [row for row in rows if row[1] and "引き受け先なし" not in row[1]]
+        assert len(claimed) >= 1, "positive control: 「引き受け先あり」の行が 1 行も無い"

@@ -1473,3 +1473,155 @@ class TestDriver:
         assert isinstance(data, dict)
         assert "links" in data
         assert len(data["links"]) > 0
+
+
+# ===========================================================================
+# test-ac-gaps タスク: `.claude/reports/test-report-ac-reconcile.md` の
+# 「要追加」27 件のうち、クエリ層に属する 3 件（AC-45 / AC-46 / AC-58）。
+# ===========================================================================
+class TestSettledLinksGroupKeyIsRelationSourceReference:
+    """AC-45: `settled_links` のグループキーが (relation, source, reference) であること."""
+
+    def test_two_candidates_sharing_relation_source_reference_are_excluded(self):
+        module = query()
+        links = [
+            # 同一 (relation, source, reference) で target が 2 通り → unsettled
+            _link(
+                source=".claude/docs/a.md",
+                target=".claude/x.md",
+                reference="dup",
+                resolution="ambiguous",
+                source_line=1,
+            ),
+            _link(
+                source=".claude/docs/a.md",
+                target=".claude/y.md",
+                reference="dup",
+                resolution="ambiguous",
+                source_line=1,
+            ),
+            # 同じ source_line だが reference が異なる 2 グループ、それぞれ 1 候補 → settled
+            _link(
+                source=".claude/docs/a.md",
+                target=".claude/p.md",
+                reference="refA",
+                resolution="ambiguous",
+                source_line=2,
+            ),
+            _link(
+                source=".claude/docs/a.md",
+                target=".claude/q.md",
+                reference="refB",
+                resolution="ambiguous",
+                source_line=2,
+            ),
+        ]
+
+        settled = module.settled_links(links)
+
+        settled_targets = sorted(link.target for link in settled)
+        assert settled_targets == [".claude/p.md", ".claude/q.md"], (
+            "grouping by (relation, source, reference) must settle the two single-candidate "
+            f"groups (source_line must not be part of the key); got {settled_targets}"
+        )
+        assert ".claude/x.md" not in settled_targets and ".claude/y.md" not in settled_targets, (
+            "a group with two candidates sharing (relation, source, reference) must not be settled"
+        )
+
+
+class TestQueryLayerFailLoudOnUnknownValues:
+    """AC-46: `by_relation` / `by_resolution` / `by_target_kind` が未知値で `ValueError` を上げること."""
+
+    def test_by_relation_rejects_unknown_relation_name(self):
+        module = query()
+        links = [_link(source=".claude/docs/a.md", target=".claude/x.md", relation="md_link")]
+
+        assert len(module.by_relation(links, "md_link")) == 1
+
+        with pytest.raises(ValueError):
+            module.by_relation(links, "no_such_relation")
+
+    def test_by_resolution_rejects_unknown_resolution_name(self):
+        module = query()
+        links = [_link(source=".claude/docs/a.md", target=".claude/x.md", resolution="exact")]
+
+        assert len(module.by_resolution(links, "exact")) == 1
+
+        with pytest.raises(ValueError):
+            module.by_resolution(links, "no_such_resolution")
+
+    def test_by_target_kind_rejects_unknown_kind_name(self):
+        module = query()
+        links = [_link(source=".claude/docs/a.md", target=".claude/x.md")]
+
+        assert len(module.by_target_kind(links, "file")) == 1
+
+        with pytest.raises(ValueError):
+            module.by_target_kind(links, "no_such_kind")
+
+
+class TestT5bInteractionWithSettledLinks:
+    """AC-58: T-5b 由来の 2 本組が `settled_links` で返らないこと（クエリ層への合成入力）.
+
+    T-5b 自体（`src/c3/refgraph.py`）は本タスクの Red フェーズで実装欠陥と判明した
+    （`tests/test_refgraph.py::TestT5bPrefixTruncationAddsResolvedEdges` 等・
+    `docs/refgraph-acceptance.md` AC-57）。本テストは T-5b が実際に出したはずの形
+    （同一 (relation, source, reference) を持つ複数の辺・`ambiguous` にならない題材）を
+    手組みの `Link` で用意し、クエリ層（`fold_links` → `settled_links`）がその形を
+    正しく扱うかを独立に検証する。
+    """
+
+    def test_two_edges_from_the_same_reference_are_not_settled(self):
+        module = query()
+        links = [
+            # T-5b が出したはずの形: 同一 (relation, source, reference)、target が
+            # 異なる 2 本（`resolution` は missing/exact であり ambiguous ではない）。
+            _link(
+                source=".claude/hooks/caller.md",
+                target="malicious.py",
+                relation="md_code_span_path",
+                reference=".claude/hooks/stop.py/../../../malicious.py",
+                resolution="missing",
+                source_line=3,
+            ),
+            _link(
+                source=".claude/hooks/caller.md",
+                target=".claude/hooks/stop.py",
+                relation="md_code_span_path",
+                reference=".claude/hooks/stop.py/../../../malicious.py",
+                resolution="exact",
+                source_line=3,
+            ),
+            # 正の対照: T-5b が発火しない（1 本だけの）グループは返る
+            _link(
+                source=".claude/hooks/caller.md",
+                target=".claude/hooks/other.py",
+                relation="md_code_span_path",
+                reference=".claude/hooks/other.py",
+                resolution="exact",
+                source_line=5,
+            ),
+        ]
+
+        folded = module.fold_links(links)
+        settled = module.settled_links(folded)
+
+        t5b_reference = ".claude/hooks/stop.py/../../../malicious.py"
+        settled_from_t5b_group = [link for link in settled if link.reference == t5b_reference]
+        assert settled_from_t5b_group == [], (
+            "settled_links must exclude a (relation, source, reference) group that carries "
+            "more than one target, regardless of each edge's own resolution value (contract "
+            "AC-58 追記: T-5b の 2 本は resolution が missing/exact であり ambiguous ではない "
+            "が、それでも settled から除外されるべき); the current implementation only groups "
+            "resolution == 'ambiguous' links (scripts/refgraph_query.py の明示的な設計: "
+            "「ambiguous でない辺はそのまま返す」) so both T-5b edges pass through unfiltered: "
+            f"{settled_from_t5b_group}"
+        )
+
+        # 正の対照: T-5b が発火しない 1 本だけのグループは返る
+        other_targets = {
+            link.target for link in settled if link.reference == ".claude/hooks/other.py"
+        }
+        assert other_targets == {".claude/hooks/other.py"}, (
+            f"positive control: a single-candidate reference group must be settled; got {other_targets}"
+        )
