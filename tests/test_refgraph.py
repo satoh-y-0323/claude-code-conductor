@@ -1293,3 +1293,398 @@ class TestCounterexamples:
         assert lines == {".claude/hooks/a.py": 3, ".claude/hooks/b.py": 6}, (
             f"source_line must point at the referencing line; got {lines}"
         )
+
+
+# ===========================================================================
+# トークナイザ 2 読み化 ＋ `_dedupe` 4 フィールド化（test-tokenizer タスク）
+#
+# 規則の正:
+#   - `.claude/reports/architecture-report-20260806-173941.md` §4-6（改訂 14・逐語）
+#   - `docs/refgraph-contract.md` §3（トークン境界・解決の順序）
+#   - `.dev/handoff-20260806-refgraph-design.md` §1-6（トークナイザ細部の実測）／§3（2 読み構成）
+#   - `.dev/refgraph-scratch/README.md` 末尾「既知の欠陥」
+#     （テストは設計側に合わせる: R3 =「正規化後も `*` を含み、かつ既知拡張子か `/` を持つ」／
+#      S3 = 固定点まで繰り返す）
+#
+# fixture 規律: 同じ target に解決する形を同じ source ファイルへ同居させると
+# `_dedupe`（改訂後は (relation, source, target, reference) の 4 フィールド）で
+# 潰れて恒久赤になる実測がある（handoff §2・監査 8 周目）。**同じ target を持つ形は
+# 必ず別ファイルへ分ける**（異なる target を持つ形は同居させてよい）。
+# ===========================================================================
+class TestTwoReadingTokenizer:
+    """V-37 (a)〜(e)。`*` の役割を判定せず、読み A（`*` を本体に含める）と
+    読み B（含めない・現行のトークナイズそのもの）を両方通し、和を最終出力とする。
+    """
+
+    # -- (a)(b) 単独 `*` 5 形 ＋ `**` 3 形（読み B ＝現行が既に採れる・正の対照） -------
+    #
+    # 8 形すべてが同じ target（`stop.py`）に解決するため、1 形 1 ファイルへ分ける
+    # （架構レポート §2 監査 8 周目・AC-62 (iii) が同じ罠を踏んだ）。
+    _SINGLE_AND_DOUBLE_STAR_FORMS = {
+        # (a) 単独 `*` 5 形
+        "a1_bare": "*stop.py*",
+        "a2_prefix_suffix_jp": "実装*stop.py*を読む",
+        "a3_trailing_word": "*stop.py*foo",
+        "a4_trailing_hyphen_word": "*stop.py*-bar",
+        "a5_trailing_space": "*stop.py* 次",
+        # (b) `**` 3 形
+        "b1_prefix_suffix_jp": "実装**stop.py**を読む",
+        "b2_bare": "**stop.py**",
+        "b3_trailing_word": "**stop.py**foo",
+    }
+
+    def test_single_and_double_star_forms_all_resolve_to_stop_py(self, tmp_path):
+        """V-37 (a)(b): 単独 `*` 5 形・`** ` 3 形のすべてが `stop.py` を含む.
+
+        読み B は現行のトークナイズそのもの（架構レポート §4-2 事実 1/2）なので、
+        この 8 形は**現行実装で既に緑**（回帰・正の対照）。読み A の追加で壊れないことを縛る。
+        """
+        _mkfile(tmp_path, "stop.py", "# stop\n")
+        for name, form in self._SINGLE_AND_DOUBLE_STAR_FORMS.items():
+            _mkfile(tmp_path, f"{name}.md", f"# {name}\n\n見本: `{form}`\n")
+
+        graph = refgraph.build_graph(tmp_path)
+
+        missing_forms = []
+        for name in self._SINGLE_AND_DOUBLE_STAR_FORMS:
+            src = f"{name}.md"
+            hits = _links(graph, source=src, target="stop.py")
+            if len(hits) == 0:
+                missing_forms.append(name)
+        assert missing_forms == [], (
+            f"these forms must still resolve to stop.py after the 2-reading change: {missing_forms}"
+        )
+
+    # -- (c) グロブ 4 形（読み A でしか採れない・現行は Red） -----------------------
+    def test_glob_forms_keep_the_raw_pattern_as_a_single_token(self, tmp_path):
+        """V-37 (c): グロブの原文が 1 トークンとして `missing` の辺で出ること.
+
+        現行実装は `*` を本体クラスに含めないため、これら 4 形は今 0 本（Red）。
+        `.claude/skills/*/scripts/**/*.py` は架構レポート §4-5 の検算表にある形で、
+        読み B の `.claude/skills`（R2・ディレクトリ形）と読み A の原文が両方出る
+        （改訂 12 の成果「185 → 1」が壊れていないことも合わせて縛る）。
+        """
+        glob_forms = [
+            "reports/*-{ts}.md",
+            "src/*/x.py",
+            "src/**/*.py",
+            ".claude/skills/*/scripts/**/*.py",
+        ]
+        _mkfile(
+            tmp_path,
+            "globs.md",
+            "# globs\n\n" + "\n".join(f"- `{form}`" for form in glob_forms) + "\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "globs.md"
+
+        missing_forms = []
+        for form in glob_forms:
+            hits = _links(graph, source=src, target=form)
+            if len(hits) == 0:
+                missing_forms.append(form)
+        assert missing_forms == [], (
+            f"the raw glob token must survive as a single missing-resolution edge: {missing_forms}"
+        )
+        for form in glob_forms:
+            hits = _links(graph, source=src, target=form)
+            assert hits, f"unreachable unless previous assert failed for {form!r}"
+            assert hits[0].resolution == "missing"
+            assert hits[0].target_exists is False
+
+        # 改訂 12 の成果（架構レポート §4-5 の注）: 深い形でも `.claude/skills` は R2 で残る。
+        dir_hits = _links(graph, source=src, target=".claude/skills")
+        assert len(dir_hits) >= 1, (
+            "reading B must still emit the directory-form edge for the nested glob "
+            "(this is regression coverage for the 185->1 fix, not new behaviour)"
+        )
+
+    def test_glob_forms_do_not_leak_root_external_fragments(self, tmp_path):
+        """V-37 (d): 断片非生成 3 形（`/*.py` / `/SKILL.md` / `/*.md`）が target に出ないこと.
+
+        契約 §7 規律 4 に従い、同じ fixture に正の対照（グロブ原文が 1 トークンで出る）を
+        置く。正が Red のうちは負の対照は無意味（採らずに 0 本というだけ）だが、
+        グロブ原文の捕捉が実装された後もこの負が成立し続けることを機械で縛るために
+        同居させる。
+        """
+        _mkfile(
+            tmp_path,
+            "globs.md",
+            "# globs\n\n"
+            "- `.claude/skills/*/scripts/**/*.py`\n"
+            "- `/*.md`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "globs.md"
+
+        # Positive（対照）: グロブ原文はそのまま 1 トークンとして出る。
+        positive = _links(
+            graph, source=src, target=".claude/skills/*/scripts/**/*.py"
+        )
+        assert len(positive) >= 1, "positive control: the raw glob token must be captured"
+
+        # Negative: ルート外絶対パス風の断片は 1 本も出ない。
+        fragments = _links(graph, source=src, target="/*.py")
+        fragments += _links(graph, source=src, target="/SKILL.md")
+        fragments += _links(graph, source=src, target="/*.md")
+        assert fragments == [], f"fragment targets must never be emitted: {fragments}"
+
+    # -- (e) S3 固定点 3 形（handoff §1-6 の実測どおり） ---------------------------
+    #
+    # `stop.py*.` / `stop.py*}` / `stop.py**` は**読み B だけでも** `stop.py` に
+    # 解決してしまう（架構レポート §5-1 の注: 「固定点は喪失防止としては冗長」）ため、
+    # target だけを見る検査は現行実装でも空の緑になりうる（過去に踏んだ失敗と同型）。
+    # 読み A から生まれた辺だけを `reference`（S3 正規化前の原文断片）で名指しして縛る。
+    _FIXED_POINT_FORMS = {
+        "e1_dot": "stop.py*.",
+        "e2_brace": "stop.py*}",
+        "e3_double_star": "stop.py**",
+    }
+
+    def test_s3_fixed_point_forms_normalize_to_stop_py_via_reading_a(self, tmp_path):
+        """V-37 (e): 読み A の辺が `stop.py*.` 等の原文を `reference` に持ち、
+        `target` は固定点まで正規化された `stop.py` になること.
+
+        `.dev/refgraph-scratch/README.md` の既知の欠陥（S3 が 1 回適用）だと
+        `target == "stop.py*"` の余分な辺が残る。本テストは `Link.reference`
+        （現行に存在しない・改訂 14 §4-6 で新設）を直接見るため、現行実装では
+        `AttributeError` で Red になる（フィールド未実装が理由）。
+        """
+        for name, form in self._FIXED_POINT_FORMS.items():
+            _mkfile(tmp_path, f"{name}.md", f"# {name}\n\nsee `{form}` here.\n")
+        _mkfile(tmp_path, "stop.py", "# stop\n")
+
+        graph = refgraph.build_graph(tmp_path)
+
+        for name, form in self._FIXED_POINT_FORMS.items():
+            src = f"{name}.md"
+            hits = _links(graph, source=src, target="stop.py")
+            assert len(hits) == 2, (
+                f"{name}: expected 2 edges (reading A + reading B) targeting stop.py; "
+                f"got {len(hits)}: {hits}"
+            )
+            references = {link.reference for link in hits}
+            assert references == {"stop.py", form}, (
+                f"{name}: reading A must carry the pre-normalization run {form!r} as "
+                f"reference, reading B must carry stop.py; got {references}"
+            )
+
+            # 読み A 側で `target == "stop.py*"`（固定点に達しない中間形）が
+            # 別の辺として漏れていないこと（1 回適用バグの検出）。
+            leaked = _links(graph, source=src, target="stop.py*")
+            assert leaked == [], (
+                f"{name}: a non-fixed-point intermediate target leaked through: {leaked}"
+            )
+
+
+# ===========================================================================
+# R3 受理条件単体（V-41）
+#
+# `stop.py*`（正規化後も `*` を含み、拡張子はあるが `/` は無い形）が受理されること。
+# `.dev/refgraph-scratch/README.md` の既知の欠陥は
+# `accept()` が `"*" in t and "/" in t` で実装されている（`/` を要求する）ことで、
+# これだと拡張子はあっても `/` の無い形が全部拒否される。
+#
+# R3 受理条件は実装の関数として公開されていないため（契約 §5 の公開 API に含まれない）、
+# トークン → 辺の end-to-end で同値の検査を書く（plan-report test-tokenizer の指示）。
+#
+# 題材は S3 が最終的に手を出せない（末尾に `*` 等の除去対象文字を置かない）形にして、
+# 「読み A が受理するか」だけを測る。4 形とも target 文字列が異なるので 1 ファイルに同居できる。
+# ===========================================================================
+class TestR3AcceptancePredicateWithoutSlash:
+    _NO_SLASH_WITH_EXTENSION_FORMS = {
+        "middle": "sto*p.py",
+        "prefix": "s*top.py",
+        "double_middle": "st*o*p.py",
+        "before_extension": "stop*.py",
+    }
+
+    def test_star_containing_tokens_without_slash_but_with_extension_are_accepted(
+        self, tmp_path
+    ):
+        """拡張子あり・`/` なしの 4 形が `missing` 辺として出ること（R3 述語の直接検査）.
+
+        現行実装は読み A 自体を持たないため、この 4 形は今 0 本（Red）。
+        バグ版 R3（`/` を要求する）でも同様に 0 本になるため、この Red は
+        「読み A 未実装」と「R3 が `/` を要求する既知の欠陥」の両方を同時に検出する。
+        """
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\n"
+            + "\n".join(
+                f"- {name}: `{form}`"
+                for name, form in self._NO_SLASH_WITH_EXTENSION_FORMS.items()
+            )
+            + "\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+        src = "notes.md"
+
+        missing_forms = []
+        for name, form in self._NO_SLASH_WITH_EXTENSION_FORMS.items():
+            hits = _links(graph, source=src, target=form)
+            if len(hits) == 0:
+                missing_forms.append((name, form))
+        assert missing_forms == [], (
+            f"R3 must accept extension-bearing, slash-less star tokens: {missing_forms}"
+        )
+        for name, form in self._NO_SLASH_WITH_EXTENSION_FORMS.items():
+            hits = _links(graph, source=src, target=form)
+            assert hits, f"unreachable unless previous assert failed for {name}"
+            assert hits[0].resolution == "missing"
+
+
+# ===========================================================================
+# 断片非生成（ルート外絶対パス）— 合成ツリー全体で検査（plan-report item 3）
+#
+# `TestTwoReadingTokenizer.test_glob_forms_do_not_leak_root_external_fragments` が
+# 単一ファイル・3 リテラルに絞った検査であるのに対し、本クラスは**独立した合成ツリー**で
+# edges と nodes の両方を見る（V-34: 185 件の断片は S1 の run ＋ S2 の分割が由来。
+# 改訂 14 で S2 を廃止した結果、構造的に発生しなくなったことを確認する）。
+# ===========================================================================
+class TestFragmentNonGenerationSyntheticTree:
+    def test_no_edge_or_node_id_is_a_root_external_absolute_path(self, tmp_path):
+        """ネストしたグロブ 2 形を置いても、`/` から始まる辺・ノードが 1 本も出ないこと."""
+        _mkfile(
+            tmp_path,
+            "nested_a.md",
+            "# nested a\n\n参照: `.claude/skills/*/scripts/**/*.py`\n",
+        )
+        _mkfile(
+            tmp_path,
+            "nested_b.md",
+            "# nested b\n\n参照: `src/c3/_template/**/*.py`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        # Positive（対照）: グロブ原文自体は捕捉される。
+        positive_a = _links(
+            graph, source="nested_a.md", target=".claude/skills/*/scripts/**/*.py"
+        )
+        positive_b = _links(
+            graph, source="nested_b.md", target="src/c3/_template/**/*.py"
+        )
+        assert len(positive_a) >= 1, "positive control: nested_a's raw glob must be captured"
+        assert len(positive_b) >= 1, "positive control: nested_b's raw glob must be captured"
+
+        # Negative: ルート外絶対パス形の辺・ノードが 1 本も無いこと。
+        root_external_link_targets = sorted(
+            {link.target for link in graph.links if link.target.startswith("/")}
+        )
+        assert root_external_link_targets == [], (
+            f"no link target may be a root-external absolute path fragment: "
+            f"{root_external_link_targets}"
+        )
+
+        root_external_node_ids = sorted(
+            node.id for node in graph.nodes if node.id.startswith("/")
+        )
+        assert root_external_node_ids == [], (
+            f"no node id may be a root-external absolute path fragment: {root_external_node_ids}"
+        )
+
+
+# ===========================================================================
+# `_dedupe` の 4 フィールド化（(relation, source, target, reference)）
+#
+# 現行の `_dedupe` は (relation, source, target) の 3 フィールド（`refgraph.py:937`）。
+# 改訂 14 §4-6 は `reference`（辺を生んだ読みの原文断片）を key に足す。
+# fixture は 1 形 1 ファイル（plan-report の fixture 規律）。
+# ===========================================================================
+class TestDedupeFourFields:
+    def test_same_relation_source_target_with_different_reference_both_survive(
+        self, tmp_path
+    ):
+        """同一 (relation, source, target) で `reference` が違う 2 本が両方残ること.
+
+        `.claude/hooks/stop.py*` は読み B で `.claude/hooks/stop.py`（`*` の手前で
+        止まる・現行の振る舞い）、読み A では `*` を含む run が S3 で `stop.py*` が
+        削られて同じ `.claude/hooks/stop.py` に解決する（架構レポート §9 項目 8 の
+        実測例そのもの）。3 フィールド dedupe だと 1 本に潰れる（現行は実際に 1 本）。
+        """
+        _mkfile(tmp_path, ".claude/hooks/stop.py", "# stop\n")
+        _mkfile(
+            tmp_path,
+            "notes.md",
+            "# notes\n\nsee `.claude/hooks/stop.py*` for details.\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        hits = _links(graph, source="notes.md", target=".claude/hooks/stop.py")
+        assert len(hits) == 2, (
+            f"expected reading A and reading B to both survive dedupe; got {len(hits)}: {hits}"
+        )
+
+        relations = {link.relation for link in hits}
+        sources = {link.source for link in hits}
+        assert relations == {"md_code_span_path"}, f"relation must be identical: {relations}"
+        assert sources == {"notes.md"}, f"source must be identical: {sources}"
+
+        references = {link.reference for link in hits}
+        assert references == {".claude/hooks/stop.py*", ".claude/hooks/stop.py"}, (
+            f"the two surviving edges must be distinguished by reference; got {references}"
+        )
+
+    def test_identical_reference_repeated_in_the_same_file_still_collapses_to_one(
+        self, tmp_path
+    ):
+        """同じ (relation, source, target, reference) の繰り返しは今までどおり 1 本に潰れること.
+
+        4 フィールド化が dedupe そのものを無効化していない（何でも残す実装への転落）
+        ことの負の対照。正の対照（前段のテスト）と対になる。
+        """
+        _mkfile(tmp_path, ".claude/hooks/real.py", "# real\n")
+        _mkfile(
+            tmp_path,
+            "repeats.md",
+            "# repeats\n\n"
+            "1 回目: `.claude/hooks/real.py`\n"
+            "2 回目: `.claude/hooks/real.py`\n"
+            "3 回目: `.claude/hooks/real.py`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        hits = _links(graph, source="repeats.md", target=".claude/hooks/real.py")
+        assert len(hits) == 1, (
+            f"identical (relation, source, target, reference) must still collapse to one; "
+            f"got {len(hits)}: {hits}"
+        )
+
+
+# ===========================================================================
+# 非 ASCII 境界（契約 §3「境界として許す側の列挙が本体」の回帰）
+# ===========================================================================
+class TestNonAsciiTokenBoundaryRegression:
+    def test_skill_md_is_extracted_after_japanese_punctuation(self, tmp_path):
+        """`…という表示になる。SKILL.md の引用では…` から `SKILL.md` が採れること.
+
+        契約 §3 の実測: ASCII だけの境界実装は正当な参照 39 件を落とした
+        （`。` の直後から新しいトークンを開始できなかった）。
+        現行実装は `unicodedata.category` の先頭が `P`/`Z` を区切りとして扱う
+        修正が既に入っているため、この形は**現行実装で既に緑**（回帰・正の対照）。
+        """
+        _mkfile(tmp_path, ".claude/skills/x/SKILL.md", "# x\n")
+        _mkfile(
+            tmp_path,
+            "prose.md",
+            "# prose\n\n`…という表示になる。SKILL.md の引用では…`\n",
+        )
+
+        graph = refgraph.build_graph(tmp_path)
+
+        hits = _links(
+            graph,
+            source="prose.md",
+            target=".claude/skills/x/SKILL.md",
+        )
+        assert len(hits) >= 1, (
+            "SKILL.md must be extracted as its own token right after the Japanese "
+            "punctuation '。', not silently merged into the preceding run"
+        )

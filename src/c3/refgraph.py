@@ -96,6 +96,29 @@ _PATH_TOKEN_RE = re.compile(
     r"(?![\w.])"
 )
 
+# 参照拡張子の選択肢（正規表現の組み立てに使い回す）。
+_SUFFIX_ALTERNATION = "|".join(_REFERENCE_SUFFIXES)  # nul-boundary: allow(正規表現の選択肢の組み立て。区切りは正規表現の文法で固定されており、機械可読な行集合ではない)
+
+# S1 の文字クラス（架構レポート 改訂 14 §4-6）。
+#   - 開始クラス: run を開始してよい ASCII（`*` は入れない）
+#   - 本体クラス: run の途中として認める ASCII（読み A はこれに `*` を足す）
+# 非 ASCII は句読点（P）・空白（Z）・制御（C）以外を本体文字かつ開始文字として扱う
+# （契約 §3「境界として許す側の列挙が本体」）。
+_RUN_START_ASCII = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.~$-"
+)
+_RUN_BODY_ASCII = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./{}$~+-"
+)
+
+# R1: 既知拡張子で終わる形。
+_R1_TOKEN_RE = re.compile(r".+\.(?:" + _SUFFIX_ALTERNATION + r")$")
+
+# R3 が見る「既知拡張子を含む」（末尾であることを要求しない・改訂 14 §5-2）。
+_HAS_KNOWN_SUFFIX_RE = re.compile(
+    r"\.(?:" + _SUFFIX_ALTERNATION + r")(?![A-Za-z0-9_])"
+)
+
 # md のコードスパン（改行をまたがない）。
 _CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 
@@ -199,7 +222,13 @@ class Node:
 
 @dataclass(frozen=True)
 class Link:
-    """実在する参照関係 1 本。出所（source / source_line / context）を必ず持つ."""
+    """実在する参照関係 1 本。出所（source / source_line / context）を必ず持つ.
+
+    `reference` はその辺を生んだ読みの原文断片（改訂 14 §4-6）。同じ参照先へ
+    2 つの読みから辺が出ることがあり、`reference` が異なる限り両方を残す
+    （契約 §2 原則 2「出所を残す」）。トークナイザを経由しない関係
+    （import・素の名前・テーブル名）は原文断片を持たないので空文字のままにする。
+    """
 
     relation: str
     source: str
@@ -208,6 +237,7 @@ class Link:
     target: str
     target_exists: bool
     resolution: str
+    reference: str = ""
 
 
 @dataclass(frozen=True)
@@ -247,6 +277,7 @@ class Graph:
                     "target": link.target,
                     "target_exists": link.target_exists,
                     "resolution": link.resolution,
+                    "reference": link.reference,
                 }
                 for link in self.links
             ],
@@ -298,6 +329,8 @@ def read_graph(path) -> Graph:
                 target=item["target"],
                 target_exists=item["target_exists"],
                 resolution=item["resolution"],
+                # `reference` を持たない旧スキーマの出力も読めるようにする。
+                reference=item.get("reference", ""),
             )
             for item in data["links"]
         ],
@@ -373,11 +406,113 @@ def _starts_at_boundary(text: str, index: int) -> bool:
     return unicodedata.category(previous)[0] in ("P", "Z")
 
 
+@dataclass(frozen=True)
+class _Token:
+    """切り出した参照トークン 1 件.
+
+    `reference` は S3 正規化前の run 原文（辺の出所として残す）、
+    `text` は解決に掛ける正規化後の文字列。
+    """
+
+    reference: str
+    text: str
+
+
+def _is_run_body(char: str, with_star: bool) -> bool:
+    """S1 の本体クラス判定（`with_star` が読み A / 読み B の唯一の違い）."""
+    if char == "*":
+        return with_star
+    if char.isascii():
+        return char in _RUN_BODY_ASCII
+    return unicodedata.category(char)[0] not in ("P", "Z", "C")
+
+
+def _can_start_run(text: str, index: int) -> bool:
+    """S1 の開始クラス ＋ S4 の開始位置判定（`*` は先頭に許さない）."""
+    char = text[index]
+    if char == "*":
+        return False
+    if char.isascii():
+        if char not in _RUN_START_ASCII:
+            return False
+    elif unicodedata.category(char)[0] in ("P", "Z", "C"):
+        return False
+    return _starts_at_boundary(text, index)
+
+
+def _runs(text: str, with_star: bool):
+    """1 つの読みで run を切り出す（S1）."""
+    length = len(text)
+    index = 0
+    while index < length:
+        if not _can_start_run(text, index):
+            index += 1
+            continue
+        end = index
+        while end < length and _is_run_body(text[end], with_star):
+            end += 1
+        yield text[index:end]
+        index = end
+
+
+def _normalize_run(run: str) -> str:
+    """S3 正規化。末尾の `*` / `}])>` / `.,;:` を**固定点まで**削る.
+
+    1 回だけの適用では `stop.py*.` が `stop.py*` にしかならない
+    （3 種を 1 巡しても末尾がまだ除去対象になりうる）。
+    各手順は必ず 1 文字以上短くするため、繰り返しは必ず停止する。
+    """
+    token = run
+    while True:
+        shorter = token.rstrip("*").rstrip("}])>").rstrip(".,;:")
+        if shorter == token:
+            return token
+        token = shorter
+
+
+def _accepts(token: str) -> bool:
+    """S4 の受理条件（R1 / R2 / R3・改訂 14 §4-6）.
+
+    - R1: 既知拡張子で終わる
+    - R2: `/` で終わる（ディレクトリ形）
+    - R3: 正規化後も `*` を含み、かつ既知拡張子または `/` を**含む**
+      （末尾であることは要求しない。受理を狭めると原文に書かれたトークンを
+      落とす方向になるため・契約 §2 原則 1 の非対称性）
+    """
+    if not token:
+        return False
+    if _R1_TOKEN_RE.match(token):
+        return True
+    if token.endswith("/"):
+        return True
+    if "*" in token:
+        return "/" in token or _HAS_KNOWN_SUFFIX_RE.search(token) is not None
+    return False
+
+
 def _path_tokens(text: str):
-    """境界から始まるパストークンだけを順に返す."""
-    for match in _PATH_TOKEN_RE.finditer(text):
-        if _starts_at_boundary(text, match.start()):
-            yield match
+    """2 通りの読みでパストークンを切り出す（改訂 14 §4-6）.
+
+    `*` の役割（Markdown の強調か glob か）を**判定しない**。
+    `*` を本体文字に含めない読み B（強調形を採る）と、含める読み A（glob の原文を
+    1 トークンとして残す）の両方を通し、和を返す。どちらを採るかは読む側が
+    `reference`（run 原文）で区別する（契約 §1-2 / §3 `ambiguous`）。
+    """
+    seen = set()
+    for with_star in (False, True):
+        for run in _runs(text, with_star):
+            token = _normalize_run(run)
+            if not _accepts(token):
+                continue
+            # R2（ディレクトリ形）の末尾 `/` は解決前に落とす。付けたまま渡すと
+            # `CLAUDE.md/` のような 1 成分の参照が「パス形」の枝に入り、名前索引で
+            # 出ていた候補（`ambiguous`）が消える。解決の 4 段は変えない。
+            resolvable = token.rstrip("/") or token
+            key = (run, resolvable)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield _Token(reference=run, text=resolvable)
 
 
 def _sanitize_context(line: str) -> str:
@@ -487,12 +622,36 @@ class _Collector:
         self.skipped.append(Skipped(path=node_id, reason=reason))
 
     # -- 辺の登録 --------------------------------------------------------
-    def _emit(self, relation, source, line_number, line_text, reference):
-        """パス参照 1 件を解決して辺にする（候補が複数なら 1 本ずつ出す）."""
-        for target, resolution, exists in self._resolve(reference, source):
-            self._add(relation, source, line_number, line_text, target, resolution, exists)
+    def _emit(self, relation, source, line_number, line_text, reference, token=None):
+        """パス参照 1 件を解決して辺にする（候補が複数なら 1 本ずつ出す）.
 
-    def _add(self, relation, source, line_number, line_text, target, resolution, exists):
+        `token` は解決に掛ける文字列（S3 正規化後）。省略時は `reference` をそのまま
+        使う。辺には `reference`（正規化前の原文断片）を残す。
+        """
+        resolved = reference if token is None else token
+        for target, resolution, exists in self._resolve(resolved, source):
+            self._add(
+                relation,
+                source,
+                line_number,
+                line_text,
+                target,
+                resolution,
+                exists,
+                reference,
+            )
+
+    def _add(
+        self,
+        relation,
+        source,
+        line_number,
+        line_text,
+        target,
+        resolution,
+        exists,
+        reference="",
+    ):
         if target == source:
             # 自己参照は関係として意味を持たない（自分の名前が本文に出るだけ）。
             return
@@ -505,6 +664,7 @@ class _Collector:
                 target=target,
                 target_exists=bool(exists),
                 resolution=resolution,
+                reference=reference,
             )
         )
 
@@ -531,6 +691,10 @@ class _Collector:
             # 解決できない変数を含む参照。どのファイルを指すか決められないので辺にしない。
             return []
         if "${" in token:
+            return []
+        if not token:
+            # 変数プレフィクスだけの参照（`${CLAUDE_PROJECT_DIR}/` 単独）。
+            # 残りが無いのでどのファイルも指しておらず、空の ID は出せない。
             return []
 
         if token.startswith("/") or re.match(r"^[A-Za-z]:", token):
@@ -602,8 +766,15 @@ class _Collector:
                 if line_number is None:
                     continue
                 line_text = locator.line_text(line_number)
-                for match in _path_tokens(value):
-                    self._emit(relation, source, line_number, line_text, match.group(0))
+                for token in _path_tokens(value):
+                    self._emit(
+                        relation,
+                        source,
+                        line_number,
+                        line_text,
+                        token.reference,
+                        token.text,
+                    )
 
     # -- markdown --------------------------------------------------------
     def _from_markdown(self, source: str, text: str) -> None:
@@ -619,8 +790,15 @@ class _Collector:
 
     def _md_code_spans(self, source, number, line):
         for span in _CODE_SPAN_RE.finditer(line):
-            for match in _path_tokens(span.group(1)):
-                self._emit("md_code_span_path", source, number, line, match.group(0))
+            for token in _path_tokens(span.group(1)):
+                self._emit(
+                    "md_code_span_path",
+                    source,
+                    number,
+                    line,
+                    token.reference,
+                    token.text,
+                )
 
     def _md_links(self, source, number, line):
         for match in _MD_LINK_RE.finditer(line):
@@ -644,7 +822,9 @@ class _Collector:
             token = next(_path_tokens(match.group(1)), None)
             if token is None:
                 continue
-            self._emit("md_c3_run", source, number, line, token.group(0))
+            self._emit(
+                "md_c3_run", source, number, line, token.reference, token.text
+            )
 
     def _md_table_row(self, source, number, line):
         stripped = line.strip()
@@ -926,15 +1106,17 @@ def _uses_subprocess(tree: ast.AST) -> bool:
 
 
 def _dedupe(links):
-    """同じ (relation, source, target) は最初の 1 本だけ残す.
+    """同じ (relation, source, target, reference) は最初の 1 本だけ残す.
 
     同じ名前が 1 ファイル内で何十回も出るため、そのまま出すと出所が増えるだけで
     関係の種類は増えない。最初に現れた行を代表として残す。
+    ただし `reference`（辺を生んだ読みの原文断片）が異なるものは**別の出所**なので
+    畳まない（改訂 14 §4-6 / 契約 §2 原則 2）。
     """
     seen = set()
     out = []
     for link in links:
-        key = (link.relation, link.source, link.target)
+        key = (link.relation, link.source, link.target, link.reference)
         if key in seen:
             continue
         seen.add(key)
