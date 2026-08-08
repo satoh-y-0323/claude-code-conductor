@@ -2842,7 +2842,7 @@ class TestOversizedFilesAreSkippedNotRead:
     def test_file_over_the_size_limit_is_skipped_and_its_content_not_parsed(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr(refgraph, "_MAX_TEXT_BYTES", 10, raising=False)
+        monkeypatch.setattr(refgraph, "_MAX_TEXT_BYTES", 100, raising=False)
 
         big = tmp_path / "big.md"
         big.write_text("参照: `should-not-be-read.py`\n" + ("x" * 200), encoding="utf-8")
