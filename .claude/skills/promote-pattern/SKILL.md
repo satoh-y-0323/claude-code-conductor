@@ -101,7 +101,7 @@ trust_score: {スコア}
 
 ---
 
-## Step 5: index.md に追記する
+## Step 5: `.claude/rules/promoted/index.md` に追記する
 
 **rule の場合のみ** — `.claude/rules/promoted/index.md` の `<!-- C3:PROMOTED_RULES:BEGIN -->` と `<!-- C3:PROMOTED_RULES:END -->` の間に追記:
 ```
@@ -114,7 +114,7 @@ trust_score: {スコア}
 
 ## Step 6: patterns.json を更新する
 
-**注意:** patterns.json への直接編集は patterns_guard.py hook でブロックされます。以下の順序で実行してください:
+**注意:** patterns.json への直接編集は `.claude/hooks/patterns_guard.py` hook でブロックされます。以下の順序で実行してください:
 
 1. まず `.claude/state/patterns_guard_allow.flag` を作成します（空ファイルで可）:
    - Bash: `touch .claude/state/patterns_guard_allow.flag`

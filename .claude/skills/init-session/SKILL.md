@@ -30,8 +30,8 @@ c3 run .claude/skills/init-session/scripts/session_guard.py mark
 > 順序について: setup ガード（G-2）は Step 1（前回セッション復元）より前に置く。`SETUP_NEEDED` となるのは規約未設定＝実質的に初回導入のケースであり、その場合 Step 1 で復元すべき前回セッションは通常存在しない（復元はほぼ no-op）ため、setup を先行させてもコンテキストへの実害はない。
 
 - **`SETUP_DONE`** → そのまま Step 1 へ進む。
-- **`SETUP_NEEDED`** → Skill ツールで `setup` を自動的に呼ぶ。ここでの「自動」は**ユーザーが `/setup` を打つ必要なく連鎖起動される**という意味で、`setup` 自体は言語・規約のヒアリング（AskUserQuestion 群）を行うため**ユーザー応答は必要**（規約設定をスキップ・無人実行する意味ではない）。`setup` 完了後（`coding-standards.md` と `setup_done.flag` が生成される）に Step 1 へ進む。
-  - ユーザーが `setup` のヒアリングを中断した場合、`coding-standards.md`・`setup_done.flag` のいずれも未生成なら次回の `/init-session`・`/start` で再度 `setup` が起動される（再試行可能）。
+- **`SETUP_NEEDED`** → Skill ツールで `setup` を自動的に呼ぶ。ここでの「自動」は**ユーザーが `/setup` を打つ必要なく連鎖起動される**という意味で、`setup` 自体は言語・規約のヒアリング（AskUserQuestion 群）を行うため**ユーザー応答は必要**（規約設定をスキップ・無人実行する意味ではない）。`setup` 完了後（`.claude/rules/coding-standards.md` と `setup_done.flag` が生成される）に Step 1 へ進む。
+  - ユーザーが `setup` のヒアリングを中断した場合、`.claude/rules/coding-standards.md`・`setup_done.flag` のいずれも未生成なら次回の `/init-session`・`/start` で再度 `setup` が起動される（再試行可能）。
 
 > `mark` が exit 0 以外で終了した（stdout が空で SETUP_DONE/SETUP_NEEDED いずれでもない）場合は、ディスクフル・権限エラー等の可能性がある。その場合は `SETUP_NEEDED` と同様に扱い（= `/setup` を起動するかエラーを確認してからセッションを続ける）、安全側に倒す。
 
@@ -122,7 +122,7 @@ Glob で `.claude/memory/sessions/*.tmp` を検索し、ファイル名（YYYYMM
 {promotion_candidate: true のパターン一覧。なければ「なし」}
 ```
 
-> 注: `現在地:` の値は dev-workflow SKILL.md の運用総則で 200 文字以内と定められている。ただし**この長さ規約を機械的に強制する仕組みは無い**（`restore_session.py` の `MAX_GENBA_CHARS` / `_cap_genba` は同 hook の stdout を組み立てるときだけ働くもので、本 skill が session.tmp を直接 Read する経路には関与しない。書き込み時点で長さを検証する hook も存在しない）。したがって規約に反する長大な値が実在し得る。要約・省略はせず、上記のサニタイズを施したうえでそのまま表示すること。
+> 注: `現在地:` の値は dev-workflow SKILL.md の運用総則で 200 文字以内と定められている。ただし**この長さ規約を機械的に強制する仕組みは無い**（`.claude/hooks/restore_session.py` の `MAX_GENBA_CHARS` / `_cap_genba` は同 hook の stdout を組み立てるときだけ働くもので、本 skill が session.tmp を直接 Read する経路には関与しない。書き込み時点で長さを検証する hook も存在しない）。したがって規約に反する長大な値が実在し得る。要約・省略はせず、上記のサニタイズを施したうえでそのまま表示すること。
 
 Step 1.5 で「完了している可能性のあるタスク」が検出された場合は、Step 4 の前に以下の AskUserQuestion を提示する（**`from-start` 起動時はスキップ**・G-3 参照）:
 

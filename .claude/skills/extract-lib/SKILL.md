@@ -100,7 +100,7 @@ Agent ツールで解析を実行する。以下のプロンプトを使用す�
 ## 解析対象プロジェクト
 {収集したプロジェクトパスのリスト}
 
-## プロジェクト規約（coding-standards.md / project-conventions.md より）
+## プロジェクト規約（.claude/rules/coding-standards.md / .claude/rules/project-conventions.md より）
 {Step 0 で抽出した言語・フレームワーク・命名規則・その他規約}
 
 ## 解析手順

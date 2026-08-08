@@ -147,7 +147,7 @@ AskUserQuestion で 3 択を提示する:
 
 [注 2] **デバッグ調査から** の D-0 判定: systematic-debugger が当日タイムスタンプの debug-analysis-*.md を出力するため、D-0 がそれを検出して bug-fix モードで動作する。D-1（Red tester）と D-4（Refactor）はスキップされる。
 
-**最初に必ず** 遷移先の `dev-workflow/SKILL.md` を Read してから実行する。記憶・推測で進めず、各フェーズに記述された AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
+**最初に必ず** 遷移先の `.claude/skills/dev-workflow/SKILL.md` を Read してから実行する。記憶・推測で進めず、各フェーズに記述された AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
 
 各エージェント完了後は通常の Approval Flow に従う。
 

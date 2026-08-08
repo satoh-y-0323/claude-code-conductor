@@ -50,7 +50,7 @@ tools:
 **During:**
 - ルーブリックの 3 レンズ（前提発掘 `[DC-AS-NNN]` / 曖昧さ `[DC-AM-NNN]` / 抜け漏れ `[DC-GP-NNN]`）を順に適用する
 - この段階の役割は**網羅（coverage）であり取捨選択ではない**。確信度が低い finding・Low 重要度の finding も握り潰さず report する。重要度による最終的な絞り込みは下流（ユーザー承認・層別ルーティング）に委ねる
-- 各 finding に必須付与する項目（詳細は `design-critic-rubric.md` の「Finding 必須項目」セクションを参照）:
+- 各 finding に必須付与する項目（詳細は `.claude/skills/dev-workflow/references/design-critic-rubric.md` の「Finding 必須項目」セクションを参照）:
   - **重要度**: High（このまま実装すれば確実に手戻り）/ Medium（解釈次第で手戻り）/ Low（改善余地）
   - **起因層**: `A要件` / `B設計` / `C計画`（層別ルーティングの判定キー）
   - **該当箇所**: どのレポートのどのセクションか

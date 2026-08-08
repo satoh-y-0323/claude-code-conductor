@@ -1,5 +1,5 @@
 ---
-description: 技術スタックと独自規約をヒアリングして project-setup エージェントに coding-standards.md と project-conventions.md を生成させる。プロジェクト開始時に使用する。
+description: 技術スタックと独自規約をヒアリングして project-setup エージェントに .claude/rules/coding-standards.md と .claude/rules/project-conventions.md を生成させる。プロジェクト開始時に使用する。
 ---
 
 # setup
@@ -182,7 +182,7 @@ AskUserQuestion ツール:
 ## Phase 3: project-setup エージェントの起動
 
 全ヒアリング結果を整理して Agent ツールで `project-setup` エージェントを起動する。
-agent は本 skill 配下の `templates/` と `reference.md` を Read して、`{プレースホルダ}` を置換する形で 2 ファイルを生成する。
+agent は `.claude/skills/setup/templates/` と `.claude/skills/setup/reference.md` を Read して、`{プレースホルダ}` を置換する形で 2 ファイルを生成する。
 
 プロンプト形式:
 ```
@@ -206,8 +206,8 @@ agent は本 skill 配下の `templates/` と `reference.md` を Read して、`
 - その他: {回答}
 
 ## 生成ルール
-- coding-standards.md には reference.md の言語→拡張子マッピングを {LANG_PATHS} に展開する
-- project-conventions.md には paths を付けない（git・コミット規約など横断的ルールのため常時適用）
+- .claude/rules/coding-standards.md には .claude/skills/setup/reference.md の言語→拡張子マッピングを {LANG_PATHS} に展開する
+- .claude/rules/project-conventions.md には paths を付けない（git・コミット規約など横断的ルールのため常時適用）
 - 全プレースホルダを実値に置換した完成版を Write する（プレースホルダを残さない）
 ```
 
@@ -223,7 +223,7 @@ project-setup エージェントが 2 ファイルを生成したら、Bash で 
 c3 run .claude/skills/init-session/scripts/session_guard.py setup-mark
 ```
 
-書き込みが失敗した場合は session_guard.py が例外で停止する（握り潰さない・ADR-4 整合）。フラグ未書き込みなら次回 `/init-session` 実行時に G-2 が SETUP_NEEDED を返し `/setup` が再起動されるためリカバリ可能。
+書き込みが失敗した場合は `.claude/skills/init-session/scripts/session_guard.py` が例外で停止する（握り潰さない・ADR-4 整合）。フラグ未書き込みなら次回 `/init-session` 実行時に G-2 が SETUP_NEEDED を返し `/setup` が再起動されるためリカバリ可能。
 
 その後、以下を報告する:
 

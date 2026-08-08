@@ -45,7 +45,7 @@ Glob で `.claude/rules/coding-standards.md` と `.claude/rules/project-conventi
 
 **Step 3: 標準規約の Web 検索**
 
-プロンプトに含まれるスタック情報と `reference.md` の「公式スタイルガイド参照先」をもとに以下を調査する:
+プロンプトに含まれるスタック情報と `.claude/skills/setup/reference.md` の「公式スタイルガイド参照先」をもとに以下を調査する:
 - 言語の公式スタイルガイド（PEP8、Google Style Guide、StandardJS 等）
 - フレームワークのベストプラクティス（公式ドキュメント優先）
 - セキュリティガイドライン（OWASP、CWE 等）

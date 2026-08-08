@@ -31,7 +31,7 @@ Claude Code のサブエージェントは **更にサブエージェントを s
 
 - `wt_tester` / `wt_developer` / `wt_systematic-debugger`: frontmatter に `permissionMode: bypassPermissions` を持つ並列専用バリアント
 - 本体ロジックはオリジナルの `tester` / `developer` / `systematic-debugger` と同等。差分はレポート出力のファイル名規約のみで、並列専用 agent は `test-report-{task_id}.md` / `debug-needed-{task_id}.md` / `debug-analysis-{task_id}.md` を主経路とする（タイムスタンプ形式は task_id 不在時の保険）
-- worktree 内のみで動作するため、`worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) が worktree 外への書き込みをブロックする保護下にある
+- worktree 内のみで動作するため、`.claude/hooks/worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) が worktree 外への書き込みをブロックする保護下にある
 
 直接起動経路（worktree なし）では元の agent を使い、main リポジトリでの bypass を防ぐ。
 
@@ -155,7 +155,7 @@ plan-report 承認時点で全タスク・agent・writes・prompt が確認済�
 各 Agent ツール呼び出しに以下を指定:
 
 - `subagent_type`: 上記マッピング表の値
-- `model`: **親 Claude は `model:` を指定しない**。`wt_developer` タスクは起動時に PreToolUse hook（`tier_autoapply.py`）が `[tier-routing 推奨]`（developer 基準）の推奨 Tier を `model:` へ自動適用する（機械適用・親 Claude が model: を転記する必要はない）。この推奨 Tier の SSOT は `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、kickoff の UserPromptSubmit で 1 度確定して以降 wave をまたいで安定する（`[tier-routing 推奨]` の表示テキストはその派生表示）。hook は実適用した model を `.claude/state/tier_autoapply.jsonl` に記録する（適用者=記録 SSOT）。並列 wave 内に複数の `wt_developer` が居る場合、**全 wt_developer は同一の推奨 Tier（単一 tier_selection.json.tier）で起動される。これは本 MVP の設計として明示的に許容する**（per-task complexity に応じて wt_developer ごとに tier を変える機能は本 MVP のスコープ外・フェーズ 3 以降）。推奨と異なる Tier を使いたい場合のみ `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。`wt_tester` は **test- タスク（Red）に限り機械適用対象**（`C3_TASK_ID` マーカーの `test-` プレフィックスで RED_APPLY_ROLES 注入・confirm- 等の非 test- タスクは対象外＝frontmatter 任せ）。`wt_systematic-debugger` / `code-reviewer` / `security-reviewer` は **model: 指定対象外**（frontmatter/元 agent 任せ・機械適用対象外）。fork は model 上書き不可のため対象外。
+- `model`: **親 Claude は `model:` を指定しない**。`wt_developer` タスクは起動時に PreToolUse hook（`.claude/hooks/tier_autoapply.py`）が `[tier-routing 推奨]`（developer 基準）の推奨 Tier を `model:` へ自動適用する（機械適用・親 Claude が model: を転記する必要はない）。この推奨 Tier の SSOT は `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、kickoff の UserPromptSubmit で 1 度確定して以降 wave をまたいで安定する（`[tier-routing 推奨]` の表示テキストはその派生表示）。hook は実適用した model を `.claude/state/tier_autoapply.jsonl` に記録する（適用者=記録 SSOT）。並列 wave 内に複数の `wt_developer` が居る場合、**全 wt_developer は同一の推奨 Tier（単一 tier_selection.json.tier）で起動される。これは本 MVP の設計として明示的に許容する**（per-task complexity に応じて wt_developer ごとに tier を変える機能は本 MVP のスコープ外・フェーズ 3 以降）。推奨と異なる Tier を使いたい場合のみ `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。`wt_tester` は **test- タスク（Red）に限り機械適用対象**（`C3_TASK_ID` マーカーの `test-` プレフィックスで RED_APPLY_ROLES 注入・confirm- 等の非 test- タスクは対象外＝frontmatter 任せ）。`wt_systematic-debugger` / `code-reviewer` / `security-reviewer` は **model: 指定対象外**（frontmatter/元 agent 任せ・機械適用対象外）。fork は model 上書き不可のため対象外。
 - `isolation`: **`read_only: false` タスクのみ `"worktree"` を指定する。ただし `writes` が全て gitignored ファイル（実質 `.claude/reports/` のレポートのみ）のタスク（confirm- 系が典型）は git 的に「未変更」の worktree となるため Agent 完了時に auto-cleanup され、親が取り込む前に成果物が消失する（2026-07-26 実測）ため、worktree を使わず `isolation` を省略して main 直接経路・素の agent（読み替え: `wt_tester`→`tester` 等）で起動する。`read_only: true`（code-reviewer / security-reviewer）はソースを変更しないため worktree 不要。`isolation` を省略して main リポジトリで直接実行し、レポートを main の `.claude/reports/` に直接書かせる。**
   > **R5 hook による機械強制**: 上記ルールに違反して `read_only: true` のレビュータスクに `isolation: "worktree"` を指定した場合、`.claude/hooks/check_agent_invocation.py`（PreToolUse Agent hook）が exit 2 でブロックする。詳細は `.claude/skills/dev-workflow/references/plan-design-guidelines.md` R5 参照。
 - `run_in_background`: `true`
@@ -172,7 +172,7 @@ plan-report 承認時点で全タスク・agent・writes・prompt が確認済�
     - **不均質 wave ではマーカー注入が必須**: escape hatch として一部タスクに `model:` を明示し wave 内で tier が不均質になる場合、マーカー欠落で優先2b に落ちると 2b は task を無視して session+role 最新の 1 行を拾うため、**別タスクの tier を誤帰属しうる**。均質 wave では顕在化しないが、`model:` 明示混在の**不均質 wave ではマーカー欠落＝誤帰属リスクのためマーカー注入を必須**とする。
   - **`read_only: false` タスクのみ: マーカー行の次（2 行目以降・タスク本文の前）に `PO_WORKTREE_GUARD=1` を export する Bash 1 行を必須で含める** [SR-V-002]:
     ```
-    Bash でまず以下を実行: `export PO_WORKTREE_GUARD=1`（worktree_guard.py PreToolUse が worktree 外書き込みをブロックする条件）
+    Bash でまず以下を実行: `export PO_WORKTREE_GUARD=1`（`.claude/hooks/worktree_guard.py` PreToolUse が worktree 外書き込みをブロックする条件）
     ```
     worktree_guard.py はこの env 未設定時 `sys.exit(0)` で完全無効化されるため、wt_* agent 起動プロンプトで（マーカー行の直後・書き込み発生より前に）必ず設定すること。マーカーを 1 行目に移したのは `\A` 抽出との整合のためで、`worktree_guard.py` は env 変数のみを消費しプロンプト内の位置に依存しないため export 指示を 2 行目に置いても保護は不変（SR-V-002 の意図＝書き込み前に export、は順序非依存）。
   - タスクの `prompt` 本文
@@ -249,7 +249,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
   --task {task_id}   # ← test-* の task_id（2-C の C3_TASK_ID マーカーと完全一致）
 
-# tester→tester・confirm- タスクの失敗（gitignored-only writes ルール（plan-design-guidelines.md ルール 14・2-C の isolation 項参照）により main 直接経路で起動・gate は 2-E のまま・frontmatter 解決）
+# tester→tester・confirm- タスクの失敗（gitignored-only writes ルール（.claude/skills/dev-workflow/references/plan-design-guidelines.md ルール 14・2-C の isolation 項参照）により main 直接経路で起動・gate は 2-E のまま・frontmatter 解決）
 c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
   --role tester --outcome failure --gate 2-E \
   --execution subagent --complexity {セッションファイルの tier-routing複雑度: 行の値} \
@@ -330,7 +330,7 @@ git branch -D worktree-agent-{id}
 #### 2-F-4: セッション記録
 
 - `- [ ] Wave {N}` を `- [x] Wave {N}` に Edit
-- `現在地:` を以下のルールで Edit（`dev-workflow/SKILL.md` の「セッションファイル運用総則」参照）:
+- `現在地:` を以下のルールで Edit（`.claude/skills/dev-workflow/SKILL.md` の「セッションファイル運用総則」参照）:
   - Wave N 成功時: `現在地: Wave {N} 完了 / 次: Wave {N+1}`
   - 最終 Wave 完了時: `現在地: 完了`（レビューへ遷移する場合は `現在地: フェーズE レビュー中`）
   - Wave をスキップした時: `現在地: Wave {N} skipped / 次: Wave {N+1}`

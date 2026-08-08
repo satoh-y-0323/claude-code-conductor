@@ -41,7 +41,7 @@ requirements-report・architecture-report・各種レビューレポートを統
 **During:**
 - レビュー指摘がある場合は優先度を付けて反映する
 - タスクは「1タスク = 1コミット」の粒度を意識して分解する
-- `plan-design-guidelines.md` のルール 1〜15 と R2〜R6 を遵守する（適用射程は同ファイル冒頭の分類表に従う。`"sequential"` プランでは並列前提ルールを適用しない）
+- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` のルール 1〜15 と R2〜R6 を遵守する（適用射程は同ファイル冒頭の分類表に従う。`"sequential"` プランでは並列前提ルールを適用しない）
 
 **After:**
 - Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/plan-report-{timestamp}.md` に出力する

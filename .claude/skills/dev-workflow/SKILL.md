@@ -22,7 +22,7 @@ user-invocable: false
 
 `現在地:` に書くのは「**今どのフェーズにいるか**」と「**次にどこへ向かうか**」の 2 点だけとし、値は **200 文字以内**に収めること（`.claude/hooks/restore_session.py` の `MAX_GENBA_CHARS = 200` に対応する）。経緯・確定事項・コミットハッシュ・再開手順などは `現在地:` に書かず、`## 残タスク` / `## うまくいったアプローチ` / `## 試みたが失敗したアプローチ` へ振り分けること。
 
-> **なぜ 200 文字なのか（美観の問題ではない）**: `現在地:` の値は `SessionStart:compact` hook（`restore_session.py`）が圧縮後に再注入する出力の中で、**fail-loud マーカーより前方**に置かれる。ハーネスは hook の stdout を 10,000 文字で cap する（設定変更不可）ため、`現在地:` が肥大するとマーカーが 10,000 文字境界の外へ押し出され、**切り詰めに気付けないまま復元されたつもりになる**。
+> **なぜ 200 文字なのか（美観の問題ではない）**: `現在地:` の値は `SessionStart:compact` hook（`.claude/hooks/restore_session.py`）が圧縮後に再注入する出力の中で、**fail-loud マーカーより前方**に置かれる。ハーネスは hook の stdout を 10,000 文字で cap する（設定変更不可）ため、`現在地:` が肥大するとマーカーが 10,000 文字境界の外へ押し出され、**切り詰めに気付けないまま復元されたつもりになる**。
 >
 > 200 文字を超えた値は `_cap_genba` が先頭 200 文字へ切り詰め、末尾に `…[現在地は全 N 文字中 先頭 200 文字のみ表示。全文は {セッションファイルのパス} を Read]` を付けて知らせるため、気付けないまま失う事故そのものは防がれる。ただし**切り詰められた内容は復元に載らない**。長い記述は上記の各セクションへ書くこと。
 
@@ -47,7 +47,7 @@ session.tmp の `モード:` 行を確認する。**有効な自律宣言**（§
 
 ## tier-routing 結果記録の運用
 
-各フェーズの承認ゲート・タスク単位で `record_agent_outcome.py` を呼び、role 別に実際に使われた tier の成功/失敗を記録する（architecture-report-20260702-214748.md §3-4）。全記録ブロック共通のルール:
+各フェーズの承認ゲート・タスク単位で `.claude/skills/dev-workflow/scripts/record_agent_outcome.py` を呼び、role 別に実際に使われた tier の成功/失敗を記録する（architecture-report-20260702-214748.md §3-4）。全記録ブロック共通のルール:
 
 - `--complexity` は必須。値は**ワークフロー開始時に UserPromptSubmit hook が表示した `[tier-routing 推奨]` 表示の複雑度**（simple/medium/complex）で、フェーズ A 冒頭でセッションファイルへ `tier-routing複雑度:` 行として 1 度だけ永続化する（本ワークフロー中に再判定しない）。以降の各ブロックの `{セッションファイルの tier-routing複雑度: 行の値}` はこの永続化された値を参照するプレースホルダ（`現在地:` フィールドと同じ、compaction・長時間セッション耐性のための設計）
 - `--execution` は必須。interviewer/architect/planner を**親 Claude ペルソナ**で採用した場合は `persona`（bandit 更新なし・イベントログのみ）、**Agent ツールでサブエージェント起動した場合は `subagent`**（bandit 更新あり）を渡す。developer/tester は dev-workflow では常に `subagent`
@@ -58,7 +58,7 @@ session.tmp の `モード:` 行を確認する。**有効な自律宣言**（§
 
 **機械適用（推奨 Tier の `model:` 自動注入・ADR-AS-1・フェーズ3）:**
 
-- developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）では、PreToolUse hook（`tier_autoapply.py`）が `[tier-routing 推奨]` の推奨 Tier を Agent 呼び出しの `model:` に自動適用する（機械適用・学習データ収集中の期間も含め常に適用する。親 Claude が `model:` を転記する必要はない。fork は model 上書き不可のため対象外）。推奨と異なる Tier を使いたい場合のみ Agent 呼び出しで `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。**tester は Red 起動（D-1 のマーカー付き `test-` タスク）のみ機械適用対象**（RED_APPLY_ROLES・Red 限定注入）で、D-3/D-5 等の非 Red 起動と systematic-debugger は対象外＝従来どおり frontmatter 任せとする。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
+- developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）では、PreToolUse hook（`.claude/hooks/tier_autoapply.py`）が `[tier-routing 推奨]` の推奨 Tier を Agent 呼び出しの `model:` に自動適用する（機械適用・学習データ収集中の期間も含め常に適用する。親 Claude が `model:` を転記する必要はない。fork は model 上書き不可のため対象外）。推奨と異なる Tier を使いたい場合のみ Agent 呼び出しで `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。**tester は Red 起動（D-1 のマーカー付き `test-` タスク）のみ機械適用対象**（RED_APPLY_ROLES・Red 限定注入）で、D-3/D-5 等の非 Red 起動と systematic-debugger は対象外＝従来どおり frontmatter 任せとする。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
 - **opus 固定不変則（ADR-6）**: 機械適用（`model:` 自動注入）の対象に追加してよいのは frontmatter が `model: sonnet` の role（developer / wt_developer / tester / wt_tester）のみで、opus 5 体（architect / planner / design-critic / doc-writer / project-setup）は恒久的に注入対象外とする（強 model 固定の設計判断・機械検査で保護）。
 - **推奨 Tier の SSOT**: 「推奨 Tier」の唯一のソースは `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、`[tier-routing 推奨]` の additionalContext テキストはその値を人間可読に射影した派生表示で SSOT ではない。この値は kickoff プロンプトの UserPromptSubmit で select_tier が 1 度だけ書き、E-2 の `--final` で削除されるまで wave/ゲートをまたいで安定する（承認応答は UserPromptSubmit を発火しないため途中で上書きされない）。
 - developer の record ブロックは**`--tier` を付けない**（tier_autoapply.py が実適用 model を `.claude/state/tier_autoapply.jsonl` に記録し、record_agent_outcome.py が applied-state を session_id 一致で読んで実適用 tier を機械解決する＝適用者=記録 SSOT。tier 値の LLM 申告を行わない。明示指定で推奨と異なる Tier を使った場合も、その実適用値が applied-state に記録されるため `--tier` の付与は不要）。
@@ -90,7 +90,7 @@ session.tmp の `モード:` 行を確認する。**有効な自律宣言**（§
 - **停止条件**: 床 5 観点が十分 / 質問総数 **上限 6 問** 到達 / ユーザーが「もう十分」。床充足なら即停止する。
 - requirements-report 生成前に **self-check**: 5 観点に確定内容があるか点検し、空欄は推測で埋めず「未確定事項」として明示する。
 
-詳細手順・予測可能性の担保根拠は `references/interview-rubric.md` を参照。
+詳細手順・予測可能性の担保根拠は `.claude/skills/dev-workflow/references/interview-rubric.md` を参照。
 
 ### A-4: requirements-report の生成と承認
 
@@ -157,7 +157,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 - **停止条件**: 床 4 観点が十分 / 質問総数 **上限 4 問** 到達 / ユーザーが「もう十分」。床充足なら即停止する。
 - architecture-report 生成前に **self-check**: 4 観点に確定内容があるか点検し、空欄は推測で埋めず「未確定事項」として明示する。
 
-詳細手順は `references/design-rubric.md` を参照。
+詳細手順は `.claude/skills/dev-workflow/references/design-rubric.md` を参照。
 
 ### B-3: architecture-report の生成と承認
 
@@ -396,7 +396,7 @@ Agent ツールで `design-critic` を起動する。
 - `subagent_type: "design-critic"`（固有名を明示。`'claude'` や省略は禁止）
 - `isolation: worktree` は使わない（read-only・並列なし）
 - プロンプトには以下の起動指示のみを含める（レポートの内容は agent 側で Glob・Read させる [SR-AI-001]）:
-  - 「`design-critic-rubric.md` を Read し、requirements / architecture / plan の各最新レポートを Glob で取得して 3 レンズで監査せよ」
+  - 「`.claude/skills/dev-workflow/references/design-critic-rubric.md` を Read し、requirements / architecture / plan の各最新レポートを Glob で取得して 3 レンズで監査せよ」
 
 design-critic は `.claude/reports/design-review-report-YYYYMMDD-HHMMSS.md` を Write して終了する。
 
@@ -1054,7 +1054,7 @@ AskUserQuestion で許容理由を確認する:
 }
 ```
 1. 全指摘の直下に `> **[許容]** {理由}` を Edit で追記する（検出記録は削除しない）
-2. **review-hint 判断記録**: `[CR-NEW]` 含む全指摘を `record_review_decision.py --decision accepted --severity {レポートの重要度を小文字で（high/medium/low）}` で記録する
+2. **review-hint 判断記録**: `[CR-NEW]` 含む全指摘を `.claude/skills/dev-workflow/scripts/record_review_decision.py --decision accepted --severity {レポートの重要度を小文字で（high/medium/low）}` で記録する
 3. セッションファイルの `## うまくいったアプローチ` に `[許容例外] {指摘内容} → {許容理由}` の形式で追記し `patterns` に記録する
 4. セッションファイルの `- [ ] code-review` を `- [x]` に Edit し、`現在地:` を `現在地: フェーズE レビュー中 / 次: security-review` に Edit して E-2 へ。
 5. **tier-routing 結果記録**:

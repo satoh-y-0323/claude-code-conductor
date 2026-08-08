@@ -19,7 +19,7 @@ disable-model-invocation: true
 
 現在、登録されているパターンはありません。
 セッション内で発見したパターンは session ファイルの JSON ブロックに記録され、
-セッション終了時に stop.py が patterns.json へ統合します。
+セッション終了時に .claude/hooks/stop.py が patterns.json へ統合します。
 ```
 
 ---
@@ -99,5 +99,5 @@ disable-model-invocation: true
 ## 注意事項
 
 - patterns.json を **絶対に変更しない**。読み取り専用のコマンドである
-- ファイルの修正・パターンの追加削除は `/promote-pattern` または `stop.py` の担当
+- ファイルの修正・パターンの追加削除は `/promote-pattern` または `.claude/hooks/stop.py` の担当
 - 経過日数は `registered_date` (YYYYMMDD) と今日の日付から計算する

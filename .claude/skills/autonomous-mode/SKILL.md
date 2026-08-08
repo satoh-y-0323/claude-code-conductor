@@ -97,7 +97,7 @@ E-0 起因の差し戻しは E 周回として 1 消費する（CR/SR セット�
 | サイクルの状態 | 分岐 |
 |---|---|
 | High/Medium が 1 件以上 | 従来どおり「全て対応する」を選ぶ（Low も含めて `[対応予定]`）。層別ルーティングで上流へ戻る＝未収束 |
-| High/Medium 0・Low が 1 件以上（＝収束） | 残る Low を「全て許容して進む」で処理する。許容理由は「C-3 収束条件（High/Medium 0）を満たしたため、残る Low は実装フェーズ以降で扱う」と記録し、`record_review_decision.py --decision accepted` で残す。フェーズ D へ進む |
+| High/Medium 0・Low が 1 件以上（＝収束） | 残る Low を「全て許容して進む」で処理する。許容理由は「C-3 収束条件（High/Medium 0）を満たしたため、残る Low は実装フェーズ以降で扱う」と記録し、`.claude/skills/dev-workflow/scripts/record_review_decision.py --decision accepted` で残す。フェーズ D へ進む |
 | findings 0 | そのままフェーズ D へ |
 
 **cycles_used の定義**: E は**周回数**。CR∥SR 並列 1 セット＋修正＝1 サイクル。
@@ -134,7 +134,7 @@ E findings の修正も「C 差し戻し → D-2 developer」の正規ルート�
    および**既存レポートへの findings マーク**（`[対応予定]` / `[許容]` の追記）。
    **担当エージェントが生成するレポートの本文 Write は含まない**
    （test-report ＝ tester ／ code-review-report ＝ code-reviewer ／ security-review-report ＝ security-reviewer ／ design-review-report ＝ design-critic）
-2. 記録スクリプトの実行（`record_agent_outcome.py` / `record_review_decision.py` / `review_hint_inject.py`）
+2. 記録スクリプトの実行（`.claude/skills/dev-workflow/scripts/` の `record_agent_outcome.py` / `record_review_decision.py` / `review_hint_inject.py`）
 3. E-0（実行検証判定）のスクリプト実行と判定行の記録（`.claude/skills/dev-workflow/scripts/detect_execution_verification.py` 呼び出し、
    セッションファイルへの `E-0判定: {TOKEN} {件数} plan-report-{ts}` 行の追記）
 4. `.claude/memory/sessions/*.tmp`（セッションファイル）の更新
@@ -176,7 +176,7 @@ E findings の修正も「C 差し戻し → D-2 developer」の正規ルート�
 | opt-in（プランモードで**資源同意節を含む委任プラン**を承認） | `現在地:` 直後にモード行を Edit 挿入する。具体形は `モード: 自律 plan=<絶対パス> cycles=C-3/0,E/0`（`plan=` は絶対パス／`~/.claude/plans/` 形）。**cycles= の発効時点は opt-in 時・初期値は両ゲートとも 0** | 親 Claude |
 | セッション交代・コンパクト後 | init-session が `モード:` 行を Read → 有効なら本 skill を Read して運転継続 | init-session |
 | 収束 or 打ち切り（フェーズ E 完了 / 上限到達で人へ報告） | `モード:` 行を削除（＝HITL 復帰）。cycles トークンも同時に消える | 親 Claude |
-| 日付跨ぎ（新セッションファイル生成） | `_inherit_backlog` は `モード:` を運ばない → 自動的に HITL 既定 | stop.py（既存・変更なし） |
+| 日付跨ぎ（新セッションファイル生成） | `_inherit_backlog` は `モード:` を運ばない → 自動的に HITL 既定 | `.claude/hooks/stop.py`（既存・変更なし） |
 
 #### モード行挿入の前提条件（不変則）
 
@@ -188,7 +188,7 @@ E findings の修正も「C 差し戻し → D-2 developer」の正規ルート�
   判定を通る形のモード行が承認なしに書かれると自律運転が成立してしまう。
   R1 で走行中の usage 停止を全廃した結果、この場合に**コミット直前まで人間が一度も介在しない**状態まで露出が広がった
 - **限界**: これは文書上の不変則であり**機械的強制ではない**。
-  有効性判定への組み込みは `mode_line.py` の変更を要し、今回の不変条件（コード変更なし）に反するため採らない。
+  有効性判定への組み込みは `.claude/skills/autonomous-mode/scripts/mode_line.py` の変更を要し、今回の不変条件（コード変更なし）に反するため採らない。
   機械的な承認バインドは配布切替タスクまたは独立タスクで扱う
 
 **設計判断**: 日付跨ぎで自律が自動継続しないのは「揮発耐性」と一見矛盾するが、

@@ -1,12 +1,12 @@
 # Setup Skill 参照表
 
-`project-setup` agent が `coding-standards-template.md` のプレースホルダを埋めるときに使う参照データ。
+`project-setup` agent が `.claude/skills/setup/templates/coding-standards-template.md` のプレースホルダを埋めるときに使う参照データ。
 
 ---
 
 ## 言語 → ファイル拡張子 glob マッピング
 
-`coding-standards.md` の `paths` フロントマターに使う glob パターンの参照表。
+`.claude/rules/coding-standards.md` の `paths` フロントマターに使う glob パターンの参照表。
 複数言語の場合は全行を結合する。
 
 | 言語 | `paths` glob 行 |
