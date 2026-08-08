@@ -1966,7 +1966,7 @@ class TestGlobMatchesRedosRegression:
     """SR-NEW M-1: `glob_matches` の連続する `*` によるバックトラッキング爆発の回帰ガード.
 
     契約 §5-1 完成条件 5 の対象外（性能特性の回帰ガードであり、絞り込み結果を
-    identity スタブと比較する検査ではない）。`_component_matcher` が `*` の連続数
+    identity スタブと比較する検査ではない）。`_component_matches` が `*` の連続数
     ぶん `[^/]*` を連結する現行実装のままだと、非マッチ入力に対して指数時間で
     バックトラックする（security-review 実測: n=9 で 4.19 秒・n=10 で 15 秒超）。
     別プロセスで評価し `timeout=2` で確認する（`ValueError` は期待しない）。
@@ -2011,7 +2011,7 @@ class TestGlobMatchesRedosRegression:
 
 
 class TestGlobMatchesRedosVariantFormWithNonConsecutiveStars:
-    """SR-NEW M-1': `_component_matcher` の ReDoS 変異形（非連続の複数 `*` + 反復リテラル）
+    """SR-NEW M-1': `_component_matches` の ReDoS 変異形（非連続の複数 `*` + 反復リテラル）
     の回帰ガード。周回 1 の M-1（連続 `*`）は修正済みだが、本変異形は未対策。
 
     実測パターン（SR での確認）: `("*a" * n) + "ZZZ"` に対して非マッチ入力
