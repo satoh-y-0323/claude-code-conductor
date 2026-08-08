@@ -74,7 +74,6 @@ exclude = [
     ".claude/tmp/*",
     ".claude/docs/decisions.md",
     ".claude/docs/taxonomy.md",
-    ".claude/docs/game-studios-research.md",
 ]
 
 [tool.pytest.ini_options]

@@ -41,7 +41,7 @@ def test_excludes_personal_files():
     assert should_skip("tmp/scratch.txt")
     assert should_skip("docs/decisions.md")
     assert should_skip("docs/taxonomy.md")
-    assert should_skip("docs/game-studios-research.md")
+    assert should_skip("docs/c3追加予定機能リスト.md")
     assert should_skip("settings.local.json")
 
 

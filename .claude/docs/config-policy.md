@@ -435,7 +435,6 @@ Claude Code 側で `deny` 判定が出た後に発火するため、`permission_
 | 設定キー仕様 | `.claude/docs/settings.json.md` | settings.json の各キー詳細仕様 |
 | ディレクトリ命名 | `.claude/docs/taxonomy.md` | ディレクトリの命名・役割・配置判断 |
 | プラットフォーム別 | `.claude/docs/platform-adapters.md` | Codex / Cursor adapter の生成物と参照経路 |
-| 背景・設計判断 | `.claude/docs/C3のconfig_policyとversion_upgradeの考慮点と超えるべき壁.md` | 本ドキュメント作成の背景・version upgrade の残課題 |
 
 ### 実装ファイル
 
