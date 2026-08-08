@@ -570,7 +570,7 @@ src/c3/_template/.claude/skills/dev-workflow/SKILL.md
 | 関数レベルの死にコード検出 | 本契約の対象外。`src/c3/` 内部の呼び出しグラフは graphify が正確（pivot §8 実測）で、dev ツールとして外から使えば足りる |
 | `confidence` スコア | v1 では `resolution` の 4 値で代替する |
 | driver `--graph` / `--build` に任意パスを渡せること | **許容**。実行ユーザー自身が指定する引数であり、権限昇格・サンドボックス越境は起きない（同一ユーザー権限内の操作）。ローカル単発実行の dev ツールとして許容範囲内（SR L-3・2026-08-08 確認） |
-| `_process` の symlink 判定・サイズ上限判定と `read_text()` の間の narrow な TOCTOU（check-then-act） | **許容**。悪用には走査プロセスと競合するタイミングでの書き込み権限が要り、ローカル単発実行・非並行アクセスという脅威モデルの外。Windows には `O_NOFOLLOW` 相当の一貫した API が無く、クロスプラットフォームな恒久対処のコストが見合わない（SR L-1'・2026-08-08 確認） |
+| 走査時の check-then-act 全般に生じる narrow な TOCTOU（`_process` の symlink 判定・サイズ上限判定と `read_text()` の間、および `_walk` / `_is_link` のリンク判定と `dirnames` pruning の間を含む） | **許容**。悪用には走査プロセスと競合するタイミングでの書き込み権限が要り、ローカル単発実行・非並行アクセスという脅威モデルの外。Windows には `O_NOFOLLOW` 相当の一貫した API が無く、クロスプラットフォームな恒久対処のコストが見合わない（SR L-1' / L-2'・2026-08-08 確認） |
 
 ---
 
