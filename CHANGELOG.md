@@ -1,5 +1,118 @@
 # Changelog
 
+## [2.62.0] - 2026-08-09
+
+### 追加
+
+- **参照抽出器 `src/c3/refgraph.py` を新設した**。「このファイルは誰が参照しているか」を
+  機械的に出す道具で、資産の削除可否を判断するときの安全網として使う。判定基準を
+  「参照が 0 件」ではなく **「発火しうる経路が無い」** に置く（`wt_systematic-debugger` を
+  「起動元なし」と誤判定して削除可としかけた事故の再発防止）
+  - 契約は `docs/refgraph-contract.md`。**抽出と判定を分離**し、抽出段階では
+    ファイル種別・出所によるフィルタを一切かけない（原則 1「落とさない・採り漏らしは気づけない」）。
+    種別が決めるのは「どの経路を当てるか」だけ
+  - relation は 19 種。`settings_hook` / `settings_statusline` / `settings_permission` /
+    `md_code_span_path` / `md_link` / `md_c3_run` / `md_agent_variant_map` /
+    `md_subagent_type` / `md_bare_agent_name` / `md_bare_skill_name` / `py_import` /
+    `py_importlib` / `py_subprocess_path` / `py_sql_table` / `md_prose_path` /
+    `md_fence_path` / `py_string` / `py_comment` / `text_path`
+  - **Python の文字列リテラルによるパス参照（`py_string`）を拾えるようにした**のが中核の是正。
+    従来は `src/c3/_excludes.py` が `agents/tdd-develop.md` を参照していることすら見えず、
+    削除判定の中心（誰が参照しているか）に答えられなかった
+  - 読めないファイルは `skipped`（`Symlink` / `TooLarge` 等の理由つき）で呼び出し側へ見せる
+    （fail-closed）。ディレクトリのリンクは走査せず枝を刈る。Windows の junction は
+    `Path.is_symlink()` が False を返し管理者権限なしで作れるため、
+    `FILE_ATTRIBUTE_REPARSE_POINT` との和で判定する
+- **クエリ層 `scripts/refgraph_query.py` を追加した**（配布外の dev ツール）。網羅的に採った関係を
+  読む側が絞るための道具で、絞り方が使い捨てスクリプトへ散らばって再現できなくなるのを防ぐ
+  - 軸 1: 出所のカテゴリで外す（`live` / `history` / `derived` / `dev` / `tests` / `generated`）
+  - 軸 2: 派生の参照先を原本へ畳む（`src/c3/_template/` 接頭辞の除去）。`resolution` は
+    「抽出器がどう解決したか」の記録なので書き換えない
+  - `--build <root>` でグラフを生成し、`--target <path>` で live に絞った逆引きを JSON 出力する
+  - **判定を配布物に置かない**（契約 §1-2）ため `scripts/` に置いた。公開 CLI の拡大は
+    契約 §8 で未決のまま保つ（`src/c3/` への昇格は容易だが、公開 CLI の縮小は外部契約の変更になる）
+- **`c3.db` 接続の公開 API を追加した**（ADR-9）。`db.py` に公開 `connect()` context manager と
+  `apply_busy_timeout` を additive 追加し、`PRAGMA busy_timeout` の `int()` キャストを 1 箇所へ閉じ込めた。
+  private 名は別名として維持したため既存 17 箇所の呼び出しは 1 行も変更していない
+  - 背景: 接続の定型が 22 箇所に散り、`db.py` 外の 4 箇所が手写しで、そのうち 1 箇所が
+    PRAGMA インジェクション防御の `int()` キャストを落としていた。複製の再発は静的検査で禁じる
+- **`review_decisions` に解決状態を追加した**（migration 007・配布物）。`resolution` /
+  `resolution_note` / `resolution_commit` の 3 列を additive 追加する。既存行は NULL のまま保持され
+  後方互換を保ち、SessionStart hook が自動適用するため利用先の移行手順は不要
+  - 背景: 負債台帳に「解決済み」を表す状態が無く、他の作業のついでに直った負債も `accepted` の
+    まま残り続けていた。サンプル 9 件を実コードと突き合わせた結果 6 件が既に解決済みで、
+    台帳の件数は生きた負債の量を大幅に過大評価していた
+  - 台帳検証ツール `scripts/audit_review_decisions.py` を新設した
+- **レビュー指摘 → 修正計画の方向検算（ルール 15）を追加した**
+  （`.claude/skills/dev-workflow/references/plan-design-guidelines.md`）。CR / SR / design-critic の
+  finding をタスクへ翻訳するとき、「推奨 / 本計画の指示 / 同方向か」を並置した表を plan-report 本文へ
+  含めることを規約化した。適用主体は planner に限定し、Critical/High/Medium を必須・Low を任意とする
+  - 背景: SR の推奨と**逆方向**に翻訳した指示が developer・tester・code-reviewer の 3 者を素通りして
+    配布物に入った実績がある（再発 2 回目）。毎回書いていた対応表は「触ったか」しか示さず
+    「方向が合っているか」を示さなかった
+  - 同方向列の値語彙は方向軸で閉じた 3 値（`✓` / 方式変更 / 逆方向）とし、**逆方向を方式変更として
+    記録することを禁じた**（2 値のままだと逆方向が「方式変更＋理由 1 行」で合法的に通過する）
+- **フェーズ D-5 承認後・フェーズ E 遷移前にコミット提案を追加した**（`dev-workflow/SKILL.md`）。
+  フェーズ E は指摘の是正で作業ツリーを改変するため、D の成果を未コミットのまま E に入ると
+  周回中の一時改変の後始末で復元不能に失われる（実装 5 時間分を全損した実績がある）
+
+### 変更
+
+- **`.claude/CLAUDE.md` の冒頭を、機構の説明から C3 のポジショニングへ書き換えた**。
+  「業務アプリケーション開発で製品としての品質を保証するための開発フレームワーク」であり、
+  複数エージェントのオーケストレーションと HITL 承認はその手段である、と明記した。
+  あわせて **品質保証の判断基準**（セキュリティ Low の許容条件 / 機能欠陥は通さない /
+  保守性は必須要件）と **設計思想**（規約は効く場所に置く / 安全境界・品質保証の実体・
+  プロセス契約は簡略化しない / レビューチェックリストは差し替え可能な SSOT）を追加した
+  - 背景: 過去に「実態から見てこのレビュー体制は過剰では」という誤評価が出た際、その再発防止の
+    記述が配布されない開発メモにしか無かった（対策が読み手の経路の外にある構図）
+- **`.claude/agents/` と `.claude/skills/` の相対パス参照をプロジェクトルート起点に統一した**（35 箇所・13 ファイル）。
+  裸のファイル名は読み手が所在を既知である前提を要求し、`index.md` のように実際に曖昧なものもあった。
+  Markdown リンク（レンダリングがファイル位置起点）・`MEMORY.md`（ハーネスの memory 機能の規約名）・
+  `${CLAUDE_SKILL_DIR}`（環境変数解決）・生成物の命名パターンは対象外とした
+- **`.claude/skills/autonomous-mode/SKILL.md` の `mode_line.py` 呼び出し例を `c3 run` に置換した**。
+  無印 `python` は macOS に存在せず（`python3` のみ）、Claude Code 側に OS による読み替え機能も無いため、
+  v2.51.0 の `c3 run` 導入方針に揃えた。**これで配布物の無印 `python` 起動子は 0 件になった**
+
+### 削除
+
+- **実体の無い除外エントリ 3 件を削除した**（`src/c3/_excludes.py` / `hatch_build.py`）。
+  `hooks/subagent_log.py` / `agents/tdd-develop.md` / `skills/worktree-tdd-workflow/*` はいずれも
+  実体が存在しない死んだ規則で、**残す側に「同名ファイルが再登場すると静かに配布から落ちる」という
+  silent な失敗モードがある**ため削除を選んだ。配布対象は 88 ファイルで変化なし（一覧の差分ゼロを実測）
+  - `.claude/docs/config-policy.md` の表からも、3 件を「例外」として説明する記述を削除した
+  - `/.gitignore` の同名行は「v2.1.0 廃止後の**復活防止**」という別目的なので残している
+- **死にテーブル `agent_runs` を DROP した**（migration 008・配布物）。production の書き手が歴史上
+  一度も存在せず 0 行のまま残っていたため、DROP によるデータ喪失リスクは無い。コスト集計は
+  `agent_cost_runs`（書き込み元 `usage_ingester.py`）が担っており影響を受けない
+- **recall 索引の `.bak` 生成を廃止した**（`src/c3/recall_index.py`）。`_atomic_replace` から
+  ロールオーバーを外し、`os.replace` によるアトミック性は維持した。読み戻すコードは存在せず、
+  対象自体が「再生成可能」と分類済み（`c3 recall rebuild` で再構築できる）
+  - **既存利用先の `.claude/state/*.bak` は自動削除されない。** 不要なら手動で削除してよい
+    （配布元の実測では 38MB あった）。`.claude/.gitignore` の `state/*.bak` 行は、旧版が生成した
+    `.bak` が `git status` に浮上しないよう**残している**
+- 役目を終えた設計メモ・調査メモ 15 本を `.claude/docs/` から削除した（いずれも配布対象外）
+
+### 修正
+
+- **glob 照合の ReDoS 素地を根治した**。正規表現生成を廃止し greedy two-pointer 法へ置き換えた。
+  `O(len(pattern) × len(text))` の多項式時間で、非連続の複数 `*` と反復リテラルを組み合わせた形
+  （実測 4.8〜9.3 秒のハング）のバックトラック爆発が構造的に起きない。
+  差分ファジング 20 万組と全数照合 49.6 万組で新旧一致 100% を確認した
+- **ディレクトリのリンクを走査対象から封じ込めた**。同一実体の二重索引と、自己参照 junction による
+  際限ない再走査が構造的に消える
+- 非 SQLite ファイルを `--db` に渡すと例外が `main` を突き抜ける欠陥を修正した（`scripts/`）
+- 静的検査のマーカー帰属が行単位で fail-open になる欠陥を修正した
+- フェンス不在ガードが tilde 記法（`~~~`）のフェンスを検出しない欠陥を修正した
+- 廃止済み資産を現行として記載していた文書 2 箇所と、利用先に存在しない検証レポートへの参照を是正した
+
+### 内部
+
+- `docs/spec/` に C3 の仕様目次を外在化した（CLI / hook / agent / skill / state・DB / 配布境界の 6 層）。
+  実装と乖離した記述を是正したうえで**スナップショットとして凍結**しており、実装変更に追随させない
+- テストは 2779 → **2977** 件（failed 0 / error 0）。「空の緑」（何も検査していないのに緑になるテスト）を
+  破壊スタブで機械検出する方式を導入し、実際に空の緑を 4 件検出して是正した
+
 ## [2.61.0] - 2026-08-03
 
 ### 追加

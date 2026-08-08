@@ -2605,27 +2605,33 @@ class TestGlobRawTokenInTheRealRepo:
     """AC-62 (iv): 実リポジトリで `.claude/skills/*/scripts/**/*.py` のグロブ原文が確認できること.
 
     題材が CHANGELOG.md の特定行を指すため、CHANGELOG.md が先頭へ追記される慣習で
-    行番号がずれるとこのテストの前提が崩れる。前提 assert が失敗したら、AC-62 (iv) が
-    明記する代替題材（`.claude/docs/taxonomy.md:147-148`・フェンス内なので relation は
-    `md_fence_path`）へ差し替えてよい。
+    行番号がずれる。そのためこのテストは行番号をハードコードせず、対象トークンを含む行を
+    CHANGELOG.md から動的に探して照合する。該当行が見つからない場合（前提喪失）は
+    AC-62 (iv) が明記する代替題材（`.claude/docs/taxonomy.md:147-148`・フェンス内なので
+    relation は `md_fence_path`）への差し替えを検討する旨を fail-loud で案内する。
     """
 
-    def test_changelog_line_28_reference_produces_the_raw_glob_and_not_a_shortened_dir(
+    def test_changelog_raw_glob_reference_survives_and_is_not_shortened(
         self, repo_root, repo_graph
     ):
         text = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
         lines = text.split("\n")
-        assert len(lines) >= 28 and "`.claude/skills/*/scripts/**/*.py`" in lines[27], (
-            "premise gone: CHANGELOG.md:28 の記載が変わった "
-            "(代替題材: .claude/docs/taxonomy.md:147-148・relation は md_fence_path)"
+        needle = "`.claude/skills/*/scripts/**/*.py`"
+        matching_line_numbers = [
+            i + 1 for i, line in enumerate(lines) if needle in line
+        ]
+        assert matching_line_numbers, (
+            "premise gone: CHANGELOG.md に '.claude/skills/*/scripts/**/*.py' の記載が "
+            "見当たらない (代替題材: .claude/docs/taxonomy.md:147-148・relation は md_fence_path)"
         )
+        line_number = matching_line_numbers[0]
 
         hits = [
             link
             for link in repo_graph.links
             if link.relation == "md_code_span_path"
             and link.source == "CHANGELOG.md"
-            and link.source_line == 28
+            and link.source_line == line_number
             and link.reference == ".claude/skills/*/scripts/**/*.py"
         ]
 
