@@ -1,5 +1,5 @@
 site_name: Claude Code Conductor (C3)
-site_description: 複数エージェントのオーケストレーションを中心に据えた Claude Code フレームワーク
+site_description: 業務アプリケーション開発で製品としての品質を保証するための、複数エージェントオーケストレーション型 Claude Code フレームワーク
 site_url: https://satoh-y-0323.github.io/claude-code-conductor/
 repo_url: https://github.com/satoh-y-0323/claude-code-conductor
 repo_name: satoh-y-0323/claude-code-conductor
