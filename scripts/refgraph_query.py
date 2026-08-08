@@ -1,7 +1,9 @@
 """参照抽出器のクエリ層 — 網羅的な関係抽出から読む側が絞る道具.
 
 `docs/refgraph-contract.md` §5-1「クエリ層」に基づく。
-抽出器が網羅的に採った関係（36,498 辺・実リポジトリ）を 2 つの軸で絞り込む：
+抽出器が網羅的に採った関係（36,498 辺・実リポジトリ。**C-25 適用前のレジームの値**——
+`reference` 充足で `_dedupe` のキーが割れるため、適用後は総数が変わりうる）を
+2 つの軸で絞り込む：
 
 - **軸 1: 出所のカテゴリで外す** — live / history / derived / dev / tests / generated
 - **軸 2: 派生の参照先を原本へ畳む** — `src/c3/_template/...` → `...`
@@ -301,11 +303,18 @@ def settled_links(links) -> tuple[refgraph.Link, ...]:
 def _component_matcher(pattern: str):
     """1 成分ぶんのワイルドカードを正規表現へ変換する.
 
-    `*` は `[^/]*`（`/` をまたがない）。`**` も 1 成分の中の 2 連続 `*` として扱うので
-    「成分をまたぐ」意味は持たない。リテラル部分は `re.escape` で固定する。
+    `*` は `[^/]*`（`/` をまたがない）。**連続する `*` は 1 つの `[^/]*` に畳む**ので
+    `**` も「成分をまたぐ」意味は持たない。リテラル部分は `re.escape` で固定する。
+
+    畳むのは意味論の都合だけではない: `[^/]*` を `*` の個数ぶん連結すると、同じ
+    文字クラスの可変長ワイルドカードがセパレータなしで並ぶ古典的な ReDoS 形になり、
+    末尾リテラルに一致しない入力で指数時間バックトラックする（SR-NEW M-1・実測
+    `*` 10 個で 15 秒超）。`[^/]*[^/]*` と `[^/]*` は言語として同値なので、畳んでも
+    一致するパスの集合は変わらない。**`*` の個数に上限は設けない**（上限で
+    `ValueError` にすると、正当なパターンを弾く方向の非対称な事故が起きる）。
     """
     regex = "^"
-    for index, chunk in enumerate(pattern.split("*")):
+    for index, chunk in enumerate(re.split(r"\*+", pattern)):
         if index:
             regex += "[^/]*"
         regex += re.escape(chunk)
@@ -450,6 +459,10 @@ def _run_target(target: str, graph: str | None) -> int:
 
     payload = {
         "graph": str(graph_path),
+        # 枠付け宣言（SR-AI-001）。抽出器の私有定数を**そのまま**参照して同値にする
+        # （driver は配布外の dev ツールなので抽出器の内部を読んでよい・契約 §5-1）。
+        # 文面を写経すると to_dict() 側と静かにずれる。
+        "framing": refgraph_module._FRAMING,
         "target": wanted,
         "links": [asdict(link) for link in matched],
     }
