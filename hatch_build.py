@@ -36,7 +36,6 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     "docs/decisions.md",
     "docs/taxonomy.md",
     "docs/c3追加予定機能リスト.md",
-    "hooks/subagent_log.py",
     "settings.local.json",
     "pytest_temp.ini",
     "logs/*",
@@ -46,9 +45,6 @@ EXCLUDE_PATTERNS: tuple[str, ...] = (
     # マージ後に削除されるが残骸が残ることがあり、wheel に混入すると利用先に
     # 不要な agent worktree レポート（code-review-report-*.md 等）が配布される問題があった
     "worktrees/*",
-    # v2.1.0: tdd-develop / worktree-tdd-workflow 廃止（planner が TDD を 3-wave に分解する設計に統一）
-    "agents/tdd-develop.md",
-    "skills/worktree-tdd-workflow/*",
 )
 
 KEEP_PATTERNS: tuple[str, ...] = (

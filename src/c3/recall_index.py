@@ -262,8 +262,7 @@ class RecallIndex:
 
         索引はファイルオブジェクト経由の ``np.save`` で書く（パス文字列を渡すと
         ``.npy`` が付与されるため・Windows 非 ASCII パス対策も兼ねる）。
-        ``.tmp`` へ書いたあと ``_atomic_replace`` で確定し、直前のファイルを
-        ``.bak`` として残す。
+        ``.tmp`` へ書いたあと ``_atomic_replace`` で確定する。
         """
         if self._vectors is None:
             raise RuntimeError("nothing to save; call build() first")
@@ -587,19 +586,7 @@ def snippet_of(text: str, *, max_chars: int = SNIPPET_CHARS) -> str:
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:
-    """``os.replace`` with a ``.bak`` rollover of the previous file."""
-    if dst.exists():
-        bak = dst.with_suffix(dst.suffix + ".bak")
-        # Drop any prior .bak so the rename succeeds on Windows.
-        if bak.exists():
-            try:
-                bak.unlink()
-            except OSError:
-                pass
-        try:
-            os.replace(dst, bak)
-        except OSError:
-            pass
+    """Atomically replace ``dst`` with ``src`` using ``os.replace``."""
     os.replace(src, dst)
 
 

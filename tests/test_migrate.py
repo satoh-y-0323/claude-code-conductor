@@ -332,7 +332,7 @@ class TestMigrateApplyExistingDb:
             conn.close()
 
     def test_upgrade_preserves_existing_data(self, v219_db: Path):
-        """C2: 既存の review_decisions / tier_bandit / agent_runs データが保持される。
+        """C2: 既存の review_decisions / tier_bandit データが保持される。
 
         migration 後も既存行が正しく参照できることを確認する。
         """

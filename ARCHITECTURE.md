@@ -155,7 +155,7 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 | `schema_migrations` | マイグレーション適用記録 | `migrate.py` |
 | `review_decisions` | レビュー指摘への過去判断（対応/許容） | `record_review_decision.py`（dev-workflow/scripts） |
 | `agent_outcomes` | tier-routing の学習シグナル（role / gate / tier / 成否）。Thompson Sampling の α/β と escalation 判定は本テーブルからの読み取り時導出 | `record_agent_outcome.py`（dev-workflow/scripts） |
-| `agent_runs` / `agent_cost_runs` | エージェント実行・コスト集計 | `usage_ingester.py` |
+| `agent_cost_runs` | コスト集計 | `usage_ingester.py` |
 | `usage_ingest_state` | セッションログ取り込みの offset 管理 | `usage_ingester.py` |
 
 - **review-hint ループ**: code-reviewer が `[CR-XX-NNN]` ID を付与 → `review_hint_inject.py` が過去判断を次回レビューに注入し、一貫性を高める。
