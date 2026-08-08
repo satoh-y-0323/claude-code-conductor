@@ -43,7 +43,7 @@ c3 init
 | 変更される場所 | 内容 |
 |---|---|
 | `.claude/` ディレクトリ（追加） | C3 のフレームワーク一式 |
-| `.claude/.gitignore`（自動配置） | 再生成可能なもの（`.claude/state/recall.*` は数十 MB）とセッション一時ファイルのみ除外。`.claude/agent-memory/`・`.claude/reports/`・`.claude/memory/`・`.claude/state/c3.db` はチームの引き継ぎ資産として tracked（[コミット方針](../.claude/docs/config-policy.md)）。**プロジェクト既存の `.gitignore` は変更しません** |
+| `.claude/.gitignore`（自動配置） | 再生成可能なもの（`.claude/state/recall.*` は数十 MB）とセッション一時ファイルのみ除外。`.claude/agent-memory/`・`.claude/reports/`・`.claude/memory/`・`.claude/state/c3.db` はチームの引き継ぎ資産として tracked（[コミット方針](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/docs/config-policy.md)）。**プロジェクト既存の `.gitignore` は変更しません** |
 
 後日 C3 を更新したくなったら:
 
