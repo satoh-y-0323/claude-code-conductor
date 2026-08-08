@@ -1785,23 +1785,29 @@ class TestNoTrailingSlashDirectoryReference:
 
 
 class TestGlobResidueDirectoryReference:
-    """AC-3: `skills/worktree-tdd-workflow/*` の残骸が `missing`・`kind: "dir"` で辺になること."""
+    """AC-3: グロブ残骸（削除後の `_excludes.py` / `hatch_build.py` から消えたパターン）が
+    `missing`・`kind: "dir"` で辺になり、元のグロブトークンが逐語保存されること.
 
-    def test_excludes_py_glob_residue_is_a_missing_dir_edge_with_original_reference(
-        self, repo_root, repo_graph
-    ):
-        text = (repo_root / "src" / "c3" / "_excludes.py").read_text(encoding="utf-8")
-        assert '"skills/worktree-tdd-workflow/*"' in text, (
-            "premise gone: _excludes.py から skills/worktree-tdd-workflow/* の記載が消えた"
+    実リポジトリの削除対象に依存しない合成 fixture を使用。
+    """
+
+    def test_glob_residue_is_a_missing_dir_edge_with_original_reference(self, tmp_path):
+        """グロブ残骸が missing エッジになり、元トークンが reference に保存されること."""
+        # 合成ファイル: 実在しない `skills/__nonexistent_residue__/*` を参照する Python ファイル
+        _mkfile(tmp_path, "stop.py", "# stop\n")
+        _mkfile(
+            tmp_path,
+            "config_with_glob.py",
+            'PATTERNS = [\n    "skills/__nonexistent_residue__/*",\n]\n',
         )
-        assert not (repo_root / ".claude" / "skills" / "worktree-tdd-workflow").exists(), (
-            "premise changed: worktree-tdd-workflow が復活した（v2.1.0 で廃止済みのはず）"
-        )
+        # ディレクトリ skills/__nonexistent_residue__ は作らない（missing の条件）
+
+        graph = refgraph.build_graph(tmp_path)
 
         hits = _links(
-            repo_graph,
-            source="src/c3/_excludes.py",
-            target="skills/worktree-tdd-workflow",
+            graph,
+            source="config_with_glob.py",
+            target="skills/__nonexistent_residue__",
         )
         assert len(hits) >= 1, (
             "the glob residue must survive as a missing edge to the directory prefix"
@@ -1810,18 +1816,18 @@ class TestGlobResidueDirectoryReference:
         assert bad_resolution == [], f"expected missing; got {bad_resolution}"
 
         references = {link.reference for link in hits}
-        assert "skills/worktree-tdd-workflow/*" in references, (
+        assert "skills/__nonexistent_residue__/*" in references, (
             f"the original glob token must be preserved verbatim as reference; got {references}"
         )
 
-        by_id = {node.id: node for node in repo_graph.nodes}
-        assert "skills/worktree-tdd-workflow" in by_id
-        assert by_id["skills/worktree-tdd-workflow"].kind == "dir", (
+        by_id = {node.id: node for node in graph.nodes}
+        assert "skills/__nonexistent_residue__" in by_id
+        assert by_id["skills/__nonexistent_residue__"].kind == "dir", (
             "a residue directory reference must be classified as kind == 'dir' "
-            f"(contract C-3); got {by_id['skills/worktree-tdd-workflow'].kind!r}"
+            f"(contract C-3); got {by_id['skills/__nonexistent_residue__'].kind!r}"
         )
         assert not any(
-            node.id == "skills/worktree-tdd-workflow/" for node in repo_graph.nodes
+            node.id == "skills/__nonexistent_residue__/" for node in graph.nodes
         ), "the node id must not carry a trailing slash"
 
 

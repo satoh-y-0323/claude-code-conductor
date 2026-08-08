@@ -600,12 +600,18 @@ def test_scaffold_adapters_opencode_marker_in_content_preserves_boundary(
 # ----------------------------------------------------------------------
 
 
-def test_write_opencode_agents_skips_excluded(tmp_path: Path):
+def test_write_opencode_agents_skips_excluded(tmp_path: Path, monkeypatch):
     """Agents matching should_skip must not be written to .opencode/agents/."""
+    import c3._excludes
     from c3._excludes import should_skip as _should_skip
 
-    # agents/tdd-develop.md is explicitly in EXCLUDE_PATTERNS
-    excluded_name = "tdd-develop"
+    # Inject synthetic excluded pattern (not a dead pattern from real EXCLUDE_PATTERNS).
+    # This preserves the intent (filter symmetry verification) without depending on
+    # actual _excludes data that may be deleted.
+    synthetic_patterns = c3._excludes.EXCLUDE_PATTERNS + ("agents/__synthetic_excluded__.md",)
+    monkeypatch.setattr(c3._excludes, "EXCLUDE_PATTERNS", synthetic_patterns)
+
+    excluded_name = "__synthetic_excluded__"
     assert _should_skip(f"agents/{excluded_name}.md"), (
         f"precondition failed: agents/{excluded_name}.md should be excluded"
     )
@@ -625,12 +631,18 @@ def test_write_opencode_agents_skips_excluded(tmp_path: Path):
     )
 
 
-def test_write_opencode_skills_skips_excluded(tmp_path: Path):
+def test_write_opencode_skills_skips_excluded(tmp_path: Path, monkeypatch):
     """Skills matching should_skip must not be written to .opencode/agents/."""
+    import c3._excludes
     from c3._excludes import should_skip as _should_skip
 
-    # skills/worktree-tdd-workflow/* is in EXCLUDE_PATTERNS
-    excluded_skill = "worktree-tdd-workflow"
+    # Inject synthetic excluded pattern (not a dead pattern from real EXCLUDE_PATTERNS).
+    # This preserves the intent (filter symmetry verification) without depending on
+    # actual _excludes data that may be deleted.
+    synthetic_patterns = c3._excludes.EXCLUDE_PATTERNS + ("skills/__synthetic_excluded__/*",)
+    monkeypatch.setattr(c3._excludes, "EXCLUDE_PATTERNS", synthetic_patterns)
+
+    excluded_skill = "__synthetic_excluded__"
     assert _should_skip(f"skills/{excluded_skill}/SKILL.md"), (
         f"precondition: skills/{excluded_skill}/SKILL.md should be excluded"
     )

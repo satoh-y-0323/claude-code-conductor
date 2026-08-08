@@ -93,6 +93,18 @@ def _list_tables(db_path: Path) -> set[str]:
         conn.close()
 
 
+def _list_indexes(db_path: Path) -> set[str]:
+    """データベースに存在するすべての INDEX を返す."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+        return {r[0] for r in rows}
+    finally:
+        conn.close()
+
+
 def _write_settings(cwd: Path, content: dict | str) -> Path:
     """cwd/.claude/settings.json を作成して返す."""
     settings_dir = cwd / ".claude"
@@ -376,17 +388,18 @@ class TestInitC3Db:
             'schema_migrations',
             'review_decisions',
             'agent_outcomes',
-            'agent_runs',
         }
         missing = expected - tables
         assert not missing, f"作られていないテーブル: {missing}"
         # v2.0.0 で削除済みのテーブルが復活していないこと
         # v2.41.0 db-foundation: tier_bandit / tier_recent_outcomes も同様に廃止済み（ADR-1）
         # tier-routing フェーズ2.5: agent_tier_bandit も migration 005 で廃止済み（ADR-25-4）
+        # migration 008: agent_runs も DROP（ADR-0）— 書き手は tests/hooks/test_session_start.py:604 のみ
         legacy_dropped = {
             'po_results', 'po_status', 'schema_version',
             'tier_bandit', 'tier_recent_outcomes',
             'agent_tier_bandit',
+            'agent_runs',
         }
         assert not (legacy_dropped & tables), (
             f"廃止済みのテーブルが残っている: {legacy_dropped & tables}"
@@ -434,7 +447,7 @@ class TestInitC3Db:
 
         tables = _list_tables(db_path)
         assert 'schema_migrations' in tables
-        assert 'agent_runs' in tables
+        assert 'agent_runs' not in tables
 
     def test_existing_data_is_preserved(self, tmp_path: Path):
         module = _load_hook_module()
@@ -601,11 +614,11 @@ class TestInitC3Db:
         conn = sqlite3.connect(str(db_path))
         try:
             conn.execute(
-                "INSERT INTO agent_runs "
-                "(session_id, agent_id, agent_type, event, ts, total_tokens, status, model) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                ('sess-1', 'agent-a', 'Explore', 'stop',
-                 '2026-05-08T00:00:00+00:00', 12345, 'success', 'claude-sonnet-4-6'),
+                "INSERT INTO review_decisions "
+                "(checklist_id, finding_text, decision, decided_at, reviewer) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ('CR-Q-001', 'test finding', 'accepted',
+                 '2026-05-08T00:00:00+00:00', 'code-reviewer'),
             )
             conn.commit()
         finally:
@@ -617,12 +630,56 @@ class TestInitC3Db:
             con.execute("LOAD sqlite")
             con.execute(f"ATTACH '{db_path}' AS c3 (TYPE SQLITE)")
             rows = con.execute(
-                "SELECT session_id, total_tokens, model FROM c3.agent_runs"
+                "SELECT checklist_id, decision, reviewer FROM c3.review_decisions"
             ).fetchall()
         finally:
             con.close()
 
-        assert rows == [('sess-1', 12345, 'claude-sonnet-4-6')]
+        assert rows == [('CR-Q-001', 'accepted', 'code-reviewer')]
+
+    def test_agent_runs_table_is_dropped_after_full_migration(self, tmp_path: Path):
+        """
+        migration 008 が適用されると agent_runs テーブルと関連 INDEX が削除される。
+        （負の対照: agent_runs 存在することを confirm）
+        """
+        module = _load_hook_module()
+        db_path = tmp_path / "c3.db"
+
+        module.apply_schema(db_path=str(db_path))
+
+        tables = _list_tables(db_path)
+        indexes = _list_indexes(db_path)
+
+        # agent_runs テーブルが存在しないこと（DROP されたため）
+        assert 'agent_runs' not in tables, (
+            "agent_runs テーブルが存在します。migration 008 で DROP されるはずです"
+        )
+        # 関連 INDEX も存在しないこと
+        assert 'idx_agent_runs_session' not in indexes, (
+            "idx_agent_runs_session INDEX が存在します"
+        )
+        assert 'idx_agent_runs_agent' not in indexes, (
+            "idx_agent_runs_agent INDEX が存在します"
+        )
+
+    def test_current_tables_exist_after_full_migration(self, tmp_path: Path):
+        """
+        migration 008 が適用されても、現役テーブルは存在し続ける。
+        （正の双子: agent_outcomes / agent_cost_runs / review_decisions / schema_migrations）
+        """
+        module = _load_hook_module()
+        db_path = tmp_path / "c3.db"
+
+        module.apply_schema(db_path=str(db_path))
+
+        tables = _list_tables(db_path)
+
+        # 現役テーブルが全て存在すること
+        required_tables = {'agent_outcomes', 'agent_cost_runs', 'review_decisions', 'schema_migrations'}
+        missing = required_tables - tables
+        assert not missing, (
+            f"必須の現役テーブルが不足しています: {missing}"
+        )
 
 
 # ===========================================================================

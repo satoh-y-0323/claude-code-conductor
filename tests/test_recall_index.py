@@ -20,6 +20,7 @@ from c3.recall_index import (
     IndexMeta,
     RecallIndex,
     SourceChunk,
+    _atomic_replace,
     collect_sources,
     content_hash,
     default_index_paths,
@@ -201,7 +202,12 @@ def test_load_returns_false_when_missing(tmp_path: Path) -> None:
     assert index.load() is False
 
 
-def test_save_keeps_previous_as_bak(tmp_path: Path) -> None:
+def test_save_does_not_create_bak(tmp_path: Path) -> None:
+    """負の対照(統合レベル): 2 回 save() しても .bak が作られないこと。
+
+    現行実装(``_atomic_replace`` の .bak ロールオーバー)ではこの assert は
+    失敗する(赤)。Green フェーズで .bak ロールオーバーを外すと緑になる。
+    """
     index = RecallIndex(
         index_path=tmp_path / "recall.hnsw",
         meta_path=tmp_path / "recall_meta.json",
@@ -212,8 +218,69 @@ def test_save_keeps_previous_as_bak(tmp_path: Path) -> None:
     index.save()
     index.build([(_record(), _unit([0.0, 1.0, 0.0]))])
     index.save()
-    bak = index.index_path.with_suffix(index.index_path.suffix + ".bak")
-    assert bak.exists(), "previous index should be retained as .bak"
+    index_bak = index.index_path.with_suffix(index.index_path.suffix + ".bak")
+    meta_bak = index.meta_path.with_suffix(index.meta_path.suffix + ".bak")
+    assert not index_bak.exists(), ".bak should not be created for recall.hnsw"
+    assert not meta_bak.exists(), ".bak should not be created for recall_meta.json"
+
+
+def test_atomic_replace_does_not_create_bak(tmp_path: Path) -> None:
+    """負の対照(ユニットレベル): 既存 dst がある状態で _atomic_replace しても
+    .bak が新規に作られないこと。
+
+    現行実装では .bak ロールオーバーが行われるため、この assert は赤になる。
+    """
+    src = tmp_path / "recall.hnsw.tmp"
+    dst = tmp_path / "recall.hnsw"
+    dst.write_bytes(b"old content")
+    src.write_bytes(b"new content")
+
+    _atomic_replace(src, dst)
+
+    bak = dst.with_suffix(dst.suffix + ".bak")
+    assert not bak.exists(), ".bak should not be created by _atomic_replace"
+
+
+def test_atomic_replace_does_not_create_bak_when_bak_already_exists(
+    tmp_path: Path,
+) -> None:
+    """負の対照(ユニットレベル): 呼び出し前から .bak が存在していても、
+    その内容を書き換えたり作り直したりしないこと。
+
+    現行実装は既存 .bak を消してから dst を新しい .bak として書き込むため、
+    この assert は赤になる(sentinel の内容が dst の旧内容に置き換わってしまう)。
+    """
+    src = tmp_path / "recall.hnsw.tmp"
+    dst = tmp_path / "recall.hnsw"
+    bak = dst.with_suffix(dst.suffix + ".bak")
+    dst.write_bytes(b"old content")
+    src.write_bytes(b"new content")
+    bak.write_bytes(b"pre-existing bak sentinel")
+
+    _atomic_replace(src, dst)
+
+    assert bak.read_bytes() == b"pre-existing bak sentinel", (
+        ".bak must be left untouched; _atomic_replace must not roll dst into it"
+    )
+
+
+def test_atomic_replace_replaces_destination_content_positive_control(
+    tmp_path: Path,
+) -> None:
+    """正の双子(ユニットレベル): .bak の有無とは無関係に、置換そのものが
+    機能していること。現行実装でも Green 後でも緑であるべき。
+
+    .bak に関する assert はここに混ぜない(負の対照とは別関数)。
+    """
+    src = tmp_path / "recall.hnsw.tmp"
+    dst = tmp_path / "recall.hnsw"
+    dst.write_bytes(b"old content")
+    src.write_bytes(b"new content")
+
+    _atomic_replace(src, dst)
+
+    assert dst.read_bytes() == b"new content"
+    assert not src.exists(), "src (tmp file) should be consumed by the replace"
 
 
 def test_load_detects_dim_mismatch(tmp_path: Path) -> None:

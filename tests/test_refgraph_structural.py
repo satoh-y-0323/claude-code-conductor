@@ -381,37 +381,33 @@ class TestKnownRelationsWithPremiseChecks:
 # 3. A-3 判定材料（source 名固定）
 # ===========================================================================
 class TestA3JudgmentMaterialSourceNamesFixed:
-    """`agents/tdd-develop.md` を target とする辺の source に `_excludes.py` と
-    `hatch_build.py` がいずれも含まれ、どちらも `categorize` で `live` になること.
+    """py_string リテラルが両方の _excludes.py / hatch_build.py から辺を作り、
+    ともに live source として categorize されること.
 
-    **本数条件にしない**（`DC-AS-2702`: 走査ツリーに live 文書が増えるたびに緩むため）。
+    実リポジトリの live 題材 (`docs/taxonomy.md`) と、合成 fixture の missing 版を
+    分離して検査（A-3 削除対象と非結合）。
     """
 
-    def test_premise_both_files_literally_mention_tdd_develop_md(self, repo_root):
-        """題材の実在: 2 ファイルとも `agents/tdd-develop.md` という文字列を持つこと."""
+    def test_both_sources_produce_live_edge_to_live_target(self, repo_root, repo_graph):
+        """AC-42(2a): 実リポジトリの live 題材で「py_string が両ファイルから拾える」を検査.
+
+        題材は `.claude/docs/config-policy.md`（実在ファイル・両ファイルのリテラルに記載）。
+        target = `".claude/docs/config-policy.md"`（正規化パス）。
+        このテストが赤になる場合、それは「py ファイル内の文字列リテラルのパス参照が
+        辺になっていない」という本スライスの中核欠落であり、テスト設計の誤りではない。
+        """
+        # premise: 両ファイルが "docs/config-policy.md" というリテラルを持つこと
         excludes_text = (repo_root / "src" / "c3" / "_excludes.py").read_text(encoding="utf-8")
         hatch_text = (repo_root / "hatch_build.py").read_text(encoding="utf-8")
-        assert "agents/tdd-develop.md" in excludes_text, (
-            "premise gone: src/c3/_excludes.py から agents/tdd-develop.md の記載が消えた"
+        assert "docs/config-policy.md" in excludes_text, (
+            "premise: src/c3/_excludes.py に docs/config-policy.md が見つかりません"
         )
-        assert "agents/tdd-develop.md" in hatch_text, (
-            "premise gone: hatch_build.py から agents/tdd-develop.md の記載が消えた"
+        assert "docs/config-policy.md" in hatch_text, (
+            "premise: hatch_build.py に docs/config-policy.md が見つかりません"
         )
 
-    def test_both_sources_produce_an_edge_and_are_categorized_live(self, repo_graph):
-        """AC-42（`docs/refgraph-acceptance.md:498`）: A-3 削除判定の裏取りに使う実測材料.
-
-        target は `agents/tdd-develop.md`（`.claude/` プレフィックス無し）。
-        `src/c3/_excludes.py` / `hatch_build.py` が持つリテラルは `"agents/tdd-develop.md"`
-        というプレーンな文字列で、`.claude/agents/tdd-develop.md` という形では
-        どこにも書かれていない（削除済みファイルのため §3 の 4 段解決のどこにも
-        当たらず `missing` になる。原文正規化形がそのまま target になる）。
-        このテストが赤になる場合、それは「py ファイル内の文字列リテラルのパス参照が
-        辺になっていない」という本スライスの中核欠落であり、テスト設計の誤りではない
-        （plan-report 明記）。
-        """
         target_links = [
-            link for link in repo_graph.links if link.target == "agents/tdd-develop.md"
+            link for link in repo_graph.links if link.target == ".claude/docs/config-policy.md"
         ]
 
         by_source: dict = {"src/c3/_excludes.py": [], "hatch_build.py": []}
@@ -425,24 +421,64 @@ class TestA3JudgmentMaterialSourceNamesFixed:
             f"パス参照が辺になっていない）: {missing}"
         )
 
-        wrong_resolution = sorted(
-            f"{link.source}:{link.resolution}"
-            for links in by_source.values()
-            for link in links
-            if link.resolution != "missing"
-        )
-        assert wrong_resolution == [], (
-            "agents/tdd-develop.md への辺の resolution が missing でない"
-            f"（削除済みファイルへの参照のはず）: {wrong_resolution}"
-        )
-
         module = query()
         live_sources = {
             link.source for link in target_links if module.categorize(link.source) == "live"
         }
         assert len(live_sources) >= 2, (
-            "agents/tdd-develop.md を target とする全辺の source の categorize に"
+            ".claude/docs/config-policy.md を target とする全辺の source の categorize に"
             f"live が 2 件未満: {sorted(live_sources)}"
+        )
+
+    def test_synthesized_missing_file_reference_produces_missing_edge(self, tmp_path):
+        """AC-42(2b): 合成 fixture で実在しないファイルへの参照が missing になることを検査.
+
+        両ファイルから参照がある、という structure は (2a) で検査済み。
+        本テストは「削除済みファイルへの参照が missing になる」という resolution の
+        正確性を検査する。
+        """
+        import c3.refgraph as refgraph
+
+        # 合成ファイル: 実在しないファイルを参照する 2 つの Python ファイル
+        _mkfile(tmp_path, "stop.py", "# stop\n")
+        _mkfile(
+            tmp_path,
+            "config1.py",
+            'PATTERNS = ["deleted_target.md"]\n',
+        )
+        _mkfile(
+            tmp_path,
+            "config2.py",
+            'PATTERNS = ["deleted_target.md"]\n',
+        )
+        # deleted_target.md は作らない（missing の条件）
+
+        graph = refgraph.build_graph(tmp_path)
+
+        target_links = [
+            link for link in graph.links if link.target == "deleted_target.md"
+        ]
+
+        by_source: dict = {"config1.py": [], "config2.py": []}
+        for link in target_links:
+            if link.source in by_source:
+                by_source[link.source].append(link)
+
+        missing_sources = sorted(source for source, links in by_source.items() if not links)
+        assert missing_sources == [], (
+            "both sources should produce an edge to deleted_target.md: "
+            f"missing {missing_sources}"
+        )
+
+        missing_resolutions = sorted(
+            f"{link.source}:{link.resolution}"
+            for links in by_source.values()
+            for link in links
+            if link.resolution != "missing"
+        )
+        assert missing_resolutions == [], (
+            "deleted_target.md への辺の resolution が missing でない"
+            f"（実在しないファイルへの参照のはず）: {missing_resolutions}"
         )
 
 
