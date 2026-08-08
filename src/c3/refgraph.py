@@ -28,6 +28,7 @@ import json
 import os
 import posixpath
 import re
+import stat
 import tokenize
 import unicodedata
 from dataclasses import dataclass
@@ -588,8 +589,40 @@ def _sanitize_context(line: str) -> str:
 
 
 def _split_lines(text: str) -> list:
-    """行番号を安定させるため `\\n` だけで分割する（`splitlines` は垂直タブ等でも切る）."""
+    """行番号を安定させるため `\\n` だけで分割する（`splitlines` は垂直タブ等でも切る）.
+
+    末尾 `\\r` の除去は `read_text()` を経由しない呼び出しに備えた防御であり、
+    実パイプラインでは発火しない（`Path.read_text()` の universal newlines が
+    `\\r\\n` も単独 `\\r` も読み込み時点で `\\n` に正規化するため・CR-NEW Low）。
+    """
     return [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+
+
+def _is_link(path: Path) -> bool:
+    """`path` がシンボリックリンク、または Windows の reparse point か（CR-NEW High）.
+
+    `Path.is_symlink()` は **NTFS のディレクトリジャンクションに対して `False` を返す**
+    （junction は symlink とは別種の reparse point）。junction は管理者権限なしで作れる
+    ため Windows で最も遭遇しやすいリンク形式であり、素通りさせると (a) 同一実体が別の
+    ノード ID で二重に索引される、(b) 自己参照 junction で走査が際限なく続く。
+
+    判定は `is_symlink()`（= `lstat` + `S_ISLNK`）と `st_file_attributes` の
+    `FILE_ATTRIBUTE_REPARSE_POINT` の**和**。`st_file_attributes` は Windows 限定の
+    属性なので `hasattr` で守る（POSIX では `S_ISLNK` 側だけが効く）。`lstat` は
+    走査ファイル数ぶん呼ばれるため 1 回で両方を判定する。
+    """
+    try:
+        status = os.lstat(str(path))
+    except (OSError, ValueError):
+        # 判定できないものは「リンクではない」とはせず、読み取り側の例外処理へ委ねる
+        # （ここで握って `skipped` に別 reason を作ると理由が二重管理になる）。
+        return False
+    if stat.S_ISLNK(status.st_mode):
+        return True
+    attributes = getattr(status, "st_file_attributes", None)
+    if attributes is None or not hasattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT"):
+        return False
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 # ---------------------------------------------------------------------------
@@ -635,10 +668,21 @@ class _Collector:
         if not base.is_dir():
             return
         for dirpath, dirnames, filenames in os.walk(str(base)):
-            dirnames[:] = sorted(
-                name for name in dirnames if name not in _SKIP_DIR_NAMES
-            )
             current = Path(dirpath)
+            kept = []
+            for name in sorted(dirnames):
+                if name in _SKIP_DIR_NAMES:
+                    continue
+                child = current / name
+                if _is_link(child):
+                    # リンク先の実体はツリー外にも、ツリー内の別の枝にもありうる
+                    # （CR-NEW High）。辿ると同一実体が別ノード ID で二重に索引され、
+                    # 自己参照なら走査が終わらない。`os.walk(followlinks=False)` は
+                    # 真の symlink しか見ないので、ここで枝ごと落とす。
+                    self._skip_dir_link(base, child)
+                    continue
+                kept.append(name)
+            dirnames[:] = kept
             if current != base:
                 try:
                     # ディレクトリ ID は末尾 `/` を付けない（契約 C-2）。
@@ -690,8 +734,9 @@ class _Collector:
         is_settings = fnmatch.fnmatchcase(path.name, "settings*.json")
 
         try:
-            if path.is_symlink():
-                # シンボリックリンクの実体は走査ツリーの外にありうる（SR-V-002）。
+            if _is_link(path):
+                # リンクの実体は走査ツリーの外にありうる（SR-V-002）。Windows の
+                # reparse point（ジャンクション）も同じ扱いにする（CR-NEW High）。
                 # ノードとしては索引に残したまま、**内容だけ読まない**（契約 §3）。
                 self._skip(node_id, "Symlink")
                 return
@@ -738,6 +783,14 @@ class _Collector:
             return
         self._skipped_paths.add(node_id)
         self.skipped.append(Skipped(path=node_id, reason=reason))
+
+    def _skip_dir_link(self, base: Path, path: Path) -> None:
+        """再帰しなかったリンクディレクトリを `skipped` に残す（契約 §2 原則 3「沈黙しない」）."""
+        try:
+            node_id = path.relative_to(base).as_posix()
+        except ValueError:
+            return
+        self._skip(node_id, "Symlink")
 
     # -- 辺の登録 --------------------------------------------------------
     def _emit(
@@ -1485,10 +1538,12 @@ def _node_source_segment(lines, node):
     `"\\n"` で連結する。位置情報が欠けている（`end_lineno` / `end_col_offset` が
     `None`）ノードは `None` を返し、呼び出し側は諦める。
 
-    **限界（現状維持）**: 行配列は `_split_lines`（`\\n` だけで分割）が作るため、
-    単独の `\\r` を行末とみなす `ast._splitlines_no_ff` とは行の切れ目が異なる。
-    単独 `\\r` を含む `.py` があると断片が変わりうるが、`\\r` はトークン境界文字
-    （`_ASCII_BOUNDARY`）なので採るトークン自体は変わらない。
+    **行の切れ目（実パイプラインでは差が出ない）**: 行配列は `_split_lines`（`\\n` だけで
+    分割）が作るため、単独の `\\r` も行末とみなす `ast._splitlines_no_ff` とは原理的には
+    切れ目が異なる。ただし本経路のテキストは必ず `path.read_text(encoding="utf-8")`
+    （`newline=None`）で読まれ、universal newlines により `\\r\\n` も単独 `\\r` も読み込み
+    時点で `\\n` へ正規化されるため、**この差は到達しない**（CR-NEW Low・2026-08-08 実測）。
+    `read_text()` を経由しない呼び出し経路が将来増えたときにだけ意味を持つ留保である。
     """
     start = getattr(node, "lineno", None)
     end = getattr(node, "end_lineno", None)

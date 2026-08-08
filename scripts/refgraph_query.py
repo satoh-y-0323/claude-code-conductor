@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -300,25 +299,54 @@ def settled_links(links) -> tuple[refgraph.Link, ...]:
 # ---------------------------------------------------------------------------
 
 
-def _component_matcher(pattern: str):
-    """1 成分ぶんのワイルドカードを正規表現へ変換する.
+def _component_matches(pattern: str, text: str) -> bool:
+    """1 成分ぶんのワイルドカード照合（正規表現を生成しない・線形時間）.
 
-    `*` は `[^/]*`（`/` をまたがない）。**連続する `*` は 1 つの `[^/]*` に畳む**ので
-    `**` も「成分をまたぐ」意味は持たない。リテラル部分は `re.escape` で固定する。
+    `*` は `[^/]*`（`/` をまたがない）。**連続する `*` は 1 つと等価**なので `**` も
+    「成分をまたぐ」意味は持たない。`*` 以外の文字はリテラルとして 1 文字ずつ突き合わせる。
 
-    畳むのは意味論の都合だけではない: `[^/]*` を `*` の個数ぶん連結すると、同じ
-    文字クラスの可変長ワイルドカードがセパレータなしで並ぶ古典的な ReDoS 形になり、
-    末尾リテラルに一致しない入力で指数時間バックトラックする（SR-NEW M-1・実測
-    `*` 10 個で 15 秒超）。`[^/]*[^/]*` と `[^/]*` は言語として同値なので、畳んでも
-    一致するパスの集合は変わらない。**`*` の個数に上限は設けない**（上限で
-    `ValueError` にすると、正当なパターンを弾く方向の非対称な事故が起きる）。
+    **正規表現を使わない理由**: 可変長ワイルドカードを連結した正規表現は、末尾リテラルに
+    一致しない入力でバックトラックが爆発する。`*` が**連続する**形（`***ZZZ`）は畳み込みで
+    消せたが、**同じリテラルで区切られて反復する**形（`("*a" * 15) + "ZZZ"` を `"a" * 40` に
+    当てる）は畳み込みが効かず、実測 4.8〜9.3 秒のハングが残っていた（SR-NEW M-1'）。
+    素朴な atomic group 化はマッチ結果自体を変えてしまう（SR の差分ファジングで
+    20,000 組中 554 件の不一致を実証済み）ため採らない。
+
+    代わりに古典的な greedy two-pointer 法を使う: `*` に出会ったら「最後のスター位置」と
+    「その時点の入力位置」を記録して先へ進み、不一致になったらスター直後へ巻き戻して
+    スターが飲む文字を 1 つ増やす。巻き戻し先は単調に前進するため
+    **O(len(pattern) × len(text)) の多項式時間**で、入力依存の破滅的挙動が構造的に起きない。
+
+    **`*` の個数に上限は設けない**（上限で `ValueError` にすると、正当なパターンを弾く
+    方向の非対称な事故が起きる）。
     """
-    regex = "^"
-    for index, chunk in enumerate(re.split(r"\*+", pattern)):
-        if index:
-            regex += "[^/]*"
-        regex += re.escape(chunk)
-    return re.compile(regex + "$")
+    pattern_index = 0
+    text_index = 0
+    star_index = -1
+    star_text_index = 0
+    while text_index < len(text):
+        if pattern_index < len(pattern) and pattern[pattern_index] == "*":
+            # スターは巻き戻し先として覚えるだけで、まず 0 文字を飲む形で進む。
+            star_index = pattern_index
+            star_text_index = text_index
+            pattern_index += 1
+        elif (
+            pattern_index < len(pattern)
+            and pattern[pattern_index] == text[text_index]
+        ):
+            pattern_index += 1
+            text_index += 1
+        elif star_index >= 0 and text[star_text_index] != "/":
+            # 直近のスターに 1 文字余分に飲ませて再挑戦する。`/` は飲ませない
+            # （`*` は 1 成分内・`[^/]*` と同じ意味論）。
+            star_text_index += 1
+            pattern_index = star_index + 1
+            text_index = star_text_index
+        else:
+            return False
+    while pattern_index < len(pattern) and pattern[pattern_index] == "*":
+        pattern_index += 1
+    return pattern_index == len(pattern)
 
 
 def glob_matches(pattern: str, path: str) -> bool:
@@ -344,7 +372,7 @@ def glob_matches(pattern: str, path: str) -> bool:
             if pattern_part != path_part:
                 return False
             continue
-        if not _component_matcher(pattern_part).match(path_part):
+        if not _component_matches(pattern_part, path_part):
             return False
     return True
 
