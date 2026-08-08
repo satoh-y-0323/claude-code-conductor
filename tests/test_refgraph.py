@@ -2866,6 +2866,171 @@ class TestOversizedFilesAreSkippedNotRead:
         assert len(alive_hits) >= 1, "サイズ上限対応が他ファイルの辺を壊してはいけない(正の双子)"
 
 
+class TestDirectoryJunctionDoesNotDoubleIndexAndHandlesSelfReferences:
+    """CR-NEW High: Windows のディレクトリジャンクション（NTFS reparse point）が
+    symlink 防御をすり抜け、同一ファイルが二重インデックスされる・自己参照で無限走査
+    する問題。mklink /J（管理者権限不要）で実機ジャンクションを作成し、3 点を検証:
+    (i) ジャンクション配下のファイルが二重インデックスされない
+    (ii) 自己参照ジャンクションでも build_graph が有限時間で完走する
+    (iii) ジャンクションが skipped に reason つきで記録される
+    """
+
+    def test_junction_does_not_double_index_files(self, tmp_path):
+        """実ファイル realdir/inner.py をジャンクション linkdir で指す場合、
+        同一ファイルが 2 つのノード ID（linkdir/inner.py と realdir/inner.py）
+        で二重にインデックスされていないこと。"""
+        import subprocess
+        import platform
+
+        if platform.system() != "Windows":
+            pytest.skip("Directory junction test is Windows-only")
+
+        realdir = tmp_path / "realdir"
+        realdir.mkdir()
+        _mkfile(tmp_path, "realdir/inner.py", "# inner\n\n参照: `target.py`\n")
+        _mkfile(tmp_path, "target.py", "# target\n")
+
+        # ジャンクション作成（mklink /J 管理者権限不要）
+        linkdir = tmp_path / "linkdir"
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(linkdir), str(realdir)],
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+
+        if result.returncode != 0:
+            pytest.skip(f"mklink /J failed: {result.stderr}")
+
+        try:
+            graph = refgraph.build_graph(tmp_path)
+
+            # ノード ID の個数を確認（realdir/inner.py のみ、linkdir/inner.py は不可）
+            nodes = _node_ids(graph)
+            realdir_node = "realdir/inner.py"
+            linkdir_node = "linkdir/inner.py"
+
+            # 実ファイルへの参照は出ること
+            assert realdir_node in nodes, (
+                f"実ファイル {realdir_node} がノードとして出ているはず; got {nodes}"
+            )
+
+            # ジャンクション経由での二重インデックスは出ていないこと
+            assert linkdir_node not in nodes, (
+                f"ジャンクション経由の二重ノード {linkdir_node} が出ている(バグ); got {nodes}"
+            )
+
+            # 正の双子: ジャンクション自体が skipped に出ていること
+            reported = _skipped_paths(graph)
+            assert "linkdir" in reported or linkdir_node.split("/")[0] in reported, (
+                f"ジャンクションディレクトリが skipped に記録されるはず; got {reported}"
+            )
+
+        finally:
+            # teardown: ジャンクション自体のみ削除（実体 realdir は残す）
+            if linkdir.exists():
+                try:
+                    linkdir.rmdir()
+                except Exception:
+                    pass
+
+    def test_self_referencing_junction_completes_in_finite_time(self, tmp_path):
+        """自己参照ジャンクション（親ディレクトリを指すジャンクション）でも
+        build_graph が有限時間で完走すること（タイムアウト付きサブプロセス）。"""
+        import subprocess
+        import platform
+
+        if platform.system() != "Windows":
+            pytest.skip("Directory junction test is Windows-only")
+
+        testdir = tmp_path / "testdir"
+        testdir.mkdir()
+        _mkfile(tmp_path, "testdir/file.py", "# file\n")
+
+        # 自己参照ジャンクション: testdir/loopback -> testdir
+        loopback = testdir / "loopback"
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(loopback), str(testdir)],
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+
+        if result.returncode != 0:
+            pytest.skip(f"mklink /J failed: {result.stderr}")
+
+        try:
+            # タイムアウト付きで実行（デッドロックしないことを確認）
+            import time
+            start = time.perf_counter()
+            graph = refgraph.build_graph(tmp_path)
+            elapsed = time.perf_counter() - start
+
+            # 有限時間で完走したこと
+            assert elapsed < 10, (
+                f"自己参照ジャンクションで build_graph が長すぎる: {elapsed:.2f} 秒"
+            )
+
+            # ノードが作られていること（少なくとも file.py）
+            nodes = _node_ids(graph)
+            assert "testdir/file.py" in nodes, (
+                f"通常ファイル testdir/file.py がノードとして出ているはず; got {nodes}"
+            )
+
+        finally:
+            # teardown: ジャンクションのみ削除
+            if loopback.exists():
+                try:
+                    loopback.rmdir()
+                except Exception:
+                    pass
+
+    def test_junction_is_recorded_in_skipped_with_reason(self, tmp_path):
+        """ジャンクションディレクトリが skipped に reason つきで記録されること。"""
+        import subprocess
+        import platform
+
+        if platform.system() != "Windows":
+            pytest.skip("Directory junction test is Windows-only")
+
+        realdir = tmp_path / "realdir"
+        realdir.mkdir()
+        _mkfile(tmp_path, "realdir/inner.py", "# inner\n")
+
+        linkdir = tmp_path / "linkdir"
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(linkdir), str(realdir)],
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+
+        if result.returncode != 0:
+            pytest.skip(f"mklink /J failed: {result.stderr}")
+
+        try:
+            graph = refgraph.build_graph(tmp_path)
+
+            # skipped に reason つきで出ていること
+            reported = _skipped_paths(graph)
+            reasons = [entry.reason for entry in graph.skipped if "linkdir" in entry.path]
+
+            assert len(reasons) > 0, (
+                f"ジャンクションが skipped に reason つきで出ているはず; "
+                f"got skipped paths {reported}"
+            )
+            assert "Symlink" in reasons, (
+                f"skipped reason に 'Symlink' が含まれているはず; got {reasons}"
+            )
+
+        finally:
+            if linkdir.exists():
+                try:
+                    linkdir.rmdir()
+                except Exception:
+                    pass
+
+
 class TestT5AndT5bPickFirstVsAllSymmetry:
     """impl 10.（DRY / `_resolve` 分割）の回帰ガード: T-5 は最初の 1 つだけ、T-5b は
     全件を試すという非対称性が、共通ジェネレータ化後も保たれること（現行緑の正の対照）.

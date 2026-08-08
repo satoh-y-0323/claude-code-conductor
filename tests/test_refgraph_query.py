@@ -2008,3 +2008,162 @@ class TestGlobMatchesRedosRegression:
         assert result.stdout.strip() == "False", (
             f"positive control: 非マッチ入力は False を返すはず; got {result.stdout!r}"
         )
+
+
+class TestGlobMatchesRedosVariantFormWithNonConsecutiveStars:
+    """SR-NEW M-1': `_component_matcher` の ReDoS 変異形（非連続の複数 `*` + 反復リテラル）
+    の回帰ガード。周回 1 の M-1（連続 `*`）は修正済みだが、本変異形は未対策。
+
+    実測パターン（SR での確認）: `("*a" * n) + "ZZZ"` に対して非マッチ入力
+    `"a" * 40` を評価すると n=10〜20 で数秒のハング。本テストは:
+    1. SR 実測ケース（n=15, timeout=2）で検証
+    2. 差分ファジング 1000 組以上でオラクル（安全な短い入力の re.fullmatch）と一致検証
+
+    修正案（契約 5-1）: 正規表現生成を廃止し、手続き的な線形マッチャ
+    (greedy two-pointer 法) に置き換える。正当性検査は差分ファジングで実証。
+    """
+
+    def test_variant_form_with_repeated_literal_does_not_cause_exponential_backtracking(
+        self,
+    ):
+        """非連続複数 `*` + 反復リテラルの形（例: `*a*a*a*aZZZ`）で、
+        非マッチ入力に対してハングしないこと。"""
+        import subprocess
+
+        # SR 実測パターン: n=15, 入力長 40
+        n = 15
+        pattern = ("*a" * n) + "ZZZ"
+        path = "a" * 40
+        code = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(SCRIPTS_DIR)!r})\n"
+            "import refgraph_query\n"
+            f"print(refgraph_query.glob_matches({pattern!r}, {path!r}))\n"
+        )
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                f"glob_matches はタイムアウト(2秒)で打ち切られた: "
+                f"非連続の複数 '*' + 反復リテラル形が "
+                f"非マッチ入力でバックトラック爆発している(SR-NEW M-1' 未修正)。"
+                f"パターン: {pattern!r}, 入力: {path!r}"
+            )
+
+        assert result.returncode == 0, (
+            f"child process exited nonzero (unexpected exception?); "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert result.stdout.strip() == "False", (
+            f"positive control: 非マッチ入力は False を返すはず; got {result.stdout!r}"
+        )
+
+    def test_differential_fuzzing_with_oracle_matches_existing_implementation(self):
+        """差分ファジング 1000+ 組で、glob_matches の結果が参照オラクル
+        (短い安全な入力に限った re.fullmatch) と全件一致すること。
+
+        オラクルは `*` を `.*` に置換した正規表現で、長さ<=12・`*`<=3 に限定して
+        評価。ランダムパターン/入力は固定シード。
+        """
+        import subprocess
+        import random
+
+        # 固定シード
+        random.seed(42)
+
+        # オラクル実装（短い安全な入力のみ）
+        def oracle(pattern: str, text: str) -> bool:
+            import re
+            if len(text) > 12 or pattern.count("*") > 3:
+                return None  # 評価不能（skip）
+            regex = "^" + pattern.replace("*", ".*") + "$"
+            try:
+                return bool(re.fullmatch(regex, text))
+            except Exception:
+                return None
+
+        # テストケース生成（固定シード）
+        test_cases = []
+        random.seed(42)
+        for _ in range(1000):
+            # パターン: `*` とリテラル（a, b, c）の組み合わせ
+            pattern_parts = []
+            for _ in range(random.randint(2, 5)):
+                if random.random() < 0.4:
+                    pattern_parts.append("*")
+                else:
+                    pattern_parts.append(random.choice("abc"))
+            pattern = "".join(pattern_parts)
+
+            # テキスト: a, b, c のみ
+            text = "".join(random.choices("abc", k=random.randint(1, 12)))
+
+            oracle_result = oracle(pattern, text)
+            if oracle_result is not None:
+                test_cases.append((pattern, text, oracle_result))
+
+        assert len(test_cases) >= 100, (
+            f"安全な入力が 100 件以上必要; got {len(test_cases)}"
+        )
+
+        # 各テストケースでサブプロセス実行
+        mismatches = []
+        for pattern, text, expected in test_cases:
+            code = (
+                "import sys\n"
+                f"sys.path.insert(0, {str(SCRIPTS_DIR)!r})\n"
+                "import refgraph_query\n"
+                f"result = refgraph_query.glob_matches({pattern!r}, {text!r})\n"
+                f"print('TRUE' if result else 'FALSE')\n"
+            )
+
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-c", code],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=2,
+                )
+            except subprocess.TimeoutExpired:
+                mismatches.append(
+                    (pattern, text, expected, "TIMEOUT", f"pattern={pattern!r} text={text!r}")
+                )
+                continue
+
+            if result.returncode != 0:
+                mismatches.append(
+                    (pattern, text, expected, f"EXIT {result.returncode}", result.stderr)
+                )
+                continue
+
+            actual = result.stdout.strip() == "TRUE"
+            if actual != expected:
+                mismatches.append((pattern, text, expected, actual, "mismatch"))
+
+        if mismatches:
+            summary = (
+                f"Differential fuzzing found {len(mismatches)} mismatches "
+                f"out of {len(test_cases)} cases:\n"
+            )
+            for i, (p, t, exp, act, reason) in enumerate(mismatches[:5]):
+                summary += (
+                    f"  [{i+1}] pattern={p!r} text={t!r} "
+                    f"expected={exp} actual={act} ({reason})\n"
+                )
+            if len(mismatches) > 5:
+                summary += f"  ... and {len(mismatches)-5} more\n"
+            pytest.fail(summary)
+
+        assert len(mismatches) == 0, (
+            f"差分ファジング不一致: {len(mismatches)}/{len(test_cases)}"
+        )
