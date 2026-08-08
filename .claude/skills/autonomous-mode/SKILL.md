@@ -335,7 +335,7 @@ opt-in は plan-report 生成前（フェーズ A 以前）に行われるため
 **機械実行必須化（SR-AI-001）**: realpath 正規化＋許可ルート封じ込め判定は、`.claude/skills/autonomous-mode/scripts/mode_line.py`
 （Bash 経由）を実際に呼び出して判定結果を得ること。文字列の目視比較で代替しないこと。スクリプト不在（配布先等）の場合は無効＝HITL（fail-closed）。
 呼び出し例（セッションファイルからモード行を直接パイプで渡す。コマンドラインに現れるリテラルはファイルパスのみで、モード行の内容はパイプのデータとして流れシェルに評価されない）:
-`grep -m1 '^モード: ' .claude/memory/sessions/{YYYYMMDD}.tmp | python .claude/skills/autonomous-mode/scripts/mode_line.py`
+`grep -m1 '^モード: ' .claude/memory/sessions/{YYYYMMDD}.tmp | c3 run .claude/skills/autonomous-mode/scripts/mode_line.py`
 → `VALID<TAB>{正規化済み絶対パス}`（exit 0）／`INVALID<TAB>{理由コード}`（exit 1）の 1 行と exit code で判定する。
 モード行の値をコマンド文字列（here-string・引数・ダブルクォート内展開）に直接埋め込んではならない。
 
