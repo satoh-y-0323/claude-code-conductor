@@ -488,8 +488,17 @@ def test_mode_line_cli_valid_with_trailing_newline(tmp_path):
 #
 # These tests verify:
 # (a) Negative control: Dead patterns are NOT in EXCLUDE_PATTERNS (Red before removal)
-# (b) Positive twins: Existing patterns still work (symmetry with (a))
-# (c) Stub checks: With injected dead patterns, all tests flip to Red
+# (b) Positive twins: the *live* patterns that remain still exclude, observed
+#     through the real behaviour of should_skip(). Each twin mirrors the shape
+#     of a dead pattern it replaces, so the deletion cannot silently take the
+#     exclusion mechanism down with it:
+#       - exact-file twin  <-> "hooks/subagent_log.py" / "agents/tdd-develop.md"
+#       - glob-directory twin <-> "skills/worktree-tdd-workflow/*"
+#
+# Every twin must assert should_skip(...) is True. Asserting `is False` would be
+# vacuous here: with EXCLUDE_PATTERNS emptied, should_skip returns False for
+# everything, so a `is False` assertion stays green against a destroyed
+# implementation and measures nothing.
 # ---------------------------------------------------------------------------
 
 
@@ -521,28 +530,42 @@ def test_dead_pattern_skills_worktree_tdd_workflow_not_excluded():
     )
 
 
-def test_positive_twin_existing_agent_patterns_still_excluded():
-    """Positive twin (b): Existing agent patterns remain excluded.
+def test_positive_twin_exact_file_patterns_still_excluded():
+    """Positive twin (b): live *exact-file* exclusions still fire.
 
-    Symmetry check: if agents/* patterns are excluded, the framework agents
-    (architect, etc.) must be present.
+    Twin of the two deleted exact-file patterns ("hooks/subagent_log.py" and
+    "agents/tdd-develop.md"): removing them must not break exact-file matching
+    for the entries that are still alive.
     """
-    assert should_skip("agents/architect.md") is False, (
-        "Framework agents must not be excluded"
-    )
-    # Verify at least one framework agent survives for contrast
-    assert not should_skip("agents/architect.md")
+    for rel in (
+        "memory/patterns.json",
+        "memory/agent-audit.log",
+        "settings.local.json",
+        "pytest_temp.ini",
+        "docs/taxonomy.md",
+    ):
+        assert should_skip(rel) is True, (
+            f"live exact-file exclusion must still fire for {rel!r}"
+        )
 
 
-def test_positive_twin_existing_skill_patterns_still_excluded():
-    """Positive twin (b): Existing skill patterns remain excluded.
+def test_positive_twin_glob_directory_patterns_still_excluded():
+    """Positive twin (b): live *glob-directory* exclusions still fire.
 
-    Framework skills must be included, showing the exclusion mechanism
-    still works for appropriate patterns.
+    Twin of the deleted "skills/worktree-tdd-workflow/*" pattern: removing it
+    must not break ``dir/*`` matching for the entries that are still alive,
+    including nested paths (fnmatch's ``*`` spans ``/``).
     """
-    assert should_skip("skills/dev-workflow/SKILL.md") is False, (
-        "Framework skills must not be excluded"
-    )
+    for rel in (
+        "agent-memory/wt_tester/MEMORY.md",
+        "worktrees/agent-abc123/reports/code-review-report.md",
+        "memory/sessions/20260809.md",
+        "logs/hook.log",
+        "tmp/scratch.txt",
+    ):
+        assert should_skip(rel) is True, (
+            f"live glob-directory exclusion must still fire for {rel!r}"
+        )
 
 
 def test_positive_twin_reports_state_excluded():
@@ -552,44 +575,3 @@ def test_positive_twin_reports_state_excluded():
     """
     assert should_skip("reports/test-report-20260809-120000.md") is True
     assert should_skip("state/tier_selection.json") is True
-
-
-def test_stub_check_negative_control_with_dead_patterns_injected(monkeypatch):
-    """Stub check (c-i): Inject dead patterns back → negative control tests fail.
-
-    This stub verifies that the negative control tests (a) correctly detect
-    the presence of dead patterns. When dead patterns are artificially added back,
-    negative control assertions must flip to fail (Red).
-    """
-    import c3._excludes
-
-    # Reconstruct the OLD state by adding back dead patterns
-    dead_patterns = ("hooks/subagent_log.py", "agents/tdd-develop.md", "skills/worktree-tdd-workflow/*")
-    old_patterns = c3._excludes.EXCLUDE_PATTERNS + dead_patterns
-    monkeypatch.setattr(c3._excludes, "EXCLUDE_PATTERNS", old_patterns)
-
-    # Now the negative control assertions would fail (this is the Red state)
-    # We verify they *would* fail by checking should_skip returns True:
-    from c3._excludes import should_skip
-    assert should_skip("hooks/subagent_log.py") is True
-    assert should_skip("agents/tdd-develop.md") is True
-    assert should_skip("skills/worktree-tdd-workflow/SKILL.md") is True
-
-
-def test_stub_check_positive_twin_with_empty_patterns(monkeypatch):
-    """Stub check (c-ii): Clear all patterns → positive twin tests fail.
-
-    This stub verifies that the positive twin tests (b) correctly rely on
-    EXCLUDE_PATTERNS content. When patterns are cleared, positive twin
-    assertions must flip to fail (Red).
-    """
-    import c3._excludes
-
-    # Clear all patterns
-    monkeypatch.setattr(c3._excludes, "EXCLUDE_PATTERNS", ())
-
-    # Now should_skip must return False for previously excluded items
-    from c3._excludes import should_skip
-    # These would be False with empty patterns, causing tests to fail:
-    assert should_skip("reports/test-report-20260809-120000.md") is False
-    assert should_skip("state/tier_selection.json") is False
