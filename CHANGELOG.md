@@ -1,5 +1,44 @@
 # Changelog
 
+## [2.64.0] - 2026-08-10
+
+### 追加
+
+- **到達性対応表 `.claude/skills/dev-workflow/references/reachability-map.md` を新設した**（配布物）。
+  「規約・対策をどこに置けば読み手（agent / skill）に届くか」を経路×実パス×届く role×条件の
+  4 列表と「置き場所デシジョン」3 手順で表引きできる。対策を Read 経路の外に置いて実効を
+  失う欠陥（SR-AI-001 型）が 4 回再発した構造への手当て
+  - 導線 3 本: `plan-design-guidelines.md`（planner）・`dev-workflow/SKILL.md` の E-1/E-2
+    指摘対応（親 Claude）・`agents/architect.md`（architect）
+  - 静的検査 `tests/skills/test_reachability_map.py`（8 件・非配布）が表のパス実在と導線の
+    参照実在を検査する。`C3_REACHABILITY_ROOT` 環境変数はテスト専用の検知力確認 seam
+- **`plan-design-guidelines.md` にルール 16〜20 を新設した**（配布物）:
+  16 テスト凍結の前提を変える計画は担い手（writes にテストファイルを含むタスク）を明示する／
+  17 `tasks[].prompt` には逐語手順でなく契約・不変則・測るべき性質を書く／
+  18 一時改変の後始末は手段を逐語指定し `git checkout`・`restore`・`reset` を禁じる／
+  19 テストの検知力は 2 種の do-nothing スタブで赤緑反転を示す／
+  20 gitignored 成果物は直接 Read で検証し worker prompt に gitignored 文書の Read を指示しない。
+  モード別適用表（両モード共通）と出力直前の自己チェックリストにも対応行を追加
+- **`agents/architect.md` に設計時の再発防止 2 件を追加した**:
+  「採用する対策と同種の対策が過去に破られていないか reviewer 系 agent-memory を確認する」
+  （`is_symlink()` 対策が 5 回破られた間、履歴が設計の入力になっていなかった構造への手当て）と
+  「対策・不変則は判定手段でなく満たすべき性質で書く」
+- `parallel-agents/SKILL.md` 2-C 冒頭に wave 起動前の `git status` 空確認を追加した
+  （未コミット変更は worktree に届かない）
+
+### 変更
+
+- **agent 定義からツール振り付け 9 行を削除した**（`Glob / Grep で把握する` 等・8/4 台帳 A-4・
+  G12 裁定済み）。どのツールを使うかは手段であって契約ではない。契約行（design-critic の
+  最新レポート取得指定・project-setup の置換対象指定等）は残した
+- `systematic-debugger` / `wt_systematic-debugger` の編集禁止の根拠記述を実行時の事実に
+  合わせて訂正した（`memory:` 付き agent には Edit が実行時に自動付与されるため、
+  frontmatter ではなく本規約が唯一の担保・A-6）
+- `wt_*` agent 3 本の `v2.2.0+` バージョンピンを除去した（A-7）
+- `dev-workflow/SKILL.md` のルーブリック Read 指示 3 箇所から強調・括弧書きを除去した（A-5・
+  Read 指示自体は契約として維持）
+- `agents/planner.md` の参照ルール範囲を 1〜20 へ更新した
+
 ## [2.63.0] - 2026-08-09
 
 ### 追加
