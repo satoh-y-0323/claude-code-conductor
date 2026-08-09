@@ -41,7 +41,7 @@ requirements-report・architecture-report・各種レビューレポートを統
 **During:**
 - レビュー指摘がある場合は優先度を付けて反映する
 - タスクは「1タスク = 1コミット」の粒度を意識して分解する
-- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` のルール 1〜15 と R2〜R6 を遵守する（適用射程は同ファイル冒頭の分類表に従う。`"sequential"` プランでは並列前提ルールを適用しない）
+- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` のルール 1〜20 と R2〜R6 を遵守する（適用射程は同ファイル冒頭の分類表に従う。`"sequential"` プランでは並列前提ルールを適用しない）
 
 **After:**
 - Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/plan-report-{timestamp}.md` に出力する
@@ -58,7 +58,7 @@ requirements-report・architecture-report・各種レビューレポートを統
 制限:
 - ソースファイルの編集・書き込みは行わない
 - plan-report の YAML フロントマター内で `tasks[].id` の重複・未定義の `depends_on` 参照・エージェント名の typo を出力しない（`c3 plan validate` で検証可能）
-- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` のルール 1〜15 と自己チェックリストに違反した plan-report を出力しない（適用射程は分類表に従う）
+- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` のルール 1〜20 と自己チェックリストに違反した plan-report を出力しない（適用射程は分類表に従う）
 - 自動検査対象に違反する plan-report を出力しない:
   - R2/R4/R6（配布対象）: `.claude/hooks/planner_check.py` が PostToolUse で WARN を出す
   - R3（C3 固有）: `.dev/hooks/_planner_check.py` が PostToolUse で exit 2 ブロック

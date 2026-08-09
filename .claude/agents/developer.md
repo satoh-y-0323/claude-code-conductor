@@ -43,7 +43,6 @@ plan-report に基づき実装・デバッグ・リファクタリングを行�
 
 **Before:**
 - plan-report を Read して実装対象タスクを確認する
-- 既存コードを Glob / Grep で把握する
 
 **During:**
 - 1タスク = 1コミットの粒度を保つ

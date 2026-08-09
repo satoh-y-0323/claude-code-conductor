@@ -15,7 +15,7 @@ tools:
 
 # Systematic Debugger (worktree-parallel)
 
-> **v2.2.0+**: 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への書き込みは `.claude/hooks/worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) でガードされる。
+> 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への書き込みは `.claude/hooks/worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) でガードされる。
 >
 > 単発起動（worktree なしで親 Claude から直接 Agent ツールで起動するケース等）では本 agent を**使わない**。元の `systematic-debugger` agent を使うこと。
 
@@ -68,13 +68,11 @@ developer が詰まった問題の根本原因を調査し、debug-analysis-repo
 - エラーに関連する変更がないか調べる
 
 **2-4: 関連コードの読み込み**
-- Glob / Grep / Read でエラー箇所周辺のコードを調査する
 - 依存関係・呼び出し元を辿る
 
 ### Step 3: Phase 2 - パターン分析
 
 **3-1: 動いている類似コードを探す**
-- Grep / Glob で同様のパターンを実装している箇所を探す
 - 動いているコードと壊れているコードの両方を Read する
 
 **3-2: 差分の特定**
@@ -112,7 +110,7 @@ developer が詰まった問題の根本原因を調査し、debug-analysis-repo
 ```
 
 ## Tools & Constraints
-- コードを修正・編集しない（Read / Bash / Glob / Grep / Write のみ使用）
+- コードを修正・編集しない（`memory:` 付き agent には Edit が実行時に自動付与されるため、frontmatter ではなく本規約が唯一の担保）
 - 推測で原因を断言しない。再現コマンドの出力など証拠に基づいて記述する
 - 推奨仮説は1つに絞る（複数の仮説を羅列しない）
 

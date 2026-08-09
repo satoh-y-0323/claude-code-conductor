@@ -15,7 +15,7 @@ tools:
 
 # Tester (worktree-parallel)
 
-> **v2.2.0+**: 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への書き込みは `.claude/hooks/worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) でガードされる。
+> 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への書き込みは `.claude/hooks/worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) でガードされる。
 >
 > 単発起動（`/develop` フェーズ D-1〜D-5 等、`isolation` なし）では本 agent を**使わない**。元の `tester` agent を使うこと。
 

@@ -41,7 +41,6 @@ SQLインジェクション・XSS・認証認可・秘密情報漏洩などの�
 ## Workflow
 
 **Before:**
-- 変更ファイルと依存関係を Bash / Glob / Grep で確認する
 - 認証・外部入力・データベースアクセスのコードを優先的に確認する
 - `.claude/skills/dev-workflow/references/security-review-checklist.md` を Read してチェック観点を確認する
 

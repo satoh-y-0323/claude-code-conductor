@@ -80,7 +80,7 @@ session.tmp の `モード:` 行を確認する。**有効な自律宣言**（§
 
 ### A-1〜A-3: 動的ヒアリング（ルーブリック型）
 
-**最初に必ず** `.claude/skills/dev-workflow/references/interview-rubric.md` を Read する（記憶・推測で進めない）。
+`.claude/skills/dev-workflow/references/interview-rubric.md` を Read する。
 その指針に従い、床 5 観点（①背景・目的 ②スコープ境界 ③制約・前提 ④非機能要件 ⑤成功条件）を
 **動的にヒアリング**する。要点:
 
@@ -147,7 +147,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 
 ### B-1〜B-2: 動的設計確認（ルーブリック型）
 
-**最初に必ず** `.claude/skills/dev-workflow/references/design-rubric.md` を Read する（記憶・推測で進めない）。
+`.claude/skills/dev-workflow/references/design-rubric.md` を Read する。
 その指針に従い、床 4 観点（①技術スタック制約 ②要件から導く設計判断ポイント ③非機能の実現方針 ④トレードオフ分岐）を
 **動的に確認**する。要点:
 
@@ -570,7 +570,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 3. plan-report も当日 debug-analysis も存在しない場合はフェーズ C から始めるよう案内して終了する。
 
 **`po_plan_version: "0.1"` の場合（parallel-agents モード）:**
-1. **最初に必ず** `.claude/skills/parallel-agents/SKILL.md` を Read する（記憶・推測で進めない）
+1. `.claude/skills/parallel-agents/SKILL.md` を Read する
 2. `.claude/skills/parallel-agents/SKILL.md` の手順に完全に従って wave 単位で実装を進める
 3. 全 wave 完了後はフェーズ E（レビュー）へ進む（wave に reviewer タスクが含まれていれば E をスキップ可能と案内する）
 
@@ -973,6 +973,8 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 ```
 
 **指摘がある場合:**
+対応の置き場所（どの文書・どの層に対策を置くか）を決める際は `.claude/skills/dev-workflow/references/reachability-map.md` で読み手に届くかを確認する。
+
 指摘一覧をテキストで提示してから AskUserQuestion で方針を確認する:
 ```json
 {
@@ -1114,6 +1116,8 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 ```
 
 **指摘がある場合:**
+対応の置き場所（どの文書・どの層に対策を置くか）を決める際は `.claude/skills/dev-workflow/references/reachability-map.md` で読み手に届くかを確認する。
+
 指摘一覧をテキストで提示してから AskUserQuestion で方針を確認する:
 ```json
 {

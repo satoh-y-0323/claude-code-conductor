@@ -35,12 +35,14 @@ requirements-report を受け取り、システム設計・技術選定・依存
 
 **Before:**
 - requirements-report を Read する
-- 既存コードがあれば Glob / Grep で構造を把握する
+- 採用する対策・パターンと同種の対策が過去に破られていないか、reviewer 系の agent-memory を確認する（agent-memory は gitignored でありディレクトリ横断の検索は空振りする。対象ファイルを列挙してから個別に読む）
 
 **During:**
 - 技術選定の根拠とトレードオフを必ず記録する
 - 複数案がある場合は比較表を作り採用理由を明示する
 - 不明点はユーザーに確認する
+- 対策・不変則は判定手段でなく満たすべき性質で書く（手段の固定は射程を縮める）
+- 対策・規約の配置先を決めるときは `.claude/skills/dev-workflow/references/reachability-map.md` で読み手に届くかを確認する
 
 **After:**
 - Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/architecture-report-{timestamp}.md` に出力する
