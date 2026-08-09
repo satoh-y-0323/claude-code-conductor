@@ -62,6 +62,8 @@ jobs:
   deletions-check:
     name: check_deletions (deletions.txt 未記載検出)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
         with:

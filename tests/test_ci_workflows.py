@@ -170,3 +170,36 @@ def test_test_yml_check_deletions_job_checkout_has_fetch_depth_zero():
         " git describe --tags がタグ履歴を取得できず、check_deletions.py --check が"
         " 常に「タグが見つからない」で exit 0 に早期 return する（空の緑）。"
     )
+
+
+def test_test_yml_check_deletions_job_declares_permissions():
+    """check_deletions.py --check を実行する job が permissions を明示的に宣言すること。
+
+    job レベルで permissions を明示しない場合、GITHUB_TOKEN はリポジトリ設定に
+    依存した既定権限（多くの場合 read/write 全パーミッション）で動作する。
+    本 job は checkout して読み取り専用の削除検出を行うだけなので、
+    最小権限原則に従い `contents: read` に絞る必要がある。
+
+    Red フェーズでは permissions キー自体が test.yml に無いため失敗する。
+    """
+    workflow = _load_workflow("test.yml")
+    job_name, job_def = _find_job_running_check_deletions(workflow)
+
+    assert job_name is not None, (
+        "check_deletions.py --check を実行する job が test.yml に無いため、"
+        " permissions の検査に進めない（test_test_yml_has_check_deletions_job を先に解消すること）。"
+    )
+
+    permissions = job_def.get("permissions")
+    assert permissions is not None, (
+        f"job '{job_name}' に permissions が宣言されていない。"
+        " 既定の GITHUB_TOKEN 権限（リポジトリ設定依存）で動作してしまうため、"
+        " 最小権限原則に従い job レベルで permissions を明示する必要がある"
+        "（例: permissions: {contents: read}）。"
+    )
+
+    assert permissions == {"contents": "read"}, (
+        f"job '{job_name}' の permissions が想定値と一致しない（実際の値: {permissions!r}）。"
+        " 本 job は checkout して読み取り専用の削除検出を行うだけなので、"
+        " permissions: {contents: read} を想定している。"
+    )
