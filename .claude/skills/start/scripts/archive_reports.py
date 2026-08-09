@@ -143,9 +143,17 @@ def _archive_dir_is_contained(archive_dir: Path) -> bool:
     引数を `src` / `archive_dir` の 2 個に固定しているため、`reports_dir` を別引数で渡さない）。
 
     既存の解決パターン（`mode_line.py` の plan-path 検査）と同じ `os.path.realpath` を使う。
+    例外の扱いも引用元に揃える（`mode_line.py:132-136` は `realpath` を `try/except OSError` で
+    包み、失敗を無効側へ倒している）。判定関数が例外を送出すると設計 §3-3 の
+    「exit code は戻り値で表し例外で表さない」契約を破るため、**解決できない時点で
+    「収まっていない」と扱う**（安全側・SR-NEW-1）。
     """
-    expected = os.path.join(os.path.realpath(archive_dir.parent), ARCHIVE_DIR_NAME)
-    return os.path.realpath(archive_dir) == expected
+    try:
+        expected = os.path.join(os.path.realpath(archive_dir.parent), ARCHIVE_DIR_NAME)
+        actual = os.path.realpath(archive_dir)
+    except OSError:
+        return False
+    return actual == expected
 
 
 def _default_reports_dir() -> Path:
