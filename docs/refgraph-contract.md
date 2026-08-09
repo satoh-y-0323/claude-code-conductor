@@ -508,7 +508,7 @@ src/c3/_template/.claude/skills/dev-workflow/SKILL.md
    | `session_stop.py` の importlib → `stop.py` / `consolidate_memory.py` / `session_utils.py` / `tier_gap_check.py` | `py_importlib` が出る |
    | `permission_handler.py` の subprocess → `permission_handler_toast.py` | `py_subprocess_path` が出る |
    | `parallel-agents/SKILL.md` の写像表 → `wt_systematic-debugger.md` | `md_agent_variant_map` が出る |
-   | SKILL.md の `c3 run` → skill scripts 7 本 | `md_c3_run` が出る |
+   | SKILL.md の `c3 run` → skill scripts 8 本 | `md_c3_run` が出る |
    | `cli.py` の複数行 import → `cli_init.py` ほか | `py_import` が出る |
    | SKILL.md の散文 → `security-reviewer.md` | `md_bare_agent_name` が出る |
    | `settings.json` の `permissions.allow` → `stop.py` | `settings_permission` が出る（`settings_hook` **ではない**） |
