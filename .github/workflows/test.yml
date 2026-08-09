@@ -55,3 +55,29 @@ jobs:
 
       - name: Check breaking changes are recorded
         run: python scripts/extract_breaking_changes.py --check
+
+  # 削除検出は git 履歴走査とパス文字列判定のみで OS 差を持たないため ubuntu 1 構成で十分。
+  # 既存の test matrix (5 構成) に fetch-depth: 0 を付けると全構成が full clone になるため
+  # 専用 job に分ける。
+  deletions-check:
+    name: check_deletions (deletions.txt 未記載検出)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # check_deletions.py は `git describe --tags` と `git diff <tag>..HEAD` を使う。
+          # 既定の fetch-depth: 1 ではタグも履歴も無く、スクリプトが exit 0 で素通りして
+          # 「空の緑」になるため全履歴が必須。
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Check deletions are recorded
+        run: python scripts/check_deletions.py --check
