@@ -290,13 +290,13 @@ class TestKnownRelationsWithPremiseChecks:
         )
         assert len(hits) >= 1, "md_agent_variant_map edge to wt_systematic-debugger.md is missing"
 
-    def test_row5_c3_run_reaches_all_seven_skill_scripts(self, repo_root, repo_graph):
-        """行 5: SKILL.md の `c3 run` → skill scripts 7 本（`md_c3_run`）."""
+    def test_row5_c3_run_reaches_all_eight_skill_scripts(self, repo_root, repo_graph):
+        """行 5: SKILL.md の `c3 run` → skill scripts 8 本（`md_c3_run`）."""
         script_ids = sorted(
             path.relative_to(repo_root).as_posix()
             for path in repo_root.glob(".claude/skills/*/scripts/*.py")
         )
-        assert len(script_ids) == 7, f"premise changed: skill scripts count is {len(script_ids)}"
+        assert len(script_ids) == 8, f"premise changed: skill scripts count is {len(script_ids)}"
 
         targets = {link.target for link in _links(repo_graph, relation="md_c3_run")}
         missing = [node_id for node_id in script_ids if node_id not in targets]

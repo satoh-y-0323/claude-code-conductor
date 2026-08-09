@@ -53,10 +53,14 @@ Glob で `.claude/reports/*.md` を検索する（`archive/` 配下は含まな�
 }
 ```
 
+アーカイブは専用スクリプトが行う。このコマンドは、移動先に同名のファイルが既にある場合は
+移動元を `{元の名前}-archived-{元ファイルの更新時刻}.md` へリネームして**両方を残す**（既存ファイルは 1 バイトも変更しない）。
+アーカイブ先ディレクトリが無ければ作成する。移動できなかったファイルがあれば stderr に一覧を出して exit 1 になる。
+
 **「全てアーカイブして新しく始める」の場合:**
 Bash ツールで実行する:
 ```bash
-mkdir -p .claude/reports/archive && mv .claude/reports/*.md .claude/reports/archive/
+c3 run .claude/skills/start/scripts/archive_reports.py
 ```
 
 **「アーカイブするフェーズを選ぶ」の場合:**
@@ -77,11 +81,19 @@ AskUserQuestion で対象フェーズを確認する:
 }
 ```
 
-選択されたフェーズに対応するファイルを Bash ツールで移動する（ファイルが存在しない場合はスキップ）:
-- 要件定義: `mkdir -p .claude/reports/archive && mv .claude/reports/requirements-report-*.md .claude/reports/archive/ 2>/dev/null || true`
-- 設計: `mkdir -p .claude/reports/archive && mv .claude/reports/architecture-report-*.md .claude/reports/archive/ 2>/dev/null || true`
-- 計画: `mkdir -p .claude/reports/archive && mv .claude/reports/plan-report-*.md .claude/reports/archive/ 2>/dev/null || true`
-- レビュー: `mkdir -p .claude/reports/archive && mv .claude/reports/code-review-report-*.md .claude/reports/archive/ 2>/dev/null || true && mv .claude/reports/security-review-report-*.md .claude/reports/archive/ 2>/dev/null || true && mv .claude/reports/design-review-report-*.md .claude/reports/archive/ 2>/dev/null || true`
+選択された各ラベルを次の表で `--phase` の値に読み替え、Bash ツールで 1 回だけ実行する
+（`--phase` は繰り返し指定でき、指定した分の和が対象になる。対象ファイルが 1 件も無くても成功する）:
+
+| 選択肢のラベル | `--phase` の値 | 対象になるファイル |
+|---|---|---|
+| 要件定義 | `requirements` | `requirements-report-*.md` |
+| 設計 | `architecture` | `architecture-report-*.md` |
+| 計画 | `plan` | `plan-report-*.md` |
+| レビュー | `review` | `code-review-report-*.md` / `security-review-report-*.md` / `design-review-report-*.md` |
+
+```bash
+c3 run .claude/skills/start/scripts/archive_reports.py --phase requirements --phase review
+```
 
 ---
 

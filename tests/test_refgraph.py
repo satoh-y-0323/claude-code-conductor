@@ -335,17 +335,17 @@ class TestKnownRelations:
         missing = sorted(expected - got)
         assert missing == [], f"md_agent_variant_map edges missing: {missing}"
 
-    def test_c3_run_reaches_all_seven_skill_scripts(self, repo_graph, repo_root):
-        """行 5: SKILL.md の `c3 run` → skill scripts 7 本（`md_c3_run`）.
+    def test_c3_run_reaches_all_eight_skill_scripts(self, repo_graph, repo_root):
+        """行 5: SKILL.md の `c3 run` → skill scripts 8 本（`md_c3_run`）.
 
         `${CLAUDE_SKILL_DIR}` / skill 相対 / ルート相対の 3 形式が混在しており、
-        1 形式でも解決できないと 7 本そろわない。
+        1 形式でも解決できないと 8 本そろわない。
         """
         script_ids = sorted(
             str(path.relative_to(repo_root)).replace("\\", "/")
             for path in repo_root.glob(".claude/skills/*/scripts/*.py")
         )
-        assert len(script_ids) == 7, f"repo fact changed: {script_ids}"
+        assert len(script_ids) == 8, f"repo fact changed: {script_ids}"
 
         targets = _targets(repo_graph, "md_c3_run")
         missing = [node_id for node_id in script_ids if node_id not in targets]

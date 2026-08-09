@@ -13,6 +13,7 @@
       "Bash(c3 run .claude/skills/dev-workflow/scripts/record_review_decision.py*)",
       "Bash(c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py*)",
       "Bash(c3 run .claude/skills/init-session/scripts/session_guard.py*)",
+      "Bash(c3 run .claude/skills/start/scripts/archive_reports.py*)",
       "Read(**)",
       "Grep(**)",
       "Edit(.claude/reports/**)",
