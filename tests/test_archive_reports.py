@@ -32,6 +32,15 @@ Red の理由（改訂 4・E レビュー指摘 9 件のうち振る舞いが変
   （かつ `main()` の他の `print` は helper を通っていない）
 - SR-NEW-2: `_move_one` が `src` を読む直前に `is_symlink()` を再判定しない
 
+Red の理由（改訂 5・E 再レビューの High 1 件 = CR-NEW / SR-V-002 再発）:
+移動先の判定が `is_symlink()` のままであり、**NTFS ディレクトリジャンクションが素通りする**。
+ジャンクションは `_winapi.CreateJunction` / `mklink /J` で**管理者権限なしに作成でき**、
+`Path.is_symlink()` は `False`・`is_dir()` / `exists()` は `True` を返す（本開発機で実測）。
+そのため是正前の実装は **exit 0 の成功扱い**で完走し、ファイルは外部ディレクトリへ移り、
+移動元は削除される。設計 §3-3c 改訂 5 は判定を **realpath 封じ込め**
+（`os.path.realpath(archive_dir)` が `os.path.realpath(reports_dir)` 直下の `archive` と
+一致すること・不一致なら reparse の種別を問わず 1 件も処理せず exit 1）へ置き換えると規定する。
+
 **env ゲート（SR-AI-001）と既存 21 件の関係**: 改訂 4 で `--reports-dir` は
 `C3_ARCHIVE_REPORTS_DIR_OK=1` がある場合のみ受け付ける形になる。本ファイルの全テストは
 `--reports-dir` を渡すため、モジュール全体に autouse fixture で env を明示 opt-in しておく
@@ -715,9 +724,15 @@ class TestArchiveDirSymlinkIsRefused:
     → `archive_dir` を使う前に `is_symlink()` を検査し、真なら 1 件も処理せず exit 1。
 
     Windows のシンボリックリンク作成には特権が要る（実測 `OSError: [WinError 1314]`）ため、
-    既存の性質 12 と同じ二段構成にする:
-    (a) `Path.is_symlink` を差し替えて**契約そのもの**を特権なしで測る主判定
-    (b) 実シンボリックリンクを作れる環境でのみ走る実挙動テスト
+    改訂 4 では `Path.is_symlink` を差し替える主判定と実挙動テストの二段構成にしていた。
+
+    **【改訂 5 で主判定を削除】** `Path.is_symlink` を差し替える主判定
+    （`test_archive_dir_reported_as_symlink_stops_everything`）は、置き換えられた機構
+    （`is_symlink()` 判定）そのものを測るためだけの seam であり、設計 §3-3c 改訂 5 の
+    realpath 封じ込めでは何も保証しないため削除した。真のシンボリックリンクに対する拒否は、
+    下の実挙動テスト（realpath 封じ込めでもリンク先へ解決されるため引き続き緑）と、
+    新設の `TestArchiveDirJunctionIsRefused` / `TestArchiveDirMustResolveInsideReportsDir`
+    がカバーする。
     """
 
     FIRST = "architecture-report-20260807-090501.md"
@@ -728,37 +743,6 @@ class TestArchiveDirSymlinkIsRefused:
         write_report(reports_dir, self.FIRST, LF_BODY, mtime=FIXED_MTIME_B)
         write_report(reports_dir, self.SECOND, CRLF_BODY, mtime=FIXED_MTIME_A)
         return reports_dir
-
-    def test_archive_dir_reported_as_symlink_stops_everything(self, tmp_path, monkeypatch):
-        """性質 1（主判定・特権不要）: `archive/` が symlink なら 1 件も処理せず exit 1。
-
-        リンク先の代わりに「実ディレクトリとして存在する `archive/`」を用意し、そこへ
-        **何も書かれない**ことでリンク先が汚されないことを測る。
-        """
-        module = load_archive_module()
-
-        reports_dir = self._setup(tmp_path)
-        archive_dir = reports_dir / "archive"
-        archive_dir.mkdir()
-
-        original_is_symlink = Path.is_symlink
-
-        def fake_is_symlink(self) -> bool:
-            if self.name == "archive":
-                return True
-            return original_is_symlink(self)
-
-        monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
-
-        rc = run_main(module, "--reports-dir", str(reports_dir))
-
-        assert rc == 1, "移動先が symlink なら exit 1（設計 §3-3c 改訂 4）"
-        written = sorted(p.name for p in archive_dir.iterdir())
-        assert written == [], (
-            f"symlink の移動先に書き込みが起きた: {written}（リンク先すり替えの経路）"
-        )
-        assert (reports_dir / self.FIRST).read_bytes() == LF_BODY, "移動元が削除・改変された"
-        assert (reports_dir / self.SECOND).read_bytes() == CRLF_BODY, "移動元が削除・改変された"
 
     def test_real_symlinked_archive_dir_stops_everything(self, tmp_path):
         """性質 1（実挙動・特権が要る環境では skip）: 実 symlink の移動先でも同じ。"""
@@ -1246,3 +1230,295 @@ class TestSymlinkRecheckJustBeforeRead:
         assert (archive_dir / self.PLAIN_NAME).read_bytes() == LF_BODY, (
             "1 件失敗で残りの処理が打ち切られている（ADR-4）"
         )
+
+
+# ===========================================================================
+# 以下は改訂 5（E 再レビューの High 1 件 = CR-NEW / SR-V-002 の再発）の追加分。
+#
+# 設計 §3-3c【改訂 5】: 移動先の判定を `is_symlink()` から **realpath 封じ込め**へ置き換える。
+#   `os.path.realpath(archive_dir)` が `os.path.realpath(reports_dir)` 直下の `archive` と
+#   一致しなければ、reparse の種別を問わず **1 件も処理せず exit 1**。
+#   検査箇所は改訂 4 と同じ 2 つ（`mkdir` の前・`os.open` の前）。
+#   `src` 側（ファイル）の `is_symlink()` 判定は**据え置き**（ジャンクションはディレクトリ専用）。
+# ===========================================================================
+
+ARCHIVE_NAME = "archive"
+
+
+@pytest.fixture
+def junction():
+    """NTFS ディレクトリジャンクションを作るファクトリ。作れない環境では skip する。
+
+    `mklink /J` ではなく `_winapi.CreateJunction(target, link)` を使う（Python 3.8+ の
+    非公開 API。本開発機では **管理者権限なしに成功する**ことを実測済み）。シェル経由の
+    `mklink` はパスの受け渡しで失敗するため採らない。
+
+    **skip に逃げる前に「作成を試みて失敗した」ことが分かる形にする**（設計上の要請）:
+    skip 理由には試行した API と実際の例外を必ず載せる。
+
+    **後始末**: `os.rmdir(link)` で **リンク自体を先に外す**。ジャンクションを張ったまま
+    一時ディレクトリを消すと、リンク先を巻き込んで削除しうる（`shutil.rmtree` は
+    ジャンクションを辿る）。`os.rmdir` はリンク先の中身を消さないことを実測済み。
+    """
+    created: list[Path] = []
+
+    def _create(link: Path, target: Path) -> Path:
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            import _winapi
+        except ImportError as exc:
+            pytest.skip(
+                "ジャンクションの作成を試みられなかった（`_winapi` が import できない"
+                f"＝非 Windows 環境）: {type(exc).__name__}: {exc}"
+            )
+        creator = getattr(_winapi, "CreateJunction", None)
+        if creator is None:
+            pytest.skip(
+                "ジャンクションの作成を試みられなかった（`_winapi.CreateJunction` が無い）"
+            )
+        try:
+            creator(str(target), str(link))
+        except (OSError, NotImplementedError, ValueError) as exc:
+            pytest.skip(
+                f"ジャンクションの作成を試みたが失敗した（{link} -> {target}）: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        created.append(link)
+        return link
+
+    yield _create
+
+    for link in reversed(created):
+        try:
+            os.rmdir(str(link))
+        except OSError:
+            pass
+
+
+def assert_junction_is_invisible_to_is_symlink(link: Path) -> None:
+    """本スライスの前提（ジャンクションは `is_symlink()` に捕まらない）を明示する。
+
+    この前提が崩れると改訂 4 の `is_symlink()` 判定だけで塞げてしまい、以下のテストは
+    「realpath 封じ込め」ではなく別の理由で緑になる（＝測っている性質が変わる）。
+    """
+    assert link.is_dir(), f"前提が崩れた: ジャンクションが is_dir() で見えない: {link}"
+    assert not link.is_symlink(), (
+        "前提が崩れた: この環境ではジャンクションが `is_symlink()` に捕まっている。\n"
+        "本スライスは「`is_symlink()` では捕まらない reparse point がある」ことを前提に、"
+        "判定を realpath 封じ込めへ置き換える（設計 §3-3c 改訂 5）。"
+    )
+
+
+class TestArchiveDirJunctionIsRefused:
+    """設計 §3-3c【改訂 5】: アーカイブ先がジャンクションなら 1 件も処理せず exit 1。
+
+    改訂 4 の `archive_dir.is_symlink()` は **NTFS ディレクトリジャンクションに `False` を
+    返す**ため素通りする。`Path.mkdir(exist_ok=True)` はリンク先が実在ディレクトリなら
+    素通りし、`os.open` の `O_EXCL` は最終コンポーネントにしか効かないため、
+    **移動先をすり替えたうえで移動元が削除される**（是正前は exit 0 の成功扱い）。
+    """
+
+    FIRST = "architecture-report-20260807-090501.md"
+    SECOND = "plan-report-20260808-101112.md"
+    ONE = "requirements-report-20260808-101112.md"
+
+    def _setup(self, tmp_path: Path) -> Path:
+        reports_dir = make_reports_dir(tmp_path)
+        write_report(reports_dir, self.FIRST, LF_BODY, mtime=FIXED_MTIME_B)
+        write_report(reports_dir, self.SECOND, CRLF_BODY, mtime=FIXED_MTIME_A)
+        return reports_dir
+
+    def _assert_sources_untouched(self, reports_dir: Path) -> None:
+        assert (reports_dir / self.FIRST).read_bytes() == LF_BODY, (
+            "移動元が削除・改変された（1 件も処理してはならない）"
+        )
+        assert (reports_dir / self.SECOND).read_bytes() == CRLF_BODY, (
+            "移動元が削除・改変された（1 件も処理してはならない）"
+        )
+
+    def test_junction_archive_dir_processes_nothing_and_exits_one(
+        self, tmp_path, monkeypatch, junction
+    ):
+        """性質 1: `--reports-dir` 経路。ジャンクションの移動先へは 1 件も書かれず exit 1。"""
+        module = load_archive_module()
+
+        reports_dir = self._setup(tmp_path)
+        outside = tmp_path / "outside"
+        link = junction(reports_dir / ARCHIVE_NAME, outside)
+        assert_junction_is_invisible_to_is_symlink(link)
+
+        rc, _out, err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 1, (
+            "アーカイブ先がジャンクションなのに exit 1 になっていない"
+            "（設計 §3-3c 改訂 5: reparse の種別を問わず 1 件も処理せず exit 1）。\n"
+            f"stderr: {err!r}"
+        )
+        leaked = sorted(p.name for p in outside.iterdir())
+        assert leaked == [], (
+            f"リンク先へ書き込みが漏れた: {leaked}（移動先すり替えの経路そのもの）"
+        )
+        self._assert_sources_untouched(reports_dir)
+
+    def test_default_reports_dir_path_is_guarded_too(self, tmp_path, monkeypatch, junction):
+        """性質 2: 既定経路（`--reports-dir` を渡さない形）でも同じ判定が効く。
+
+        `.claude/reports/archive` をジャンクション化できる主体には env ゲートが一切関与しない
+        （設計 §3-3c 改訂 5）。したがってゲートは本件の緩和策にならず、既定経路側でも
+        判定が要る。**env は外した状態**で測ることでその点を明示する。
+
+        **実リポジトリの `.claude/reports` は絶対に対象にしない**。既定値の解決規則
+        （`__file__` から `parents[4]`・設計 §3-1）には依存せず、遅延評価される解決関数
+        （設計 §3-3b「引数パース後に遅延評価する」）を一時ディレクトリへ差し替える。
+        差し替えが効かない実装に備えて、破壊操作の直前でも対象を検査する安全網を置く。
+        """
+        module = load_archive_module()
+
+        reports_dir = self._setup(tmp_path)
+        outside = tmp_path / "outside"
+        link = junction(reports_dir / ARCHIVE_NAME, outside)
+        assert_junction_is_invisible_to_is_symlink(link)
+
+        monkeypatch.setattr(module, "_default_reports_dir", lambda: reports_dir)
+        assert module._default_reports_dir() == reports_dir, (
+            "安全確認に失敗: 既定の対象ディレクトリを一時ディレクトリへ差し替えられていない"
+        )
+
+        # 安全網: 万一 seam が効かなくても、実リポジトリのレポートを 1 件も動かさない。
+        original_archive_all = module._archive_all
+
+        def guarded_archive_all(targets, archive_dir):
+            assert Path(archive_dir) == reports_dir / ARCHIVE_NAME, (
+                "安全網が発火: 破壊操作の対象が一時ディレクトリではない"
+                f"（{archive_dir}）。テストの seam が実装に効いていない"
+            )
+            return original_archive_all(targets, archive_dir)
+
+        monkeypatch.setattr(module, "_archive_all", guarded_archive_all)
+
+        # env ゲートは本件の緩和策にならない（既定経路にはそもそも掛からない）。
+        monkeypatch.delenv(REPORTS_DIR_OK_ENV, raising=False)
+        assert REPORTS_DIR_OK_ENV not in os.environ
+
+        rc, _out, err = run_capturing(module, monkeypatch)
+
+        assert rc == 1, (
+            "既定経路ではジャンクションの移動先が素通りしている"
+            "（env ゲートは既定経路に掛からないため、判定側で塞ぐ必要がある）。\n"
+            f"stderr: {err!r}"
+        )
+        leaked = sorted(p.name for p in outside.iterdir())
+        assert leaked == [], f"既定経路でリンク先へ書き込みが漏れた: {leaked}"
+        self._assert_sources_untouched(reports_dir)
+
+    def test_only_the_junction_archive_makes_the_difference(
+        self, tmp_path, monkeypatch, junction
+    ):
+        """性質 4 + 性質 1: 封じ込めが厳しすぎず、かつジャンクションだけを拒否する。
+
+        同じ「ジャンクション経由で辿るツリー」の下に 2 つの対象ディレクトリを置き、
+        **違いは `archive/` が実ディレクトリかジャンクションかだけ**にする。
+
+        - `ok/`: `archive/` が実ディレクトリ → 従来どおり移動して exit 0
+          （`--reports-dir` の値自体がジャンクションを含む形。`Path.resolve()` で
+          リンクが解ける経路であり、封じ込めを素朴に実装すると正規経路を壊しうる）
+        - `evil/`: `archive/` がジャンクション → 1 件も処理せず exit 1
+
+        正常系だけを独立したテストにしないのは、是正**前**でも自明に緑で
+        「既存の挙動を測るだけ」になるため。拒否と同じテストへ畳み込むことで、
+        是正が厳しすぎて正常系を壊した場合も同じ場所で赤にできる。
+        """
+        module = load_archive_module()
+
+        real_root = tmp_path / "real-root"
+        entry = junction(tmp_path / "entry", real_root)
+        assert_junction_is_invisible_to_is_symlink(entry)
+
+        ok_dir = entry / "ok"
+        ok_dir.mkdir()
+        write_report(ok_dir, self.ONE, LF_BODY, mtime=FIXED_MTIME_B)
+        rc_ok = run_main(module, "--reports-dir", str(ok_dir))
+        moved_ok = (real_root / "ok" / ARCHIVE_NAME / self.ONE).is_file()
+
+        evil_dir = entry / "evil"
+        evil_dir.mkdir()
+        write_report(evil_dir, self.ONE, CRLF_BODY, mtime=FIXED_MTIME_A)
+        outside = tmp_path / "outside"
+        junction(evil_dir / ARCHIVE_NAME, outside)
+        rc_evil, _out, err = run_capturing(module, monkeypatch, "--reports-dir", str(evil_dir))
+
+        assert (rc_ok, moved_ok) == (0, True), (
+            "封じ込めが厳しすぎる: `archive/` が実ディレクトリなのに正常系が壊れた"
+            f"（rc={rc_ok} moved={moved_ok}）。`--reports-dir` がジャンクション経由で"
+            "渡される形は正規の利用形態でも起こりうる（利用先の `.claude` がリンク配下にある等）"
+        )
+        assert rc_evil == 1, (
+            "同じツリーでも `archive/` がジャンクションなら 1 件も処理せず exit 1"
+            f"（設計 §3-3c 改訂 5）。実際 rc={rc_evil}。stderr: {err!r}"
+        )
+        assert sorted(p.name for p in outside.iterdir()) == [], "リンク先へ書き込みが漏れた"
+        assert (real_root / "evil" / self.ONE).read_bytes() == CRLF_BODY, (
+            "拒否したのに移動元が削除・改変された"
+        )
+
+
+class TestArchiveDirMustResolveInsideReportsDir:
+    """設計 §3-3c【改訂 5】の判定そのもの（reparse の種別に依存しない形）。
+
+    ジャンクションも真のシンボリックリンクも作れない環境（特権不足・非 NTFS・
+    非 Windows CI の組み合わせ）でも契約を測れるよう、**「アーカイブ先が対象ディレクトリの
+    外へ解決される」状態をパス解決の層で直接作る**。設計が名指しする `os.path.realpath` と、
+    実装が選びうる等価 API の `Path.resolve` の**両方**を差し替える。
+
+    改訂 4 の `is_symlink()` は素通りするため、このテストは是正前には赤になる。
+    真のシンボリックリンクに対する既存の拒否（`TestArchiveDirSymlinkIsRefused` の
+    実挙動テスト）は「アーカイブ先が外へ解決される」の一事例であり、本判定に包含される。
+    """
+
+    NAME = "plan-report-20260808-101112.md"
+
+    def test_archive_dir_resolving_outside_processes_nothing(self, tmp_path, monkeypatch):
+        module = load_archive_module()
+
+        reports_dir = make_reports_dir(tmp_path)
+        write_report(reports_dir, self.NAME, CRLF_BODY, mtime=FIXED_MTIME_A)
+        archive_dir = reports_dir / ARCHIVE_NAME
+        archive_dir.mkdir()
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_real = os.path.realpath(str(outside))
+
+        original_realpath = os.path.realpath
+        original_resolve = Path.resolve
+
+        def is_the_archive_dir(value: object) -> bool:
+            try:
+                return PurePath(os.fspath(value)) == PurePath(archive_dir)
+            except TypeError:
+                return False
+
+        def fake_realpath(path, *args, **kwargs):
+            if is_the_archive_dir(path):
+                return outside_real
+            return original_realpath(path, *args, **kwargs)
+
+        def fake_resolve(self, *args, **kwargs):
+            if is_the_archive_dir(self):
+                return Path(outside_real)
+            return original_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(os.path, "realpath", fake_realpath)
+        monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+        rc, _out, err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 1, (
+            "アーカイブ先が対象ディレクトリの外へ解決されるのに exit 1 になっていない"
+            "（設計 §3-3c 改訂 5 の realpath 封じ込めが未実装）。\n"
+            f"stderr: {err!r}"
+        )
+        written = sorted(p.name for p in archive_dir.iterdir())
+        assert written == [], f"1 件も処理してはならないのに移動先へ書き込まれた: {written}"
+        assert sorted(p.name for p in outside.iterdir()) == [], "外部ディレクトリへ書き込まれた"
+        assert (reports_dir / self.NAME).read_bytes() == CRLF_BODY, "移動元が削除・改変された"

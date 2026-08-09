@@ -19,7 +19,7 @@
   - 失敗した 1 件は移動元を消さない（残す方に倒す）
 
 改訂 4（フェーズ E レビュー差し戻し）で加わった規定:
-  - SR-V-002: `{reports-dir}/archive` が symlink なら 1 件も処理せず exit 1
+  - SR-V-002: `{reports-dir}/archive` が対象ディレクトリの外へ解決されるなら 1 件も処理せず exit 1
     （`mkdir` の前と `os.open` の前の 2 箇所で検査する）
   - SR-NEW-2: `src` を読む直前に `is_symlink()` を再判定し、真ならその 1 件を失敗にする
   - SR-AI-001: `--reports-dir` は環境変数 `C3_ARCHIVE_REPORTS_DIR_OK=1` がある場合のみ受け付ける
@@ -27,6 +27,16 @@
     別分類で報告し、**移動先は削除しない**
   - SR-V-001: 衝突退避の候補生成に上限を設け、超過はその 1 件の失敗として扱う
   - SR-NEW-1: stdout / stderr に出す全てのファイル名・パス・失敗理由を `_safe()` に通す
+
+改訂 5（フェーズ E 再レビュー・CR-NEW / SR-V-002 の再発）で加わった規定:
+  - `archive_dir` の判定を `is_symlink()` から **realpath 封じ込め**へ置き換えた。
+    `Path.is_symlink()` は NTFS ディレクトリジャンクション（`mklink /J` で管理者権限なしに
+    作成できる）に `False` を返し素通りするため（実測: exit 0 の成功扱いで外部ディレクトリへ
+    移動し移動元が削除された）。判定は「`os.path.realpath(archive_dir)` が
+    `os.path.realpath(reports_dir)` 直下の `archive` と一致すること」（reparse の種別を問わない）。
+    既存の解決パターン（`mode_line.py` の plan-path 検査）と同じ realpath 封じ込め方式に揃えた
+  - `src` 側（ファイル）の `is_symlink()` 判定は据え置き（ジャンクションはディレクトリ専用で
+    ファイルには張れないため影響を受けない）
 
 Exit code（設計 §3-3。**戻り値で表し例外では表さない**）:
   0: 全対象の移動を確認できた（対象 0 件も 0）
@@ -123,6 +133,21 @@ def _one_line(exc: BaseException) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _archive_dir_is_contained(archive_dir: Path) -> bool:
+    """`archive_dir` が対象ディレクトリ（その親）の直下の `archive` へ実際に解決されるか（設計 §3-3c 改訂 5）。
+
+    `is_symlink()` は NTFS ディレクトリジャンクションに `False` を返し素通りするため判定に使えない
+    （実測済み）。reparse point の種別を問わず塞ぐには、**実際に辿り着く先**を見るしかない。
+    `archive_dir` は常に `reports_dir / ARCHIVE_DIR_NAME` として構築されるため、
+    `archive_dir.parent` を対象ディレクトリとして扱える（`_move_one` は設計 §3-3b で
+    引数を `src` / `archive_dir` の 2 個に固定しているため、`reports_dir` を別引数で渡さない）。
+
+    既存の解決パターン（`mode_line.py` の plan-path 検査）と同じ `os.path.realpath` を使う。
+    """
+    expected = os.path.join(os.path.realpath(archive_dir.parent), ARCHIVE_DIR_NAME)
+    return os.path.realpath(archive_dir) == expected
+
+
 def _default_reports_dir() -> Path:
     """`--reports-dir` 省略時の対象ディレクトリ（設計 §3-1）。
 
@@ -204,11 +229,13 @@ def _move_one(src: Path, archive_dir: Path) -> Path:
     # INV-4: バイナリ I/O のみ。テキストモードを経由すると改行・encoding が変換される。
     data = src.read_bytes()
 
-    # 【改訂 4・SR-V-002】`os.open` の前にも移動先を検査する。`O_EXCL` は最終コンポーネントに
-    # しか効かないため、親が symlink だと移動先をすり替えたうえで移動元が削除される。
-    if archive_dir.is_symlink():
+    # 【改訂 5・CR-NEW / SR-V-002 再発】`os.open` の前にも移動先を検査する。`O_EXCL` は
+    # 最終コンポーネントにしか効かないため、親が reparse point だと移動先をすり替えたうえで
+    # 移動元が削除される。`is_symlink()` は NTFS ジャンクションに素通りされるため
+    # realpath 封じ込めで判定する（種別を問わない）。
+    if not _archive_dir_is_contained(archive_dir):
         raise RuntimeError(
-            f"アーカイブ先がシンボリックリンクへ差し替えられた: {_safe(archive_dir)}"
+            f"アーカイブ先が対象ディレクトリの外へ解決される: {_safe(archive_dir)}"
         )
 
     dst: Path | None = None
@@ -442,11 +469,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     archive_dir = reports_dir / ARCHIVE_DIR_NAME
-    # 【改訂 4・SR-V-002】`mkdir` の前に検査する。`mkdir(exist_ok=True)` はリンク先が
-    # 実在ディレクトリなら素通りするため、ここで止めないと移動先ごとすり替えられる。
-    if archive_dir.is_symlink():
+    # 【改訂 5・CR-NEW / SR-V-002 再発】`mkdir` の前に検査する。`mkdir(exist_ok=True)` は
+    # リンク先が実在ディレクトリなら素通りするため、ここで止めないと移動先ごとすり替えられる。
+    # `is_symlink()` は NTFS ジャンクションに `False` を返し素通りするため、
+    # realpath 封じ込めで判定する（reparse の種別を問わない）。
+    if not _archive_dir_is_contained(archive_dir):
         print(
-            f"アーカイブ先がシンボリックリンクのため 1 件も処理しない: {_safe(archive_dir)}",
+            f"アーカイブ先が対象ディレクトリの外へ解決されるため 1 件も処理しない: {_safe(archive_dir)}",
             file=sys.stderr,
         )
         return 1
