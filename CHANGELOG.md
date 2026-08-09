@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.63.0] - 2026-08-09
+
+### 追加
+
+- **レポートのアーカイブを `\.claude/skills/start/scripts/archive_reports.py` へ集約した**（配布物）。
+  `/start` Step 0 のアーカイブは `mv` を 5 箇所・7 個に分散して持っており、**移動先に同名ファイルが
+  あると黙って上書きしていた**。reviewer のレポート名は task_id ベースの固定名で、task id は
+  スライスをまたいで再利用されるため、平坦な `archive/` では衝突が必然だった。実際に
+  2026-08-09 にレビューレポート 2 本を復元不能な形で失っている（`.claude/reports/` は gitignored）
+  - **移動先の名前を `O_CREAT|O_EXCL` で先に確保してから書き、成功後に移動元を削除する**。
+    `shutil.move` / `os.replace` は黙って上書きし、`os.rename` は POSIX でのみ上書きするため使わない。
+    「存在するか調べてから移動する」形も TOCTOU があるため採らない
+  - 衝突時は移動元を `{stem}-archived-{元の mtime}{suffix}` へリネームし、**既存と新規の両方を残す**。
+    `-archived-` の識別子を挟むのは、タイムスタンプ命名の正規レポート名と字面で区別するため
+  - 移動は**バイナリ I/O でバイト同一**を保つ（テキスト I/O は Windows 既定の cp932 で例外になり、
+    encoding を指定しても改行変換でバイト列が変わる）。移動先の mtime は `os.utime` で復元する
+    （復元しないと `c3 recall` の staleness 判定がアーカイブのたびに全件を「新しい」と見なす）
+  - `archive/` は**フラットのまま**維持する。`recall_index.py` が非再帰 glob で走査しており、
+    サブディレクトリ化すると既存のアーカイブが `c3 recall` の対象から丸ごと外れる
+  - 1 件失敗しても残りは処理し、stderr に失敗一覧を出して exit 1。**コピーは成功したが移動元の
+    削除だけ失敗した場合**は `FAILED` と別分類（`SOURCE_KEPT`）にし、移動先は削除しない
+  - `--phase requirements|architecture|plan|review` で対象を絞れる。`--reports-dir` は
+    テスト・検証専用で、環境変数 `C3_ARCHIVE_REPORTS_DIR_OK=1` がある場合のみ受け付ける
+- **`check_deletions --check` を CI 化した**（`deletions-check` job）。リリース前の関所 4 つのうち
+  CI 化されていたのは `extract_breaking_changes --check` の 1 つだけで、残り 3 つは人手だった
+- **未 push の先行コミットを検知する hook を追加した**（配布元専用・`.dev/hooks/_push_lag_watch.py`）。
+  3 コミット以上、または最古が 24 時間以上前で SessionStart 時に通知する。v2.61.0 以降 50 コミットを
+  溜めて CI が止まり、公開サイトの停止と回帰の検出漏れが同時に露見したことへの対処
+
+### 修正
+
+- **アーカイブ先ディレクトリ自体が reparse point の場合に、移動先をすり替えられる穴を塞いだ**。
+  当初 `Path.is_symlink()` で検査していたが、**NTFS ディレクトリジャンクションには `False` を返し、
+  `mklink /J` は管理者権限なしに作成できる**。`os.open` の `O_EXCL` は最終コンポーネントにしか
+  効かないため、親が reparse point なら追従する。実測では exit 0 の成功扱いでファイルが外部
+  ディレクトリへ移動し、移動元が削除された
+  - 判定を **`os.path.realpath` による封じ込め**へ置き換えた。アーカイブ先が対象ディレクトリ直下へ
+    解決されなければ、reparse の種別を問わず 1 件も処理せず exit 1 とする。`mode_line.py` の
+    plan-path 検査が既に採っている方式に揃えており、新しい機構は足していない
+  - この欠陥クラスは本リポジトリで 5 回目の再発。**知見は v2.62.0 の CHANGELOG にも書かれていた**が、
+    設計時に参照されなかった
+- **`permissions.allow` の末尾ワイルドカードを正規経路 2 本へ絞った**。削除を伴うスクリプトを
+  追記系と同列に扱うと、`--reports-dir` を含む任意引数が無確認で通る。`--phase *` 形は後続の
+  `--reports-dir` とも前方一致しうるため、allow の絞り込みと env ゲートの二段で塞いでいる
+- **stdout / stderr に出すファイル名・パス・失敗理由の制御文字を一元的に無害化した**（C0 と DEL）
+- **GitHub Pages のビルドを止めていた docs ツリー外への相対リンクを修正した**。mkdocs `--strict` が
+  警告 1 件でビルドを中断するため、公開サイトが 7/24 の内容で停止していた
+- **ブートストラップ検査が editable install で fail-open になる欠陥を修正した**。hatchling の `.pth` が
+  `src` を `sys.path` へ載せるため、スクリプト自身の bootstrap が無くても解決できてしまっていた
+
+### 内部
+
+- `.claude/docs/config-policy.md` に、`c3 run <script>*` 型の allow について**破壊操作を伴う
+  スクリプトを追記系と同列に扱わない**旨と、env ゲートが単一コマンド文字列への関所であり
+  セッションを跨いだ env 継承は射程外である旨を追記した
+- テストを 41 件追加した（アーカイブの振る舞い・`start/SKILL.md` の静的契約・CI ワークフローのガード）
+
 ## [2.62.0] - 2026-08-09
 
 ### 追加
