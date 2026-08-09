@@ -8,8 +8,8 @@
 - 性質 13: `.claude/reports/` を対象とする生の `mv` **および** `mkdir` が本文に 1 件も残っていない
 - 性質 14: Step 0 のアーカイブ経路が `archive_reports.py` を `c3 run` で**ルート相対パス**で呼んでいる
 - 性質 15: フェーズ選択の日本語ラベルと `--phase` 値の対応が **Markdown 表の行として**書かれている
-- 性質 16（補足・下記の注記を参照）: 配布 `.claude/settings.json` の `permissions.allow` に
-  新スクリプトのパターンが追加されている
+- 性質 16（補足・下記の注記を参照）: 配布 `.claude/settings.json` の `permissions.allow` が
+  **【改訂 4・SR-AI-001】末尾ワイルドカード 1 本ではなく、正規経路の形 2 本**になっている
 
 **性質 15 の判定単位を「行」に固定する理由**: SKILL.md には既に「要件定義」「設計」「計画」
 「レビュー」も `requirements-report-*.md` 等も別文脈で存在するため、「8 語がファイル全体に
@@ -20,13 +20,23 @@
 `code-review-report-*.md` が `review` を、`plan-report-*.md` が `plan` を含むため、
 対応表が無くても緑になる（`(?<![0-9A-Za-z_-])` / `(?![0-9A-Za-z_-])` でこれを排除する）。
 
-Red の理由: `start/SKILL.md` の Step 0 が未改修（`mkdir -p ... && mv ...` のまま）で、
-`archive_reports.py` の呼び出しも対応表も存在しないため。機能未実装による正しい失敗である。
+Red の理由（初版・性質 13〜16）: `start/SKILL.md` の Step 0 が未改修（`mkdir -p ... && mv ...`
+のまま）で、`archive_reports.py` の呼び出しも対応表も存在しなかったため。
+※ 初版の 6 件は実装済みで、性質 13〜15 は現在も緑。
 
-**性質 16 について（計画の性質一覧に無い補足テスト）**: 設計 §1-2 と plan の `impl-archive`
-prompt が同一文字列で allow パターンを凍結しており、この変更にテストが 1 件も無いと
-「配布設定の変更」だけ無検査で通る。逐語が 2 箇所で確定済みのため brittle にはならないと
-判断して追加した（test-report にも明記済み）。
+Red の理由（改訂 4・性質 16 のみ）: 設計 §1-2【改訂 4・SR-AI-001】が
+「末尾ワイルドカード 1 本（`archive_reports.py*`）は採らない」「引数なしの完全一致と
+`--phase` で始まる形の 2 本にする」と規定したのに対し、`.claude/settings.json` は
+現在も末尾ワイルドカード 1 本のままであるため。機能未実装による正しい失敗である。
+
+**性質 16 について（計画の性質一覧に無い補足テスト）**: 設計 §1-2 が allow パターンの形を
+規定しており、この変更にテストが 1 件も無いと「配布設定の変更」だけ無検査で通る。
+
+**改訂 4 での期待値の決め方**: 「採ってはいけない形」と「引数なしの完全一致」は設計本文で
+形が一意に定まるため逐語で固定する。「`--phase` で始まる形」だけは末尾ワイルドカードの
+前の空白の有無まで一意に定まらないため、**パス直後が `--phase` であること**（＝ここに
+任意の引数列を挿し込めないこと＝ SR-AI-001 が塞ぎたい性質そのもの）を接頭辞で固定し、
+本数（2 本）で締める。表記差では割れず、緩めた分は本数と `--reports-dir` の不在で埋めている。
 """
 
 from __future__ import annotations
@@ -41,7 +51,28 @@ SETTINGS_PATH = REPO_ROOT / ".claude" / "settings.json"
 
 # 設計 §3-1 が定める呼び出し形（ルート相対パス）。
 ARCHIVE_SCRIPT_REL = ".claude/skills/start/scripts/archive_reports.py"
-ARCHIVE_ALLOW_PATTERN = f"Bash(c3 run {ARCHIVE_SCRIPT_REL}*)"
+
+# ---------------------------------------------------------------------------
+# 性質 16 の期待値（設計 §1-2【改訂 4・SR-AI-001】）
+#
+# 改訂 4 の本文:
+#   「末尾ワイルドカード 1 本（`archive_reports.py*`）は採らない」
+#   「allow を正規経路の形に絞る: 引数なしの完全一致と `--phase` で始まる形の 2 本にする」
+#
+# 採ってはいけない形。このパターンは `--reports-dir <任意ディレクトリ>` を含むあらゆる
+# 引数列を無確認で許可し、破壊操作（移動元の削除）を追記系スクリプトと同列に扱ってしまう。
+# ---------------------------------------------------------------------------
+ARCHIVE_ALLOW_REJECTED_PATTERN = f"Bash(c3 run {ARCHIVE_SCRIPT_REL}*)"
+
+# 1 本目: 「引数なしの完全一致」。設計本文で形が一意に定まるため逐語で固定する。
+ARCHIVE_ALLOW_EXACT_PATTERN = f"Bash(c3 run {ARCHIVE_SCRIPT_REL})"
+
+# 2 本目: 「`--phase` で始まる形」。設計本文は理由の説明で `--phase *` 形と表記するが、
+# 規定文は「`--phase` で始まる形」であり、末尾ワイルドカードの前の空白の有無までは
+# 一意に定まらない。よって **パス直後が `--phase` であること**（＝ここに任意の引数列を
+# 挿し込めないこと。SR-AI-001 が塞ぎたい性質そのもの）を接頭辞で固定し、
+# `--phase *)` / `--phase*)` の表記差では割れないようにする。
+ARCHIVE_ALLOW_PHASE_PREFIX = f"Bash(c3 run {ARCHIVE_SCRIPT_REL} --phase"
 
 # コマンド先頭 / パイプ / `&&` / バッククォート直後の `mv` `mkdir` を拾う。
 _RAW_MV_RE = re.compile(r"(?:^|[\s;&|`(])mv\s")
@@ -213,15 +244,61 @@ class TestPhaseLabelTable:
 
 
 class TestSettingsAllowsArchiveScript:
-    """設計 §1-2。allow が無いと利用先で `/start` のたびにプロンプトが出る。"""
+    """設計 §1-2【改訂 4・SR-AI-001】。
 
-    def test_permissions_allow_contains_the_archive_script_pattern(self):
-        """性質 16: `permissions.allow` に設計 §1-2 の逐語パターンが含まれる。"""
+    allow が無いと利用先で `/start` のたびにプロンプトが出る一方、末尾ワイルドカード 1 本だと
+    `--reports-dir <任意ディレクトリ>` を含むあらゆる引数列を無確認で許可してしまう。
+    改訂 4 は「引数なしの完全一致」と「`--phase` で始まる形」の **2 本に絞る**ことを規定する。
+    """
+
+    @staticmethod
+    def _allow_entries() -> list[str]:
         assert SETTINGS_PATH.is_file(), f"settings.json が見つからない: {SETTINGS_PATH}"
         settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-        allow = settings.get("permissions", {}).get("allow", [])
-        assert ARCHIVE_ALLOW_PATTERN in allow, (
-            f"permissions.allow に {ARCHIVE_ALLOW_PATTERN!r} が無い。\n"
-            f"現在の c3 run 系 allow: "
-            f"{[entry for entry in allow if entry.startswith('Bash(c3 run')]}"
+        return list(settings.get("permissions", {}).get("allow", []))
+
+    @classmethod
+    def _archive_entries(cls) -> list[str]:
+        """`archive_reports.py` に言及する allow エントリを返す。"""
+        return [entry for entry in cls._allow_entries() if ARCHIVE_SCRIPT_REL in entry]
+
+    def test_permissions_allow_does_not_use_the_trailing_wildcard_form(self):
+        """性質 16: 末尾ワイルドカード 1 本の形が `permissions.allow` に無い。
+
+        設計 §1-2 改訂 4 が逐語で「採らない」と名指ししている形（`archive_reports.py*`）。
+        これが残っていると env ゲート（§3-3c 改訂 4）を入れても allow 側は素通りのままになる。
+        """
+        entries = self._archive_entries()
+        assert ARCHIVE_ALLOW_REJECTED_PATTERN not in entries, (
+            f"permissions.allow に採ってはいけない形 {ARCHIVE_ALLOW_REJECTED_PATTERN!r} が残っている"
+            "（設計 §1-2 改訂 4・SR-AI-001）。\n"
+            f"現在の archive_reports.py 系 allow: {entries}"
+        )
+        assert not any(entry for entry in entries if "--reports-dir" in entry), (
+            "`--reports-dir` を含む allow エントリがある。`--reports-dir` は"
+            "テスト・検証専用であり正規経路の allow に載せない（設計 §1-2 / §3-3c 改訂 4）。\n"
+            f"現在の archive_reports.py 系 allow: {entries}"
+        )
+
+    def test_permissions_allow_uses_the_two_narrowed_patterns(self):
+        """性質 16: `permissions.allow` が「完全一致」と「`--phase` で始まる形」の 2 本である。"""
+        entries = self._archive_entries()
+
+        assert ARCHIVE_ALLOW_EXACT_PATTERN in entries, (
+            f"引数なしの完全一致 {ARCHIVE_ALLOW_EXACT_PATTERN!r} が無い（設計 §1-2 改訂 4）。\n"
+            f"現在の archive_reports.py 系 allow: {entries}"
+        )
+
+        phase_entries = [
+            entry for entry in entries if entry.startswith(ARCHIVE_ALLOW_PHASE_PREFIX)
+        ]
+        assert len(phase_entries) == 1, (
+            f"`--phase` で始まる形（接頭辞 {ARCHIVE_ALLOW_PHASE_PREFIX!r}）が 1 本でない"
+            "（設計 §1-2 改訂 4）。\n"
+            f"現在の archive_reports.py 系 allow: {entries}"
+        )
+
+        assert len(entries) == 2, (
+            "archive_reports.py の allow は 2 本（完全一致 + `--phase` 形）に絞る"
+            f"（設計 §1-2 改訂 4）。実際は {len(entries)} 本: {entries}"
         )

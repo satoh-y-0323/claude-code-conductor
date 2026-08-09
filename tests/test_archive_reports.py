@@ -1,9 +1,10 @@
 """Red フェーズ: `.claude/skills/start/scripts/archive_reports.py` の実挙動テスト。
 
 上流契約（SSOT）:
-- `.claude/reports/architecture-report-20260809-154124.md`（改訂 2）
+- `.claude/reports/architecture-report-20260809-154124.md`（改訂 2 → **改訂 4**）
   §0 INV-1〜INV-4 / ADR-2 / ADR-3 / §3-1〜§3-3c
 - `.claude/reports/plan-report-20260809-164111.md` の `test-archive` タスク（性質 1〜12）
+- `.claude/reports/plan-report-20260809-181356.md` の `test-findings` タスク（改訂 4 の性質 1〜6）
 
 本ファイルの全テストは **必ず `--reports-dir` に `tmp_path` を渡す**。既定値経路
 （実リポジトリの `.claude/reports`）は検査対象外である。既定値を使うテストを 1 本でも
@@ -16,8 +17,26 @@
 検査対象スクリプトのパスは環境変数 `C3_ARCHIVE_SCRIPT_PATH` で差し替えられる
 （confirm フェーズがスクリプトの写しにスタブを当てて走らせるため）。未設定時は実体パスを使う。
 
-Red の理由: `archive_reports.py` が未実装のため `load_archive_module()` が
-`FileNotFoundError` を送出して全件 failed になる。これは機能未実装による正しい失敗である。
+Red の理由（初版・性質 1〜12）: `archive_reports.py` が未実装のため `load_archive_module()` が
+`FileNotFoundError` を送出して全件 failed になった。これは機能未実装による正しい失敗である。
+※ 初版の 21 件は実装済みで現在は緑。以下は**改訂 4 の追加分**についての Red の理由である。
+
+Red の理由（改訂 4・E レビュー指摘 9 件のうち振る舞いが変わる 6 件）:
+`archive_reports.py` が改訂 4 の規定を未実装のため、以下がいずれも「現行の（是正前の）挙動」で失敗する。
+
+- SR-V-002: 移動先 `archive/` が symlink でも検査せずに移動してしまう（設計 §3-3c 改訂 4 が未実装）
+- SR-AI-001: env ゲート `C3_ARCHIVE_REPORTS_DIR_OK` が存在せず `--reports-dir` が無条件に通る
+- CR-E-005: 「コピー成功・移動元の削除だけ失敗」が `FAILED` に丸められ `SOURCE_KEPT` 分類が無い
+- SR-V-001: `_candidate_names` に上限が無く、候補を埋め尽くしても失敗にならない
+- SR-NEW-1: `_one_line` が `\\r` / `\\n` / `\\t` しか潰さず、他の C0 制御文字と DEL が生で出る
+  （かつ `main()` の他の `print` は helper を通っていない）
+- SR-NEW-2: `_move_one` が `src` を読む直前に `is_symlink()` を再判定しない
+
+**env ゲート（SR-AI-001）と既存 21 件の関係**: 改訂 4 で `--reports-dir` は
+`C3_ARCHIVE_REPORTS_DIR_OK=1` がある場合のみ受け付ける形になる。本ファイルの全テストは
+`--reports-dir` を渡すため、モジュール全体に autouse fixture で env を明示 opt-in しておく
+（設計 §3-3c 改訂 4 の「テスト・検証は env を明示設定して呼ぶ」）。
+ゲートそのものを測るテストだけが `monkeypatch.delenv` で外す。
 """
 
 from __future__ import annotations
@@ -26,9 +45,10 @@ import importlib.util
 import io
 import itertools
 import os
+import re
 import sys
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import pytest
 
@@ -132,6 +152,74 @@ def write_report(directory: Path, name: str, data: bytes, mtime: float | None = 
 def run_main(module, *argv: str) -> int:
     """`main(argv)` を呼び、戻り値（= exit code）を返す。"""
     return module.main(list(argv))
+
+
+# ---------------------------------------------------------------------------
+# 改訂 4・SR-AI-001: `--reports-dir` の env ゲート
+#
+# 本ファイルの全テストは `--reports-dir` に一時ディレクトリを渡す（既定値経路は実リポジトリの
+# `.claude/reports` であり、検査対象外）。改訂 4 でその引数が env ゲート下に入るため、
+# モジュール全体で明示 opt-in しておく。**ゲート自体を測るテストだけが delenv で外す**。
+# ---------------------------------------------------------------------------
+
+REPORTS_DIR_OK_ENV = "C3_ARCHIVE_REPORTS_DIR_OK"
+
+
+@pytest.fixture(autouse=True)
+def _opt_in_to_reports_dir_override(monkeypatch):
+    """設計 §3-3c 改訂 4: テスト・検証は env を明示設定して `--reports-dir` を使う。"""
+    monkeypatch.setenv(REPORTS_DIR_OK_ENV, "1")
+
+
+def run_capturing(module, monkeypatch, *argv: str) -> tuple[int, str, str]:
+    """`main(argv)` を呼び、(exit code, stdout, stderr) を返す。
+
+    モジュールロード後に `sys.stdout` / `sys.stderr` を差し替える（ロード時の reconfigure を
+    壊さないため）。`print` は呼び出し時に `sys.stdout` を引くため、この差し替えで捕捉できる。
+    """
+    out_buffer = io.StringIO()
+    err_buffer = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out_buffer)
+    monkeypatch.setattr(sys, "stderr", err_buffer)
+    rc = module.main(list(argv))
+    return rc, out_buffer.getvalue(), err_buffer.getvalue()
+
+
+def lines_with_token(text: str, token: str) -> list[str]:
+    """行頭トークン `{token}\\t` で始まる行を返す（設計 §3-3 の失敗一覧書式）。"""
+    return [line for line in text.splitlines() if line.startswith(f"{token}\t")]
+
+
+# 改訂 4・SR-NEW-1: 出力に出てはいけない文字。
+# `\n` / `\r` は行区切り、`\t` は `FAILED` / `SOURCE_KEPT` 行のフィールド区切りとして
+# 契約が使うため除外する。それ以外の C0 制御文字（ESC・BEL 等）と DEL が対象。
+_FORBIDDEN_OUTPUT_CHARS = frozenset(
+    chr(code) for code in range(0x20) if chr(code) not in "\n\r\t"
+) | {"\x7f"}
+
+
+def assert_no_raw_control_chars(text: str, label: str) -> None:
+    """`text` に生の C0 制御文字 / DEL が含まれないことを確認する（設計 §3-3 改訂 4）。"""
+    found = sorted({char for char in text if char in _FORBIDDEN_OUTPUT_CHARS})
+    assert found == [], (
+        f"{label} に生の制御文字が出力された: {[hex(ord(c)) for c in found]}\n"
+        "設計 §3-3【改訂 4・SR-NEW-1】は stdout / stderr に出す全てのファイル名・パス・"
+        "失敗理由を同一 helper に通し、C0 制御文字と DEL を除去・置換することを求めている。\n"
+        f"全文: {text!r}"
+    )
+
+
+def write_report_or_skip(directory: Path, name: str, data: bytes, mtime: float | None = None) -> Path:
+    """制御文字入りの名前でファイルを作る。作れない FS では skip する。
+
+    実測: Windows (NTFS) は `\\x01`-`\\x1f` を含むファイル名を `OSError: [Errno 22]` で拒否するが、
+    DEL (`\\x7f`) は受け付ける。ESC を含む実ファイルはこの環境では作れないため、
+    ESC は「失敗理由の文字列」経由でも測る（下の TestControlCharSanitisation を参照）。
+    """
+    try:
+        return write_report(directory, name, data, mtime)
+    except (OSError, ValueError) as exc:
+        pytest.skip(f"この環境ではファイル名に制御文字を含められない: {exc!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -606,3 +694,555 @@ class TestSymlinkEntriesAreSkipped:
         assert link.is_symlink(), "symlink が移動・削除された（設計 §3-3c 違反）"
         assert real_target.read_bytes() == CRLF_BODY, "リンク先の実体が改変された"
         assert (reports_dir / "archive" / self.PLAIN_NAME).is_file()
+
+
+# ===========================================================================
+# 以下は改訂 4（E レビュー差し戻し 9 件のうち振る舞いが変わる 6 件）の追加分。
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# 改訂 4 性質 1 / SR-V-002: 移動先ディレクトリが symlink なら 1 件も処理しない
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveDirSymlinkIsRefused:
+    """設計 §3-3c【改訂 4・SR-V-002】。
+
+    `Path.mkdir(exist_ok=True)` はリンク先が実在ディレクトリなら素通りし、`os.open` の
+    `O_EXCL` は最終コンポーネントにしか効かない。よって `{reports-dir}/archive` を任意
+    ディレクトリへのリンクにされると、**移動先をすり替えたうえで移動元が削除される**。
+    → `archive_dir` を使う前に `is_symlink()` を検査し、真なら 1 件も処理せず exit 1。
+
+    Windows のシンボリックリンク作成には特権が要る（実測 `OSError: [WinError 1314]`）ため、
+    既存の性質 12 と同じ二段構成にする:
+    (a) `Path.is_symlink` を差し替えて**契約そのもの**を特権なしで測る主判定
+    (b) 実シンボリックリンクを作れる環境でのみ走る実挙動テスト
+    """
+
+    FIRST = "architecture-report-20260807-090501.md"
+    SECOND = "plan-report-20260808-101112.md"
+
+    def _setup(self, tmp_path: Path) -> Path:
+        reports_dir = make_reports_dir(tmp_path)
+        write_report(reports_dir, self.FIRST, LF_BODY, mtime=FIXED_MTIME_B)
+        write_report(reports_dir, self.SECOND, CRLF_BODY, mtime=FIXED_MTIME_A)
+        return reports_dir
+
+    def test_archive_dir_reported_as_symlink_stops_everything(self, tmp_path, monkeypatch):
+        """性質 1（主判定・特権不要）: `archive/` が symlink なら 1 件も処理せず exit 1。
+
+        リンク先の代わりに「実ディレクトリとして存在する `archive/`」を用意し、そこへ
+        **何も書かれない**ことでリンク先が汚されないことを測る。
+        """
+        module = load_archive_module()
+
+        reports_dir = self._setup(tmp_path)
+        archive_dir = reports_dir / "archive"
+        archive_dir.mkdir()
+
+        original_is_symlink = Path.is_symlink
+
+        def fake_is_symlink(self) -> bool:
+            if self.name == "archive":
+                return True
+            return original_is_symlink(self)
+
+        monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+
+        rc = run_main(module, "--reports-dir", str(reports_dir))
+
+        assert rc == 1, "移動先が symlink なら exit 1（設計 §3-3c 改訂 4）"
+        written = sorted(p.name for p in archive_dir.iterdir())
+        assert written == [], (
+            f"symlink の移動先に書き込みが起きた: {written}（リンク先すり替えの経路）"
+        )
+        assert (reports_dir / self.FIRST).read_bytes() == LF_BODY, "移動元が削除・改変された"
+        assert (reports_dir / self.SECOND).read_bytes() == CRLF_BODY, "移動元が削除・改変された"
+
+    def test_real_symlinked_archive_dir_stops_everything(self, tmp_path):
+        """性質 1（実挙動・特権が要る環境では skip）: 実 symlink の移動先でも同じ。"""
+        module = load_archive_module()
+
+        reports_dir = self._setup(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        archive_dir = reports_dir / "archive"
+        try:
+            archive_dir.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"この環境ではシンボリックリンクを作成できない: {exc}")
+
+        rc = run_main(module, "--reports-dir", str(reports_dir))
+
+        assert rc == 1, "移動先が symlink なら exit 1（設計 §3-3c 改訂 4）"
+        leaked = sorted(p.name for p in outside.iterdir())
+        assert leaked == [], f"リンク先に書き込みが漏れた: {leaked}"
+        assert (reports_dir / self.FIRST).read_bytes() == LF_BODY, "移動元が削除・改変された"
+        assert (reports_dir / self.SECOND).read_bytes() == CRLF_BODY, "移動元が削除・改変された"
+
+
+# ---------------------------------------------------------------------------
+# 改訂 4 性質 2 / SR-AI-001: `--reports-dir` の env ゲート
+# ---------------------------------------------------------------------------
+
+
+class TestReportsDirEnvGate:
+    """設計 §3-3c【改訂 4・SR-AI-001】。
+
+    `--reports-dir` は「テスト・検証専用」でありながら、任意ディレクトリへの破壊操作
+    （移動元の削除）を開く唯一の入口になっている。`permissions.allow` の前方一致では
+    塞ぎきれないため、env `C3_ARCHIVE_REPORTS_DIR_OK=1` を実効的な関所とする。
+    """
+
+    NAME = "plan-report-20260808-101112.md"
+
+    def _setup(self, tmp_path: Path) -> Path:
+        reports_dir = make_reports_dir(tmp_path)
+        write_report(reports_dir, self.NAME, CRLF_BODY, mtime=FIXED_MTIME_A)
+        return reports_dir
+
+    def test_reports_dir_without_env_gate_processes_nothing(self, tmp_path, monkeypatch):
+        """性質 2: env が無い状態の `--reports-dir` は 1 件も処理せず exit 1。"""
+        module = load_archive_module()
+        reports_dir = self._setup(tmp_path)
+        monkeypatch.delenv(REPORTS_DIR_OK_ENV, raising=False)
+
+        rc = run_main(module, "--reports-dir", str(reports_dir))
+
+        assert rc == 1, (
+            f"env {REPORTS_DIR_OK_ENV} が無いのに --reports-dir が受け付けられた"
+            "（設計 §3-3c 改訂 4）"
+        )
+        assert (reports_dir / self.NAME).read_bytes() == CRLF_BODY, "移動元が処理された"
+        archive_dir = reports_dir / "archive"
+        moved = sorted(p.name for p in archive_dir.glob("*")) if archive_dir.exists() else []
+        assert moved == [], f"ゲートを抜けて archive に書き込みが起きた: {moved}"
+
+    def test_env_gate_is_what_makes_the_difference(self, tmp_path, monkeypatch):
+        """性質 2: 同じ引数で env の有無だけを変えると結果が変わる（拒否 → 従来どおり）。
+
+        「env 無しで拒否」と「env 有りで従来どおり動く」を 1 本にまとめている。分けると
+        後者は現行実装でも自明に緑で、**是正前の挙動をテストしているだけ**になるため。
+        """
+        module = load_archive_module()
+        reports_dir = self._setup(tmp_path)
+        archive_dir = reports_dir / "archive"
+
+        monkeypatch.delenv(REPORTS_DIR_OK_ENV, raising=False)
+        rc_without = run_main(module, "--reports-dir", str(reports_dir))
+        moved_without = (archive_dir / self.NAME).exists()
+
+        monkeypatch.setenv(REPORTS_DIR_OK_ENV, "1")
+        rc_with = run_main(module, "--reports-dir", str(reports_dir))
+
+        assert (rc_without, moved_without) == (1, False), (
+            f"env 無し: exit 1 かつ未処理であるべき（実際 rc={rc_without} moved={moved_without}）"
+        )
+        assert rc_with == 0, f"env 有り: 従来どおり成功すべき（実際 rc={rc_with}）"
+        assert (archive_dir / self.NAME).read_bytes() == CRLF_BODY, "env 有りで移動していない"
+        assert not (reports_dir / self.NAME).exists(), "env 有りで移動元が消えていない"
+
+
+# ---------------------------------------------------------------------------
+# 改訂 4 性質 3 / CR-E-005: コピー成功・移動元の削除だけ失敗 → SOURCE_KEPT
+# ---------------------------------------------------------------------------
+
+
+class TestSourceKeptWhenOnlyUnlinkFails:
+    """設計 §3-3【改訂 4・CR-E-005】。
+
+    初版は `src.unlink()` を排他生成〜書き込みの `try` の外側に置いたため、この経路が
+    「移動 0 件 / 失敗 1 件」として報告され、**実態（移動先には正しい内容が既に存在する）**を
+    表せていなかった。→ `FAILED` とは別の行頭トークン
+    `SOURCE_KEPT\\t{移動元 basename}\\t{移動先 basename}\\t{理由}` を stderr に出し、
+    集計にも独立項目を出す。exit code は 1。**移動先は削除しない**。
+
+    失敗注入は `Path.unlink` を差し替えて行う（`_move_one` を丸ごと差し替えると
+    「コピーは成功している」という前提そのものを作れないため）。`archive/` 配下の
+    `unlink`（中途生成物の後始末）は素通りさせ、移動元の削除だけを失敗させる。
+    """
+
+    NAME = "plan-report-20260808-101112.md"
+    RENAMED = f"plan-report-20260808-101112-archived-{STAMP_A}.md"
+
+    # 集計の独立項目。設計の逐語は「コピー済み・移動元が残存: N 件」。
+    # 文言の細部に依存しすぎないよう、ラベル語 + 件数の同居で判定する
+    # （`/` を跨がせないことで「移動: 1 件 / ... 残存: 0 件」の誤一致を防ぐ）。
+    KEPT_COUNT_RE = re.compile(r"(コピー済み|残存|SOURCE_KEPT)[^/\n]*?[:：]\s*1\s*件")
+
+    def _setup(self, tmp_path: Path) -> Path:
+        reports_dir = make_reports_dir(tmp_path)
+        write_report(reports_dir, self.NAME, CRLF_BODY, mtime=FIXED_MTIME_A)
+        return reports_dir
+
+    @staticmethod
+    def _is_the_source(path) -> bool:
+        """`archive/` の外にある対象ファイル（＝移動元）か。"""
+        pure = PurePath(path)
+        return pure.name == TestSourceKeptWhenOnlyUnlinkFails.NAME and pure.parent.name != "archive"
+
+    def _break_source_unlink(self, monkeypatch) -> None:
+        """移動元の削除だけを失敗させる。
+
+        `Path.unlink` と `os.unlink` の両方を塞ぐ。実装がどちらの API を選んでも
+        同じ失敗注入が効くようにするため（`_move_one` の中途生成物の後始末は
+        `archive/` 配下なので素通りする）。
+        """
+        original_path_unlink = Path.unlink
+        original_os_unlink = os.unlink
+
+        def fake_path_unlink(self, *args, **kwargs):
+            if TestSourceKeptWhenOnlyUnlinkFails._is_the_source(self):
+                raise OSError("injected unlink failure for test")
+            return original_path_unlink(self, *args, **kwargs)
+
+        def fake_os_unlink(path, *args, **kwargs):
+            if TestSourceKeptWhenOnlyUnlinkFails._is_the_source(path):
+                raise OSError("injected unlink failure for test")
+            return original_os_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fake_path_unlink)
+        monkeypatch.setattr(os, "unlink", fake_os_unlink)
+
+    def test_copy_is_classified_as_source_kept_and_the_destination_survives(
+        self, tmp_path, monkeypatch
+    ):
+        """性質 3: `SOURCE_KEPT` 分類・移動先はバイト同一で削除されない・移動元も残る・exit 1。
+
+        「移動先が削除されないこと」を独立したテストにしない理由: 是正**前**の実装でも
+        （`src.unlink()` が排他生成〜書き込みの `try` の外にあるため）その 1 点だけは
+        たまたま成立しており、単独では is-red にならない＝既存の挙動を測るだけになる。
+        分類（`SOURCE_KEPT`）と同じテストに畳み込むことで、是正で移動先を捨てる実装に
+        なった場合もここで赤になる。
+        """
+        module = load_archive_module()
+        reports_dir = self._setup(tmp_path)
+        self._break_source_unlink(monkeypatch)
+
+        rc, _out, err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 1, "コピー済み・移動元残存は要対応（exit 1・設計 §3-3 改訂 4）"
+
+        dst = reports_dir / "archive" / self.NAME
+        assert dst.is_file(), (
+            "コピーに成功した移動先が削除された。"
+            "設計 §3-3 改訂 4 は「移動先は削除しない（バイト同一のコピーを捨てない）」と規定している"
+        )
+        assert dst.read_bytes() == CRLF_BODY, "INV-4 違反: 移動先がバイト同一でない"
+        assert (reports_dir / self.NAME).read_bytes() == CRLF_BODY, "移動元が消えた/改変された"
+
+        kept = lines_with_token(err, "SOURCE_KEPT")
+        assert len(kept) == 1, (
+            "`SOURCE_KEPT\\t{移動元}\\t{移動先}\\t{理由}` が 1 件 1 行で stderr に出ていない。\n"
+            f"stderr 全文: {err!r}"
+        )
+        assert lines_with_token(err, "FAILED") == [], (
+            "コピー成功・削除失敗が `FAILED` に丸められている（CR-E-005 の是正対象）。\n"
+            f"stderr 全文: {err!r}"
+        )
+        fields = kept[0].split("\t")
+        assert len(fields) >= 4, f"書式は SOURCE_KEPT\\t移動元\\t移動先\\t理由: {kept[0]!r}"
+        assert fields[1] == self.NAME, "2 列目は移動元の basename"
+        assert fields[2] == self.NAME, "3 列目は移動先の basename（衝突が無いので同名）"
+
+    def test_stdout_summary_has_an_independent_kept_count(self, tmp_path, monkeypatch):
+        """性質 3: 集計に「コピー済み・移動元が残存」の件数が独立項目として出る。"""
+        module = load_archive_module()
+        reports_dir = self._setup(tmp_path)
+        self._break_source_unlink(monkeypatch)
+
+        rc, out, _err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 1
+        assert self.KEPT_COUNT_RE.search(out), (
+            "stdout の集計に「コピー済み・移動元が残存: 1 件」に相当する独立項目が無い"
+            "（設計 §3-3 改訂 4）。\n"
+            f"stdout 全文: {out!r}"
+        )
+
+    def test_rerun_duplication_is_either_avoided_or_reported(self, tmp_path, monkeypatch):
+        """性質 3: 同じ引数で再実行したときの重複が、避けられるか報告から読み取れる。
+
+        設計 §3-3 改訂 4 は重複排除を規定せず「移動先は削除しない」「`SOURCE_KEPT` で
+        運用者が手で削除できる状態にする」と規定している。よって契約は
+        **「重複が増えないこと」または「増えた実体が報告（`SOURCE_KEPT` の移動先列）から
+        辿れること」**である。どちらの実装でも通るが、`SOURCE_KEPT` が出ないか、
+        増えた実体が報告から辿れないなら赤になる。
+        """
+        module = load_archive_module()
+        reports_dir = self._setup(tmp_path)
+        self._break_source_unlink(monkeypatch)
+        archive_dir = reports_dir / "archive"
+
+        rc_first, _out1, err1 = run_capturing(
+            module, monkeypatch, "--reports-dir", str(reports_dir)
+        )
+        assert rc_first == 1
+        assert lines_with_token(err1, "SOURCE_KEPT"), f"1 回目に SOURCE_KEPT が無い: {err1!r}"
+        after_first = sorted(p.name for p in archive_dir.glob("*.md"))
+
+        rc_second, _out2, err2 = run_capturing(
+            module, monkeypatch, "--reports-dir", str(reports_dir)
+        )
+        assert rc_second == 1
+        kept2 = lines_with_token(err2, "SOURCE_KEPT")
+        assert len(kept2) == 1, f"2 回目に SOURCE_KEPT が 1 行出ていない: {err2!r}"
+        after_second = sorted(p.name for p in archive_dir.glob("*.md"))
+
+        assert (reports_dir / self.NAME).read_bytes() == CRLF_BODY, "移動元が失われた"
+
+        if after_second == after_first:
+            # 重複を増やさない実装。移動先が消えていないことだけ押さえる。
+            assert (archive_dir / self.NAME).read_bytes() == CRLF_BODY
+            return
+
+        added = sorted(set(after_second) - set(after_first))
+        assert len(added) == 1, f"再実行で増えた実体が 1 件でない: {added}"
+        reported_dst = kept2[0].split("\t")[2]
+        assert reported_dst == added[0], (
+            "再実行で増えたコピーが報告（SOURCE_KEPT の移動先列）から辿れない。\n"
+            f"報告: {reported_dst!r} / 実際に増えた実体: {added}"
+        )
+        assert (archive_dir / added[0]).read_bytes() == CRLF_BODY
+        assert after_first[0] in after_second, "1 回目のコピーが消えた（INV-1 / 改訂 4）"
+
+
+# ---------------------------------------------------------------------------
+# 改訂 4 性質 4 / SR-V-001: 衝突退避の候補生成に上限
+# ---------------------------------------------------------------------------
+
+
+class TestCandidateNameLimit:
+    """設計 §3-3【改訂 4・SR-V-001】: 候補生成の上限は 1000。超過はその 1 件の失敗。
+
+    上限が無いと、退避名を大量に事前配置されたときに 1 件の移動が O(N) の `os.open`
+    試行を要する（軽度の DoS）。
+    """
+
+    STEM = "plan-report-20260808-101112"
+    BLOCKED = f"{STEM}.md"
+    SURVIVING = "architecture-report-20260807-090501.md"
+
+    # 上限 1000 の読み方（候補総数か数値接尾辞の最大値か）に依存しないよう、
+    # 余裕を持って `-1005` まで塞ぐ。
+    LAST_INDEX = 1005
+
+    def _blocker_names(self) -> list[str]:
+        base = f"{self.STEM}-archived-{STAMP_A}"
+        return (
+            [self.BLOCKED, f"{base}.md"]
+            + [f"{base}-{index}.md" for index in range(2, self.LAST_INDEX + 1)]
+        )
+
+    def test_exhausted_candidates_fail_that_one_and_others_continue(self, tmp_path, monkeypatch):
+        """性質 4: 候補を上限まで埋めるとその 1 件が失敗し、他の対象の処理は継続する。"""
+        module = load_archive_module()
+        _assert_stamp_helpers_are_self_consistent()
+
+        reports_dir = make_reports_dir(tmp_path)
+        archive_dir = reports_dir / "archive"
+        archive_dir.mkdir()
+        blockers = self._blocker_names()
+        for blocker in blockers:
+            (archive_dir / blocker).write_bytes(b"")
+
+        write_report(reports_dir, self.BLOCKED, CRLF_BODY, mtime=FIXED_MTIME_A)
+        write_report(reports_dir, self.SURVIVING, LF_BODY, mtime=FIXED_MTIME_B)
+
+        rc, _out, err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 1, (
+            "候補を上限まで埋めても失敗にならない（設計 §3-3 改訂 4 の上限 1000 が未実装）"
+        )
+        failed = lines_with_token(err, "FAILED")
+        assert [line.split("\t")[1] for line in failed] == [self.BLOCKED], (
+            f"上限超過の 1 件が失敗として報告されていない。stderr 全文: {err!r}"
+        )
+        assert (reports_dir / self.BLOCKED).read_bytes() == CRLF_BODY, (
+            "失敗した 1 件の移動元が消えた/改変された"
+        )
+        assert (archive_dir / self.SURVIVING).read_bytes() == LF_BODY, (
+            "1 件失敗で残りの処理が打ち切られている（ADR-4 / 設計 §3-3）"
+        )
+        assert not (reports_dir / self.SURVIVING).exists()
+
+        produced = sorted(p.name for p in archive_dir.glob("*.md"))
+        assert len(produced) == len(blockers) + 1, (
+            "上限を超えて候補が生成された（または事前配置が上書きされた）。"
+            f" 期待 {len(blockers) + 1} 件 / 実際 {len(produced)} 件"
+        )
+        assert all((archive_dir / blocker).stat().st_size == 0 for blocker in blockers), (
+            "INV-1 違反: 事前配置した既存ファイルが書き換わった"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 改訂 4 性質 5 / SR-NEW-1: 出力の制御文字を一元的に無害化する
+# ---------------------------------------------------------------------------
+
+
+class TestControlCharSanitisation:
+    """設計 §3-3【改訂 4・SR-NEW-1】。
+
+    `--reports-dir` が任意ディレクトリを指せる以上、そこにあるファイル名は攻撃者が制御でき、
+    生の ANSI エスケープが端末表示を偽装しうる。**失敗理由の行だけでなく、移動・リネームの
+    通常出力（stdout）も対象**である。
+
+    **判定に使う制御文字の選び方（実測に基づく）**: Windows (NTFS) は `\\x01`-`\\x1f` を含む
+    ファイル名を `OSError: [Errno 22] Invalid argument` で拒否する一方、DEL (`\\x7f`) は
+    受け付ける（本開発機で実測）。よって
+    - **主判定はファイル名の DEL**（クロスプラットフォームで実ファイルを作れる）
+    - **ESC (`\\x1b`) と BEL (`\\x07`) は失敗理由の文字列経由**で測る（OS 依存なし）
+    - ESC を含む実ファイル名の版は、作れない環境では skip する
+    の 3 本立てにする。
+    """
+
+    DEL_NAME = "plan-report-20260808-101112\x7fx.md"
+    ESC_NAME = "plan-report-20260808-101112\x1bx.md"
+    ESC_REASON = "boom \x1b[31mRED\x1b[0m \x07bell"
+
+    def test_rename_output_on_stdout_is_sanitised(self, tmp_path, monkeypatch):
+        """性質 5: 通常出力（リネームの旧名→新名）に生の制御文字が出ない。"""
+        module = load_archive_module()
+        _assert_stamp_helpers_are_self_consistent()
+
+        reports_dir = make_reports_dir(tmp_path)
+        archive_dir = reports_dir / "archive"
+        # 衝突させてリネーム経路（stdout に旧名→新名を出す）を通す。
+        write_report_or_skip(archive_dir, self.DEL_NAME, b"OLD VERSION\n")
+        write_report_or_skip(reports_dir, self.DEL_NAME, CRLF_BODY, mtime=FIXED_MTIME_A)
+
+        rc, out, err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 0, f"衝突リネームは失敗ではない。stderr: {err!r}"
+        assert "リネーム" in out or "->" in out, (
+            f"リネームの通常出力が stdout に出ていない（前提が崩れている）: {out!r}"
+        )
+        assert_no_raw_control_chars(out, "stdout（リネームの通常出力）")
+
+    def test_failure_line_name_and_reason_are_sanitised(self, tmp_path, monkeypatch):
+        """性質 5: 失敗行のファイル名（DEL）と理由（ESC / BEL）が無害化される。"""
+        module = load_archive_module()
+
+        reports_dir = make_reports_dir(tmp_path)
+        write_report_or_skip(reports_dir, self.DEL_NAME, CRLF_BODY, mtime=FIXED_MTIME_A)
+
+        def fake_move_one(src, archive_dir):
+            raise OSError(TestControlCharSanitisation.ESC_REASON)
+
+        monkeypatch.setattr(module, "_move_one", fake_move_one)
+
+        rc, out, err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 1
+        assert lines_with_token(err, "FAILED"), f"失敗一覧が出ていない: {err!r}"
+        assert_no_raw_control_chars(err, "stderr（FAILED 行のファイル名と理由）")
+        assert_no_raw_control_chars(out, "stdout（集計）")
+
+    def test_escape_char_in_a_real_filename_is_sanitised(self, tmp_path, monkeypatch):
+        """性質 5（実挙動・ESC 名を作れない FS では skip）: ESC 入りの実ファイル名。"""
+        module = load_archive_module()
+        _assert_stamp_helpers_are_self_consistent()
+
+        reports_dir = make_reports_dir(tmp_path)
+        archive_dir = reports_dir / "archive"
+        write_report_or_skip(archive_dir, self.ESC_NAME, b"OLD VERSION\n")
+        write_report_or_skip(reports_dir, self.ESC_NAME, CRLF_BODY, mtime=FIXED_MTIME_A)
+
+        rc, out, err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 0, f"衝突リネームは失敗ではない。stderr: {err!r}"
+        assert_no_raw_control_chars(out, "stdout（ESC を含む実ファイル名）")
+        assert_no_raw_control_chars(err, "stderr（ESC を含む実ファイル名）")
+
+
+# ---------------------------------------------------------------------------
+# 改訂 4 性質 6 / SR-NEW-2: 読み取り直前の symlink 再判定
+# ---------------------------------------------------------------------------
+
+
+class TestSymlinkRecheckJustBeforeRead:
+    """設計 §3-3c【改訂 4・SR-NEW-2】。
+
+    `_collect_targets` で symlink を除外した後、`_move_one` は別途 `src.read_bytes()` を
+    呼ぶ。この間に `src` が symlink へ差し替えられると、差し替え先の実体が `.md` として
+    アーカイブへコピーされうる。→ `_move_one` 内で読む直前に `src.is_symlink()` を再判定し、
+    真ならその 1 件を失敗にする。
+
+    差し替えの作り方: 列挙が終わった後にだけ「リンクに見える」状態にしたいので、
+    契約シンボル `_move_one`（設計 §3-3b）へ入った時点でフラグを立てる。
+    `Path.read_bytes` は差し替え先の内容（SECRET）を返す形にし、**SECRET が archive に
+    現れないこと**でリンク先の内容がコピーされないことを測る。
+    """
+
+    LINK_NAME = "plan-report-20260808-101112.md"
+    PLAIN_NAME = "architecture-report-20260807-090501.md"
+    SECRET = b"LINK TARGET SECRET - must never reach archive\n"
+
+    def test_target_that_becomes_a_symlink_before_read_fails_that_one(
+        self, tmp_path, monkeypatch
+    ):
+        """性質 6: 列挙後・読み取り前に symlink 化した 1 件は失敗になり、内容はコピーされない。"""
+        module = load_archive_module()
+
+        reports_dir = make_reports_dir(tmp_path)
+        write_report(reports_dir, self.LINK_NAME, CRLF_BODY, mtime=FIXED_MTIME_A)
+        write_report(reports_dir, self.PLAIN_NAME, LF_BODY, mtime=FIXED_MTIME_B)
+        archive_dir = reports_dir / "archive"
+
+        state = {"swapped": False}
+        link_name = self.LINK_NAME
+        secret = self.SECRET
+
+        def _is_the_swapped_target(path: Path) -> bool:
+            return path.name == link_name and path.parent.name != "archive"
+
+        original_move_one = module._move_one
+
+        def move_one_after_swap(src, target_dir):
+            # 列挙は既に終わっている。ここから先が「読み取り直前」の窓。
+            if _is_the_swapped_target(Path(src)):
+                state["swapped"] = True
+            return original_move_one(src, target_dir)
+
+        monkeypatch.setattr(module, "_move_one", move_one_after_swap)
+
+        original_is_symlink = Path.is_symlink
+
+        def fake_is_symlink(self) -> bool:
+            if state["swapped"] and _is_the_swapped_target(self):
+                return True
+            return original_is_symlink(self)
+
+        monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+
+        original_read_bytes = Path.read_bytes
+
+        def fake_read_bytes(self) -> bytes:
+            if state["swapped"] and _is_the_swapped_target(self):
+                return secret
+            return original_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", fake_read_bytes)
+
+        rc, _out, err = run_capturing(module, monkeypatch, "--reports-dir", str(reports_dir))
+
+        assert rc == 1, "読み取り直前に symlink 化した 1 件が失敗になっていない（設計 §3-3c 改訂 4）"
+        failed = lines_with_token(err, "FAILED")
+        assert [line.split("\t")[1] for line in failed] == [self.LINK_NAME], (
+            f"失敗として報告された対象が違う。stderr 全文: {err!r}"
+        )
+
+        leaked = [
+            path.name
+            for path in archive_dir.glob("*")
+            if path.is_file() and original_read_bytes(path) == secret
+        ]
+        assert leaked == [], f"リンク先の内容が archive にコピーされた: {leaked}"
+        assert not (archive_dir / self.LINK_NAME).exists(), "symlink 化した対象が移動された"
+        assert (reports_dir / self.LINK_NAME).exists(), "失敗した 1 件の移動元が削除された"
+        assert (archive_dir / self.PLAIN_NAME).read_bytes() == LF_BODY, (
+            "1 件失敗で残りの処理が打ち切られている（ADR-4）"
+        )
