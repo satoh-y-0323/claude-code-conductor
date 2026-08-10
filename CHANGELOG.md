@@ -1,5 +1,64 @@
 # Changelog
 
+## [2.66.0] - 2026-08-11
+
+### 破壊的変更
+
+- **`record_review_decision.py` の `--severity` を必須引数にした**（配布物・`.claude/skills/dev-workflow/scripts/`）。
+  省略すると argparse エラー（exit 2）で記録されない。値の語彙検証は従来どおりフェイルセーフ
+  （`critical/high/medium/low` 以外は stderr 警告＋severity=NULL で記録続行）。
+  あわせて `--finding` は strip 後空文字を明示エラー（exit 2・記録しない）にした。
+  非 0 exit を返すのはこの 2 系統のみ（checklist-id 不正・import 失敗・insert 失敗は従来どおり exit 0）。
+  **移行**: 旧コマンド例（`--severity` なし）は `--severity {critical|high|medium|low}` を付与すること。
+  呼び出し規約（`dev-workflow/SKILL.md` / `autonomous-mode/SKILL.md`）と docstring Usage / help は追随済み。
+  v2.55.0 の「省略時完全後方互換」宣言は本バージョンで撤回（凍結テストは意図的に反転）
+
+### 追加
+
+- **hooks のパスガードに Unicode 正規化（NFC）を導入した**（配布物）。
+  - `patterns_guard.py`: resolve 適用後の比較両辺へ NFC を適用（macOS 等の NFD 表現パスで保護が
+    沈黙する fail-open を解消・台帳 id 925）
+  - `worktree_guard.py`: 判定を純関数 `decide_containment` へ切り出し、二層 AND
+    （第 1 層=NFC 正規化後 prefix 判定・第 2 層=実在する最深祖先から根方向への `samefile` 祖先鎖照合）で
+    「NFD 名の別 worktree を同一視する境界越え」を塞いだまま表現差の誤ブロックを解消。
+    NUL 混入パスの明示ブロック（Windows では realpath が NUL 保持で成功する実測に対応）と
+    fail-closed 異常系（判定不能は exit 2）・TOCTOU 受容 docstring を追加
+- **wt_* agent 定義の同期検査を新設した**（`tests/test_wt_agent_sync.py`）。本体 3 本との差分が
+  既知の意図的変換 9 カテゴリのみであることを行単位で検査する。導入時に実在の同期漏れ 1 件
+  （`wt_tester.md` の閉じ括弧）を検出・是正した
+- **agent-memory 肥大ガードを全ファイル射程へ拡張した**（配布物・`stop.py`）。
+  従来の索引 `MEMORY.md` 決め打ち（25KB/200 行・injection 予算）に加え、サブディレクトリ含む
+  全 `*.md` を再帰走査し個別ファイルは `AGENT_MEMORY_FILE_LIMIT_BYTES = 100KB` 超過で警告
+  （2 しきい値制・台帳 id 868）。警告文の外部由来文字列は連結前の各パス要素ごとにサニタイズ・
+  64 文字上限を適用し、symlink / NTFS junction は reparse tag 判定で辿らない（索引自体がリンクの場合も対象）
+- **NUL 境界 lint の走査層を拡張した**（`tests/test_nul_boundary_lint.py`）。
+  必須層に `scripts/**/*.py`・`hatch_build.py`、任意層に `.dev/hooks/**/*.py`（存在時のみ）を追加。
+  `scripts/audit_review_decisions.py` の SQL 組み立てを 2 文に分割（生成 SQL 不変）して
+  allow マーカーを付与（台帳 M-3 残の解消）
+- **端末表示サニタイズを共通ヘルパーへ統一した**（`_hook_utils.sanitize_for_terminal`）。
+  除去集合を C0/C1/DEL＋ゼロ幅（U+200B-200F/FEFF）＋行分離（U+2028/2029）＋双方向制御
+  （U+202A-202E/2066-2069）へ拡張し、`worktree_guard.py` / `planner_check.py` ほか複製 6 箇所を統一
+  （RTL override による BLOCK メッセージの表示偽装を解消）
+
+### 修正
+
+- `tests/skills/test_planner_lightweight.py` の docstring の旧ルール番号表記を、assert の実態に合わせた
+  番号非固定の表現へ是正（台帳 id 1228）
+- `record_agent_outcome.py` の `--final` help 文言を E-3 統合裁定後のフローへ追随（挙動変更なし）
+
+### 台帳（レビュー判断の記録）
+
+- resolved: id 925 / 927（NFC 正規化）・932（patterns_guard docstring 2 分解）・1228（docstring 番号）・
+  868（agent-memory 肥大ガード）
+- 再裁定 accepted 維持: id 1489（`.dev/hooks` 2 本の構造重複・トリガー=3 本目追加時）・
+  id 25（`_REPO_ROOT` 重複・トリガー=scripts 共通モジュール新設時 or ブートストラップ棚卸し時）
+
+### 配布元のみ（gitignored・利用先に影響なし）
+
+- `.dev/hooks/` の stdin を読む 4 本（`_template_guard` / `_sync_check` / `_pip_reinstall_reminder` /
+  `_planner_check`）へ stdin reconfigure を追加し、NFC 正規化（realpath 後比較両辺 / relpath 前段）を適用。
+  `_push_lag_watch` / `_version_watch` の射程コメントを新規範（stdin を読む hook は 3 ストリーム必須）へ整合
+
 ## [2.65.0] - 2026-08-10
 
 ### 追加
