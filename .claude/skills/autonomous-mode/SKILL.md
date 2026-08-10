@@ -96,7 +96,7 @@ E-0 起因の差し戻しは E 周回として 1 消費する（CR/SR セット�
 | サイクルの状態 | 分岐 |
 |---|---|
 | High/Medium が 1 件以上 | 従来どおり「全て対応する」を選ぶ（Low も含めて `[対応予定]`）。層別ルーティングで上流へ戻る＝未収束 |
-| High/Medium 0・Low が 1 件以上（＝収束） | 残る Low を「全て許容して進む」で処理する。許容理由は「C-3 収束条件（High/Medium 0）を満たしたため、残る Low は実装フェーズ以降で扱う」と記録し、`.claude/skills/dev-workflow/scripts/record_review_decision.py --decision accepted` で残す。フェーズ D へ進む |
+| High/Medium 0・Low が 1 件以上（＝収束） | 残る Low を「全て許容して進む」で処理する。許容理由は「C-3 収束条件（High/Medium 0）を満たしたため、残る Low は実装フェーズ以降で扱う」と記録し、`.claude/skills/dev-workflow/scripts/record_review_decision.py --decision accepted --severity low` で残す（`--severity` は必須引数）。フェーズ D へ進む |
 | findings 0 | そのままフェーズ D へ |
 
 **cycles_used の定義**: E は**周回数**。CR∥SR 並列 1 セット＋修正＝1 サイクル。

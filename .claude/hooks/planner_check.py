@@ -35,10 +35,11 @@ import re
 import sys
 from pathlib import Path
 
-# 共通ヘルパー (_hook_utils.write_debug_log) を hooks/ 経由で import するため、
+# 共通ヘルパー (_hook_utils.write_debug_log / sanitize_for_terminal) を hooks/ 経由で
+# import するため、
 # このスクリプトのディレクトリを PYTHONPATH に追加する。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_utils import write_debug_log  # noqa: E402
+from _hook_utils import sanitize_for_terminal, write_debug_log  # noqa: E402
 
 try:
     sys.stdin.reconfigure(encoding="utf-8")
@@ -77,17 +78,6 @@ _TIMESTAMP_RE = re.compile(r"(?<![A-Za-z0-9])\d{8}(?:-\d{6})?(?![A-Za-z0-9])")
 _R6_TASK_THRESHOLD = 3
 
 _REVIEWER_AGENTS = frozenset({"code-reviewer", "security-reviewer"})
-
-
-def _sanitize(s: str) -> str:
-    """ターミナルインジェクション対策: 制御文字と JSON 互換性を壊す Unicode 行区切りを除去する。
-
-    除去対象:
-      - C0/C1 制御文字 (\\x00-\\x1f) と DEL (\\x7f) — ANSI エスケープ (ESC 0x1b) を含む
-      - U+2028 (Line Separator) / U+2029 (Paragraph Separator) — 一部の JS/JSON
-        パーサが行区切りとして扱い、ensure_ascii=False の JSON 解析を破壊する
-    """
-    return re.sub("[\x00-\x1f\x7f\u2028\u2029]", "", str(s))
 
 
 def _normalize(path: str) -> str:
@@ -277,7 +267,7 @@ def main() -> None:
         # 経路1: stderr に人間向けメッセージ（ターミナル表示用）
         print("[PlannerCheck WARN] plan-report の検査で違反を検出しました:",
               file=sys.stderr)
-        sanitized_warnings = [_sanitize(msg) for msg in warnings]
+        sanitized_warnings = [sanitize_for_terminal(msg) for msg in warnings]
         for msg in sanitized_warnings:
             print(f"  - {msg}", file=sys.stderr)
 

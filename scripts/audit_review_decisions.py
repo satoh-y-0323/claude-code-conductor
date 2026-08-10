@@ -184,13 +184,19 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
     try:
         with connect(db_path, wal=True) as conn:
-            sql = (
+            # NUL 境界 lint は 1 文に対象 join が 2 個あるとマーカーで抑止できない
+            # （fail-closed）ため、SELECT 句と WHERE 句を 2 文に分けて組み立てる。
+            # 連結後の SQL 文字列は分割前と同一。
+            select_clause = (
                 f"SELECT {', '.join(_LIST_COLUMNS)} FROM review_decisions"
+            )  # nul-boundary: allow(SQL の列名リスト連結・内部定数 _LIST_COLUMNS のみで外部由来値は入らない)
+            where_clause = (
                 " WHERE resolution IS NULL"
                 f" AND decision IN ({', '.join('?' * len(_TARGET_DECISIONS))})"
                 " AND id <= ?"
                 " ORDER BY id"
-            )
+            )  # nul-boundary: allow(SQL のプレースホルダ連結・値は execute のパラメータで渡す)
+            sql = select_clause + where_clause
             params: list[object] = [*_TARGET_DECISIONS, _FROZEN_MAX_ID]
             if args.limit != 0:
                 sql += " LIMIT ?"
@@ -237,6 +243,7 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
     if args.resolution not in _VALID_RESOLUTIONS:
         print(
             f"エラー: --resolution の値が不正です: {args.resolution!r}"
+            # nul-boundary: allow(エラーメッセージ内の許容値一覧・人間可読出力で機械パース対象ではない)
             f"（許容値: {', '.join(_VALID_RESOLUTIONS)}）",
             file=sys.stderr,
         )
@@ -354,6 +361,7 @@ def _cmd_summary(args: argparse.Namespace) -> int:
         with connect(db_path, wal=True) as conn:
             sql = (
                 "SELECT resolution, severity, reviewer, COUNT(*) FROM review_decisions"
+                # nul-boundary: allow(SQL のプレースホルダ連結・値は execute のパラメータで渡す)
                 f" WHERE decision IN ({', '.join('?' * len(_TARGET_DECISIONS))})"
                 " AND id <= ?"
                 " GROUP BY resolution, severity, reviewer"
@@ -413,6 +421,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_resolve.add_argument(
         "--resolution",
         required=True,
+        # nul-boundary: allow(--help に表示する許容値一覧・人間可読出力で機械パース対象ではない)
         help=f"判定結果（{'|'.join(_VALID_RESOLUTIONS)}）",
     )
     p_resolve.add_argument("--note", default=None, help="判定の根拠（resolved / unverifiable では必須）")

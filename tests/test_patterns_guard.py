@@ -70,6 +70,20 @@ tmp_path 配下に閉じ込める。実リポジトリの `.claude/memory/patter
         するようになるため、単体コピー方式の擬似リポジトリでも import を成立させる
         （前例 tests/hooks/test_restore_session.py:79-93 の session_utils.py 同梱）。
         この fixture 変更自体は既存テストの挙動を変えない（コピーが 1 ファイル増えるのみ）。
+
+## S3 ① NFC 正規化 追加分（Red）
+
+閉じる穴: `resolve()` 後の等値比較が Unicode 正規化形の違い（NFC / NFD）で不一致になり、
+同一ファイルを指す別表現の `file_path` がガードを素通りする fail-open。
+
+    - Red 群: NFD 表現の絶対パス × NFC 表現で実在する擬似リポジトリ → block(exit 2) を期待。
+      現行実装は文字列としての表現差で `resolved != protected_path` となり exit 0（素通り）。
+    - 回帰ガード群: NFC × NFC の block 維持・無関係パス（NFD 名）の素通り維持・
+      正規化後も許可フラグ経路が効くこと。既存 ASCII ケースは本ファイル上記 28 件が担保する。
+
+ソースに NFD リテラルを直接埋め込まず `unicodedata.normalize()` で実行時に生成する
+（cp932 環境で NFD の結合文字がテストソース表示・stdout でエンコード不能になるのを避ける）。
+アサーションメッセージ中のパスは `ascii()` で退避する（同じ理由）。
 """
 
 from __future__ import annotations
@@ -82,6 +96,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 WORKTREE_ROOT = Path(__file__).resolve().parent.parent
@@ -596,3 +611,116 @@ def test_ttl_literal_is_not_hardcoded_in_comparison() -> None:
                     "TTL 判定の比較式に 600 がリテラルで直書きされている"
                     "（TTL_SECONDS 定数を参照すること）"
                 )
+
+
+# ===========================================================================
+# S3 ① NFC 正規化（Red / 回帰ガード）
+# ===========================================================================
+
+# NFC と NFD で表現が異なる文字（ダ = U+30C0 / U+30BF + U+3099）。
+# NFD リテラルをソースへ直書きせず実行時に生成する（モジュール docstring 参照）。
+_NFC_MARK = unicodedata.normalize("NFC", "ダ")
+_NFD_MARK = unicodedata.normalize("NFD", _NFC_MARK)
+
+_NFC_REPO_DIRNAME = f"repo-{_NFC_MARK}"
+_NFD_REPO_DIRNAME = f"repo-{_NFD_MARK}"
+
+
+def _install_unicode_fake_repo(tmp_path: Path) -> tuple[Path, Path]:
+    """NFC 正規形のディレクトリ名を持つ擬似リポジトリを作り ``(repo_root, hook)`` を返す。
+
+    `.claude/memory/patterns.json` は ASCII なので、NFC / NFD の表現差は
+    リポジトリルートのディレクトリ名（実在するのは NFC 形のみ）に載せる。
+    """
+    assert _NFC_MARK != _NFD_MARK, (
+        "テスト前提が崩れている: NFC と NFD で表現が異なる文字を使うこと "
+        f"(NFC={ascii(_NFC_MARK)}, NFD={ascii(_NFD_MARK)})"
+    )
+    repo_root = tmp_path / _NFC_REPO_DIRNAME
+    repo_root.mkdir(parents=True, exist_ok=True)
+    hook = _install_fake_repo(repo_root)
+    _patterns_json_path(repo_root)
+    return repo_root, hook
+
+
+def _nfd_path_in_repo(tmp_path: Path, *parts: str) -> str:
+    """NFD 表現のリポジトリルート経由の絶対パス文字列を組み立てる（実在しない表現）。"""
+    return str(tmp_path.joinpath(_NFD_REPO_DIRNAME, *parts))
+
+
+def _run_hook_utf8(hook: Path, payload: dict) -> subprocess.CompletedProcess:
+    """payload を（\\uXXXX エスケープせず）UTF-8 のまま stdin へ送る。"""
+    return _run_hook(hook, None, raw_stdin=json.dumps(payload, ensure_ascii=False))
+
+
+# --- Red 群: NFD 入力 × NFC 実在 -------------------------------------------
+
+
+def test_nfd_form_path_to_patterns_json_is_blocked(tmp_path: Path) -> None:
+    """[S3①・Red] NFD 表現の絶対パスでも patterns.json への Write は block される。
+
+    現行実装は `resolved != protected_path` の等値比較が Unicode 正規化形の違いで
+    不一致になり exit 0（素通り＝fail-open）。比較の両辺に NFC 正規化を適用すると
+    exit 2 になる。
+    """
+    _repo_root, hook = _install_unicode_fake_repo(tmp_path)
+    nfd_target = _nfd_path_in_repo(tmp_path, ".claude", "memory", "patterns.json")
+    result = _run_hook_utf8(hook, _write_payload("Write", nfd_target))
+    assert result.returncode == 2, (
+        f"NFD 表現の patterns.json 指定が block されなかった: exit {result.returncode} "
+        f"(path={ascii(nfd_target)})\n{ascii(result.stderr)}"
+    )
+
+
+def test_nfd_form_path_emits_block_message(tmp_path: Path) -> None:
+    """[S3①・Red] NFD 表現で block されたとき通常と同じ案内が stderr に出る。"""
+    _repo_root, hook = _install_unicode_fake_repo(tmp_path)
+    nfd_target = _nfd_path_in_repo(tmp_path, ".claude", "memory", "patterns.json")
+    result = _run_hook_utf8(hook, _write_payload("Edit", nfd_target))
+    assert "PatternGuard BLOCK" in result.stderr, (
+        f"block メッセージが出ていない: {ascii(result.stderr)}"
+    )
+    assert "Traceback" not in result.stderr, (
+        f"正規化処理で未捕捉例外が漏れた: {ascii(result.stderr)}"
+    )
+
+
+# --- 回帰ガード群 -----------------------------------------------------------
+
+
+def test_nfc_form_path_in_unicode_repo_stays_blocked(tmp_path: Path) -> None:
+    """[S3①・回帰] NFC 入力 × NFC 実在は現行どおり block(exit 2) のまま。"""
+    repo_root, hook = _install_unicode_fake_repo(tmp_path)
+    nfc_target = str(repo_root / ".claude" / "memory" / "patterns.json")
+    result = _run_hook_utf8(hook, _write_payload("Write", nfc_target))
+    assert result.returncode == 2, (
+        f"NFC 入力での block が壊れた: exit {result.returncode}\n{ascii(result.stderr)}"
+    )
+
+
+def test_unrelated_nfd_form_path_stays_ignored(tmp_path: Path) -> None:
+    """[S3①・回帰] 無関係ファイルは NFD 表現でも素通り（正規化で過剰ブロックしない）。"""
+    _repo_root, hook = _install_unicode_fake_repo(tmp_path)
+    nfd_other = _nfd_path_in_repo(tmp_path, ".claude", "memory", "other.json")
+    result = _run_hook_utf8(hook, _write_payload("Write", nfd_other))
+    assert result.returncode == 0, (
+        f"無関係ファイル(NFD 表現)が block された: exit {result.returncode}\n"
+        f"{ascii(result.stderr)}"
+    )
+
+
+def test_nfd_form_path_with_valid_flag_is_allowed(tmp_path: Path) -> None:
+    """[S3①・回帰] 正規化を効かせても TTL 内の許可フラグ経路は allow のまま。
+
+    是正前は「表現差で素通り」という別の理由で exit 0 になるため、本ケースは是正の
+    前後どちらでも緑。フラグ経路が正規化導入で潰れないことを固定する回帰ガード。
+    """
+    repo_root, hook = _install_unicode_fake_repo(tmp_path)
+    flag = _write_flag(repo_root, age_seconds=100)
+    nfd_target = _nfd_path_in_repo(tmp_path, ".claude", "memory", "patterns.json")
+    result = _run_hook_utf8(hook, _write_payload("Write", nfd_target))
+    assert result.returncode == 0, (
+        f"TTL 内フラグがあるのに block された: exit {result.returncode}\n"
+        f"{ascii(result.stderr)}"
+    )
+    assert flag.exists(), "TTL 内の許可はフラグを削除しない仕様のはず"

@@ -12,7 +12,7 @@ PYTHONPATH に追加してから `from _hook_utils import ...` する経路を�
 - ``write_debug_log(log_path, line)`` — ``C3_HOOK_DEBUG=1`` のときのみログを追記する
   fail-safe な書き込みヘルパー。
 - ``sanitize_for_terminal(text)`` — 端末出力（stderr / stdout JSON）へ載せる前に
-  C0 + DEL + C1 制御文字を除去するヘルパー。
+  C0 + DEL + C1 制御文字に加え、双方向制御・ゼロ幅・行区切り文字を除去するヘルパー。
 """
 
 from __future__ import annotations
@@ -35,6 +35,25 @@ DEBUG_ENV = "C3_HOOK_DEBUG"
 #     エスケープシーケンスのプリフィクス（例: CSI = \x9b）として解釈される
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
+# 端末表示用の除去集合。stop.py の `_DISPLAY_SANITIZE_RE` と同一範囲を持つ
+# （CR-M-001 / SR-NEW-1: hook 側の表示サニタイズを最も広い集合へ揃える）。
+# _CONTROL_CHARS_RE（C0 + DEL + C1）に加えて次を除去する:
+#   - U+200B-U+200F — ゼロ幅スペース / ZWNJ / ZWJ / LRM / RLM（表示偽装）
+#   - U+2028 / U+2029 — Line/Paragraph Separator（行区切り偽装・JSON パーサ破壊）
+#   - U+202A-U+202E — 双方向埋め込み・上書き（RLO によるファイル名偽装）
+#   - U+2066-U+2069 — 双方向 isolate
+#   - U+FEFF — BOM / ZERO WIDTH NO-BREAK SPACE
+# raw string は \uXXXX を解釈しないため、非 ASCII のコードポイントは chr() で連結する。
+_TERMINAL_SANITIZE_RE = re.compile(
+    r"[\x00-\x1f\x7f-\x9f"
+    + chr(0x200b) + "-" + chr(0x200f)
+    + chr(0x2028) + chr(0x2029)
+    + chr(0x202a) + "-" + chr(0x202e)
+    + chr(0x2066) + "-" + chr(0x2069)
+    + chr(0xfeff)
+    + r"]"
+)
+
 
 # NOTE: 同一ロジックが src/c3/cli_update.py::_validate_deletion_path の step 13 に
 # 複製されている（import 経路がないため）。変更時は両方を揃えること。
@@ -49,14 +68,15 @@ def norm_component(s: str) -> str:
 
 
 def sanitize_for_terminal(text: str) -> str:
-    """端末インジェクション対策: C0 制御文字 / DEL / C1 制御文字を除去する。
+    """端末インジェクション対策: 制御文字と表示偽装文字を除去する。
 
-    - 除去範囲は ``_CONTROL_CHARS_RE``（C0 + DEL + C1）と共通。ANSI エスケープの
-      ESC (``\\x1b``) と CSI (``\\x9b``) の双方をカバーする。
+    - 除去範囲は ``_TERMINAL_SANITIZE_RE``（C0 + DEL + C1 + ゼロ幅 + 行区切り +
+      双方向制御 + BOM）。ANSI エスケープの ESC (``\\x1b``) と CSI (``\\x9b``)、
+      RLO によるファイル名偽装、改行による偽の警告行の注入をまとめてカバーする。
     - hook が stderr / stdout JSON（additionalContext）へ外部由来の文字列
       （ファイル名など）を載せる前に通す。
     """
-    return _CONTROL_CHARS_RE.sub("", str(text))
+    return _TERMINAL_SANITIZE_RE.sub("", str(text))
 
 
 def write_debug_log(log_path: Path, line: str) -> None:

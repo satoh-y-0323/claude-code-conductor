@@ -175,6 +175,7 @@ class TestChecklistIdPattern:
             "--finding", "test finding",
             "--decision", "accepted",
             "--reviewer", "code-reviewer",
+            "--severity", "high",  # S3 ⑤ で required 化されたため補う
         ])
         assert rc == 0
         captured = capsys.readouterr()
@@ -191,6 +192,7 @@ class TestChecklistIdPattern:
             "--finding", "test finding",
             "--decision", "accepted",
             "--reviewer", "code-reviewer",
+            "--severity", "high",  # S3 ⑤ で required 化されたため補う
         ])
         assert rc == 0
         captured = capsys.readouterr()
@@ -223,6 +225,7 @@ class TestChecklistIdPattern:
             "--finding", "新規パターン",
             "--decision", "accepted",
             "--reviewer", "code-reviewer",
+            "--severity", "high",  # S3 ⑤ で required 化されたため補う
         ])
         assert rc == 0
         captured = capsys.readouterr()
@@ -255,9 +258,31 @@ def _install_fake_insert(monkeypatch: pytest.MonkeyPatch, return_value: bool = T
     return calls
 
 
+def _exit_code_of(func, argv: list[str]) -> int:
+    """main() の終了コードを返す。
+
+    argparse 由来の `SystemExit` と `return` 値のどちらで終了コードが表現されても
+    同じ「終了コード」として扱い、拒否の実装手段（parser.error / 明示 return）を
+    テストで凍結しない。
+    """
+    try:
+        result = func(argv)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        return 1  # メッセージ文字列付き sys.exit は非 0 扱い
+    return 0 if result is None else int(result)
+
+
 class TestSeverityArgument:
-    """--severity の Title Case 正規化・語彙外フェイルセーフ・省略時後方互換を固定した
-    （architecture-report §2-2(c)）。"""
+    """--severity の必須化・Title Case 正規化・値の語彙外フェイルセーフを固定する
+    （architecture-report §2-2(c) / S3 ⑤）。
+
+    引数そのものの省略は許容しない（argparse required）が、渡された値が語彙外の場合は
+    警告 + severity=None で記録を続行する（値のフェイルセーフは維持）。"""
 
     def test_severity_title_case_is_normalized_to_lowercase(self, monkeypatch, capsys):
         """`--severity High` は `high` に正規化されて記録された。"""
@@ -294,23 +319,80 @@ class TestSeverityArgument:
         captured = capsys.readouterr()
         assert "語彙外" in captured.err
 
-    def test_severity_omitted_is_backward_compatible(self, monkeypatch, capsys):
-        """`--severity` を省略した従来呼び出しは、severity 未指定（None）・
-        警告なし・exit 0 のまま変わらなかった（後方互換）。"""
+    def test_severity_omitted_exits_nonzero(self, monkeypatch, capsys):
+        """`--severity` の省略は exit≠0 で拒否され、記録も発生しない。
+
+        旧 `test_severity_omitted_is_backward_compatible`（省略時の exit 0 + severity=None 記録を
+        凍結していた）の反転。反転理由:
+        required 化前は省略を許容していたが、S3（2026-08-10 ユーザー裁定）で破壊的変更として
+        撤回した。CHANGELOG の破壊的変更セクションに記載する
+        """
         mod = _load_hook_module()
         calls = _install_fake_insert(monkeypatch)
 
-        rc = mod.main([
+        code = _exit_code_of(mod.main, [
             "--checklist-id", "CR-Q-003",
             "--finding", "f",
             "--decision", "fixed",
             "--reviewer", "code-reviewer",
         ])
-        assert rc == 0
-        # kwargs に severity キー自体が無い場合も None 扱いになる呼び出し側実装を許容する
-        assert calls[-1].get("severity") is None
+        assert code != 0
+        assert calls == []
         captured = capsys.readouterr()
-        assert "語彙外" not in captured.err
+        # 無関係な理由での非 0 終了と区別する（どの引数が原因かが示されること）
+        assert "severity" in captured.err
+
+
+class TestFindingQuality:
+    """--finding の品質ガード（S3 ⑤）。
+
+    strip 後に空となる finding は後段の review-hint 照合で無価値なため、明示エラー
+    （exit≠0）で拒否し記録しない。一方、非空であれば短い値でも記録は成立させる
+    （警告を出すかどうか・短さの閾値はテストで凍結しない）。
+    """
+
+    @pytest.mark.parametrize(
+        "blank",
+        ["", "   ", "\t", " \n ", "　"],
+        ids=["empty", "spaces", "tab", "space-newline", "ideographic-space"],
+    )
+    def test_whitespace_only_finding_is_rejected(self, blank, monkeypatch, capsys):
+        """strip 後が空文字になる `--finding` は exit≠0 で拒否され、記録されない。"""
+        mod = _load_hook_module()
+        calls = _install_fake_insert(monkeypatch)
+
+        code = _exit_code_of(mod.main, [
+            "--checklist-id", "CR-Q-005",
+            "--finding", blank,
+            "--decision", "fixed",
+            "--reviewer", "code-reviewer",
+            "--severity", "high",
+        ])
+        assert code != 0
+        assert calls == []
+        captured = capsys.readouterr()
+        # 無関係な理由での非 0 終了と区別する（どの引数が原因かが示されること）
+        assert "finding" in captured.err
+
+    def test_short_nonempty_finding_is_recorded(self, monkeypatch):
+        """非空なら短い `--finding` でも記録は成立する（回帰ガード）。
+
+        品質ガード追加で「短い finding を弾く」方向へ踏み込ませないための下限固定。
+        警告の有無・閾値には触れず、記録が成立することだけを assert する。
+        """
+        mod = _load_hook_module()
+        calls = _install_fake_insert(monkeypatch)
+
+        code = _exit_code_of(mod.main, [
+            "--checklist-id", "CR-Q-006",
+            "--finding", "f",
+            "--decision", "fixed",
+            "--reviewer", "code-reviewer",
+            "--severity", "high",
+        ])
+        assert code == 0
+        assert len(calls) == 1
+        assert calls[0]["finding_text"] == "f"
 
 
 class TestDesignCriticReviewerAndDcId:
@@ -348,6 +430,7 @@ class TestDesignCriticReviewerAndDcId:
             "--finding", "f",
             "--decision", "fixed",
             "--reviewer", "code-reviewer",
+            "--severity", "high",  # S3 ⑤ で required 化されたため補う
         ])
         assert rc == 0
         assert calls == []
@@ -381,6 +464,9 @@ class TestDesignCriticReviewerAndDcId:
                 "--finding", "f",
                 "--decision", "fixed",
                 "--reviewer", "unknown-reviewer",
+                # S3 ⑤ で required 化されたため補う。省略すると required 由来の exit 2 と
+                # 区別できず、choices 制約の検知力が失われる。
+                "--severity", "high",
             ])
         assert exc_info.value.code == 2
 

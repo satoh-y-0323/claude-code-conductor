@@ -13,8 +13,14 @@ NOTE [SR-V-002]: env 未設定時にガードが無効化されるリスクは p
 
 import json
 import os
-import re
 import sys
+import unicodedata
+from pathlib import Path
+
+# 共通ヘルパー (_hook_utils.sanitize_for_terminal) を hooks/ 経由で import するため、
+# このスクリプトのディレクトリを PYTHONPATH に追加する。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_utils import sanitize_for_terminal  # noqa: E402
 
 try:
     sys.stdin.reconfigure(encoding='utf-8')
@@ -35,9 +41,67 @@ _WORKTREES_PARENT = ".claude"
 _WORKTREES_COMPONENT = "worktrees"
 
 
-def _sanitize(s: str) -> str:
-    """ターミナルインジェクション対策: 制御文字（ANSI エスケープ含む）を除去する。"""
-    return re.sub(r'[\x00-\x1f\x7f]', '', s)
+def decide_containment(resolved, cwd, same_entity=os.path.samefile, path_exists=os.path.exists):
+    """対象パスが cwd 配下かどうかを二層 AND で判定する純関数（S3 ①）。
+
+    戻り値はブロック判定そのもの（True = block / False = allow）。
+
+    第 1 層: 対象パスの解決（realpath）後、比較直前に両辺を NFC 正規化した文字列の
+             prefix 判定。表現差（NFC/NFD）だけの不一致を吸収する。
+    第 2 層: ファイルシステム実体による cwd 配下確認。対象の実在する最深祖先から
+             根方向へ祖先鎖を辿り、いずれかの祖先（最深祖先自身を含む）が cwd と
+             samefile であれば配下と判定する（対象自身が cwd と同一の場合も、
+             対象自身が「実在する最深祖先」になるため自然に許可される）。
+
+    許可は第 1 層・第 2 層の両方に合格した場合のみ（AND）。片方のみの合格では
+    許可しない。
+
+    例外（OSError / ValueError）はこの関数の内側で捕捉し、fail-closed として
+    True（block）を返す。捕捉が囲む範囲は対象パスの解決（realpath）と両層の判定の
+    みに限定する。
+
+    TOCTOU 免責 [SR-NEW-3]: realpath / path_exists / same_entity の各呼び出しの
+    間に対象パスやその祖先が差し替えられる（判定後・実書き込み前にリンクへ
+    すり替えられる等）競合は原理的に残る。本 hook は agent の書き込み先が
+    worktree 外へ逸脱する事故を防ぐガードであり、悪意ある同時操作に対する
+    セキュリティ境界ではないため、この競合は許容する（patterns_guard.py の
+    フラグ TTL 判定と同じ免責）。射程外の経路（Bash / NotebookEdit 経由の
+    書き込み）が元々ガードされないことと合わせ、本 hook 単独を防御の最終線に
+    しない前提で運用する。
+    """
+    try:
+        resolved = os.path.realpath(resolved)
+
+        # 実測補正: Windows / Python 3.11.9 では os.path.realpath() は NUL 混入
+        # パスでも例外を出さず NUL を保持したまま成功して返る。例外捕捉だけでは
+        # 不足するため、解決後パスに \x00 が含まれる場合を明示的に block する。
+        if "\x00" in resolved or "\x00" in cwd:
+            return True
+
+        # 第 1 層: 正規化文字列（realpath 後 NFC）の prefix 判定
+        norm_resolved = unicodedata.normalize("NFC", resolved)
+        norm_cwd = unicodedata.normalize("NFC", cwd)
+        if norm_resolved != norm_cwd and not norm_resolved.startswith(norm_cwd + os.sep):
+            return True
+
+        # 第 2 層: ファイルシステム実体による cwd 配下確認。
+        # 対象の実在する最深祖先を求める（対象自身が実在すればそれが最深祖先）。
+        target = Path(resolved)
+        deepest_existing = None
+        for candidate in (target, *target.parents):
+            if path_exists(str(candidate)):
+                deepest_existing = candidate
+                break
+        if deepest_existing is None:
+            return True
+
+        # 最深祖先から根方向へ祖先鎖を辿り、いずれかが cwd と samefile なら配下。
+        for ancestor in (deepest_existing, *deepest_existing.parents):
+            if same_entity(str(ancestor), cwd):
+                return False
+        return True
+    except (OSError, ValueError):
+        return True
 
 
 def main():
@@ -74,16 +138,19 @@ def main():
     except ValueError:
         sys.exit(0)
 
-    resolved = os.path.realpath(
-        file_path if os.path.isabs(file_path) else os.path.join(cwd, file_path)
-    )
+    target = file_path if os.path.isabs(file_path) else os.path.join(cwd, file_path)
 
-    if resolved != cwd and not resolved.startswith(cwd + os.sep):
+    if decide_containment(target, cwd):
+        # stderr 表示専用の best-effort 解決（判定には使わない・失敗しても target を出す）
+        try:
+            display_resolved = os.path.realpath(target)
+        except (OSError, ValueError):
+            display_resolved = target
         print(
             f'[WorktreeGuard BLOCK] worktree 外へのファイル操作をブロックしました。\n'
-            f'  対象パス: {_sanitize(file_path)}\n'
-            f'  解決パス: {_sanitize(resolved)}\n'
-            f'  許可範囲: {_sanitize(cwd)}',
+            f'  対象パス: {sanitize_for_terminal(file_path)}\n'
+            f'  解決パス: {sanitize_for_terminal(display_resolved)}\n'
+            f'  許可範囲: {sanitize_for_terminal(cwd)}',
             file=sys.stderr
         )
         sys.exit(2)

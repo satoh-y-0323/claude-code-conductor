@@ -13,15 +13,22 @@ promote-pattern skill。意図的な編集は `.claude/state/patterns_guard_allo
 - worktree 実行時: 基準が main/worktree のどちらになるかは環境解決に依存
   （本 hook の基準は main の patterns.json 本体の事故防止。main 側保護が
   保護されない場合は検知が働かない限界あり）
-- resolve() による大小文字の正準化は実在ファイルのみ（Windows nt._getfinalpathname）。
-  patterns.json が未作成の初期環境（c3 init 直後）ではケース違い指定が素通りする
-- Windows の末尾ドット・スペース正規化も実在パス限定。非実在パスでは本 hook が検知できない限界
+- (i) resolve() が実在パスに対して解決する軸: 大小文字の正準化（Windows
+  nt._getfinalpathname）・末尾ドット/スペース正規化は実在ファイルのみに効く。
+  patterns.json が未作成の初期環境（c3 init 直後）ではケース違い指定が素通りする。
+  非実在パスでは本 hook が検知できない限界がある
+- (ii) 文字列比較に構造的に残る軸: resolve() 後の比較は文字列一致に依存するため、
+  Unicode 正規化形（NFC/NFD）の違いは resolve() だけでは吸収されない。これは
+  比較直前に両辺へ unicodedata.normalize("NFC", ...) を適用することで対応済み
+  （S3 ①）。ただし NFC 化しても別種の等価表現（大小文字・末尾装飾等）は (i) の
+  実在パス限定という限界の範囲内でしか解決しない
 """
 
 import json
 import os
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 # 共通ヘルパー (_hook_utils.sanitize_for_terminal) を hooks/ 経由で import するため、
@@ -80,8 +87,12 @@ def main():
     except (OSError, ValueError):
         sys.exit(0)
 
-    # realpath 一致チェック
-    if resolved != protected_path:
+    # realpath 一致チェック（比較直前に両辺を NFC 正規化する。片辺のみの正規化は禁止）。
+    # resolve() は実在パスのバイト列は正しく解決するが、Unicode 正規化形（NFC/NFD）の
+    # 違いまでは吸収しない。同一ファイルを指す NFD 表現の file_path が素通りするのを防ぐ。
+    if unicodedata.normalize("NFC", str(resolved)) != unicodedata.normalize(
+        "NFC", str(protected_path)
+    ):
         sys.exit(0)
 
     # patterns.json への書き込みが検出された → フラグチェック

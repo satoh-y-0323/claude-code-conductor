@@ -104,7 +104,11 @@ def test_planner_references_plan_design_guidelines():
 
 
 def test_plan_design_guidelines_exists_and_has_rules():
-    """skills/dev-workflow/references/plan-design-guidelines.md が存在し、ルール 1〜14 と R2〜R6 を含む。"""
+    """skills/dev-workflow/references/plan-design-guidelines.md が存在し、必須の設計指針キーワードと R2〜R6 を含む。
+
+    ルールの総数・上限番号は検査しない（ルール追加で docstring が陳腐化するため）。
+    検査対象は required_concepts に列挙したキーワードのみ。
+    """
     content = _read(PLAN_DESIGN_GUIDELINES)
     assert content, "skills/dev-workflow/references/plan-design-guidelines.md が存在しない"
     required_concepts = (

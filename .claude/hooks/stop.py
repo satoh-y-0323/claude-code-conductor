@@ -8,6 +8,7 @@ import json
 import sys
 import os
 import re
+import stat
 import tempfile
 from datetime import date, datetime, timezone
 
@@ -48,6 +49,16 @@ AGENT_MEMORY_WARN_RATIO = 0.8
 # 全体を read() する必要はない。予算の 2 倍を超えたファイルは（上限を超えた時点で
 # 必ず警告条件を満たすので）行数を下限値として報告する [SR-NEW]。
 AGENT_MEMORY_READ_CAP_BYTES = AGENT_MEMORY_LIMIT_BYTES * 2
+
+# 個別メモリファイル（agent-memory/<agent>/ 配下・MEMORY.md 以外の *.md。
+# topics/ 等のサブディレクトリを含め再帰走査の対象）向けの閾値。
+# 索引 MEMORY.md と異なり起動時に system prompt へ自動注入されないため、
+# injection 予算（25KB/200行の 80%）はそのまま適用できない。個別ファイルは
+# 必要時に Read されるだけなので、制約は「1 回の Read で払うトークン・保守コスト」
+# であり注入予算とは性質が違う。実測分布は 27〜50KB が正規運用範囲、200KB 超は
+# 外れ値だったため、その中間の区切りとして 100KB を採用する
+# （strict greater・超過のみ警告）[S3 ⑦]。
+AGENT_MEMORY_FILE_LIMIT_BYTES = 100 * 1024
 
 # 過去セッションファイルから引き継ぐ - [ ] 行のサニタイズ用パターン。
 # C0/C1 制御文字 (タブ 	 と通常スペース   は保持) と U+2028 / U+2029 を除去する。
@@ -395,53 +406,184 @@ def _warn_oversized_descriptions(patterns: list) -> None:
             )
 
 
+def _sanitize_path_element(value) -> str:
+    """agent 名・相対サブパスの各セグメント・ファイル名を、連結前に個別サニタイズする。
+
+    連結後の文字列全体へ長さ上限をかけると、長い要素の隣に来た別要素が丸ごと
+    消えてどのファイルの警告か分からなくなる（要素境界が壊れる）。要素ごとに
+    独立してサニタイズ・切り詰めることで、対象ファイルの一意特定を保つ
+    [S3 ⑦ 契約(4)]。
+    """
+    if not isinstance(value, str):
+        value = str(value)
+    return _DISPLAY_SANITIZE_RE.sub('', value)[:MAX_ID_LENGTH]
+
+
+def _is_link_like(path: str) -> bool:
+    """symlink / junction など「別の場所を指す」エントリかどうかを判定する。
+
+    os.path.islink() は POSIX symlink 用の reparse tag しか見ないため、Windows の
+    junction (IO_REPARSE_TAG_MOUNT_POINT) を検出できない。junction はディレクトリ
+    として列挙されるとそのまま再帰走査に「辿られて」しまう [S3 ⑦ tester 実測]。
+    reparse tag の種類を問わず FILE_ATTRIBUTE_REPARSE_POINT 属性の有無で判定する
+    ことで、symlink・junction の両方、および将来追加されうる他の reparse tag も
+    一律に除外する。
+    """
+    try:
+        if os.path.islink(path):
+            return True
+        st = os.lstat(path)
+    except OSError:
+        return False
+    attrs = getattr(st, 'st_file_attributes', 0)
+    return bool(attrs & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400))
+
+
+def _iter_relative_md_files(agent_dir: str, _rel_parts: list | None = None):
+    """agent_dir 配下の *.md を再帰的に列挙する（symlink / junction は辿らない）。
+
+    yield するのは agent_dir からの相対パス要素のリスト（例: ["topics", "foo.md"]）。
+    走査エラー（権限不足等）はそのディレクトリ配下をスキップして継続する
+    （fail-open。1 ディレクトリの読み取りエラーで走査全体を止めない）。
+    """
+    rel_parts = _rel_parts or []
+    dir_path = os.path.join(agent_dir, *rel_parts) if rel_parts else agent_dir
+    try:
+        entries = sorted(os.listdir(dir_path))
+    except OSError:
+        return
+    for entry in entries:
+        full = os.path.join(dir_path, entry)
+        if _is_link_like(full):
+            continue
+        try:
+            is_dir = os.path.isdir(full)
+        except OSError:
+            continue
+        new_rel = rel_parts + [entry]
+        if is_dir:
+            yield from _iter_relative_md_files(agent_dir, new_rel)
+        elif entry.lower().endswith('.md'):
+            yield new_rel
+
+
+def _warn_index_file(agent_dir: str, safe_agent: str, warn_bytes: int, warn_lines: int) -> None:
+    """<agent_dir>/MEMORY.md（索引）が injection 予算の 80% に達していたら警告する。
+
+    直下 1 階層の MEMORY.md を直接パスで判定する（_iter_relative_md_files 経由の
+    os.listdir を追加で呼ばない）。listdir を丸ごと差し替える表示サニタイズ系の
+    既存テストは「top-level の os.listdir が 1 回だけ呼ばれる」前提のため、ここで
+    再度 listdir すると意図しない偽陰性を生む [S3 ⑦ 実装ノート]。
+
+    MEMORY.md 自体が symlink / junction の場合はスキップする [CR-NEW]。
+    直接パスで開く経路は `_iter_relative_md_files` のリンク除外を通らないため、
+    ここで検査しないと「symlink / junction は辿らない」契約 [S3 ⑦ 契約(1)] に
+    索引経路だけ穴が残る（リンク先の任意ファイルのサイズ・行数が警告に出る）。
+    """
+    path = os.path.join(agent_dir, 'MEMORY.md')
+    if _is_link_like(path):
+        return
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'rb') as f:
+            head = f.read(AGENT_MEMORY_READ_CAP_BYTES)
+    except OSError:
+        # MEMORY.md 未生成のディレクトリ（wt_developer 等）はスキップする
+        return
+
+    # 末尾改行は行を増やさない（全 agent-memory ファイルが末尾改行ありのため、
+    # 単純な count+1 だと通常経路で常に 1 行多く報告してしまう）。
+    lines = head.count(b'\n')
+    if head and not head.endswith(b'\n'):
+        lines += 1
+    truncated = size > len(head)
+
+    if size <= warn_bytes and lines <= warn_lines:
+        return
+
+    line_label = f'{lines}行以上' if truncated else f'{lines}行'
+    print(
+        f'[Stop] agent-memory/{safe_agent}/MEMORY.md が injection 予算に接近しています '
+        f'({size}B / {AGENT_MEMORY_LIMIT_BYTES}B, {line_label} / {AGENT_MEMORY_LIMIT_LINES}行)。'
+        f'超えた分は起動時に system prompt へ載らず、蓄積した知見が読まれなくなります。'
+        f'価値の低いエントリから削って予算内に戻してください',
+        file=sys.stderr,
+    )
+
+
+def _warn_individual_file(agent_dir: str, rel_parts: list, safe_agent: str) -> None:
+    """個別メモリファイル（索引 MEMORY.md 以外の *.md）が 100KB を超えていたら警告する。
+
+    索引と異なり system prompt へ自動注入されないため、行数しきい値や injection
+    予算の文言は使わない。制約は「Read のたびに払うコスト・保守コスト」。
+    """
+    path = os.path.join(agent_dir, *rel_parts)
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        # 読めないファイル 1 件で走査全体を止めない（fail-open）
+        return
+
+    if size <= AGENT_MEMORY_FILE_LIMIT_BYTES:
+        return
+
+    safe_parts = [_sanitize_path_element(p) for p in rel_parts]
+    # nul-boundary: allow(警告文に埋め込む相対パス表示のみ・人間可読出力であり機械パース対象ではない)
+    rel_display = '/'.join(safe_parts)
+    print(
+        f'[Stop] agent-memory/{safe_agent}/{rel_display} が個別メモリファイルとして'
+        f'肥大しています ({size}B > {AGENT_MEMORY_FILE_LIMIT_BYTES}B)。'
+        f'Read のたびに読み込みコストがかかり保守コストも増えるため、'
+        f'内容を分割するか整理してください',
+        file=sys.stderr,
+    )
+
+
 def _warn_oversized_agent_memory() -> None:
-    """agent-memory/*/MEMORY.md が injection 予算の 80% に達していたら stderr 警告する。
+    """agent-memory/*/ 配下の *.md を 2 種類のしきい値で走査し stderr 警告する。
+
+    - <agent>/MEMORY.md（索引。直下 1 階層のみ）: injection 予算 25KB/200行の 80% 到達
+    - それ以外の *.md（個別メモリファイル。サブディレクトリ含め再帰走査）:
+      AGENT_MEMORY_FILE_LIMIT_BYTES (100KB) 超過のみ
+
+    直下以外の場所にある "MEMORY.md"（例: topics/MEMORY.md）は契約上の想定外だが、
+    索引として扱うと agent 直下と衝突するため、個別メモリファイル扱いとする
+    [設計コメント: 契約に明記なし・「索引は直下 1 階層のみ」と解釈して実装]。
 
     削除・切り詰めは行わない（警告のみ・read-only）。1 ファイル 1 行で出力する。
     patterns.json 側の `_warn_oversized_descriptions` と同じ「警告のみ」方針を取る。
+    symlink / junction は辿らない [S3 ⑦ 契約(1)]。
     本関数は例外を出さない防御的実装だが、呼び出し側でも try/except で二重に保護する。
     """
     warn_bytes = int(AGENT_MEMORY_LIMIT_BYTES * AGENT_MEMORY_WARN_RATIO)
     warn_lines = int(AGENT_MEMORY_LIMIT_LINES * AGENT_MEMORY_WARN_RATIO)
     try:
-        names = sorted(os.listdir(AGENT_MEMORY_DIR))
+        agent_names = sorted(os.listdir(AGENT_MEMORY_DIR))
     except OSError:
         # 利用先の初回起動時などディレクトリ自体が無い場合は何もしない
         return
 
-    for name in names:
-        path = os.path.join(AGENT_MEMORY_DIR, name, 'MEMORY.md')
-        try:
-            size = os.path.getsize(path)
-            with open(path, 'rb') as f:
-                head = f.read(AGENT_MEMORY_READ_CAP_BYTES)
-        except OSError:
-            # MEMORY.md 未生成のディレクトリ（wt_developer 等）や
-            # トップ階層の .gitkeep 等はスキップする
+    for agent_name in agent_names:
+        agent_dir = os.path.join(AGENT_MEMORY_DIR, agent_name)
+        if _is_link_like(agent_dir):
             continue
-
-        # 末尾改行は行を増やさない（全 agent-memory ファイルが末尾改行ありのため、
-        # 単純な count+1 だと通常経路で常に 1 行多く報告してしまう）。
-        lines = head.count(b'\n')
-        if head and not head.endswith(b'\n'):
-            lines += 1
-        truncated = size > len(head)
-
-        if size <= warn_bytes and lines <= warn_lines:
+        try:
+            if not os.path.isdir(agent_dir):
+                # トップ階層の .gitkeep 等（ディレクトリでないエントリ）はスキップ
+                continue
+        except OSError:
             continue
 
         # ディレクトリ名はファイルシステム由来で未検証のため、出力前に制御文字・
         # 表示偽装文字を除去し MAX_ID_LENGTH で切り詰めて無害化する。
-        safe = _DISPLAY_SANITIZE_RE.sub('', name)[:MAX_ID_LENGTH]
-        line_label = f'{lines}行以上' if truncated else f'{lines}行'
-        print(
-            f'[Stop] agent-memory/{safe}/MEMORY.md が injection 予算に接近しています '
-            f'({size}B / {AGENT_MEMORY_LIMIT_BYTES}B, {line_label} / {AGENT_MEMORY_LIMIT_LINES}行)。'
-            f'超えた分は起動時に system prompt へ載らず、蓄積した知見が読まれなくなります。'
-            f'価値の低いエントリから削って予算内に戻してください',
-            file=sys.stderr,
-        )
+        safe_agent = _sanitize_path_element(agent_name)
+
+        _warn_index_file(agent_dir, safe_agent, warn_bytes, warn_lines)
+
+        for rel_parts in _iter_relative_md_files(agent_dir):
+            if rel_parts == ['MEMORY.md']:
+                continue  # 索引は _warn_index_file が処理済み。二重報告しない。
+            _warn_individual_file(agent_dir, rel_parts, safe_agent)
 
 
 def update_patterns(date_str: str) -> None:

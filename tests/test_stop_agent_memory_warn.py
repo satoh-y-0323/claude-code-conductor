@@ -20,6 +20,12 @@ Tests for .claude/hooks/stop.py — agent-memory の injection 予算接近を�
 from __future__ import annotations
 
 import importlib.util
+import os
+import re
+import shutil
+import stat
+import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -335,3 +341,535 @@ class TestWiredIntoRun:
 
         # 警告処理が壊れても Stop は 0 で返る
         assert stop_mod.run({}) == 0
+
+
+# ---------------------------------------------------------------------------
+# S3 ⑦ agent-memory 肥大ガード拡張（2 しきい値制）
+#
+# 設計契約:
+#   - MEMORY.md（各 agent 直下の索引）: 25KB / 200 行・injection 予算文言。挙動変更なし。
+#   - 非 MEMORY.md（個別メモリファイル・topics/ 等サブディレクトリ含む再帰）:
+#     新設定数 100KB **超過のみ** 警告。文言は Read / 保守コスト観点。
+#
+# 索引（MEMORY.md）は起動時に system prompt へ注入されるため予算が硬く 25KB だが、
+# 個別メモリファイルは必要時に Read されるだけで注入されない。したがって「注入予算」
+# ではなく「1 回の Read で払うトークン・保守コスト」が制約になり、しきい値は分離する。
+# ---------------------------------------------------------------------------
+
+# 期待する新設定数の値（実装側の定数名は AGENT_MEMORY_FILE_LIMIT_BYTES）
+EXPECTED_FILE_LIMIT_BYTES = 100 * 1024
+
+
+def _write_individual(mod, agent: str, rel: str, size: int) -> Path:
+    """agent-memory/<agent>/<rel> に任意サイズの個別メモリファイルを作る.
+
+    rel には "topics/foo.md" のようにサブディレクトリを含められる。
+    """
+    p = Path(mod.AGENT_MEMORY_DIR) / agent / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("x" * size, encoding="utf-8")
+    # 作成に失敗していると「機能未実装」と区別がつかない赤になるため、ここで確定させる
+    assert p.stat().st_size == size
+    return p
+
+
+def _err_lines(capsys) -> list[str]:
+    return [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+
+
+def _only_line(capsys) -> str:
+    """警告が 1 行だけ出ていることを確かめてその行を返す.
+
+    素の [0] だと未実装時に IndexError になり「なぜ赤いのか」が読み取れないため、
+    Red の失敗理由を明示するアサーションを噛ませる。
+    """
+    lines = _err_lines(capsys)
+    assert len(lines) == 1, f"警告が 1 行だけ出ることを期待したが {len(lines)} 行だった: {lines}"
+    return lines[0]
+
+
+@pytest.fixture
+def short_root_stop_mod():
+    """ルートを短い一時ディレクトリに寄せた stop モジュール.
+
+    pytest の tmp_path は 90 文字を超えることがあり、64 文字超のパス要素を
+    2 つ重ねると Windows の MAX_PATH (260) にぶつかる。そのまま使うと
+    「機能未実装」ではなく「テストがファイルを作れない」で赤くなるため、
+    長い要素名を扱うテストだけルートを短く取り直す。
+    """
+    root = tempfile.mkdtemp(prefix="c3am")
+    mod = _load_stop_module("stop_for_agent_memory_warn_short")
+    mod.AGENT_MEMORY_DIR = os.path.join(root, "am")
+    try:
+        yield mod
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _rel_path_in(line: str) -> list[str]:
+    """警告行から agent-memory 配下の相対パスを取り出し、要素リストに分解する.
+
+    区切りは実装が os.sep を使う可能性があるため / と \\ の両方を許容する。
+    """
+    m = re.search(r"agent-memory[/\\](\S+)", line)
+    assert m, f"警告行に agent-memory 配下のパスが含まれていない: {line!r}"
+    return m.group(1).replace("\\", "/").split("/")
+
+
+# --- Red 群 ---------------------------------------------------------------
+
+
+class TestIndividualFileLimitConstant:
+    """個別メモリファイル用の新しきい値が定数化されていること（Red）."""
+
+    def test_individual_file_limit_is_100kb(self, stop_mod):
+        assert stop_mod.AGENT_MEMORY_FILE_LIMIT_BYTES == EXPECTED_FILE_LIMIT_BYTES
+
+    def test_individual_limit_is_separate_from_index_limit(self, stop_mod):
+        """索引（MEMORY.md）の 25KB と混同されていないこと."""
+        assert (
+            stop_mod.AGENT_MEMORY_FILE_LIMIT_BYTES > stop_mod.AGENT_MEMORY_LIMIT_BYTES
+        )
+
+
+class TestIndividualFileWarn:
+    """(1) 非 MEMORY.md が 100KB を超えたら警告する（Red）."""
+
+    def test_warns_for_oversized_file_directly_under_agent_dir(self, stop_mod, capsys):
+        _write_individual(
+            stop_mod, "security-reviewer", "sr_checklist_notes.md",
+            EXPECTED_FILE_LIMIT_BYTES + 1,
+        )
+        stop_mod._warn_oversized_agent_memory()
+        err = capsys.readouterr().err
+        assert "security-reviewer" in err
+        assert "sr_checklist_notes" in err
+
+    def test_warns_for_oversized_file_in_subdirectory(self, stop_mod, capsys):
+        """topics/ のようなサブディレクトリ配下も走査対象であること."""
+        _write_individual(
+            stop_mod, "developer", "topics/big_topic.md",
+            EXPECTED_FILE_LIMIT_BYTES + 1,
+        )
+        stop_mod._warn_oversized_agent_memory()
+        err = capsys.readouterr().err
+        assert "developer" in err
+        assert "big_topic" in err
+
+    def test_warns_for_deeply_nested_file(self, stop_mod, capsys):
+        """再帰であること（1 階層だけの走査では通らない）."""
+        _write_individual(
+            stop_mod, "tester", "topics/2026/08/deep_note.md",
+            EXPECTED_FILE_LIMIT_BYTES + 1,
+        )
+        stop_mod._warn_oversized_agent_memory()
+        assert "deep_note" in capsys.readouterr().err
+
+    def test_one_byte_over_limit_warns(self, stop_mod, capsys):
+        _write_individual(
+            stop_mod, "code-reviewer", "notes.md", EXPECTED_FILE_LIMIT_BYTES + 1
+        )
+        stop_mod._warn_oversized_agent_memory()
+        assert "notes" in capsys.readouterr().err
+
+    def test_each_oversized_individual_file_is_one_line(self, stop_mod, capsys):
+        _write_individual(
+            stop_mod, "developer", "alpha_note.md", EXPECTED_FILE_LIMIT_BYTES + 1
+        )
+        _write_individual(
+            stop_mod, "developer", "topics/beta_note.md",
+            EXPECTED_FILE_LIMIT_BYTES + 1,
+        )
+        stop_mod._warn_oversized_agent_memory()
+        lines = _err_lines(capsys)
+        assert len(lines) == 2
+        assert sum("alpha_note" in ln for ln in lines) == 1
+        assert sum("beta_note" in ln for ln in lines) == 1
+
+
+class TestIndividualFileWording:
+    """(2) 個別ファイル用の文言が MEMORY.md 用と異なること（Red）."""
+
+    def test_wording_differs_from_index_warning(self, stop_mod, capsys):
+        # 索引は injection 予算に接近（21KB）、個別ファイルは 100KB 超過
+        _write_memory(stop_mod, "security-reviewer", line_count=21, line_body="x" * 1000)
+        _write_individual(
+            stop_mod, "security-reviewer", "sr_long_note.md",
+            EXPECTED_FILE_LIMIT_BYTES + 1,
+        )
+        stop_mod._warn_oversized_agent_memory()
+        lines = _err_lines(capsys)
+        assert len(lines) == 2, f"索引と個別ファイルの 2 行が出ること: {lines}"
+
+        index_line = next(ln for ln in lines if "MEMORY.md" in ln)
+        file_line = next(ln for ln in lines if "sr_long_note" in ln)
+        assert index_line != file_line
+
+    def test_individual_warning_has_no_injection_budget_wording(self, stop_mod, capsys):
+        """個別ファイルは system prompt へ注入されないため injection 予算の話をしない."""
+        _write_individual(
+            stop_mod, "developer", "long_note.md", EXPECTED_FILE_LIMIT_BYTES + 1
+        )
+        stop_mod._warn_oversized_agent_memory()
+        line = _only_line(capsys)
+        assert "injection" not in line
+        assert "予算" not in line
+
+    def test_individual_warning_mentions_read_or_maintenance_cost(self, stop_mod, capsys):
+        _write_individual(
+            stop_mod, "developer", "long_note.md", EXPECTED_FILE_LIMIT_BYTES + 1
+        )
+        stop_mod._warn_oversized_agent_memory()
+        line = _only_line(capsys)
+        assert ("Read" in line) or ("保守" in line), f"Read / 保守コスト観点の文言がない: {line!r}"
+
+    def test_individual_warning_reports_size_and_limit(self, stop_mod, capsys):
+        """実測値と上限が出て、どれだけ削ればよいか分かること."""
+        size = EXPECTED_FILE_LIMIT_BYTES + 1234
+        _write_individual(stop_mod, "developer", "long_note.md", size)
+        stop_mod._warn_oversized_agent_memory()
+        line = _only_line(capsys)
+        assert str(size) in line
+        assert str(EXPECTED_FILE_LIMIT_BYTES) in line or "100" in line
+
+
+class TestIndividualFileNameSanitize:
+    """(3) 100KB 超ファイル名の表示偽装文字が無害化されること（Red・複合 assert）.
+
+    U+202E (RIGHT-TO-LEFT OVERRIDE) / U+200B (ZERO WIDTH SPACE) は NTFS で
+    ファイル名に使用でき、かつ _DISPLAY_SANITIZE_RE の射程内。
+    C0 制御文字は NTFS で作成できないため題材にしない（listdir 差し替えは
+    既存の TestDefensiveBehaviour が担当）。
+    """
+
+    def test_bidi_and_zero_width_in_filename_are_stripped(self, stop_mod, capsys):
+        name = "evil‮dm​_note.md"
+        _write_individual(stop_mod, "developer", name, EXPECTED_FILE_LIMIT_BYTES + 1)
+
+        stop_mod._warn_oversized_agent_memory()
+        err = capsys.readouterr().err
+
+        # 警告が出ること（サニタイズによって検知自体が落ちないこと）
+        assert "evil" in err, f"100KB 超ファイルの警告が出ていない: {err!r}"
+        # かつ生の表示偽装文字が出力に残らないこと
+        assert "‮" not in err
+        assert "​" not in err
+
+    def test_bidi_in_subdirectory_name_is_stripped(self, stop_mod, capsys):
+        """サブディレクトリ名も同じ経路で無害化されること."""
+        _write_individual(
+            stop_mod, "developer", "top‮ics​/inner_note.md",
+            EXPECTED_FILE_LIMIT_BYTES + 1,
+        )
+        stop_mod._warn_oversized_agent_memory()
+        err = capsys.readouterr().err
+        assert "inner_note" in err
+        assert "‮" not in err
+        assert "​" not in err
+
+
+class TestPathElementTruncation:
+    """(4) 長い要素名が切り詰められても対象ファイルが一意に特定できること（Red）.
+
+    サニタイズと長さ上限は「連結後のパス全体」ではなく「連結前の各パス要素ごと」に
+    適用する設計。全体を切り詰めるとファイル名要素が丸ごと消え、どのファイルの
+    警告か分からなくなる（＝要素境界が壊れる）。
+    """
+
+    def test_each_path_element_is_truncated_independently(self, short_root_stop_mod, capsys):
+        mod = short_root_stop_mod
+        # MAX_ID_LENGTH (64) を超えるが、Windows の MAX_PATH には収まる長さ
+        subdir = "sub_" + "a" * 66
+        filename = "file_" + "b" * 65 + ".md"
+        _write_individual(
+            mod, "developer", f"{subdir}/{filename}", EXPECTED_FILE_LIMIT_BYTES + 1
+        )
+        mod._warn_oversized_agent_memory()
+        parts = _rel_path_in(_only_line(capsys))
+
+        assert len(parts) == 3, f"要素境界が壊れている（agent/subdir/file の 3 要素でない）: {parts}"
+        assert parts[0] == "developer"
+        assert parts[1].startswith("sub_aaaa")
+        assert parts[2].startswith("file_bbbb"), "ファイル名要素が切り詰めで消えている"
+        for part in parts:
+            assert len(part) <= mod.MAX_ID_LENGTH, f"要素が長さ上限を超えている: {part!r}"
+
+    def test_two_long_named_files_remain_distinguishable(self, short_root_stop_mod, capsys):
+        mod = short_root_stop_mod
+        long_a = "alpha_" + "z" * 70 + ".md"
+        long_b = "bravo_" + "z" * 70 + ".md"
+        _write_individual(mod, "developer", long_a, EXPECTED_FILE_LIMIT_BYTES + 1)
+        _write_individual(mod, "developer", long_b, EXPECTED_FILE_LIMIT_BYTES + 1)
+
+        mod._warn_oversized_agent_memory()
+        lines = _err_lines(capsys)
+        assert len(lines) == 2, f"2 件とも警告されること: {lines}"
+        shown = {_rel_path_in(ln)[-1] for ln in lines}
+        assert len(shown) == 2, f"切り詰め後に区別できなくなっている: {shown}"
+        assert any(s.startswith("alpha_") for s in shown)
+        assert any(s.startswith("bravo_") for s in shown)
+
+
+# --- 回帰ガード群 ---------------------------------------------------------
+# 以下は是正前から緑である想定。「最初から Pass なら修正する」規範は適用しない。
+
+
+class TestThresholdSeparation:
+    """(5) 100KB 未満の個別ファイルは（25KB を超えても）警告しない."""
+
+    def test_file_below_individual_limit_is_silent(self, stop_mod, capsys):
+        # 30KB = 索引の 25KB 予算は超えるが、個別ファイルの 100KB には届かない
+        _write_individual(stop_mod, "developer", "mid_note.md", 30 * 1024)
+        stop_mod._warn_oversized_agent_memory()
+        assert capsys.readouterr().err == ""
+
+    def test_file_exactly_at_individual_limit_is_silent(self, stop_mod, capsys):
+        """「超過のみ」＝ strict greater（既存の境界値規約と同じ）."""
+        _write_individual(
+            stop_mod, "developer", "edge_note.md", EXPECTED_FILE_LIMIT_BYTES
+        )
+        stop_mod._warn_oversized_agent_memory()
+        assert capsys.readouterr().err == ""
+
+    def test_many_line_individual_file_is_silent(self, stop_mod, capsys):
+        """個別ファイルは行数（200 行）しきい値の対象外."""
+        p = Path(stop_mod.AGENT_MEMORY_DIR) / "developer" / "many_lines.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x\n" * 500, encoding="utf-8")
+        stop_mod._warn_oversized_agent_memory()
+        assert capsys.readouterr().err == ""
+
+
+class TestIndexWarningUnchanged:
+    """(6) 既存の MEMORY.md 向け警告の緑維持."""
+
+    def test_index_warning_still_fires_with_injection_wording(self, stop_mod, capsys):
+        _write_memory(stop_mod, "security-reviewer", line_count=21, line_body="x" * 1000)
+        stop_mod._warn_oversized_agent_memory()
+        line = _err_lines(capsys)[0]
+        assert "agent-memory/security-reviewer/MEMORY.md" in line
+        assert "injection" in line
+        assert str(stop_mod.AGENT_MEMORY_LIMIT_BYTES) in line
+
+    def test_huge_index_is_reported_once_with_index_wording(self, stop_mod, capsys):
+        """100KB 超の MEMORY.md でも索引扱いのまま。個別ファイル警告と二重に出さない."""
+        d = Path(stop_mod.AGENT_MEMORY_DIR) / "security-reviewer"
+        d.mkdir(parents=True)
+        (d / "MEMORY.md").write_text("x" * (EXPECTED_FILE_LIMIT_BYTES + 1), encoding="utf-8")
+        stop_mod._warn_oversized_agent_memory()
+        lines = _err_lines(capsys)
+        assert len(lines) == 1, f"MEMORY.md が二重報告されている: {lines}"
+        assert "injection" in lines[0]
+
+    def test_index_and_individual_file_do_not_interfere(self, stop_mod, capsys):
+        """索引が予算内・個別ファイルのみ肥大しているケースで索引の緑を保つ."""
+        _write_memory(stop_mod, "developer", line_count=10, line_body="x" * 10)
+        _write_individual(
+            stop_mod, "developer", "topics/huge.md", EXPECTED_FILE_LIMIT_BYTES + 1
+        )
+        stop_mod._warn_oversized_agent_memory()
+        lines = _err_lines(capsys)
+        assert all("MEMORY.md" not in ln for ln in lines), f"索引が誤検知されている: {lines}"
+
+
+class TestScanFailOpen:
+    """(7) 走査エラーで Stop が止まらない（fail-open）."""
+
+    def test_scan_error_is_silent_and_does_not_raise(self, stop_mod, capsys, monkeypatch):
+        _write_individual(
+            stop_mod, "developer", "topics/huge.md", EXPECTED_FILE_LIMIT_BYTES + 1
+        )
+
+        def _boom(*_a, **_k):
+            raise PermissionError("scan denied")
+
+        # 実装が listdir / walk / scandir（pathlib.rglob 含む）のどれを使っても
+        # 走査が失敗する状態にする
+        monkeypatch.setattr(stop_mod.os, "listdir", _boom)
+        monkeypatch.setattr(stop_mod.os, "walk", _boom)
+        monkeypatch.setattr(stop_mod.os, "scandir", _boom)
+
+        stop_mod._warn_oversized_agent_memory()  # 例外を送出しないこと
+        assert capsys.readouterr().err == ""
+
+    def test_unreadable_individual_file_does_not_block_index_warning(
+        self, stop_mod, capsys, monkeypatch
+    ):
+        _write_memory(stop_mod, "security-reviewer", line_count=21, line_body="x" * 1000)
+        _write_individual(
+            stop_mod, "security-reviewer", "broken_note.md",
+            EXPECTED_FILE_LIMIT_BYTES + 1,
+        )
+
+        real_getsize = stop_mod.os.path.getsize
+
+        def _selective(path, *a, **k):
+            if "broken" in str(path):
+                raise OSError("unreadable")
+            return real_getsize(path, *a, **k)
+
+        monkeypatch.setattr(stop_mod.os.path, "getsize", _selective)
+
+        stop_mod._warn_oversized_agent_memory()
+        err = capsys.readouterr().err
+        assert "MEMORY.md" in err, "読めないファイル 1 件で走査全体が止まっている"
+
+    def test_run_returns_zero_when_scan_raises_unexpectedly(self, stop_mod, monkeypatch):
+        def _boom(*_a, **_k):
+            raise RuntimeError("unexpected")
+
+        monkeypatch.setattr(stop_mod.os, "listdir", _boom)
+        monkeypatch.setattr(stop_mod.os, "walk", _boom)
+        monkeypatch.setattr(stop_mod.os, "scandir", _boom)
+        monkeypatch.setattr(stop_mod, "ensure_session_file", lambda _d: None)
+        monkeypatch.setattr(stop_mod, "update_patterns", lambda _d: None)
+        monkeypatch.setattr(stop_mod, "is_worktree", lambda _c: False)
+
+        assert stop_mod.run({}) == 0
+
+
+def _make_link(target: Path, link: Path) -> None:
+    """走査対象ディレクトリの内側に、外部ディレクトリへのリンクを作る.
+
+    Windows は junction（_winapi.CreateJunction・管理者権限不要）、
+    POSIX は os.symlink を使う。作成に失敗した場合は skip せず fail させる
+    （skip すると「リンクを辿らない」という契約が全 OS で無検証になりうる）。
+    """
+    if sys.platform == "win32":
+        try:
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+        except Exception as exc:  # pragma: no cover - 環境不備時のみ
+            pytest.fail(f"junction の作成に失敗した（skip せず fail させる契約）: {exc!r}")
+    else:
+        try:
+            os.symlink(str(target), str(link), target_is_directory=True)
+        except OSError as exc:  # pragma: no cover - 環境不備時のみ
+            pytest.fail(f"symlink の作成に失敗した（skip せず fail させる契約）: {exc!r}")
+
+
+def _patch_lstat_as_reparse_point(mod, monkeypatch, target: Path) -> None:
+    """`target` に対してのみ os.lstat が reparse point 属性を返すようにする.
+
+    Windows の非特権環境では**ファイル**の symlink を作れず、junction は
+    ディレクトリ専用のため、MEMORY.md 自体をリンクにする構成が実ファイルでは
+    作れない。属性を差し替えることで `_is_link_like` の判定経路
+    （FILE_ATTRIBUTE_REPARSE_POINT）はそのまま通す（判定関数自体は差し替えない）。
+    """
+    real_lstat = mod.os.lstat
+    key = os.path.normcase(os.path.abspath(str(target)))
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    def _fake_lstat(path, *args, **kwargs):
+        st = real_lstat(path, *args, **kwargs)
+        try:
+            same = os.path.normcase(os.path.abspath(str(path))) == key
+        except (TypeError, ValueError):  # pragma: no cover - fd 引数など
+            same = False
+        if not same:
+            return st
+        return types.SimpleNamespace(
+            st_mode=st.st_mode,
+            st_size=st.st_size,
+            st_file_attributes=getattr(st, "st_file_attributes", 0) | reparse_flag,
+        )
+
+    monkeypatch.setattr(mod.os, "lstat", _fake_lstat)
+
+
+class TestLinkIsNotFollowed:
+    """(8) symlink / junction 非追跡.
+
+    リンクは agent-memory/<agent>/ 配下（走査対象ディレクトリの内側）に置き、
+    リンク先（repo 外＝tmp_path 直下）に 100KB 超の *.md を置いても
+    警告対象に載らないことを assert する。
+
+    是正前の期待値: 現行実装は <agent>/MEMORY.md 決め打ちのため
+    サブディレクトリ内リンクは辿られず沈黙＝是正前後とも警告なし（回帰ガード）。
+
+    注意: Windows の junction は os.path.islink() が False を返し、
+    os.walk(followlinks=False) でも追跡されてしまう。再帰実装では
+    os.lstat().st_reparse_tag などによる明示的な除外が必要になる。
+    """
+
+    def test_link_to_outside_dir_is_not_followed(self, stop_mod, capsys, tmp_path):
+        outside = tmp_path / "outside-repo"
+        outside.mkdir()
+        (outside / "linked_huge.md").write_text(
+            "x" * (EXPECTED_FILE_LIMIT_BYTES + 1), encoding="utf-8"
+        )
+
+        agent_dir = Path(stop_mod.AGENT_MEMORY_DIR) / "developer"
+        agent_dir.mkdir(parents=True)
+        _make_link(outside, agent_dir / "linked")
+
+        # リンクが実際に張れており、辿れば 100KB 超ファイルに到達できる状態
+        assert (agent_dir / "linked" / "linked_huge.md").exists()
+
+        stop_mod._warn_oversized_agent_memory()
+        err = capsys.readouterr().err
+        assert "linked_huge" not in err, f"リンク先を辿っている: {err!r}"
+        assert err == "", f"リンク経由の誤検知: {err!r}"
+
+    def test_real_file_beside_link_is_still_detected(self, stop_mod, capsys, tmp_path):
+        """リンク除外が「サブディレクトリ走査ごと止める」実装になっていないこと.
+
+        是正前は個別ファイル警告自体が無いため赤（Red 群相当）。
+        """
+        outside = tmp_path / "outside-repo"
+        outside.mkdir()
+        (outside / "linked_huge.md").write_text(
+            "x" * (EXPECTED_FILE_LIMIT_BYTES + 1), encoding="utf-8"
+        )
+
+        agent_dir = Path(stop_mod.AGENT_MEMORY_DIR) / "developer"
+        agent_dir.mkdir(parents=True)
+        _make_link(outside, agent_dir / "linked")
+        (agent_dir / "real_huge.md").write_text(
+            "x" * (EXPECTED_FILE_LIMIT_BYTES + 1), encoding="utf-8"
+        )
+
+        stop_mod._warn_oversized_agent_memory()
+        err = capsys.readouterr().err
+        assert "real_huge" in err
+        assert "linked_huge" not in err
+
+    def test_link_like_index_file_is_skipped(
+        self, stop_mod, capsys, tmp_path, monkeypatch
+    ):
+        """[CR-NEW] MEMORY.md 自体がリンクなら索引警告経路もスキップする.
+
+        `_warn_index_file` は `<agent>/MEMORY.md` を直接パスで開くため
+        `_iter_relative_md_files` のリンク除外を通らない。是正前は索引経路だけ
+        リンクを辿り、リンク先（走査対象外）のサイズ・行数を警告に出していた。
+
+        対照群（リンクでない実体の MEMORY.md）を同時に置き、警告経路そのものが
+        死んでいないことを担保する（空振りの緑を防ぐ）。
+        """
+        outside = tmp_path / "outside-repo"
+        outside.mkdir()
+        real_index = outside / "MEMORY.md"
+        real_index.write_text("x" * 21000, encoding="utf-8")
+
+        # 対照群: 実体の索引は従来どおり警告される
+        _write_memory(stop_mod, "control", line_count=21, line_body="x" * 1000)
+
+        agent_dir = Path(stop_mod.AGENT_MEMORY_DIR) / "developer"
+        agent_dir.mkdir(parents=True)
+        index_path = agent_dir / "MEMORY.md"
+        try:
+            os.symlink(str(real_index), str(index_path))
+        except (OSError, NotImplementedError, AttributeError):
+            # Windows の非特権環境ではファイル symlink を作れないため、実体を置いた
+            # うえで lstat の属性のみリンク相当にする（skip では逃さない）
+            shutil.copyfile(real_index, index_path)
+            _patch_lstat_as_reparse_point(stop_mod, monkeypatch, index_path)
+
+        # 辿れば警告対象サイズに到達できる状態であること
+        assert index_path.stat().st_size == 21000
+
+        stop_mod._warn_oversized_agent_memory()
+        err = capsys.readouterr().err
+        assert "control" in err, f"対照群の索引警告が出ていない（空振りの緑）: {err!r}"
+        assert "developer" not in err, f"リンクの索引を辿っている: {err!r}"

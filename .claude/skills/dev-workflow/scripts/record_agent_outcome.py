@@ -288,7 +288,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--final", action="store_true",
-        help="tier_selection.json を削除する（E-2 完了時のみ付与）",
+        help="tier_selection.json を削除する（E-3 統合裁定の完了時のみ付与）",
     )
     return parser
 

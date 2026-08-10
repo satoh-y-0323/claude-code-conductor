@@ -60,7 +60,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _GLOB_SRC_C3 = "src/c3/**/*.py"
 _GLOB_CLAUDE_HOOKS = ".claude/hooks/**/*.py"
 _GLOB_CLAUDE_SKILLS_SCRIPTS = ".claude/skills/*/scripts/**/*.py"
+# 配布元専用 dev ツール層（git 管理下・wheel/sdist 非収録）。CI のクリーンチェックアウトにも
+# 存在するため必須層として扱う。
+_GLOB_SCRIPTS = "scripts/**/*.py"
+# ビルドフック本体（リポジトリルート直下の単一ファイル）。glob だが実質 1 ファイルを指す。
+_GLOB_HATCH_BUILD = "hatch_build.py"
+# 任意層: `.dev/` は `.gitignore` 済みの配布元ローカル領域であり、CI のクリーン
+# チェックアウトには存在しない。したがって **.dev 側に付与したマーカーは CI では検証されない**
+# （ローカル実行時のみ検査される補助的な層）。恒久赤を避けるため is_dir() ガードで囲う。
 _GLOB_DEV_LOOP = ".dev/loop/**/*.py"
+_GLOB_DEV_HOOKS = ".dev/hooks/**/*.py"
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -89,9 +98,12 @@ def iter_target_files(root: Path = REPO_ROOT) -> list[Path]:
       - src/c3/**/*.py （パス要素に "_template" を含むものを除外）
       - .claude/hooks/**/*.py
       - .claude/skills/*/scripts/**/*.py
+      - scripts/**/*.py
+      - hatch_build.py
 
     任意層（ディレクトリが存在する場合のみ）:
       - .dev/loop/**/*.py
+      - .dev/hooks/**/*.py
 
     全層とも再帰 glob に統一する（DC-GP-006: 将来サブディレクトリが増えても暗黙に
     走査対象から漏れないようにするため）。
@@ -100,9 +112,14 @@ def iter_target_files(root: Path = REPO_ROOT) -> list[Path]:
     files.extend(root.glob(_GLOB_SRC_C3))
     files.extend(root.glob(_GLOB_CLAUDE_HOOKS))
     files.extend(root.glob(_GLOB_CLAUDE_SKILLS_SCRIPTS))
+    files.extend(root.glob(_GLOB_SCRIPTS))
+    files.extend(root.glob(_GLOB_HATCH_BUILD))
     dev_loop = root / ".dev" / "loop"
     if dev_loop.is_dir():
         files.extend(root.glob(_GLOB_DEV_LOOP))
+    dev_hooks = root / ".dev" / "hooks"
+    if dev_hooks.is_dir():
+        files.extend(root.glob(_GLOB_DEV_HOOKS))
     # _template はビルド生成物であり走査対象外（パス要素一致で除外・全層に一様適用）
     files = [f for f in files if "_template" not in f.parts]
     return sorted(set(files))
@@ -473,6 +490,14 @@ class TestRequiredLayersAreNotEmpty:
             f"{_GLOB_CLAUDE_SKILLS_SCRIPTS} が1件も見つかりません（走査対象パスの確認が必要）"
         )
 
+    def test_scripts_layer_has_files(self):
+        files = list(REPO_ROOT.glob(_GLOB_SCRIPTS))
+        assert files, f"{_GLOB_SCRIPTS} が1件も見つかりません（走査対象パスの確認が必要）"
+
+    def test_hatch_build_layer_has_files(self):
+        files = list(REPO_ROOT.glob(_GLOB_HATCH_BUILD))
+        assert files, f"{_GLOB_HATCH_BUILD} が1件も見つかりません（走査対象パスの確認が必要）"
+
 
 class TestNoNulBoundaryViolations:
     """本検査。既存コードに宣言マーカーが無いため現時点では失敗する（Red）。"""
@@ -544,6 +569,83 @@ class TestIterTargetFiles:
 
         files = iter_target_files(tmp_path)
         assert any(f.name == "run_loop.py" for f in files)
+
+    def test_scripts_layer_recursive_glob(self, tmp_path):
+        nested = tmp_path / "scripts" / "nested"
+        nested.mkdir(parents=True)
+        (tmp_path / "scripts" / "top.py").write_text("x = 1\n", encoding="utf-8")
+        (nested / "deep.py").write_text("x = 1\n", encoding="utf-8")
+
+        files = iter_target_files(tmp_path)
+        names = {f.name for f in files}
+        assert names == {"top.py", "deep.py"}
+
+    def test_hatch_build_layer_included_when_present(self, tmp_path):
+        (tmp_path / "hatch_build.py").write_text("x = 1\n", encoding="utf-8")
+
+        files = iter_target_files(tmp_path)
+        assert [f.name for f in files] == ["hatch_build.py"]
+
+    def test_optional_dev_hooks_layer_included_when_present(self, tmp_path):
+        dev_hooks = tmp_path / ".dev" / "hooks"
+        dev_hooks.mkdir(parents=True)
+        (dev_hooks / "_sync_check.py").write_text("x = 1\n", encoding="utf-8")
+
+        files = iter_target_files(tmp_path)
+        assert [f.name for f in files] == ["_sync_check.py"]
+
+    def test_missing_dev_hooks_does_not_raise(self, tmp_path):
+        """.dev/hooks が存在しない合成ツリーでも例外にならず、他層のみを返す。"""
+        (tmp_path / "scripts").mkdir(parents=True)
+        (tmp_path / "scripts" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / ".dev" / "loop").mkdir(parents=True)
+        (tmp_path / ".dev" / "loop" / "b.py").write_text("x = 1\n", encoding="utf-8")
+
+        files = iter_target_files(tmp_path)  # .dev/hooks が存在しない
+
+        assert {f.name for f in files} == {"a.py", "b.py"}
+
+
+# ---------------------------------------------------------------------------
+# 新規追加層の検知力（合成ツリーでの正負両方向）
+# ---------------------------------------------------------------------------
+
+
+def _build_new_layer_tree(root: Path, body: str) -> None:
+    """新規追加層（scripts / hatch_build.py / .dev/hooks）に同じ body を配置する。"""
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "tool.py").write_text(body, encoding="utf-8")
+    (root / "hatch_build.py").write_text(body, encoding="utf-8")
+    (root / ".dev" / "hooks").mkdir(parents=True)
+    (root / ".dev" / "hooks" / "_hook.py").write_text(body, encoding="utf-8")
+
+
+def _scan(root: Path) -> list[Violation]:
+    violations: list[Violation] = []
+    for f in iter_target_files(root):
+        violations.extend(find_violations(f))
+    return violations
+
+
+class TestNewLayersAreLinted:
+    """scripts / hatch_build.py / .dev/hooks が実際に lint されることの検知力実証。"""
+
+    def test_unmarked_join_in_new_layers_is_detected(self, tmp_path):
+        _build_new_layer_tree(tmp_path, 'x = ", ".join(items)\n')
+
+        violations = _scan(tmp_path)
+
+        detected = {Path(v[0]).name for v in violations}
+        assert detected == {"tool.py", "hatch_build.py", "_hook.py"}
+        assert len(violations) == 3
+
+    def test_marked_join_in_new_layers_is_suppressed(self, tmp_path):
+        _build_new_layer_tree(
+            tmp_path,
+            'x = ", ".join(items)  # nul-boundary: allow(理由文字数は十分あります)\n',
+        )
+
+        assert _scan(tmp_path) == []
 
 
 # ---------------------------------------------------------------------------

@@ -11,11 +11,16 @@ Usage:
         --finding "関数が長い" \
         --decision accepted \
         --reason "既存スタイルを尊重するため" \
-        --reviewer code-reviewer
+        --reviewer code-reviewer \
+        --severity medium
 
 Exit code:
-  0: 記録成功 / DB が無く何もしなかった（呼び出し元を止めない方針）
-  2: 引数不正（argparse のエラー時）
+  0: 記録成功 / checklist-id 不正・import 失敗・insert 失敗で何もしなかった
+     （呼び出し元を止めない方針。checklist-id 不正 [SR-V-001] や DB 不在等は
+     この 0 系に含まれる）
+  非 0: 引数不正（argparse のエラー、--severity 省略含む）または
+     --finding が strip 後に空文字列（記録しない）。この 2 系統に限定する
+     （不変則: S3 ⑤）。
 """
 
 from __future__ import annotations
@@ -43,6 +48,8 @@ CHECKLIST_ID_PATTERN = re.compile(r"^(CR|SR|DC)-[A-Z]+-\d{3,}$")
 # 相互参照: src/c3/db.py:fetch_prevented_findings の IN リテラル / src/c3/cli_metrics.py:_derive_headline
 # の severity リテラル（item2）。語彙変更時は 3 箇所同期が必要・import 共有は実行コンテキスト
 # 分離のため不可。
+# S3 ⑤: 引数の「存在」は required=True で必須化した一方、渡された「値」の語彙検証は
+# 引き続き choices を使わないフェイルセーフを維持する（存在必須化と値フェイルセーフは別軸の設計判断）。
 _SEVERITY_VOCAB = {"critical", "high", "medium", "low"}
 
 
@@ -96,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checklist-id", required=True,
                         help="例: CR-Q-001 / SR-K-002")
     parser.add_argument("--finding", required=True,
-                        help=f"指摘本文（後の参照用、最大 {MAX_FINDING_LEN} 文字で切り詰め）")
+                        help=(f"指摘本文（後の参照用、最大 {MAX_FINDING_LEN} 文字で切り詰め）。"
+                              "strip 後に空文字列となる値は拒否する"))
     parser.add_argument("--decision", required=True,
                         choices=["fixed", "accepted", "deferred"],
                         help="判断")
@@ -107,10 +115,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reviewer", required=True,
                         choices=["code-reviewer", "security-reviewer", "design-critic"],
                         help="どちらの reviewer の指摘か")
-    parser.add_argument("--severity", default=None,
-                        help="指摘の重要度（critical/high/medium/low。任意・大小文字非依存）")
+    parser.add_argument("--severity", required=True,
+                        help="指摘の重要度（critical/high/medium/low。必須（語彙外は警告＋None）。大小文字非依存）")
 
     args = parser.parse_args(argv)
+
+    # --finding の品質ガード（S3 ⑤）: strip 後に空文字列となる値は後段の
+    # review-hint 照合で無価値なため明示エラーで拒否する（記録しない・不変則の一部）。
+    # 短い非空値（例: "f"）は許容する（閾値を設けると恣意的になるため、
+    # 「空かどうか」のみを機械判定の対象とする）。
+    if not args.finding.strip():
+        parser.error("--finding: strip 後に空文字列となる値は指定できません")
 
     # --severity の手動検証（argparse choices は使わない）。
     # 語彙外・表記ゆれ（Title Case 等）でもワークフローを止めず、
