@@ -53,26 +53,24 @@ class TestReachabilityMapPathways:
         count = content.count("reachability-map.md")
         assert count >= 1, f"P2(a) FAIL: 'reachability-map.md' appears {count} time(s), expected >= 1"
 
-    def test_p2b_reference_in_skill_e1_and_e2(self):
-        """P2(b) - SKILL.md E-1 and E-2 sections must each contain 'reachability-map.md' >= 1 time."""
+    def test_p2b_reference_in_skill_e3(self):
+        """P2(b) - SKILL.md E-3 section must contain 'reachability-map.md' >= 1 time.
+
+        S2 改訂: 参照先を E-1 / E-2 の各セクションから E-3（統合裁定）へ集約した。
+        レビュー指摘の裁定は E-3 に一本化されるため、到達可能性の判断材料も
+        E-3 の裁定時に届いていれば足りる（E-1 / E-2 への重複配置をやめる）。
+        """
         root = get_repo_root()
         path = root / ".claude" / "skills" / "dev-workflow" / "SKILL.md"
         assert path.is_file(), f"SKILL.md not found at {path}"
         content = path.read_text(encoding="utf-8")
 
-        # Extract E-1 section (### E-1 to next ### or ##)
-        e1_match = re.search(r"### E-1:.*?(?=(?:### |## |$))", content, re.DOTALL)
-        assert e1_match, "P2(b) FAIL: E-1 section not found"
-        e1_section = e1_match.group(0)
-        e1_count = e1_section.count("reachability-map.md")
-        assert e1_count >= 1, f"P2(b) E-1 FAIL: 'reachability-map.md' appears {e1_count} time(s), expected >= 1"
-
-        # Extract E-2 section (### E-2 to next ### or ##)
-        e2_match = re.search(r"### E-2:.*?(?=(?:### |## |$))", content, re.DOTALL)
-        assert e2_match, "P2(b) FAIL: E-2 section not found"
-        e2_section = e2_match.group(0)
-        e2_count = e2_section.count("reachability-map.md")
-        assert e2_count >= 1, f"P2(b) E-2 FAIL: 'reachability-map.md' appears {e2_count} time(s), expected >= 1"
+        # Extract E-3 section (### E-3 to next ### or ##)
+        e3_match = re.search(r"### E-3:.*?(?=(?:### |## |$))", content, re.DOTALL)
+        assert e3_match, "P2(b) FAIL: E-3 section not found"
+        e3_section = e3_match.group(0)
+        e3_count = e3_section.count("reachability-map.md")
+        assert e3_count >= 1, f"P2(b) E-3 FAIL: 'reachability-map.md' appears {e3_count} time(s), expected >= 1"
 
     def test_p2c_reference_in_architect_md(self):
         """P2(c) - architect.md must contain 'reachability-map.md' >= 1 time."""

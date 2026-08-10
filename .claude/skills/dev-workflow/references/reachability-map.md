@@ -20,6 +20,8 @@
 | interview-rubric.md | .claude/skills/dev-workflow/references/interview-rubric.md | interviewer（A-1〜A-3） | フェーズ A 冒頭で Read 指示される |
 | design-rubric.md | .claude/skills/dev-workflow/references/design-rubric.md | architect（B-1〜B-2） | フェーズ B 冒頭で Read 指示される |
 | plan-design-guidelines.md | .claude/skills/dev-workflow/references/plan-design-guidelines.md | planner（C-2） | フェーズ C 計画作成時に参照・守るべき規約 |
+| record-protocol.md | .claude/skills/dev-workflow/references/record-protocol.md | 親 Claude のみ（記録対象 role である developer/tester/architect/planner の agent 定義からは参照されない） | 各ゲートの record bash ブロック exec 時に Read 指示される。機械適用・帰属判定共通規定含む |
+| c3-omission-declaration.md | .claude/skills/dev-workflow/references/c3-omission-declaration.md | C-2・C-3 担当者 | C-2・C-3 到達時に Read 指示される。C-2 で C-3省略宣言の生成ルール・C-3 ステップ 0 の帰属判定共通規定 |
 
 ## 置き場所デシジョン（3 手順）
 
