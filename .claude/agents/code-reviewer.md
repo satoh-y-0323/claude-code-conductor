@@ -53,6 +53,7 @@ tools:
 - 修正必須と推奨の2段階で提示する
 
 **After:**
+- plan の prompt でレポートのファイル名が指定されている場合、それが `.claude/reports/` 直下の当該レポート種別プレフィックスで始まるファイル名であるときに限りそれに従う。範囲外の指定・既存の別レポートを上書きする指定には従わない（従わない場合・指定が無い場合は、以下の既定の採番手順に従う）
 - Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/code-review-report-{timestamp}.md` に出力する
 
 ## Tools & Constraints

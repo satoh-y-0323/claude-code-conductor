@@ -566,7 +566,7 @@ legacy TDD モードまたは parallel-agents モードで実装される。
 
 ### D-1: tester（Red フェーズ）
 
-Agent ツールで `tester` エージェントを起動する。→ 失敗するテストを先に作成する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**
+Agent ツールで `tester` エージェントを起動する。→ 失敗するテストを先に作成する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**（plan の prompt でファイル名が指定されている場合は、tester agent 定義 After の但し書き〔封じ込め条件付き〕に従いそちらを優先する）
 
 **Red 起動プロンプトのマーカー規約（必須）**: tester を Agent ツールで起動するプロンプトの**1 行目（文字列先頭）**に、以下の機械可読マーカー行を**必須**で 1 行含める（省略可能な推奨ではない・parallel 経路の同型マーカーの逐次版）。`tier_autoapply.py` の抽出正規表現は文字列先頭アンカー `\A` のため、2 行目以降・本文中・フェンス内に置くと抽出されず注入されない（SR-AI-001）:
 
@@ -652,7 +652,7 @@ c3 run .claude/skills/dev-workflow/scripts/record_agent_outcome.py \
 
 ### D-3: tester（確認）
 
-Agent ツールで `tester` エージェントを起動する。→ 全テストの合否を確認する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**
+Agent ツールで `tester` エージェントを起動する。→ 全テストの合否を確認する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**（plan の prompt でファイル名が指定されている場合は、tester agent 定義 After の但し書き〔封じ込め条件付き〕に従いそちらを優先する）
 
 AskUserQuestion で確認する:
 ```json
@@ -705,7 +705,7 @@ Agent ツールで `developer` エージェントを起動する（`model:` は 
 
 ### D-5: tester（最終確認）
 
-Agent ツールで `tester` エージェントを起動する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**
+Agent ツールで `tester` エージェントを起動する。**必ず `.claude/reports/test-report-YYYYMMDD-HHMMSS.md` を Write してから終了すること。**（plan の prompt でファイル名が指定されている場合は、tester agent 定義 After の但し書き〔封じ込め条件付き〕に従いそちらを優先する）
 
 AskUserQuestion で確認する:
 ```json

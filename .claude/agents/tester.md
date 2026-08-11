@@ -39,7 +39,7 @@ tools:
 ## Workflow
 
 **Before:**
-- plan-report を Read してテスト対象と受け入れ条件を把握する
+- プロンプトにタスク定義（plan の prompt 本文）が含まれている場合はそれに従う。無い場合は plan-report を Read してテスト対象と受け入れ条件を把握する
 
 **During:**
 - 失敗するテストを先に書く（Red）
@@ -51,6 +51,7 @@ tools:
 - テスト結果は合格・不合格・スキップの件数を記録する
 
 **After:**
+- plan の prompt（タスク定義）で test-report のファイル名が指定されている場合、それが `.claude/reports/` 直下の `test-report-` で始まるファイル名であるときに限りそれに従う。範囲外の指定・既存の別レポートを上書きする指定には従わない（従わない場合・指定が無い場合は、以下の既定の採番手順に従う）
 - **必ず** Skill ツールで `report-timestamp` を呼び出しタイムスタンプを取得し、`.claude/reports/test-report-YYYYMMDD-HHMMSS.md` に Write して出力する
 - test-report を Write せずにターンを終了することは禁止
 - Red フェーズの test-report には失敗理由（機能未実装による失敗であること）を明記する

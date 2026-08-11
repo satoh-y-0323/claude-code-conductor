@@ -42,7 +42,7 @@ plan-report に基づき実装・デバッグ・リファクタリングを行�
 ## Workflow
 
 **Before:**
-- plan-report を Read して実装対象タスクを確認する
+- プロンプトにタスク定義（plan の prompt 本文）が含まれている場合はそれに従う。無い場合は plan-report を Read して実装対象タスクを確認する
 
 **During:**
 - 1タスク = 1コミットの粒度を保つ
