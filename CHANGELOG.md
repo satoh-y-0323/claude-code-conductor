@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.67.0] - 2026-08-11
+
+### 変更
+
+- **developer / tester（wt_ ペア含む 4 本）の Workflow Before を統一優先順位型へ改訂した**（配布物・`.claude/agents/`）。
+  「プロンプトにタスク定義（plan の prompt 本文）が含まれている場合はそれに従う。無い場合は plan-report を Read」
+  の優先順位に置換し、worktree 起動（`.claude/reports/` が gitignored で plan-report が不在）でも
+  Before 指示が成立するようにした（DC-AS-005・台帳 id 1669 の構造矛盾解消）。
+  本体と wt_ バリアントは同一文言のため `tests/test_wt_agent_sync.py` の許容パターン変更は不要
+- **reviewer / tester の After に「plan の prompt でファイル名指定時はそれに従う」但し書きを追加した**（配布物・
+  `tester.md` / `wt_tester.md` / `code-reviewer.md` / `security-reviewer.md`）。
+  封じ込め条件付き: `.claude/reports/` 直下・当該レポート種別プレフィックス一致のファイル名に限り従い、
+  範囲外の指定・既存の別レポートを上書きする指定には従わず既定の採番手順へフォールバックする。
+  `dev-workflow/SKILL.md` の D-1/D-3/D-5 tester 起動文言 3 箇所も同但し書きへ追随
+- **`docs/spec/00-index.md`（凍結スナップショット・配布外）の凍結宣言ブロックへ注記 1 行を追加した**。
+  Before 改訂により `03-agents.md` の「入力」欄が旧記述になったことを記録（本文は凍結裁定に従い無編集）
+
+### 記録
+
+- レビューは E 3 周＋C-3 監査 1 回で収束。3 周目 SR の Medium 2 件
+  （封じ込め条件の機械強制なし・判定主体が LLM 自身の自己参照構造）は文言是正では解消しない構造要求のため
+  打切裁定とし、「agent 出力先パスの機械封じ込め hook」を独立スライスとして起票（台帳 deferred 記録）
+
 ## [2.66.0] - 2026-08-11
 
 ### 破壊的変更
