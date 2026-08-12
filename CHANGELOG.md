@@ -1,5 +1,41 @@
 # Changelog
 
+## [2.68.0] - 2026-08-13
+
+### 破壊的変更
+
+- **レポート書き先ガード hook `report_path_guard.py` を新設した**（配布物・`.claude/hooks/`・
+  `.claude/settings.json` の PreToolUse Write に登録）。レポート 9 prefix
+  （requirements-report- / architecture-report- / plan-report- / design-review-report- /
+  code-review-report- / security-review-report- / test-report- / debug-analysis- / debug-needed-）
+  で始まる basename の Write を検査し、以下の逸脱を exit 2 で block する:
+  - 封じ込め: 書き先が `.claude/reports/` 直下でない（名前判定＋realpath/samefile 実体照合の
+    二層 AND・fail-closed。許可 root は cwd と `CLAUDE_PROJECT_DIR` の 2 系統）
+  - 上書き: タイムスタンプ形式（`{prefix}YYYYMMDD-HHMMSS.md`）の既存レポートへの Write
+    （task_id 形式の既存上書きは wt_* リトライの正規経路のため許可）
+  - 形式: strict-4（requirements / architecture / plan / design-review）の
+    非タイムスタンプ命名での新規作成
+  **利用先への影響**: 対象 prefix で始まる名前の一般ファイルを `.claude/reports/` 外へ
+  Write する操作が block されるようになる。回避が必要な場合は環境変数
+  `C3_REPORT_GUARD_DISABLE=1` で無効化できる（settings.json から登録を外す恒久対処も可）
+
+### 変更
+
+- **`report_contract_check.py`（PostToolUse Write warn）の検査を strict-4＋loose-3 へ拡張した**。
+  従来のタイムスタンプ契約 4 種（strict-4 厳密検査）に加え、code-review / security-review / test の
+  3 種はタイムスタンプ形式または task_id 形式のどちらかを許容する緩検査で warn する。
+  prefix 一致判定は正規化 basename・形式判定は元 basename という分割ポリシーを
+  report_path_guard と統一した
+- 共有ヘルパー `STRICT4_PREFIXES` / `timestamp_pattern()` を `_hook_utils.py` へ追加した
+  （`re.ASCII` で全角数字偽装を防止・strict-4 定義の二重管理を解消）
+
+### 記録
+
+- リリース前 E2E 実測（2026-08-13・セッション再起動後）: block 側（封じ込め違反）・allow 側
+  （新規タイムスタンプ名の通過・stderr なし）・上書き block を親セッションで、
+  封じ込め block / worktree 内 reports 直下の許可を worktree agent で確認。
+  前スライスの台帳 deferred 2 件（SR-V-002 / SR-AI-001・2026-08-11）を resolved 化
+
 ## [2.67.0] - 2026-08-11
 
 ### 変更
