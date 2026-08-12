@@ -29,6 +29,20 @@ JSON の内容検査のみで完結する（hook スクリプト自体の実在�
     6. 既存登録の不変確認（PreToolUse Bash/Write/Edit/Agent・PostToolUse Write/Edit の
        既存 hook 列挙）・各 matcher 配列の末尾に追記されていること
     7. json.load 可能（壊れていない）
+
+## 追記分（task test-reg・Red）— P4: report_path_guard.py
+
+新規 PreToolUse hook `.claude/hooks/report_path_guard.py`（未実装）の settings 登録。
+検査方式は上記と同一（実 `.claude/settings.json` の JSON 内容検査のみ）。
+
+    8. PreToolUse "Write" に report_path_guard.py が 1 件のみ登録されている
+       （形式は `command: "c3"` + `args: ["run", "<hooks>/report_path_guard.py"]`）
+       — 未登録の現状では AssertionError で Red
+    9. 既存 hook（worktree_guard.py / patterns_guard.py）より後ろに追記されている
+       — 未登録の現状では Red
+    10. 負側（回帰ガード群・現状でも緑）: PreToolUse "Edit" および
+        PostToolUse "Write" / "Edit" の各 matcher には report_path_guard.py が
+        出現しない（P4 は PreToolUse Write 専用）
 """
 
 from __future__ import annotations
@@ -44,6 +58,7 @@ _HOOK_DIR_PREFIX = "${CLAUDE_PROJECT_DIR}/.claude/hooks/"
 PATTERNS_GUARD_ARG = _HOOK_DIR_PREFIX + "patterns_guard.py"
 REPORT_CONTRACT_CHECK_ARG = _HOOK_DIR_PREFIX + "report_contract_check.py"
 SESSION_MODE_WATCH_ARG = _HOOK_DIR_PREFIX + "session_mode_watch.py"
+REPORT_PATH_GUARD_ARG = _HOOK_DIR_PREFIX + "report_path_guard.py"
 
 PRE_TOOL_ARG = _HOOK_DIR_PREFIX + "pre_tool.py"
 WORKTREE_GUARD_ARG = _HOOK_DIR_PREFIX + "worktree_guard.py"
@@ -247,6 +262,82 @@ class TestSessionModeWatchRegistration:
         assert SESSION_MODE_WATCH_ARG not in _all_args(hooks), (
             "session_mode_watch.py が PostToolUse/Write に誤登録されている"
         )
+
+
+# ---------------------------------------------------------------------------
+# 3-b. report_path_guard.py: PreToolUse Write のみ（task test-reg 追記分）
+# ---------------------------------------------------------------------------
+
+
+class TestReportPathGuardRegistration:
+    """P4 (report_path_guard.py) の settings 登録。
+
+    Red 群: test_registered_in_pretooluse_write /
+            test_entry_shape_matches_convention /
+            test_appended_after_existing_pretooluse_write_hooks
+        → `.claude/settings.json` に未登録のため AssertionError で失敗する
+          （構文エラー・タイポによる失敗ではない）。
+
+    回帰ガード群: test_not_registered_in_pretooluse_edit /
+                  test_not_registered_in_posttooluse
+        → 現状でも緑。P4 追加時に Edit / PostToolUse へ取り違え登録されることを防ぐ。
+    """
+
+    def test_registered_in_pretooluse_write(self) -> None:
+        settings = _load_settings()
+        hooks = _matcher_hooks(settings, "PreToolUse", "Write")
+        assert REPORT_PATH_GUARD_ARG in _all_args(hooks), (
+            "PreToolUse/Write に report_path_guard.py が登録されていない"
+        )
+
+    def test_entry_shape_matches_convention(self) -> None:
+        """1 件のみ・`c3 run <hook>` 形式であること（重複登録の禁止も兼ねる）。"""
+        settings = _load_settings()
+        hooks = _matcher_hooks(settings, "PreToolUse", "Write")
+        matches = [h for h in hooks if REPORT_PATH_GUARD_ARG in h.get("args", [])]
+        assert len(matches) == 1, (
+            f"report_path_guard.py の登録エントリが1件でない: {matches}"
+        )
+        entry = matches[0]
+        assert entry.get("type") == "command"
+        assert entry.get("command") == "c3"
+        assert entry.get("args") == ["run", REPORT_PATH_GUARD_ARG]
+
+    def test_appended_after_existing_pretooluse_write_hooks(self) -> None:
+        """既存 hook（worktree_guard / patterns_guard）より後ろに追記されている。"""
+        settings = _load_settings()
+        hooks = _matcher_hooks(settings, "PreToolUse", "Write")
+        idx_worktree = _index_containing_arg(hooks, WORKTREE_GUARD_ARG)
+        idx_patterns = _index_containing_arg(hooks, PATTERNS_GUARD_ARG)
+        idx_report_path = _index_containing_arg(hooks, REPORT_PATH_GUARD_ARG)
+        assert idx_worktree is not None, "worktree_guard.py の既存登録が見当たらない"
+        assert idx_patterns is not None, "patterns_guard.py の既存登録が見当たらない"
+        assert idx_report_path is not None, "report_path_guard.py が未登録"
+        assert idx_report_path > idx_worktree, (
+            "report_path_guard.py が worktree_guard.py より前に追記されている"
+            "（末尾追記の規約違反）"
+        )
+        assert idx_report_path > idx_patterns, (
+            "report_path_guard.py が patterns_guard.py より前に追記されている"
+            "（末尾追記の規約違反）"
+        )
+
+    def test_not_registered_in_pretooluse_edit(self) -> None:
+        """P4 は Write 専用。PreToolUse/Edit への取り違え登録が無いこと。"""
+        settings = _load_settings()
+        hooks = _matcher_hooks(settings, "PreToolUse", "Edit")
+        assert REPORT_PATH_GUARD_ARG not in _all_args(hooks), (
+            "report_path_guard.py が PreToolUse/Edit に誤登録されている"
+        )
+
+    def test_not_registered_in_posttooluse(self) -> None:
+        """P4 は PreToolUse 専用。PostToolUse への過剰登録が無いこと。"""
+        settings = _load_settings()
+        for matcher in ("Write", "Edit"):
+            hooks = _matcher_hooks(settings, "PostToolUse", matcher)
+            assert REPORT_PATH_GUARD_ARG not in _all_args(hooks), (
+                f"report_path_guard.py が PostToolUse/{matcher} に誤登録されている"
+            )
 
 
 # ---------------------------------------------------------------------------

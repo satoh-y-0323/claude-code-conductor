@@ -41,6 +41,9 @@ PATTERNS_GUARD_PATH = HOOK_DIR / "patterns_guard.py"
 REPORT_CONTRACT_CHECK_PATH = HOOK_DIR / "report_contract_check.py"
 SESSION_MODE_WATCH_PATH = HOOK_DIR / "session_mode_watch.py"
 
+# task test-reg 追記分: P4（新規 PreToolUse hook・未実装）
+REPORT_PATH_GUARD_PATH = HOOK_DIR / "report_path_guard.py"
+
 pytestmark = pytest.mark.skipif(
     not HOOK_UTILS_PATH.is_file(),
     reason=".claude/hooks/_hook_utils.py not found",
@@ -330,6 +333,7 @@ def test_no_duplicate_sanitize_definitions_in_p1_p2_p3() -> None:
         PATTERNS_GUARD_PATH,
         REPORT_CONTRACT_CHECK_PATH,
         SESSION_MODE_WATCH_PATH,
+        REPORT_PATH_GUARD_PATH,
     ):
         assert path.is_file(), f"{path} が見つからない"
         source = path.read_text(encoding="utf-8")
@@ -348,6 +352,7 @@ def test_p1_p2_p3_import_sanitize_from_hook_utils() -> None:
         PATTERNS_GUARD_PATH,
         REPORT_CONTRACT_CHECK_PATH,
         SESSION_MODE_WATCH_PATH,
+        REPORT_PATH_GUARD_PATH,
     ):
         source = path.read_text(encoding="utf-8")
         assert "from _hook_utils import" in source, (
@@ -355,4 +360,95 @@ def test_p1_p2_p3_import_sanitize_from_hook_utils() -> None:
         )
         assert "sanitize_for_terminal" in source, (
             f"{path.name} が sanitize_for_terminal を使っていない"
+        )
+
+
+# ===========================================================================
+# task test-reg 追記分（Red）— P4: report_path_guard.py の norm_component 共有
+#
+# 共有ループ検査（test_no_duplicate_sanitize_definitions_in_p1_p2_p3 /
+# test_p1_p2_p3_import_sanitize_from_hook_utils）は対象リストへ
+# REPORT_PATH_GUARD_PATH を足すだけとし、アサーション内容
+# （sanitize_for_terminal のみ）は変更していない。
+# 理由（実測）: リスト内の既存 hook `patterns_guard.py:37` は
+# `from _hook_utils import sanitize_for_terminal` のみで norm_component を
+# import していないため、ループ内の要求を norm_component へ広げると
+# 既存 hook が恒久赤になる。
+# したがって norm_component の要求は report_path_guard.py 単体を対象にした
+# 下記の新規 test 関数で固定する。
+# ===========================================================================
+
+
+def test_report_path_guard_imports_norm_component_from_hook_utils() -> None:
+    """[P4・Red] report_path_guard.py が _hook_utils から norm_component を import する。
+
+    パス成分比較（`.claude/reports/` 判定）は共有ヘルパー
+    `_hook_utils.norm_component()` に委ねる（report_contract_check.py /
+    session_mode_watch.py と同型）。hook 未実装の現状では
+    「ファイルが存在しない」ため AssertionError で Red になる。
+    """
+    assert REPORT_PATH_GUARD_PATH.is_file(), (
+        f"{REPORT_PATH_GUARD_PATH} が見つからない（P4 hook 未実装）"
+    )
+    source = REPORT_PATH_GUARD_PATH.read_text(encoding="utf-8")
+    assert "from _hook_utils import" in source, (
+        "report_path_guard.py が _hook_utils から import していない"
+    )
+    assert "norm_component" in source, (
+        "report_path_guard.py が norm_component を使っていない"
+    )
+
+
+def test_report_path_guard_has_no_local_norm_component_definition() -> None:
+    """[P4・Red] report_path_guard.py に norm_component の同名ローカル定義が無い。
+
+    共有ヘルパーを import せず自前で再定義すると正規化規則が分岐するため禁止
+    （既存 `test_no_duplicate_write_debug_log_definitions` と同型）。
+    """
+    assert REPORT_PATH_GUARD_PATH.is_file(), (
+        f"{REPORT_PATH_GUARD_PATH} が見つからない（P4 hook 未実装）"
+    )
+    source = REPORT_PATH_GUARD_PATH.read_text(encoding="utf-8")
+    assert "def norm_component" not in source, (
+        "report_path_guard.py に norm_component の独自定義が残っている"
+        "（_hook_utils.norm_component を import すること）"
+    )
+    assert "def _norm_component" not in source, (
+        "report_path_guard.py に _norm_component の独自定義が残っている"
+    )
+
+
+def test_no_duplicate_timestamp_pattern_definitions_in_guards() -> None:
+    """[CR-M-001] report_path_guard.py と report_contract_check.py が
+    timestamp_pattern を import して重複ロジックを排除している。
+
+    共有 `_hook_utils.timestamp_pattern()` から import した後は、
+    hook ファイル側で同じ正規表現ロジック（`re.compile(re.escape(prefix) + ...`）を
+    ローカルに再実装していてはならない。既存 `test_no_duplicate_write_debug_log_definitions`
+    と同型。_is_timestamp_name などの内部関数は import した timestamp_pattern を
+    使って実装される限り許可（API の安定性と実装の自由度を両立させるため）。
+    """
+    for path in (REPORT_PATH_GUARD_PATH, REPORT_CONTRACT_CHECK_PATH):
+        assert path.is_file(), f"{path} が見つからない"
+        source = path.read_text(encoding="utf-8")
+        # hook ファイル側で直接 re.compile(...pattern...) を作成していないことを確認
+        # （timestamp_pattern をローカルで再定義していないこと）
+        assert "def timestamp_pattern" not in source, (
+            f"{path.name} に timestamp_pattern の独自定義が残っている"
+            "（_hook_utils.timestamp_pattern を import すること）"
+        )
+
+
+def test_report_guard_and_contract_check_import_timestamp_pattern() -> None:
+    """[CR-M-001] report_path_guard.py と report_contract_check.py が
+    _hook_utils から timestamp_pattern を import している。
+    """
+    for path in (REPORT_PATH_GUARD_PATH, REPORT_CONTRACT_CHECK_PATH):
+        assert path.is_file(), f"{path} が見つからない"
+        source = path.read_text(encoding="utf-8")
+        assert "from _hook_utils import" in source, (
+            f"{path.name} が _hook_utils から import していない"
+        )
+        assert "timestamp_pattern" in source, (
+            f"{path.name} が timestamp_pattern を import していない"
         )

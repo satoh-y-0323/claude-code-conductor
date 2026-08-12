@@ -13,6 +13,11 @@ PYTHONPATH に追加してから `from _hook_utils import ...` する経路を�
   fail-safe な書き込みヘルパー。
 - ``sanitize_for_terminal(text)`` — 端末出力（stderr / stdout JSON）へ載せる前に
   C0 + DEL + C1 制御文字に加え、双方向制御・ゼロ幅・行区切り文字を除去するヘルパー。
+- ``STRICT4_PREFIXES`` — タイムスタンプ形式のみ許容する prefix の tuple。
+  ``timestamp_pattern()`` と組み合わせて使用（report_path_guard / report_contract_check）。
+- ``timestamp_pattern(prefix)`` — ``{prefix}YYYYMMDD-HHMMSS.md`` のフルマッチ用
+  正規表現（``re.compile`` オブジェクト）を返す。全角数字偽装防止のため ``re.ASCII``
+  を指定。
 """
 
 from __future__ import annotations
@@ -54,6 +59,15 @@ _TERMINAL_SANITIZE_RE = re.compile(
     + r"]"
 )
 
+# strict-4: タイムスタンプ形式のみ許容する prefix の tuple。
+# report_path_guard.py / report_contract_check.py が共有する。
+STRICT4_PREFIXES = (
+    'requirements-report-',
+    'architecture-report-',
+    'plan-report-',
+    'design-review-report-',
+)
+
 
 # NOTE: 同一ロジックが src/c3/cli_update.py::_validate_deletion_path の step 13 に
 # 複製されている（import 経路がないため）。変更時は両方を揃えること。
@@ -77,6 +91,14 @@ def sanitize_for_terminal(text: str) -> str:
       （ファイル名など）を載せる前に通す。
     """
     return _TERMINAL_SANITIZE_RE.sub("", str(text))
+
+
+def timestamp_pattern(prefix: str) -> re.Pattern:
+    """``{prefix}YYYYMMDD-HHMMSS.md`` のフルマッチ用パターンを返す。
+
+    re.ASCII を指定してタイムスタンプを ASCII 数字に限定し、全角数字による偽装を防止する。
+    """
+    return re.compile(re.escape(prefix) + r'\d{8}-\d{6}\.md', re.ASCII)
 
 
 def write_debug_log(log_path: Path, line: str) -> None:
