@@ -7,6 +7,7 @@
 > （注記 2026-08-10: S2 スライスで dev-workflow の E フェーズ構成が変更された——承認ゲートは 9 個・E-1/E-2 は実行ステップ化・E-3 統合裁定が新設。本文書群の E 関連記述はすべて旧構成である。凍結裁定は S2 でも再確認され維持された）
 > （注記 2026-08-11: agent 定義 4 本（developer/tester/wt_developer/wt_tester）の Workflow Before 入力源がプロンプト内タスク定義優先へ改訂された（コミット 3e93304・DC-AS-005 是正）。03-agents.md の各「入力」欄は旧記述である）
 > （注記 2026-08-13: `report_path_guard.py` の追加と `report_contract_check.py` の検査拡張は 02-hooks.md に未反映である）
+> （注記 2026-08-13: tier_autoapply.py のロック機構が非ブロック試行＋ms リトライ（締切 5 秒）へ置換されました。02-hooks.md の tier_autoapply 出力欄と 05-state-db.md §6-11 のロック記述は旧実装（ブロッキング LK_LOCK）を前提としています。plan-report-20260813-104839.md を参照してください）
 >
 > ### なぜ凍結するのか
 >

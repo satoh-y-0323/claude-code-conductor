@@ -39,13 +39,16 @@ test-tier-autoapply（T1 Red）に基づく Red フェーズテストだった�
 
 from __future__ import annotations
 
+import builtins
 import collections
+import contextlib
 import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import types
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -77,6 +80,39 @@ _PS = chr(0x2029)
 # jsonl の ts が同一 UTC ISO8601 秒精度プロファイルであることの検証パターン
 # （agent_outcomes.ts / db.py:1046 と同一生成式: 秒精度・+00:00・小数秒なし）。
 _TS_UTC_SECONDS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")
+
+# 記録処理到達後の断念 4 経路（architecture 改訂 3・P3 の原因識別子 4 値）と、その
+# stderr 固定文言テンプレート。文言は hook 実装と 1 文字も違わない完全一致で固定する。
+_ABORT_REASONS = ("deadline", "lockfile-open-failed", "mkdir-failed", "write-failed")
+_WARNING_TEXT_TEMPLATE = "[tier_autoapply] append skipped: reason={reason}"
+
+# 外部由来文字列（row の秘密値）が stderr に混入しないことを検査するための仕込み値。
+_SECRET_PROMPT = "秘密のプロンプト内容-SHOULD-NOT-LEAK"
+
+
+def _assert_fixed_warning(stderr_text: str, reason: str, row: dict) -> None:
+    """断念時 stderr の水準統一検査（DC-GP-004・SR-NEW）。
+
+    4 経路すべてに対し同水準で以下 2 点を検査する:
+      1. stderr 末尾の警告行が原因別の固定文言と**完全一致**すること（部分一致にしない）
+      2. `row["prompt_prefix"]` に仕込んだ外部由来文字列が stderr に**出現しない**こと
+
+    2 の検査が空回りしないよう、呼び出し側の row が実際に秘密値を持つことを先に検査する
+    （仕込み忘れによる空の緑の防止）。
+    """
+    assert reason in _ABORT_REASONS, f"未知の原因識別子: {reason!r}"
+    assert row["prompt_prefix"] == _SECRET_PROMPT, (
+        "row に外部由来文字列が仕込まれていない（秘密非混入 assert が空回りする）"
+    )
+    stderr_lines = [line.strip() for line in stderr_text.splitlines() if line.strip()]
+    assert len(stderr_lines) > 0, f"stderr に警告が出ていない（reason={reason}）"
+    expected = _WARNING_TEXT_TEMPLATE.format(reason=reason)
+    assert stderr_lines[-1] == expected, (
+        f"stderr 警告文が固定文言と完全一致しない: {stderr_lines[-1]!r}（期待: {expected!r}）"
+    )
+    assert _SECRET_PROMPT not in stderr_text, (
+        "stderr に外部由来文字列（prompt）が混入している（P3 違反）"
+    )
 
 
 def _run_hook(
@@ -112,11 +148,11 @@ def _run_hook(
 
 
 def _load_autoapply_module(name: str = "tier_autoapply_direct_t") -> types.ModuleType:
-    """HOOK_PATH をプロセス内 import で直接ロードした（F-7: `_os_lock` monkeypatch 用）。
+    """HOOK_PATH をプロセス内 import で直接ロードした（F-7: `_try_os_lock`/`_acquire_lock` monkeypatch 用）。
 
     `TestConcurrency` 等は subprocess 経由（プロセス境界を跨ぐため内部関数を
     monkeypatch できない）だが、F-7 のロック取得失敗フォールバック検証は
-    `_os_lock`/`_append_applied_state` を直接差し替える必要があるため、
+    `_try_os_lock`/`_acquire_lock`/`_append_applied_state` を直接差し替える必要があるため、
     tests/hooks/test_tier_gap_check.py の `_load_hook_module` と同型の
     importlib ロードを用いた。
     """
@@ -129,6 +165,67 @@ def _load_autoapply_module(name: str = "tier_autoapply_direct_t") -> types.Modul
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
     return mod
+
+
+@contextlib.contextmanager
+def _hold_os_lock(lock_path: Path):
+    """別ハンドルで `lock_path` のバイト0に OS 排他ロックを保持した（**取得成功保証型**・CR-M-001/DC-GP-002）。
+
+    hook 側 `_try_os_lock` と同一領域（`seek(0)` + 1 バイト）を対象にするため、
+    このコンテキスト内で hook を呼ぶと必ずロック競合が発生する（＝リトライが実際に走る）。
+
+    契約（DC-GP-002 (a)）:
+    - **ロック保持に失敗したら `pytest.fail` で落とす**。「取得できなければ静かに何もしない」型の
+      条件付きスキップ（旧 `TestP2Bounded` の `if lock_held:` ガード）はヘルパーにも利用側にも
+      持ち込まない。したがって利用側の assert は全て**無条件**に書ける。
+    - 解放は `finally` で構造的に保証する（DC-GP-002 (b) の「フルスイートをハングさせない」要件）。
+      旧 `TestP5InjectionIndependent` はスレッド + `threading.Event` で保持していたが、本ヘルパーは
+      呼び出しスレッドで保持し `with` を抜けた瞬間に解放するため、待機オブジェクト自体が不要になる
+      （ロックは open file description / ファイルハンドル単位でありスレッド単位ではないため、
+      別プロセス・同一プロセス別ハンドルのいずれに対しても同じ排他が成立する）。
+    """
+    try:
+        import msvcrt as _msvcrt  # type: ignore[import-not-found]
+    except ImportError:
+        _msvcrt = None  # type: ignore[assignment]
+    try:
+        import fcntl as _fcntl  # type: ignore[import-not-found]
+    except ImportError:
+        _fcntl = None  # type: ignore[assignment]
+
+    if _msvcrt is None and _fcntl is None:
+        pytest.fail(
+            "msvcrt / fcntl が両方不在で別ハンドルの実 OS ロックを保持できなかった"
+            "（このテストはロック競合を前提とするため skip せず失敗させる）"
+        )
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_f = open(lock_path, "a+", encoding="utf-8")
+    try:
+        try:
+            if _msvcrt is not None:
+                lock_f.seek(0)
+                _msvcrt.locking(lock_f.fileno(), _msvcrt.LK_NBLCK, 1)
+            else:
+                _fcntl.flock(lock_f.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except OSError as exc:
+            pytest.fail(
+                f"別ハンドルでの OS ロック取得に失敗した: {type(exc).__name__}: {exc}"
+                f"（lock_path={lock_path}）"
+            )
+        try:
+            yield lock_f
+        finally:
+            try:
+                if _msvcrt is not None:
+                    lock_f.seek(0)
+                    _msvcrt.locking(lock_f.fileno(), _msvcrt.LK_UNLCK, 1)
+                else:
+                    _fcntl.flock(lock_f.fileno(), _fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        lock_f.close()
 
 
 def _agent_payload(
@@ -705,15 +802,14 @@ class TestRotation:
 class TestConcurrency:
     """20並行 subprocess 追記で全行 parse 可能（破損 0）・行数一致の NFR を固定した。
 
-    round 1 DC-AM-002 → architecture §3-4 は当初「単一 write 追記のみ・排他
-    ロック／専用 writer 化は本リリース非対象」を合格ゲートとしていた。しかし
-    Windows 実測で 20 並行追記のうち 18/20 行が欠落する事象を観測したため、
-    OS ファイルロック（Windows `msvcrt.locking` / POSIX `fcntl.flock`）による
-    直列化＋ロック取得失敗時のベストエフォート追記フォールバックを必要機構
-    として正式採用した（fix-cycle-1 / code-review-report-20260707-110524.md
-    F-2 対応・architecture-report §3-4 改訂）。本テストは「OS ファイルロック
-    ＋ベストエフォートフォールバックで直列化された前提で 20 並行破損 0」を
-    判定基準として固定した。
+    改訂（2026-08-13・lock-retry フェーズ）: 新仕様では OS ファイルロック
+    （Windows `msvcrt.locking LK_NBLCK` / POSIX `fcntl.flock LOCK_EX|LOCK_NB`）
+    による非ブロック試行＋ms 粒度リトライ（ジッター付き・締切 5 秒）により
+    直列化されます。締切超過またはロック open 失敗時は「追記せず stderr に
+    固定文言」で断念し、無ロック追記の経路は完全に除去されました。
+    本テストは新実装後も回帰性を維持し、「20 並行追記で全行 parse 可能・
+    破損 0・行数一致」を判定基準として固定します（判定コード・assert 内容は
+    変更しない）。
     """
 
     def test_20_parallel_appends_all_lines_parseable_and_count_matches(self) -> None:
@@ -744,56 +840,105 @@ class TestConcurrency:
 
 
 # ---------------------------------------------------------------------------
-# F-7: ロック取得失敗時のベストエフォート追記フォールバック
+# F-7（改訂）: ロック取得失敗時は追記せず断念する
 # ---------------------------------------------------------------------------
 
 
-class TestLockFailureFallback:
-    """F-7: `_os_lock` がロック取得に失敗しても追記が欠落しないフォールバックを固定した。
+class TestLockAcquisitionFailure:
+    """F-7（改訂）: `_acquire_lock` が False を返した場合（締切超過・ロックファイル open 失敗）、
+    追記せずに stderr に原因別の警告文を出して return する新契約を固定した。
 
-    code-review-report-20260707-110524.md F-7 の指摘（ロック取得失敗
-    〔`locked = False`〕分岐の回帰テストが無い）に対応した。現行実装は
-    `_append_applied_state` が `_os_lock` の `OSError` を捕捉し
-    `locked = False` のままベストエフォートで単一 write 追記へ進む設計が
-    既に入っていたため、本テストは実装追加なしで緑だった（設計上 Green。
-    plan-report-20260707-111519.md FA1 の受け入れ条件どおり、既存分岐の
-    回帰カバレッジとして追加した）。
+    v2.69 改訂（2026-08-13）: 旧契約「ロック取得失敗でもベストエフォートで追記」から
+    新契約「ロック取得失敗なら追記なし・断念」へ逆転しました。
+    無ロック追記は他プロセスの行を上書きしうる欠陥があるため、
+    断念設計に統一し挙動を決定的にしました（architecture ADR-1）。
+
+    検査水準（DC-GP-004）: 本クラスの 2 ケースも `TestP3FixedWarningText` と同水準
+    （警告行の**完全一致**＋`row["prompt_prefix"]` に仕込んだ外部由来文字列が stderr に
+    出現しないこと）で固定する。旧版は `"reason=..." in captured.err` の部分一致のみで、
+    将来 `f"...{exc}"` のように外部由来文字列を足しても緑のまま通る弱い検査だった。
     """
 
-    def test_append_still_happens_when_os_lock_raises(
+    def test_no_append_when_acquire_lock_fails_and_stderr_warning_issued(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """`_os_lock` が OSError を送出しロック未取得のままでも 1 行が欠落せず追記されたことを確認した。"""
+        """_acquire_lock が False を返した（締切超過相当）場合、追記されず stderr に
+        reason=deadline の警告が出た。"""
         mod = _load_autoapply_module()
         jsonl_path = tmp_path / "tier_autoapply.jsonl"
         monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
 
-        def _raise_oserror(lock_f: object) -> None:
-            raise OSError("lock unavailable (simulated for F-7 regression test)")
-
-        monkeypatch.setattr(mod, "_os_lock", _raise_oserror)
+        # _acquire_lock を False 返しに差し替え（ロック取得失敗を模擬）
+        monkeypatch.setattr(mod, "_acquire_lock", lambda lock_f: False)
 
         row = {
-            "ts": "2026-07-07T00:00:00+00:00",
+            "ts": "2026-08-13T00:00:00+00:00",
             "session_id": "sess-lockfail",
             "subagent_type": "developer",
             "role_recorded": "developer",
             "model_applied": "sonnet",
             "source": "injected",
-            "prompt_prefix": "",
+            "prompt_prefix": _SECRET_PROMPT,
         }
         mod._append_applied_state(row)
 
-        lines = [
-            line
-            for line in jsonl_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        assert len(lines) == 1
-        parsed = json.loads(lines[0])
-        assert parsed["session_id"] == "sess-lockfail"
+        # jsonl は追記されず空
+        if jsonl_path.is_file():
+            lines = [
+                line
+                for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(lines) == 0, "ロック取得失敗時に jsonl が追記されてしまった"
+
+        # stderr の警告行が固定文言と完全一致し、外部由来文字列を含まない（DC-GP-004）
+        captured = capsys.readouterr()
+        _assert_fixed_warning(captured.err, "deadline", row)
+
+    def test_no_append_when_lockfile_open_fails_and_stderr_warning_issued(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """ロックファイル open が失敗した場合（lock_f is None）、追記されず
+        stderr に reason=lockfile-open-failed の警告が出た。"""
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "tier_autoapply.jsonl"
+        lock_path = tmp_path / "tier_autoapply.lock"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+        monkeypatch.setattr(mod, "LOCK_FILE_PATH", str(lock_path))
+
+        # lock_path のディレクトリを削除してしまい、open が PermissionError / FileNotFoundError を発生させるよう設定
+        # （簡易的には、ロックファイルのパスをアクセス不可のディレクトリに変更）
+        monkeypatch.setattr(mod, "LOCK_FILE_PATH", "/invalid/path/that/cannot/be/opened.lock")
+
+        row = {
+            "ts": "2026-08-13T00:00:00+00:00",
+            "session_id": "sess-open-fail",
+            "subagent_type": "developer",
+            "role_recorded": "developer",
+            "model_applied": "sonnet",
+            "source": "injected",
+            "prompt_prefix": _SECRET_PROMPT,
+        }
+        mod._append_applied_state(row)
+
+        # jsonl は追記されず空
+        if jsonl_path.is_file():
+            lines = [
+                line
+                for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(lines) == 0, "open 失敗時に jsonl が追記されてしまった"
+
+        # stderr の警告行が固定文言と完全一致し、外部由来文字列を含まない（DC-GP-004）
+        captured = capsys.readouterr()
+        _assert_fixed_warning(captured.err, "lockfile-open-failed", row)
 
 
 # ---------------------------------------------------------------------------
@@ -1161,3 +1306,469 @@ class TestMarkerStringStartAnchor:
         assert lines[0]["role_recorded"] == "tester"
         assert lines[0]["model_applied"] == "sonnet"
         assert lines[0]["task_id"] == "test-login"
+
+
+# ---------------------------------------------------------------------------
+# TestP2Bounded: P2（有界性）- ロック取得待ちが締切内で収束
+# ---------------------------------------------------------------------------
+
+
+class TestP2Bounded:
+    """P2（有界性）: hook が 1 回の追記でブロックする時間は締切（既定 5 秒）＋追記処理時間を超えない。
+
+    別ハンドルでロックを保持し締切を短縮（monkeypatch）した状態で
+    _append_applied_state を呼ぶと、経過時間が「締切＋余裕」以内で戻ることを
+    assert する（architecture-report §4 テスト戦略 P2）。
+    """
+
+    def test_bounded_wait_time_respects_shortened_deadline(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """別ハンドルでロック保持＋締切 0.5 秒に短縮した場合、経過時間が 1 秒以内で戻る。
+
+        ロック保持は取得成功保証型ヘルパー `_hold_os_lock` に集約した（CR-M-001）。
+        保持に失敗した場合はヘルパー内で `pytest.fail` するため、以下の assert は
+        **無条件**に実行される（旧 `if lock_held:` ガードを撤去・DC-GP-002）。
+        """
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "tier_autoapply.jsonl"
+        lock_path = tmp_path / "tier_autoapply.lock"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+        monkeypatch.setattr(mod, "LOCK_FILE_PATH", str(lock_path))
+
+        # 締切を 0.5 秒に短縮
+        monkeypatch.setattr(mod, "_LOCK_DEADLINE_SEC", 0.5)
+
+        row = {
+            "ts": "2026-08-13T00:00:00+00:00",
+            "session_id": "sess-bounded",
+            "subagent_type": "developer",
+            "role_recorded": "developer",
+            "model_applied": "sonnet",
+            "source": "injected",
+            "prompt_prefix": "",
+        }
+
+        with _hold_os_lock(lock_path):
+            start = time.monotonic()
+            mod._append_applied_state(row)
+            elapsed = time.monotonic() - start
+
+        # 期待値: 締切 0.5 秒＋余裕 0.5 秒 ≈ 1.0 秒以内
+        assert elapsed < 1.0, (
+            f"経過時間が 1.0 秒を超過（締切内に戻らない）: {elapsed:.2f}s"
+        )
+        # 締切超過で断念したため追記は発生していない（P1・有界性の裏側の性質）。
+        assert not jsonl_path.is_file() or jsonl_path.read_text(encoding="utf-8").strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# TestP4NoSync: P4（無同期性）- ジッター脱同期検証
+# ---------------------------------------------------------------------------
+
+
+class TestP4NoSync:
+    """P4（無同期性）: 複数プロセスのリトライが同一時刻境界に集中しない（ジッターにより脱同期）。
+
+    別ハンドルで**実 OS ロックを保持**した状態で `_append_applied_state` を呼び、
+    `_acquire_lock` のリトライループを実際に走らせる。`time.sleep` を記録付きに
+    差し替えて待ち時間の列を収集し、(1) リトライが 2 回以上発生したこと・
+    (2) 待ち時間が同一値に固定されていないこと の**両方を無条件 assert** する
+    （architecture-report §4 テスト戦略 P4・CR-NEW 是正）。
+
+    旧版はロックファイルを `touch()` するだけで競合を作らず、`sleep_durations` が
+    常に空 → `if len(...) > 1:` ガードで assert が 1 度も実行されない「空の緑」だった
+    （CR-NEW High）。本版は取得成功保証型ヘルパー `_hold_os_lock` で競合を保証し、
+    条件付きガードを撤去している（DC-GP-002）。
+    """
+
+    def test_jitter_generates_varying_sleep_durations(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """実ロック競合下で複数回のリトライ sleep が発生し、待ち時間が同一値に固定されていない。"""
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "tier_autoapply.jsonl"
+        lock_path = tmp_path / "tier_autoapply.lock"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+        monkeypatch.setattr(mod, "LOCK_FILE_PATH", str(lock_path))
+
+        # 期待リトライ回数の根拠（DC-AM-003）: 締切 0.25 秒 ÷ リトライ 1 回の最大待ち 0.04 秒
+        # （_LOCK_RETRY_INTERVAL_SEC 0.02 + _LOCK_RETRY_JITTER_SEC 0.02）= 6.25 なので、
+        # 待ちが毎回最大値を引く最悪ケースでも 6 回以上リトライする（下限 assert の 2 回に 3 倍のマージン）。
+        monkeypatch.setattr(mod, "_LOCK_DEADLINE_SEC", 0.25)
+        assert mod._LOCK_DEADLINE_SEC >= 5 * (
+            mod._LOCK_RETRY_INTERVAL_SEC + mod._LOCK_RETRY_JITTER_SEC
+        ), "短縮締切がリトライ 1 回の最大待ちの 5 倍未満（リトライ回数の下限が保証されない）"
+
+        sleep_durations: list[float] = []
+        real_sleep = time.sleep
+
+        def _recording_sleep(duration: float) -> None:
+            sleep_durations.append(duration)
+            real_sleep(duration)  # 実待機を維持し締切との数値関係を壊さない
+
+        row = {
+            "ts": "2026-08-13T00:00:00+00:00",
+            "session_id": "sess-jitter",
+            "subagent_type": "developer",
+            "role_recorded": "developer",
+            "model_applied": "sonnet",
+            "source": "injected",
+            "prompt_prefix": "",
+        }
+
+        with _hold_os_lock(lock_path):
+            with monkeypatch.context() as m:
+                m.setattr(time, "sleep", _recording_sleep)
+                mod._append_applied_state(row)
+
+        # (1) リトライが実際に発生した（空の緑の再発検知・無条件）
+        assert len(sleep_durations) >= 2, (
+            f"リトライ sleep が 2 回未満（ロック競合が発生していない疑い）: {sleep_durations}"
+        )
+        # (2) 待ち時間が同一値に固定されていない＝ジッターによる脱同期（無条件）
+        assert len(set(sleep_durations)) > 1, (
+            f"sleep 時間がすべて同一値に固定されている（脱同期なし）: {sleep_durations}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestP5InjectionIndependent: P5（注入独立性）- 記録断念と注入の独立性
+# ---------------------------------------------------------------------------
+
+
+class TestP5InjectionIndependent:
+    """P5（注入独立性・改訂 1・DC-AM-001）: 記録（_append_applied_state）の断念は
+    注入判定・updatedInput の stdout 出力に一切影響しない。
+
+    記録と注入は独立。main() は追記結果を制御フローに使わない。
+    """
+
+    def test_injection_continues_even_when_append_fails_subprocess(self) -> None:
+        """別ハンドルでロック保持したまま hook を subprocess 起動。
+        断念（stderr の reason=deadline）と同時に stdout に
+        hookSpecificOutput.updatedInput.model が出力されることを確認した。
+
+        このテスト 1 本は実締切約 5 秒かかることを許容する（DC-GP-002・plan 契約で
+        明記。新実装の締切 `_LOCK_DEADLINE_SEC=5.0` 秒を待つため。単体実行の実測値も
+        約 5.6 秒・CR-M-003）。
+
+        新契約 P5 の検証: hook が実際に使うロックパス
+        (`STATE_JSONL_PATH + ".lock"`) に別ハンドルでロックを保持
+        したまま hook を subprocess 起動。
+
+        （旧実装。参考）ブロッキング LK_LOCK＋無ロック追記では：
+          - ロック取得失敗（10 秒リトライ枯渇）→ 無ロック追記に落ちて
+            jsonl に行を追記・stdout に updatedInput あり
+          - stderr には warning なし（無ロック追記が成功するため）
+
+        現行（新）実装（非ブロック試行＋5 秒締切リトライ）では：
+          - 5 秒待機 → 締切超過 → 断念
+          - stderr に "reason=deadline" が出て、jsonl に追記なし
+          - **注入は旧実装でも新実装でも継続する**（P5 の本質）
+            新実装では記録は断念するが hookSpecificOutput.updatedInput
+            は stdout に必ず出力される（記録と注入の独立性）
+
+        ロック保持は取得成功保証型ヘルパー `_hold_os_lock` に集約した（CR-M-001）。
+        旧版のスレッド + `threading.Event` 保持は畳んだが、解放は contextmanager の
+        `finally` が構造的に保証するため「即時解放・フルスイートをハングさせない」性質は
+        維持される（DC-GP-002 (b)。ロックはハンドル単位でありスレッド単位ではないため、
+        呼び出しスレッドで保持したまま subprocess を起動しても排他は同じく成立する）。
+        """
+        # hook が実際に使うロックパス（hook 内では APPLIED_STATE_PATH + ".lock"）
+        lock_path = STATE_JSONL_PATH.parent / (STATE_JSONL_PATH.name + ".lock")
+
+        _write_tier_selection(tier="haiku", suggested_model="haiku", mode="thompson")
+        sid = _new_session_id()
+
+        with _hold_os_lock(lock_path):
+            # この時点で本プロセスの別ハンドルが hook のロックパスを保持中。
+            # hook subprocess はロック取得で締切まで待機してから断念する。
+            result = _run_hook(_agent_payload("developer", session_id=sid))
+
+        # hook が起動されたことを確認
+        assert result.returncode == 0, f"hook 起動に失敗: {result.stderr}"
+
+        # P5 新契約検証：ロック保持中でも注入は継続する
+        assert "reason=deadline" in result.stderr, (
+            "stderr に 'reason=deadline' が出ていない（断念経路に入っていない・ロック競合なし）"
+        )
+
+        # P5 の本質：記録の断念と注入の独立性
+        assert result.stdout.strip(), "stdout が空（注入されていない）"
+        stdout = json.loads(result.stdout)
+        assert "hookSpecificOutput" in stdout, "hookSpecificOutput キーが無い"
+        assert "updatedInput" in stdout["hookSpecificOutput"], "updatedInput キーが無い"
+        assert stdout["hookSpecificOutput"]["updatedInput"].get("model") is not None, (
+            "updatedInput.model が None（注入が成立していない）"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestP1NoUnlockedAppend: P1（完全性）- 無ロック追記経路の廃止
+# ---------------------------------------------------------------------------
+
+
+class TestP1NoUnlockedAppend:
+    """P1（完全性）: N 並列で追記した行は、ロックが取得できた分は 1 行も欠けず・
+    1 行も壊れずに jsonl に残る。無ロックで jsonl へ書く経路はコード上存在しない。
+
+    _acquire_lock を False 返しに固定した場合、追記が一切発生しないこと
+    （断念経路のみ実行される）を確認する。
+    """
+
+    def test_no_append_without_lock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """_acquire_lock が常に False を返す（ロック無し状態）場合、
+        追記は発生せず jsonl は空のままだった。"""
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "tier_autoapply.jsonl"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+
+        # _acquire_lock を常に False 返し
+        monkeypatch.setattr(mod, "_acquire_lock", lambda lock_f: False)
+
+        row = {
+            "ts": "2026-08-13T00:00:00+00:00",
+            "session_id": "sess-nolck",
+            "subagent_type": "developer",
+            "role_recorded": "developer",
+            "model_applied": "sonnet",
+            "source": "injected",
+            "prompt_prefix": "",
+        }
+
+        mod._append_applied_state(row)
+
+        # jsonl は追記されず空
+        if jsonl_path.is_file():
+            content = jsonl_path.read_text(encoding="utf-8").strip()
+            assert content == "", "ロック無し状態でも jsonl に追記されてしまった（P1 違反）"
+
+
+# ---------------------------------------------------------------------------
+# TestP3FixedWarningText: P3（可観測性）- 原因別固定文言
+# ---------------------------------------------------------------------------
+
+
+def _abort_row(session_id: str) -> dict:
+    """断念経路テスト用の row（外部由来文字列 `_SECRET_PROMPT` を仕込み済み）を返した。"""
+    return {
+        "ts": "2026-08-13T00:00:00+00:00",
+        "session_id": session_id,
+        "subagent_type": "developer",
+        "role_recorded": "developer",
+        "model_applied": "sonnet",
+        "source": "injected",
+        "prompt_prefix": _SECRET_PROMPT,  # 外部由来文字列
+    }
+
+
+def _assert_no_append(jsonl_path: Path, message: str) -> None:
+    """jsonl が未作成または空であること（断念で追記が発生していないこと）を検査した。"""
+    if jsonl_path.is_file():
+        lines = [
+            line
+            for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 0, message
+
+
+class TestP3FixedWarningText:
+    """P3（可観測性）: 追記を断念した場合は stderr に 1 行の証跡を残す。
+    警告文は固定文言＋原因識別子のみで構成し、外部由来文字列を含めない。
+
+    原因識別子は **4 値**: reason=deadline / reason=lockfile-open-failed /
+    reason=mkdir-failed / reason=write-failed（architecture 改訂 3・§1 P3・§2-2。
+    改訂 1 時点の「2 値」からの拡張＝DC-AM-001 / SR-NEW / CR-E-002。DC-GP-005 で
+    旧契約 docstring の残置を是正）。
+
+    射程（改訂 3・DC-AM-002）: 本クラスが固定するのは `_append_applied_state` が
+    記録処理（mkdir 以降）へ到達した後の断念 4 経路。冒頭の symlink 検査による
+    沈黙 skip は断念でなく**入口ガード**であり射程外（5 値目の識別子は存在しない）。
+
+    検査水準（DC-GP-004）: 4 経路すべてを `_assert_fixed_warning`（完全一致＋秘密非混入）で
+    同水準に固定する。`TestLockAcquisitionFailure` の 2 ケース（deadline /
+    lockfile-open-failed）も同じヘルパーへ引き上げ済みで、あちらは「追記されないこと」
+    （F-7 の新契約）が主眼、本クラスは「文言そのもの」が主眼という分担にした。
+    """
+
+    def test_deadline_warning_is_fixed_text_with_reason_identifier(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """締切超過による断念の場合、stderr に '[tier_autoapply] append skipped: reason=deadline'
+        という固定文言のみが出ている（外部由来文字列を含まない）。"""
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "tier_autoapply.jsonl"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+
+        # _acquire_lock を False 返し（締切超過相当）
+        monkeypatch.setattr(mod, "_acquire_lock", lambda lock_f: False)
+
+        row = _abort_row("sess-deadline-warn")
+        mod._append_applied_state(row)
+
+        captured = capsys.readouterr()
+        _assert_fixed_warning(captured.err, "deadline", row)
+        _assert_no_append(jsonl_path, "締切超過の断念で jsonl が追記されてしまった")
+
+    def test_lockfile_open_failed_warning_is_fixed_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """ロックファイル open 失敗による断念の場合、reason=lockfile-open-failed の
+        固定文言のみが出ている（外部由来文字列を含まない）。"""
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "tier_autoapply.jsonl"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+        # ロックファイルのパスを「存在しないディレクトリ配下」に向けて open を失敗させる
+        # （POSIX/Windows いずれも OSError 派生になる）。
+        monkeypatch.setattr(
+            mod, "LOCK_FILE_PATH", str(tmp_path / "no-such-dir" / "x.lock")
+        )
+
+        row = _abort_row("sess-open-failed-warn")
+        mod._append_applied_state(row)
+
+        captured = capsys.readouterr()
+        _assert_fixed_warning(captured.err, "lockfile-open-failed", row)
+        _assert_no_append(jsonl_path, "open 失敗の断念で jsonl が追記されてしまった")
+
+    def test_mkdir_failed_warning_is_fixed_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """state ディレクトリ作成失敗（os.makedirs が OSError）による断念の場合、
+        reason=mkdir-failed の固定文言のみが出て追記されない（CR-T-001 Low）。"""
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+        monkeypatch.setattr(mod, "LOCK_FILE_PATH", str(jsonl_path) + ".lock")
+
+        def _failing_makedirs(*args, **kwargs):
+            raise OSError("mkdir denied (injected)")
+
+        row = _abort_row("sess-mkdir-warn")
+        # os.makedirs の差し替えはプロセス全体に効くため、対象呼び出しの間だけに閉じる。
+        with monkeypatch.context() as m:
+            m.setattr(mod.os, "makedirs", _failing_makedirs)
+            mod._append_applied_state(row)
+
+        captured = capsys.readouterr()
+        _assert_fixed_warning(captured.err, "mkdir-failed", row)
+        _assert_no_append(jsonl_path, "mkdir 失敗の断念で jsonl が追記されてしまった")
+
+    def test_write_failed_warning_is_fixed_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """ロック取得**成功後**の追記本体（`open(APPLIED_STATE_PATH, "a")`）が OSError の場合、
+        reason=write-failed の固定文言が出て追記されない（CR-E-002 のテスト側・**Red**）。
+
+        注入点は実運用に存在する経路である追記本体の `open` に一本化した（DC-GP-003）。
+        `_rotate_if_needed` は内部で OSError を全て握るため、そちらを差し替えると
+        実運用に存在しない合成経路だけを緑にしてしまう（禁止）。
+        """
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "tier_autoapply.jsonl"
+        lock_path = tmp_path / "tier_autoapply.lock"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+        monkeypatch.setattr(mod, "LOCK_FILE_PATH", str(lock_path))
+
+        real_open = builtins.open
+        target = str(jsonl_path)
+
+        def _failing_open(file, mode="r", *args, **kwargs):
+            # 追記本体（jsonl への追記モード open）だけを失敗させ、他は実 open に委譲する
+            # （ロックファイル open・pytest 内部の I/O を巻き込まないため）。
+            if isinstance(file, (str, bytes, os.PathLike)) and os.fspath(file) == target:
+                if "a" in mode:
+                    raise OSError("disk full (injected)")
+            return real_open(file, mode, *args, **kwargs)
+
+        row = _abort_row("sess-write-failed-warn")
+        # builtins.open の差し替えはプロセス全体に効くため、対象呼び出しの間だけに閉じる。
+        with monkeypatch.context() as m:
+            m.setattr(builtins, "open", _failing_open)
+            mod._append_applied_state(row)
+
+        captured = capsys.readouterr()
+        _assert_fixed_warning(captured.err, "write-failed", row)
+        _assert_no_append(jsonl_path, "write 失敗の断念で jsonl が追記されてしまった")
+
+
+# ---------------------------------------------------------------------------
+# TestLockModulesAbsent: ロック機構不在環境（ADR-5・DC-AS-002・CR-T-001 Medium）
+# ---------------------------------------------------------------------------
+
+
+class TestLockModulesAbsent:
+    """msvcrt / fcntl の**両方が不在**の環境では取得成功（True）とみなして追記する契約を固定した。
+
+    素直な if/elif の bool 化（False 返し）にすると、この環境では毎回締切 5 秒を待って
+    常時断念＝「記録の常時全損＋起動ごと 5 秒遅延」となり現行と真逆になる（architecture
+    §2-1 ロック機構不在環境の契約・ADR-5）。この分岐を False へ変えるリグレッションを
+    検知する回帰網が無かったため追加した（CR-T-001 Medium）。
+    """
+
+    def test_both_lock_modules_absent_treated_as_acquired_and_appends(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """msvcrt / fcntl を両方 None にした状態で `_try_os_lock` が True を返し、
+        `_append_applied_state` が実際に 1 行追記した（断念の stderr 警告は出ない）。"""
+        mod = _load_autoapply_module()
+        jsonl_path = tmp_path / "tier_autoapply.jsonl"
+        lock_path = tmp_path / "tier_autoapply.lock"
+        monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+        monkeypatch.setattr(mod, "LOCK_FILE_PATH", str(lock_path))
+        monkeypatch.setattr(mod, "msvcrt", None)
+        monkeypatch.setattr(mod, "fcntl", None)
+
+        with open(lock_path, "a+", encoding="utf-8") as lock_f:
+            assert mod._try_os_lock(lock_f) is True, (
+                "ロック機構両方不在で _try_os_lock が True を返さなかった（ADR-5 違反）"
+            )
+
+        row = {
+            "ts": "2026-08-13T00:00:00+00:00",
+            "session_id": "sess-no-lock-modules",
+            "subagent_type": "developer",
+            "role_recorded": "developer",
+            "model_applied": "sonnet",
+            "source": "injected",
+            "prompt_prefix": "",
+        }
+        mod._append_applied_state(row)
+
+        lines = [
+            line
+            for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 1, f"ロック機構不在環境で追記されなかった: {lines}"
+        assert json.loads(lines[0])["session_id"] == "sess-no-lock-modules"
+
+        captured = capsys.readouterr()
+        assert "append skipped" not in captured.err, (
+            f"ロック機構不在環境で断念していた（常時全損の回帰）: {captured.err!r}"
+        )

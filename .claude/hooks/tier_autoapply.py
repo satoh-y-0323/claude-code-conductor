@@ -20,7 +20,9 @@ check_agent は reviewer 系のみ）のため実行順序に依存しない（�
 - tier_selection 不在/破損/非文字列 tier のときは注入せず素通り
   （source=frontmatter-default・frontmatter の sonnet が実効するため）。
 - `LAUNCH_LOG_ROLES = {developer, wt_developer, tester, wt_tester}` は
-  注入有無に関わらず applied-state（tier_autoapply.jsonl）へ 1 行追記した。
+  注入有無に関わらず applied-state（tier_autoapply.jsonl）へ 1 行追記した
+  （ロックを取得できない場合のみ追記を断念する。注入は断念に影響されない・
+  `_append_applied_state` 参照）。
   reviewer 系・その他 role は記録も注入もしない（exit 0 素通り）。
 - 起動プロンプト先頭の `C3_TASK_ID:` マーカーを抽出し jsonl の `task_id` に
   載せた（T8・並列経路の record 突合キー）。
@@ -46,8 +48,10 @@ from __future__ import annotations
 import collections
 import json
 import os
+import random
 import re
 import sys
+import time
 from datetime import datetime, timezone
 
 try:
@@ -83,6 +87,7 @@ if not (_CLAUDE_DIR.endswith(os.sep + ".claude") or _CLAUDE_DIR.endswith("/.clau
 
 TIER_SELECTION_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_selection.json")
 APPLIED_STATE_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_autoapply.jsonl")
+LOCK_FILE_PATH = APPLIED_STATE_PATH + ".lock"
 
 # §3-2 ロール分岐表の定数。
 # APPLY_ROLES: 無条件 APPLY（起動フェーズを問わず tier_selection.json のトップレベル
@@ -116,6 +121,12 @@ _MAX_JSONL_BYTES = 1 * 1024 * 1024  # 1 MB
 _ROTATE_TAIL_LINES = 500
 
 _PROMPT_PREFIX_MAX_CHARS = 200
+
+# ロック取得の非ブロック試行＋ms リトライパラメータ（§2-1）。
+# 非ブロック 1 回試行で失敗時に以下の間隔で再試行し、締切 5 秒で断念する。
+_LOCK_RETRY_INTERVAL_SEC = 0.02   # 基本リトライ間隔 20ms
+_LOCK_RETRY_JITTER_SEC = 0.02     # 一様乱数 [0, 20ms) を毎回加算（脱同期・P4）
+_LOCK_DEADLINE_SEC = 5.0          # 締切（P2・B 裁定 #3）
 
 # T8: 起動プロンプト先頭の C3_TASK_ID マーカー抽出用（§3-1・SR-AI-001 で \A 化）。
 # 文字列先頭アンカー \A + allowlist + 上限200字で誤抽出・秘密混入を構造排除する
@@ -291,17 +302,52 @@ def _rotate_if_needed(path: str) -> None:
         pass
 
 
-def _os_lock(lock_f) -> None:
-    """ロックファイルのバイト0に排他ロックを取得した（取得不能時は例外を送出）。"""
-    if msvcrt is not None:
-        lock_f.seek(0)
-        msvcrt.locking(lock_f.fileno(), msvcrt.LK_LOCK, 1)
-    elif fcntl is not None:
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+def _try_os_lock(lock_f) -> bool:
+    """ロックファイルのバイト0に排他ロックを非ブロック 1 回試行した。
+
+    取得成功時 True、競合失敗時 False。競合以外の OSError（EBADF 等）も False 扱い。
+    Windows は seek(0) の後 msvcrt.locking LK_NBLCK / POSIX は fcntl.flock LOCK_EX|LOCK_NB。
+    msvcrt / fcntl 両方不在の環境では取得成功扱いで True を返す（DC-AS-002・ADR-5）。
+    """
+    if msvcrt is None and fcntl is None:
+        # ロック機構が両方不在（理論上rare）の場合は取得成功とみなす
+        return True
+    try:
+        # 冒頭ガードにより、ここに到達する時点で msvcrt / fcntl の少なくとも一方は
+        # 非 None が保証されている（DC-AS-004・CR-Q-005）。if/else で全経路が bool を
+        # 返すことを構造から読めるようにし、到達不能な末尾 return は置かない。
+        if msvcrt is not None:
+            lock_f.seek(0)
+            msvcrt.locking(lock_f.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        else:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+    except OSError:
+        return False
+
+
+def _acquire_lock(lock_f) -> bool:
+    """非ブロック試行＋ms リトライループでロック取得を試行した。
+
+    time.monotonic() 基準の締切内に _try_os_lock が成功したら True、
+    締切超過で失敗時は False。リトライ待ち時間はジッター付き。
+    """
+    deadline = time.monotonic() + _LOCK_DEADLINE_SEC
+    while True:
+        if _try_os_lock(lock_f):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_LOCK_RETRY_INTERVAL_SEC + random.uniform(0, _LOCK_RETRY_JITTER_SEC))
 
 
 def _os_unlock(lock_f) -> None:
-    """_os_lock で取得したロックを解放した（失敗時は無視）。"""
+    """_try_os_lock で取得したロックを解放した（失敗時は無視）。
+
+    取得側と同一領域（バイト0の 1 バイト）を対象にするため、Windows は
+    _try_os_lock と同じく seek(0) を先行させる（DC-AS-003・非対称だと解放漏れになる）。
+    """
     try:
         if msvcrt is not None:
             lock_f.seek(0)
@@ -316,54 +362,72 @@ def _append_applied_state(row: dict) -> None:
     """applied-state（jsonl）へ 1 行を単一 write で追記した（§3-4・追記前にローテーション）。
 
     専用ロックファイル（`<jsonl>.lock`）の OS ロックで並行 append を直列化した。
-    ロックはハンドルクローズ／プロセス終了時に OS が自動解放するため、
-    ロックファイルが残っても後続の追記をブロックしない（stale-lock デッドロック回避）。
+    ロック取得は非ブロック試行＋ms リトライ（ジッター付き・締切 `_LOCK_DEADLINE_SEC`）で、
+    取得できたときだけ追記する。締切超過・ロックファイル open 失敗・mkdir 失敗は
+    「追記せず stderr に固定文言」で断念し、無ロックのまま追記する経路は持たない（P1・ADR-1）。
 
-    ロックファイル（`<jsonl>.lock`）の永続化について（CR F-6）:
-    このファイルは削除せず `.claude/state/*` の gitignore exclude パターンで
-    配布対象外にしている（_rotate_if_needed 同様の設計）。stale-lock 回避のため
-    OS ハンドル解放に委ね、明示的な削除を行わない。
+    注入判定への影響はない（P5）。断念時も呼び出し側は stdout へ updatedInput を
+    出力して注入を継続する。
+
+    ロックファイルは削除せず残す（CR F-6）。`.claude/state/*` の gitignore exclude
+    パターンで配布対象外にしている（_rotate_if_needed 同様の設計）。残っていても
+    ロック自体は OS がハンドルクローズ／プロセス終了時に解放するため後続を妨げない。
     """
     line = json.dumps(row, ensure_ascii=False)
-    lock_path = APPLIED_STATE_PATH + ".lock"
     # item2(SR-V-002・Low): jsonl 本体・ロックファイルのいずれかが symlink の場合は
     # 追記全体を沈黙 skip（リンク先への誘導書き込みを防ぐ・fail-safe）。open で
     # follow する前に検証する。Windows は O_NOFOLLOW 非対応のため islink で分岐する
     # （POSIX 慣行に合わせた可搬な検証）。tier_gap_check.py 読み取り側と同型。
     # [CR-NEW3] islink 検証→open 間の TOCTOU レースは構造的に残存するが既知・脅威モデル外
     # （Windows O_NOFOLLOW 非対応による設計選択。stale-lock TOCTOU と同種の回避不能パターン）。
-    if os.path.islink(APPLIED_STATE_PATH) or os.path.islink(lock_path):
+    if os.path.islink(APPLIED_STATE_PATH) or os.path.islink(LOCK_FILE_PATH):
         return
     try:
         os.makedirs(os.path.dirname(APPLIED_STATE_PATH), exist_ok=True)
-    except OSError as exc:
-        print(f"[tier_autoapply] mkdir failed: {type(exc).__name__}", file=sys.stderr)
+    except OSError:
+        # mkdir 失敗（断念理由: mkdir-failed）。P3 に合わせ可観測性を確保。
+        print("[tier_autoapply] append skipped: reason=mkdir-failed", file=sys.stderr)
         return
 
     lock_f = None
     try:
-        lock_f = open(lock_path, "a+", encoding="utf-8")
-    except OSError:
-        lock_f = None
+        try:
+            lock_f = open(LOCK_FILE_PATH, "a+", encoding="utf-8")
+        except OSError:
+            # ロックファイル open 失敗（断念理由: lockfile-open-failed）
+            print("[tier_autoapply] append skipped: reason=lockfile-open-failed", file=sys.stderr)
+            return
 
-    locked = False
-    try:
-        if lock_f is not None:
-            try:
-                _os_lock(lock_f)
-                locked = True
-            except OSError:
-                locked = False  # ロック不能でもベストエフォートで追記する。
-        _rotate_if_needed(APPLIED_STATE_PATH)
-        with open(APPLIED_STATE_PATH, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except OSError as exc:
-        print(f"[tier_autoapply] append failed: {type(exc).__name__}", file=sys.stderr)
+        locked = False
+        try:
+            locked = _acquire_lock(lock_f)
+        except OSError:
+            # リトライループ中の OSError は取得失敗扱いで断念（fail-safe）
+            locked = False
+
+        # 締切超過・ロック取得失敗時は追記せず断念した（P1）
+        if not locked:
+            print("[tier_autoapply] append skipped: reason=deadline", file=sys.stderr)
+            return
+
+        try:
+            _rotate_if_needed(APPLIED_STATE_PATH)
+            with open(APPLIED_STATE_PATH, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            # 追記本体（rotate/write）失敗（断念理由: write-failed）。P3 に合わせ可観測性を
+            # 確保する（CR-E-002・改訂 2）。他 3 経路と同形式（固定文言のみ・外部由来文字列なし）。
+            print("[tier_autoapply] append skipped: reason=write-failed", file=sys.stderr)
     finally:
+        # open 成功後の全経路（追記完了・断念・例外）で解放とクローズを保証した。
+        # _os_unlock 自身が失敗を握るためここでの追加ガードは不要。
         if lock_f is not None:
             if locked:
                 _os_unlock(lock_f)
-            lock_f.close()
+            try:
+                lock_f.close()
+            except OSError:
+                pass
 
 
 def main() -> None:
