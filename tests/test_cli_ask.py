@@ -372,16 +372,24 @@ def test_mcp_stdio_reconfigure_helper_is_safe_to_call():
 
 def test_stdin_is_interactive_console_matches_isatty_on_posix(monkeypatch):
     """POSIX では isatty() が /dev/null に対し正しく False を返すため変更不要。"""
-    monkeypatch.setattr(os, "name", "posix")
-    monkeypatch.setattr(
-        "sys.stdin", type("_FakeStdin", (), {"isatty": staticmethod(lambda: False)})()
-    )
-    assert question.stdin_is_interactive_console() is False
 
-    monkeypatch.setattr(
-        "sys.stdin", type("_FakeStdin", (), {"isatty": staticmethod(lambda: True)})()
-    )
-    assert question.stdin_is_interactive_console() is True
+    def _call_with_isatty(isatty_result: bool) -> bool:
+        # [CR-NEW] os.name の差し替えは必ず monkeypatch.context() に閉じる。
+        # 裸の setattr だと本テストが赤化した瞬間に monkeypatch fixture の
+        # teardown より先に pytest 自身の repr_failure が走り、os.name="posix"
+        # のまま pathlib が PosixPath を選んで
+        # NotImplementedError -> INTERNALERROR でセッションごと落ちる（実測）。
+        with monkeypatch.context() as patched:
+            patched.setattr(os, "name", "posix")
+            patched.setattr(
+                "sys.stdin",
+                type("_FakeStdin", (), {"isatty": staticmethod(lambda: isatty_result)})(),
+            )
+            return question.stdin_is_interactive_console()
+
+    assert _call_with_isatty(False) is False
+
+    assert _call_with_isatty(True) is True
 
 
 def test_stdin_is_interactive_console_ignores_windows_isatty_nul_lie(monkeypatch):
@@ -649,3 +657,137 @@ def test_select_interactively_uses_read_key_when_console_attached(monkeypatch):
 
     assert calls == ["read_key"]
     assert selected == (0,)
+
+
+# ---------------------------------------------------------------------------
+# E 周回 2 裁定 [対応予定] 指摘の凍結テスト (task test-e3fix1)
+#
+# [SR-R-001] / [CR-E-001]
+#   確定裁定: _terminal.stdin_is_interactive_console() は「関数内部で」いかなる
+#   例外が起きても送出せず False を返す（関数全体の fail-closed 化）。第 1 ゲート
+#   (cli_ask.handle 入口) は既に try/except Exception で包まれているが、第 2 ゲート
+#   (question.answer_questions() / _raw_keyboard_supported() 経由) は無防備なため、
+#   POSIX 分岐 `sys.stdin.isatty()` が AttributeError 等を送出すると exit 1 契約を
+#   破って traceback 終了する。
+#
+# 注入点について（重要）:
+#   判定関数そのものをスタブへ差し替える注入（既存の
+#   test_cli_ask_gate_fails_closed_when_console_check_raises 方式）では、関数内部の
+#   fail-closed 化を是正しても赤のままになり性質を測れない。ここでは「関数内部の
+#   依存」（os.name / sys.stdin）にだけ失敗を注入し、実装本体を実際に走らせる。
+#
+# os.name の差し替えはすべて monkeypatch.context() に閉じる（[CR-NEW] 参照。
+# 赤化時の pytest INTERNALERROR 防止）。実 msvcrt / 実コンソールには触れない。
+# ---------------------------------------------------------------------------
+
+
+TWO_QUESTION_JSON = json.dumps(
+    {
+        "questions": [
+            {"question": "First", "options": [{"label": "A"}, {"label": "B"}]},
+            {"question": "Second", "options": [{"label": "C"}, {"label": "D"}]},
+        ]
+    },
+    ensure_ascii=False,
+)
+
+
+class _StdinWithoutIsatty:
+    """isatty 属性を持たない stdin（pythonw.exe / --windowed ビルド相当）。"""
+
+
+class _StdinIsattyRaisesRuntimeError:
+    """isatty() が OSError / ValueError / AttributeError のいずれでもない型を送出する。"""
+
+    @staticmethod
+    def isatty() -> bool:
+        raise RuntimeError("unexpected failure inside isatty()")
+
+
+class _StdinIsattyRaisesKeyboardInterrupt:
+    @staticmethod
+    def isatty() -> bool:
+        raise KeyboardInterrupt
+
+
+def _console_check_with_broken_stdin(monkeypatch, fake_stdin):
+    """POSIX 分岐を通しつつ内部依存 (sys.stdin) を壊した状態で判定関数を呼ぶ。
+
+    os.name / sys.stdin の差し替えは monkeypatch.context() に閉じ、assert /
+    pytest.raises は呼び出し側（この関数の外）に置く。
+    """
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "name", "posix")
+        patched.setattr(sys, "stdin", fake_stdin)
+        return _terminal.stdin_is_interactive_console()
+
+
+@pytest.mark.parametrize(
+    "fake_stdin",
+    [None, _StdinWithoutIsatty(), _StdinIsattyRaisesRuntimeError()],
+    ids=["stdin-is-none", "stdin-without-isatty", "isatty-raises-runtimeerror"],
+)
+def test_stdin_is_interactive_console_fails_closed_on_internal_failure(monkeypatch, fake_stdin):
+    """[SR-R-001][CR-E-001] 関数内部でどんな例外が起きても送出せず False を返す。
+
+    是正前は POSIX 分岐 (`return sys.stdin.isatty()`) に例外捕捉が一切ないため、
+    AttributeError / RuntimeError がそのまま送出されて赤になる。
+    凍結する性質は例外の「型に依存しない」fail-closed であるため、
+    AttributeError 相当 2 種と、OSError / ValueError / AttributeError の
+    いずれでもない型 (RuntimeError) の計 3 ケースで同じ結論を実測する。
+    """
+    assert _console_check_with_broken_stdin(monkeypatch, fake_stdin) is False
+
+
+def test_stdin_is_interactive_console_propagates_keyboard_interrupt(monkeypatch):
+    """KeyboardInterrupt は fail-closed の対象外＝握り潰さず伝播する。
+
+    fail-closed 化は `except Exception` で行う想定であり、BaseException 直属の
+    KeyboardInterrupt は捕捉されない。Ctrl-C が「非対話扱い (False)」へ丸め
+    込まれると、ユーザーの中断がデフォルト選択の確定に化けてしまう。
+    是正前も是正後も緑（追加時点で緑の回帰網）。
+    """
+
+    def _drive() -> bool:
+        return _console_check_with_broken_stdin(
+            monkeypatch, _StdinIsattyRaisesKeyboardInterrupt()
+        )
+
+    with pytest.raises(KeyboardInterrupt):
+        _drive()
+
+
+def test_cli_ask_second_gate_fails_closed_when_stdin_is_broken(monkeypatch, capsys):
+    """[SR-R-001][CR-E-001] 第 2 ゲート経由でも exit code 契約が守られる。
+
+    --response の応答数が質問数に満たない場合、余った質問は answer_questions()
+    内の第 2 ゲート (stdin_is_interactive_console()) を通る。この呼び出しは
+    cli_ask.handle() の try が捕捉する (OSError, ValueError) / EOFError /
+    KeyboardInterrupt のいずれにも該当しない例外型では素通りするため、是正前は
+    AttributeError が伝播して traceback 終了する（int を返さない＝赤）。
+
+    exit code 契約を測れるのは handle() 経由のみのため、入口をここに置く。
+    是正後は判定が False へ倒れ _select_default() が使われ、rc=0 で完走する。
+    """
+
+    def _drive() -> int:
+        with monkeypatch.context() as patched:
+            patched.setattr(os, "name", "posix")
+            patched.setattr(sys, "stdin", None)
+            return cli_ask.handle(
+                argparse.Namespace(
+                    file=None,
+                    json_text=TWO_QUESTION_JSON,
+                    response="1",
+                    pretty=False,
+                )
+            )
+
+    rc = _drive()
+
+    assert isinstance(rc, int)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    # 1 問目は --response の "1"、2 問目は第 2 ゲートが False へ倒れた結果の
+    # _select_default()（required なので先頭）。
+    assert [answer["labels"] for answer in payload["answers"]] == [["A"], ["C"]]

@@ -82,10 +82,22 @@ def stdin_is_interactive_console() -> bool:
     Win32 API）で実際のコンソール接続を確認し、NUL・パイプ・ファイルいずれの
     リダイレクトも False として扱う。POSIX は ``isatty()`` が ``/dev/null`` に
     対して標準どおり正しく False を返すためそのまま使う。
+
+    関数全体を ``except Exception`` で包み、内部でどの分岐がどの例外型を投げても
+    送出せず False を返す (fail-closed)。POSIX 分岐の ``sys.stdin.isatty()`` は
+    ``sys.stdin`` が None のケース (pythonw.exe / PyInstaller --windowed など) で
+    ``AttributeError`` を投げうるが、これを呼び出し元へ伝播させると
+    ``c3 ask`` の「exit 1」契約が破れる (SR-R-001 / CR-E-001)。呼び出し位置ごとに
+    try/except を足すのではなく、ここ一箇所へ集約して将来の呼び出し箇所追加にも
+    自動的に効かせる。``KeyboardInterrupt`` / ``SystemExit`` は ``BaseException``
+    直属で ``Exception`` を継承しないため握り潰さない (Ctrl-C は従来どおり伝播)。
     """
-    if os.name == "nt":
-        return _windows_console_attached()
-    return sys.stdin.isatty()
+    try:
+        if os.name == "nt":
+            return _windows_console_attached()
+        return sys.stdin.isatty()
+    except Exception:
+        return False
 
 
 def _windows_console_attached() -> bool:
