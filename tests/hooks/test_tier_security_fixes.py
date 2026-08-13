@@ -536,6 +536,11 @@ class TestSymlinkSkip:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"シンボリックリンク作成不可の環境のため非該当: {exc}")
         monkeypatch.setattr(mod, "APPLIED_STATE_PATH", str(jsonl_path))
+        # v2.69.0 で lock パスは呼び出し時導出（APPLIED_STATE_PATH + ".lock"）から
+        # import 時定数 LOCK_FILE_PATH へ変わったため、symlink 検査を tmp 側へ向けるには
+        # LOCK_FILE_PATH の monkeypatch も必要（APPLIED_STATE_PATH だけでは実 state の
+        # lock パスが検査され、本テストの symlink が検知されない）。
+        monkeypatch.setattr(mod, "LOCK_FILE_PATH", str(lock_path))
 
         row = {
             "ts": "2026-07-07T00:00:00+00:00",
