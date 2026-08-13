@@ -191,7 +191,7 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 | 1 | `.claude/hooks/*.py` | ○ | ○ | Claude Code lifecycle hook の実体。配布先で動作する。v2.20.0 で `hooks/schema.sql` を削除し SQLite スキーマは `src/c3/migrations/` に移管 |
 | 2 | `.claude/agents/*.md` | ○ | ○ | ペルソナ定義。配布先で読まれる |
 | 3 | `.claude/skills/*/` | ○ | ○ | オーケストレーション/ユーティリティ skill 定義（`scripts/` / `templates/` 等サブディレクトリ含む）|
-| 4 | `.claude/rules/*.md` | ○ | ○ | C3 配布デフォルトルール（常時注入対象）。**配布元では 0 件**（`.claude/rules/` 直下に `.md` は無く `promoted/` のみ）。利用先が `/setup` で `coding-standards.md` を生成した時点でこのカテゴリが成立する |
+| 4 | `.claude/rules/*.md` | ○ | ○ | C3 配布デフォルトルール（常時注入対象）。配布元は `judgment-principles.md` の 1 件（ほかは `promoted/` のみ）。利用先ではこれに `/setup` 生成の `coding-standards.md` 等が加わる |
 | 5 | `.claude/rules/promoted/*` | ○ | ×（`index.md` は INIT_ONLY） | プロジェクト固有昇格ルール。配布元の `promoted/index.md` は空雛形のみ配布。利用先で `/promote-pattern` が追記する **ユーザー所有領域**。`index.md` は `INIT_ONLY_PATTERNS` で上書きから保護される。昇格ルール本体（`YYYYMMDD-{id}.md`）は template 側に存在しないため `_walk_diff` の走査対象にならず元から無事 |
 | 6 | `.claude/docs/*.md` | △（一部のみ） | ○ | 利用先向けリファレンス。配布対象は `autonomous-mode-onboarding.md` / `config-policy.md`（本ドキュメント）/ `nul-boundary.md` / `parallel-agents-setup.md` / `platform-adapters.md` / `settings.json.md` の 6 ファイル。配布元固有の設計メモ等は `_excludes.py` で個別除外。`taxonomy.md` は tracked（GitHub 公開）だが EXCLUDE 対象のため wheel 非配布（詳細は §7 落とし穴 2 参照）。 |
 | 7 | `.claude/CLAUDE.md` | ○ | ○ | 配布先で常時注入される共通ルール |

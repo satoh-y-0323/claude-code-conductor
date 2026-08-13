@@ -9,31 +9,47 @@ c3 --version    # バージョン表示
 c3 --help       # サブコマンド一覧
 ```
 
+サブコマンド未指定・存在しないサブコマンド名は、argparse が usage を stderr に表示して **exit 2** になる。同様に、各サブコマンドの必須引数の不足・型不正（例: 数値指定オプションへの非数値入力）・不正な選択値も、argparse 自身の引数検証によって usage を stderr に表示して **exit 2** になる（各サブコマンドの解説にある「カスタム検証によるエラーは exit 1」とは別系統であり、以降の exit code 記載は特に断りがない限り argparse 自身の引数検証エラーを含まない）。
+
 ## `c3 init`
 
 利用先プロジェクトに `.claude/` を展開する。Codex/Cursor adapter を指定した場合も、`.claude/` は C3 の canonical source として展開される。
 
 ```bash
-c3 init [--force] [--platform claude|codex|cursor|opencode|all]
+c3 init [--force] [--target DIR] [--platform claude|codex|cursor|opencode|all] [--git | --no-git]
 ```
 
 | オプション | 内容 |
 |---|---|
 | `--force` | 既存ファイルを上書きする（通常はスキップ） |
+| `--target` | 展開先ディレクトリ。既定はカレントディレクトリ |
 | `--platform` | 生成対象。既定は `claude`。`codex` は `AGENTS.md` / `.agents/skills/` / `.codex/`、`cursor` は `.cursor/`、`opencode` は `AGENTS.md` / `.opencode/agents/` を追加 |
+| `--git` | 展開先が git 管理外のとき、確認なしで `git init` を実行する（CI / 非対話環境の明示 opt-in） |
+| `--no-git` | `git init` を行わない（worktree 並列実装の案内メッセージのみ出力） |
+
+展開先が git 管理外でフラグ未指定の場合、対話ターミナル（TTY）でのみ `git init しますか? [Y/n]` の同意プロンプトを表示する（既定は Y）。非 TTY では `git init` せず案内メッセージのみ出力する。`git init` の成否は `c3 init` の exit code に影響しない。
 
 ## `c3 update`
 
 `.claude/` と adapter 生成物をパッケージ最新版へ更新する。個人ファイル（`reports/`, `memory/sessions/` 等）はスキップ。
 
 ```bash
-c3 update [--dry-run] [--platform claude|codex|cursor|opencode|all]
+c3 update [--dry-run] [--target DIR] [--platform claude|codex|cursor|opencode|all] [--yes]
 ```
 
 | オプション | 内容 |
 |---|---|
 | `--dry-run` | 変更内容のプレビューのみ（実際には更新しない） |
+| `--target` | 更新先ディレクトリ。既定はカレントディレクトリ |
 | `--platform` | 更新対象。既定は `claude` |
+| `--yes` / `-y` | 確認プロンプト（旧ファイル削除・MAJOR バージョン更新の承認）をスキップする（CI / 自動化ワークフロー用）。`--dry-run` 併用時は効果なし |
+
+ファイルコピーに加えて、以下の付随処理を行う:
+
+1. **breaking changes の表示**: 前回更新時のバージョン（`.claude/state/c3_version.txt` checkpoint）と今回のパッケージバージョンの間に該当する `breaking-changes.txt` のエントリを表示する。checkpoint が無い初回は全件表示
+2. **MAJOR バージョン承認**: MAJOR bump（例: 2.x → 3.x）に該当する breaking changes がある場合は `[y/N]` の承認プロンプトを表示し、拒否すると更新せず正常終了する
+3. **旧配布ファイルの削除**: パッケージ同梱の `deletions.txt` に列挙された「過去のリリースで削除された配布ファイル」を利用先からも削除する（`[y/N]` 確認あり。`--yes` でスキップ）
+4. **checkpoint 更新**: 上記が完了すると `.claude/state/c3_version.txt` を今回のバージョンへ更新する（`--dry-run`・ダウングレード・プロンプト拒否時は更新しない）
 
 ## `c3 list-agents` / `c3 list-skills`
 
@@ -49,8 +65,13 @@ c3 list-skills
 環境診断を実行する。
 
 ```bash
-c3 doctor [--platform claude|codex|cursor|opencode|all]
+c3 doctor [--quiet] [--platform claude|codex|cursor|opencode|all]
 ```
+
+| オプション | 内容 |
+|---|---|
+| `--quiet` | 失敗と警告のみ表示する（成功項目を省略） |
+| `--platform` | 診断対象。既定は `claude` |
 
 確認項目:
 - `.claude/` ディレクトリの存在
@@ -74,6 +95,14 @@ c3 ask --json '{"questions":[...]}' --response 1,3
 | `--file` / `--json` | `AskUserQuestion` と同じ `{ "questions": [...] }` 形式 |
 | `--response` | 非対話実行用。ラベルまたは 1 始まりの番号を指定。複数質問は `;` で区切る |
 | `--pretty` | JSON 出力を整形 |
+
+| exit code | 条件 |
+|---|---|
+| 0 | 正常終了（回答 JSON を stdout に出力） |
+| 1 | 入力エラー（JSON 不正・ファイル読み込み失敗・入力中断）、または非対話 stdin で `--response` 未指定 |
+| 130 | 対話プロンプト中の Ctrl-C（KeyboardInterrupt） |
+
+**既知の問題（Windows）**: Windows では `sys.stdin.isatty()` が NUL デバイスや `/dev/null` へのリダイレクト時にも `True` を誤って返すため、`--response` を指定せずに非対話 stdin（NUL / `/dev/null` リダイレクト）で実行すると exit 1 にならず、対話選択の入力待ち（`msvcrt.getwch()`）でハングする。CI・自動化ワークフロー等の非対話実行では、この問題を避けるため常に `--response` を明示的に指定すること。
 
 ## `c3 run` — 配布スクリプトの共通起動口 (v2.51.0+)
 
@@ -103,7 +132,7 @@ c3 plan waves    <plan-report>        # wave 分解結果を JSON 出力
 | サブコマンド | exit code | 内容 |
 |---|---|---|
 | `validate` | 0 / 2 | 0=妥当、2=不正（フロントマター・agent ファイル不在・循環依存等） |
-| `waves` | 0 | 標準出力に wave ごとのタスク配列を JSON で出力 |
+| `waves` | 0 / 2 | 0=標準出力に wave ごとのタスク配列を JSON で出力、2=plan-report 不在・内部 validate 失敗（`validate` と同一検査を先に実行）・wave 分解不能 |
 
 > v1.14.0 までの `c3 po dry-run` / `c3 po waves` は `c3 plan validate` / `c3 plan waves` で置き換えられた。v2.0.0 で `c3 po` サブコマンド全体を削除。
 
@@ -120,9 +149,11 @@ c3 recall stats [--json]            # チャンク数・モデル名・最終 re
 
 | サブコマンド | 主なオプション | 内容 |
 |---|---|---|
-| `search` | `--top` (既定 5) / `--source` (sessions/agent-memory/reports/patterns/all) / `--min-score` (既定 0.3) / `--json` | 類似チャンク上位 N 件を返却 |
-| `rebuild` | `--force` / `--source` | 全ソースを再 embedding し numpy ベクトル検索インデックスを atomic write |
-| `stats` | `--json` | チャンク数・ソース別内訳・モデル名・index ファイルサイズ |
+| `search` | `--top` (既定 5) / `--source` (sessions/agent-memory/reports/patterns/all) / `--min-score` (既定 0.3) / `--json` / `--target` | 類似チャンク上位 N 件を返却 |
+| `rebuild` | `--force` / `--source` / `--target` | 全ソースを再 embedding し numpy ベクトル検索インデックスを atomic write |
+| `stats` | `--json` / `--target` | チャンク数・ソース別内訳・モデル名・index ファイルサイズ |
+
+`--target` は 3 サブコマンド共通で、`.claude/` を含むプロジェクトルートを明示指定する（既定はカレントディレクトリから上方探索）。
 
 初回 `c3 recall rebuild` 時に fastembed がモデル（~220MB）を `~/.cache/fastembed/` にダウンロードする。オフライン環境では `FASTEMBED_CACHE_PATH` を社内ミラーに向ける。
 
@@ -138,7 +169,10 @@ tier-routing の効果計測用 CLI。`.claude/state/c3.db` の `agent_outcomes`
 c3 tier stats                 # 累積 + 直近 outcome + コストを表形式表示
 c3 tier stats --json          # JSON 出力
 c3 tier stats --recent N      # 直近 outcome の表示件数（デフォルト 10）
+c3 tier stats --role ROLE     # role で絞り込み（interviewer/architect/planner/developer/tester）
 ```
+
+`--role` に上記以外の値を渡すと有効値一覧を stderr に表示して exit 1 になる。
 
 表示内容:
 
@@ -171,9 +205,11 @@ tier-routing の挙動は以下の環境変数で調整できます。**すべ�
 c3 metrics                          # 3 セクション構成の人間向け出力
 c3 metrics --json                   # 機械可読 JSON 出力
 c3 metrics --since YYYY-MM-DD       # 全セクション共通の下限日付フィルタ
-c3 metrics --months N               # 差し戻し傾向（月次）の表示バケット数上限（デフォルト 12）
+c3 metrics --months N               # 差し戻し傾向（月次）の表示バケット数上限（デフォルト 12・上限 120）
 c3 metrics --examples N             # 事前検出実例の表示件数上限（デフォルト 5）
 ```
+
+入力検証: `--months` は 1〜120（上限は DoS 耐性のための頭打ち）、`--examples` は 1 以上、`--since` は `YYYY-MM-DD` 書式。範囲外・書式不正はエラーメッセージを stderr に表示して **exit 1** になる。
 
 表示内容:
 
@@ -186,6 +222,15 @@ c3 metrics --examples N             # 事前検出実例の表示件数上限（
 **severity 供給経路の注記**: severity 語彙は `critical`/`high`/`medium`/`low` の 4 段階だが、`critical` を供給し得るのは **security-reviewer のみ**（code-reviewer / design-critic は `high`/`medium`/`low` の 3 段階までしか供給しない）。したがって headline の `critical` 内訳が 0 のままでも異常ではなく、security-reviewer が critical 指摘を記録した場合にのみ非 0 になる。
 
 判断記録は dev-workflow フェーズ E（code-review/security-review）・design-critic レビューで `record_review_decision.py --severity ...` を呼ぶことで蓄積される（forward-only。導入前の指摘は遡及記録されない）。
+
+## 環境変数（CLI 全体）
+
+| 環境変数 | 役割 |
+|---|---|
+| `C3_DB_PATH` | `.claude/state/c3.db` のパスを上書きする（`c3 tier stats` / `c3 metrics` など DB を読む全コマンドが参照）。指定パスにファイルが無い場合は警告を出して通常探索（カレントディレクトリからの上方探索）へフォールバック |
+| `NO_COLOR` | 設定すると ANSI 色付き出力を抑止する（[no-color.org](https://no-color.org/) 準拠）。stdout が TTY でない場合も色は付かない |
+
+このほか、tier-routing のチューニング用環境変数は `c3 tier stats` の節（Tier ルーティングのチューニング）、recall のモデルキャッシュ（`FASTEMBED_CACHE_PATH`）は `c3 recall` の節を参照。
 
 ## CLI で扱われない項目
 

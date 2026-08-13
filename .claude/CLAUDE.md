@@ -82,5 +82,6 @@ C3 は、業務アプリケーション開発で製品としての品質を保�
 - **`isolation: worktree`** / **`permissionMode`** / **`tools` 制限** など agent フロントマターの一部キーは Claude Code 仕様。adapter 側では読み替え不能なものは無視される（OpenCode adapter は全 agent に `bash/read/edit/write/websearch` を一律付与する）
 
 - **自律モード**: autonomous-mode は Claude Code 専用。Codex / Cursor / OpenCode では自律宣言は常に無効＝HITL で動作する（モード行の検証は `mode_line.py`・Bash 経由に依存し、他プラットフォームで安全に再現できないため。検証できない → HITL の fail-closed 原則がそのまま正しい挙動になる）。adapter 生成物にも autonomous-mode skill は写像されない。
+- **`.claude/rules/` の自動ロード**は Claude Code の機能。OpenCode では adapter が `AGENTS.md` に rules を埋め込む。**Codex / Cursor の生成物には rules は写像されない**（規律を効かせたい場合は各プラットフォームの規約ファイルへ手動転記する）
 
 レポート（`.claude/reports/`）・state（`.claude/state/`）・memory（`.claude/agent-memory/`）のファイル名と書き込み先は全プラットフォーム共通。adapter 生成物の詳細は `c3 init --platform codex|cursor|opencode` で出力される `AGENTS.md` / `.cursor/rules/c3-core.mdc` / `.opencode/agents/` を参照。

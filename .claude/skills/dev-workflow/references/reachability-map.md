@@ -5,6 +5,7 @@
 ## 到達経路一覧
 
 表の列構成: 経路（配置方法）、実パス（ファイルパスまたは「—」）、届く role（対象読み手）、条件（前提・性質）
+本表の到達可否は Claude Code を前提とする。OpenCode adapter は `.claude/rules/` **直下**の `.md` と `.claude/CLAUDE.md` を `AGENTS.md` に埋め込む（サブディレクトリと skills は別経路）。Codex / Cursor への到達は `.claude/CLAUDE.md` の Platform Compatibility を参照
 
 | 経路 | 実パス | 届く role | 条件 |
 |---|---|---|---|
@@ -22,6 +23,7 @@
 | plan-design-guidelines.md | .claude/skills/dev-workflow/references/plan-design-guidelines.md | planner（C-2） | フェーズ C 計画作成時に参照・守るべき規約 |
 | record-protocol.md | .claude/skills/dev-workflow/references/record-protocol.md | 親 Claude のみ（記録対象 role である developer/tester/architect/planner の agent 定義からは参照されない） | 各ゲートの record bash ブロック exec 時に Read 指示される。機械適用・帰属判定共通規定含む |
 | c3-omission-declaration.md | .claude/skills/dev-workflow/references/c3-omission-declaration.md | C-2・C-3 担当者 | C-2・C-3 到達時に Read 指示される。C-2 で C-3省略宣言の生成ルール・C-3 ステップ 0 の帰属判定共通規定 |
+| judgment-principles.md | .claude/rules/judgment-principles.md | 全 role | 判定・検証の規律 3 件（rules 再帰自動ロード） |
 
 ## 置き場所デシジョン（3 手順）
 
