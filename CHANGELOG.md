@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.71.0] - 2026-08-14
+
+### 追加
+
+- **判定・検証の判断原則を `.claude/rules/judgment-principles.md` として新設した**（配布物・
+  rules 再帰自動ロードで全 role のコンテキストへ常時注入）。3 規律: ①「現状 0 hit だから
+  実装しない」判断はせず安全側に倒す ②到達可能性は「参照 0 件」でなく「発火しうる経路が
+  無い」で判定する（当たるべき経路＝動的ロード / subprocess / 名前写像 / 設定 JSON 登録・
+  monkeypatch 対象の導出タイミング・ローカル skip テスト・探索ツールの射程明示）
+  ③機械走査を名乗るときの 3 点申告（走査対象形式の全数・版順の根拠・検証が測る性質）。
+  実在検査は reachability-map への行追加により既存テスト（`test_reachability_map.py`）が担保
+- **dev-workflow フェーズ E-3「裁定の判断基準」に第 5 項を追加した**: 実行で確かめられる
+  指摘（組み合わせロジック・件数の主張・走査結果）は試作・実データで裏取りしてから
+  差し戻しへ翻訳する。自分の是正案も裏取りの対象に含める
+- **E-3 に「是正ループの打切条件」を追加した**（E 周回・計画監査サイクル共通）: 是正が
+  新たな欠陥を生む周回が同一スライス内で 3 連続したら、周回を重ねず前提そのものを疑う。
+  打切の信号は周回数ではなく「前提が一度も疑われていない」こと。自律運転中は「情報不足の
+  質問」の関所としてユーザーへ停止確認する。C-3 ステップ 5 からも参照
+- **`docs/cli-reference.md` に未文書化だった CLI 仕様 14 件を追記した**: `c3 init --target` /
+  `--git` / `--no-git` と TTY 同意プロンプト、`c3 update --target` / `--yes` と付随処理 4 点
+  （breaking changes 表示・MAJOR 承認・deletions 削除・checkpoint 更新）、`c3 doctor --quiet`、
+  `c3 tier stats --role`、`c3 recall --target`、`c3 metrics` の入力検証と上限、`c3 ask` の
+  exit code 表、`c3 plan waves` の exit 2、環境変数 `C3_DB_PATH` / `NO_COLOR`、サブコマンド
+  未指定・不正名と argparse 引数検証の exit 2
+
+### 修正
+
+- reachability-map（到達可能性マップ）に表の前提注記を追加した（Claude Code 前提・
+  OpenCode adapter は `.claude/rules/` 直下と `.claude/CLAUDE.md` のみ埋め込む・Codex /
+  Cursor への到達は Platform Compatibility を参照）
+- `.claude/CLAUDE.md` の Platform Compatibility に「Codex / Cursor の生成物には rules は
+  写像されない」の限界告知を追加した
+- `.claude/docs/config-policy.md` の配布判断マトリクス カテゴリ #4（rules）の「配布元では
+  0 件」を実態（`judgment-principles.md` 1 件）へ更新した
+
+### 既知の問題
+
+- `c3 ask` は Windows で stdin を NUL / `/dev/null` へリダイレクトした場合に非対話判定
+  （`sys.stdin.isatty()`）が誤判定となり、`--response` 未指定だと exit 1 にならず対話待ちで
+  ハングする（E-0 実行検証の実測で発見・`docs/cli-reference.md` に注記済み）。非対話実行では
+  常に `--response` を指定すること。コード修正は別スライスで対応予定
+
 ## [2.70.0] - 2026-08-13
 
 ### 追加
