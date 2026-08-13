@@ -1,7 +1,14 @@
 """Shared terminal helpers for c3 CLI subcommands.
 
-Used by cli_doctor.py, cli_tier.py, and future cli_*.py to keep the
-``_supports_color`` and ANSI-related logic in one place.
+Used by cli_doctor.py, cli_tier.py, cli_ask.py, question.py, and future
+cli_*.py to keep terminal-facing logic in one place:
+
+- ``supports_color`` / ``strip_ansi`` / ``sanitize_terminal_text``: ANSI
+  color support detection, escape-sequence stripping, and sanitization of
+  untrusted text before printing.
+- ``stdin_is_interactive_console``: console-attachment detection for stdin
+  (whether an interactive console is really attached, as opposed to a NUL /
+  pipe / file redirection).
 """
 
 from __future__ import annotations
@@ -62,3 +69,38 @@ def sanitize_terminal_text(s: str) -> str:
     if not s:
         return s
     return _DISALLOWED_CONTROL_RE.sub("", s)
+
+
+def stdin_is_interactive_console() -> bool:
+    """Return True only when stdin is attached to a real interactive console.
+
+    Windows の CRT ``_isatty()``（``sys.stdin.isatty()`` の内部実装）は対象ハンドルが
+    ``FILE_TYPE_CHAR`` かどうかしか見ておらず、NUL デバイス（``subprocess.DEVNULL`` /
+    ``NUL`` リダイレクト）もコンソールと同じ ``FILE_TYPE_CHAR`` に分類されるため
+    誤って True を返す（実測: debug-analysis-20260814-011032.md）。
+    Windows では ``GetConsoleMode``（実コンソールハンドルに対してのみ成功する
+    Win32 API）で実際のコンソール接続を確認し、NUL・パイプ・ファイルいずれの
+    リダイレクトも False として扱う。POSIX は ``isatty()`` が ``/dev/null`` に
+    対して標準どおり正しく False を返すためそのまま使う。
+    """
+    if os.name == "nt":
+        return _windows_console_attached()
+    return sys.stdin.isatty()
+
+
+def _windows_console_attached() -> bool:
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        handle = msvcrt.get_osfhandle(0)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        mode = wintypes.DWORD()
+        return bool(kernel32.GetConsoleMode(wintypes.HANDLE(handle), ctypes.byref(mode)))
+    except Exception:
+        # 判定不能ならすべて非対話扱いに倒す (fail-closed)。answer_questions() 経由の
+        # 呼び出し位置も含め、想定外の例外型で対話ゲートを突破させない。
+        return False

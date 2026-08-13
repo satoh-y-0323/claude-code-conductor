@@ -7,11 +7,12 @@ import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
-from c3 import cli_ask, question
+from c3 import _terminal, cli_ask, question
 from c3.mcp_server import C3MCPServer, _force_utf8_stdio, _jsonrpc_line
 from c3.question import load_questions, mcp_requested_schema, normalize_mcp_answer
 
@@ -391,11 +392,11 @@ def test_stdin_is_interactive_console_ignores_windows_isatty_nul_lie(monkeypatch
     monkeypatch.setattr(
         "sys.stdin", type("_FakeStdin", (), {"isatty": staticmethod(lambda: True)})()
     )
-    monkeypatch.setattr(question, "_windows_console_attached", lambda: False)
+    monkeypatch.setattr(_terminal, "_windows_console_attached", lambda: False)
 
     assert question.stdin_is_interactive_console() is False
 
-    monkeypatch.setattr(question, "_windows_console_attached", lambda: True)
+    monkeypatch.setattr(_terminal, "_windows_console_attached", lambda: True)
     assert question.stdin_is_interactive_console() is True
 
 
@@ -508,3 +509,143 @@ def test_c3_ask_exits_promptly_on_nul_stdin_without_response(tmp_path):
     )
 
     assert result.returncode == 1
+
+
+# ---------------------------------------------------------------------------
+# E-3 裁定 [対応予定] 指摘の凍結テスト (task test-e2fix1)
+#
+# (1) [SR-R-001] 入口ゲートの判定関数が想定外例外を送出しても契約 (exit 1) を守る
+# (2) [SR-NEW]   POSIX 分岐 _read_key() が EOF 相当の空読みで有限時間に終了する
+# (3) [CR-T-001] 実コンソール接続時は従来どおり _read_key() に到達する（正の双子）
+#
+# 注入点はいずれも移設後も生き残る名前 (cli_ask.stdin_is_interactive_console /
+# question.stdin_is_interactive_console) のみを使う。判定の実装詳細
+# (_windows_console_attached) には依存しない（D-4 で _terminal.py へ移設予定）。
+# ---------------------------------------------------------------------------
+
+
+def test_cli_ask_gate_fails_closed_when_console_check_raises(monkeypatch, capsys):
+    """[SR-R-001] 判定関数が想定外例外を送出しても traceback で異常終了せず、
+    docs/cli-reference.md の契約どおり exit 1 + stderr メッセージになる。
+
+    security-review-report-20260814-014026.md [SR-R-001]:
+    cli_ask.handle() の入口ゲート呼び出しは try ブロックの外側にあるため、
+    _windows_console_attached() の narrow な except で取りこぼした例外型
+    (ctypes.ArgumentError / ImportError 等) がそのまま伝播し、契約を破って
+    未処理例外で落ちる。ここでは呼び出し元が「判定不能なら非対話扱い」で
+    fail-closed することを凍結する。
+    """
+
+    def _raise_unexpected() -> bool:
+        raise RuntimeError("unexpected failure inside the console detection path")
+
+    monkeypatch.setattr(cli_ask, "stdin_is_interactive_console", _raise_unexpected)
+
+    def _answer_questions_must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("answer_questions must not run when the console check fails")
+
+    monkeypatch.setattr(cli_ask, "answer_questions", _answer_questions_must_not_be_called)
+
+    rc = cli_ask.handle(
+        argparse.Namespace(file=None, json_text=SINGLE_QUESTION_JSON, response=None, pretty=False)
+    )
+
+    assert rc == 1
+    assert "non-interactive mode" in capsys.readouterr().err
+
+
+def test_select_interactively_posix_read_key_raises_eof_on_empty_read(monkeypatch):
+    """[SR-NEW] POSIX 分岐で stdin の read が空文字列 (EOF 相当) を返した場合、
+    _read_key() は EOFError を送出し _select_interactively() のループが
+    有限時間で終了する（CPU ビジーループにならない）。
+
+    実装場所は _read_key() だが、ビジーループという性質はループを持つ
+    _select_interactively() 側でしか測れないためこちらを入口にする。
+    Windows 開発機でも実行できるよう termios / tty を疑似モジュールで注入し、
+    os.name を "posix" に差し替える（skip しない）。
+    stdin_is_interactive_console() には True を注入する。これは
+    「判定が誤って True を返した」という SR-NEW の前提状況そのものであり、
+    これが無いと入口ゲートで _select_with_line_input() へ迂回し _read_key() に
+    到達しない。
+    """
+    calls = {"read": 0}
+
+    class _EofStdin:
+        @staticmethod
+        def fileno() -> int:
+            return 0
+
+        @staticmethod
+        def isatty() -> bool:
+            return False
+
+        @staticmethod
+        def read(_size: int = -1) -> str:
+            calls["read"] += 1
+            if calls["read"] == 1:
+                return ""
+            # 2 回目に到達＝空読みでループに戻った＝ビジーループ。
+            # ハングを避けるため即座に fail-fast する。
+            raise AssertionError(
+                "_read_key() looped on an EOF stdin: read() was called "
+                f"{calls['read']} times (expected EOFError after the 1st empty read)"
+            )
+
+    fake_termios = types.ModuleType("termios")
+    fake_termios.TCSADRAIN = 1
+    fake_termios.tcgetattr = lambda _fd: ["saved-termios-state"]
+    fake_termios.tcsetattr = lambda _fd, _when, _attrs: None
+    fake_tty = types.ModuleType("tty")
+    fake_tty.setraw = lambda _fd: None
+
+    q = load_questions(SINGLE_QUESTION_JSON)[0]
+
+    def _drive() -> tuple[int, ...]:
+        # os.name の差し替えは monkeypatch.context() で必ずこのブロック内に閉じる。
+        # fixture の teardown は「call フェーズのレポート生成」より後に走るため、
+        # os.name="posix" のまま assert が落ちると pytest 自身の repr_failure が
+        # pathlib.Path() -> PosixPath を選んで NotImplementedError となり
+        # INTERNALERROR でセッションごと落ちる（実測）。
+        with monkeypatch.context() as patched:
+            patched.setitem(sys.modules, "termios", fake_termios)
+            patched.setitem(sys.modules, "tty", fake_tty)
+            patched.setattr(os, "name", "posix")
+            patched.setattr("sys.stdin", _EofStdin())
+            patched.setattr(question, "stdin_is_interactive_console", lambda: True)
+            return question._select_interactively(q)
+
+    with pytest.raises(EOFError):
+        _drive()
+
+    assert calls["read"] == 1
+
+
+def test_select_interactively_uses_read_key_when_console_attached(monkeypatch):
+    """[CR-T-001] 正の双子テスト: 実コンソール接続時 (判定 True) は従来どおり
+    _read_key() に到達し、安全網 _select_with_line_input() へ迂回しない。
+
+    code-review-report-20260814-014025.md [CR-T-001]:
+    既存の回帰テスト 9 件は「非接続 → フォールバックする」負の分岐のみを
+    見ており、「接続時は対話パスが保たれる」正の分岐を担保するテストが無い。
+    本テストは既存挙動の凍結が目的であり、最初から緑になるのが正しい。
+    """
+    calls: list[str] = []
+
+    def _record_read_key() -> str:
+        calls.append("read_key")
+        return "enter"
+
+    def _line_input_must_not_be_called(_question):
+        raise AssertionError(
+            "_select_with_line_input must not be used when a real console is attached"
+        )
+
+    monkeypatch.setattr(question, "stdin_is_interactive_console", lambda: True)
+    monkeypatch.setattr(question, "_read_key", _record_read_key)
+    monkeypatch.setattr(question, "_select_with_line_input", _line_input_must_not_be_called)
+
+    q = load_questions(SINGLE_QUESTION_JSON)[0]
+    selected = question._select_interactively(q)
+
+    assert calls == ["read_key"]
+    assert selected == (0,)

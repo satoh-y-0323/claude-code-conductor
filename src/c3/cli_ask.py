@@ -7,7 +7,8 @@ import json
 import sys
 from pathlib import Path
 
-from c3.question import answer_questions, load_questions, stdin_is_interactive_console
+from c3._terminal import stdin_is_interactive_console
+from c3.question import answer_questions, load_questions
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -47,9 +48,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def handle(args: argparse.Namespace) -> int:
-    if args.response is None and not stdin_is_interactive_console():
-        print("c3 ask: --response is required in non-interactive mode", file=sys.stderr)
-        return 1
+    if args.response is None:
+        # 判定関数が想定外の例外を出しても traceback で落とさず「非対話」へ倒す
+        # (fail-closed)。--response 未指定時の exit 1 契約を例外型に依存させない。
+        try:
+            interactive = stdin_is_interactive_console()
+        except Exception:
+            interactive = False
+        if not interactive:
+            print("c3 ask: --response is required in non-interactive mode", file=sys.stderr)
+            return 1
 
     try:
         if args.file is not None:

@@ -13,6 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# stdin_is_interactive_console() は共有ターミナルヘルパー _terminal.py が正本
+# (CR-R-003)。ここでの import は question.py 内部の呼び出し元 (answer_questions /
+# _raw_keyboard_supported) が使うと同時に、``question.stdin_is_interactive_console``
+# という従来の参照名を後方互換で維持する re-export を兼ねる。
+from c3._terminal import stdin_is_interactive_console
+
 
 @dataclass(frozen=True)
 class Option:
@@ -382,39 +388,6 @@ def _clear_screen() -> None:
     print("\033[2J\033[H", end="")
 
 
-def stdin_is_interactive_console() -> bool:
-    """Return True only when stdin is attached to a real interactive console.
-
-    Windows の CRT ``_isatty()``（``sys.stdin.isatty()`` の内部実装）は対象ハンドルが
-    ``FILE_TYPE_CHAR`` かどうかしか見ておらず、NUL デバイス（``subprocess.DEVNULL`` /
-    ``NUL`` リダイレクト）もコンソールと同じ ``FILE_TYPE_CHAR`` に分類されるため
-    誤って True を返す（実測: debug-analysis-20260814-011032.md）。
-    Windows では ``GetConsoleMode``（実コンソールハンドルに対してのみ成功する
-    Win32 API）で実際のコンソール接続を確認し、NUL・パイプ・ファイルいずれの
-    リダイレクトも False として扱う。POSIX は ``isatty()`` が ``/dev/null`` に
-    対して標準どおり正しく False を返すためそのまま使う。
-    """
-    if os.name == "nt":
-        return _windows_console_attached()
-    return sys.stdin.isatty()
-
-
-def _windows_console_attached() -> bool:
-    try:
-        import ctypes
-        import msvcrt
-        from ctypes import wintypes
-
-        handle = msvcrt.get_osfhandle(0)
-        kernel32 = ctypes.windll.kernel32
-        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel32.GetConsoleMode.restype = wintypes.BOOL
-        mode = wintypes.DWORD()
-        return bool(kernel32.GetConsoleMode(wintypes.HANDLE(handle), ctypes.byref(mode)))
-    except (OSError, ValueError, AttributeError):
-        return False
-
-
 def _raw_keyboard_supported() -> bool:
     # OS が raw keyboard API を持つかではなく、今この stdin に実コンソールが
     # 接続されているかを見る。旧実装（os.name in ("nt", "posix")）は事実上
@@ -422,6 +395,9 @@ def _raw_keyboard_supported() -> bool:
     # _select_with_line_input() の安全網（input() → EOFError）を恒久的に
     # 迂回させ msvcrt.getwch() の無限ブロックを招いていた
     # （debug-analysis-20260814-011032.md 欠陥B）。
+    # answer_questions() の外側ゲートと同じ判定をここでも呼ぶのは、interactive=True を
+    # 明示指定して外側ゲートを迂回する呼び出し元にも安全網を効かせるための意図的な
+    # 再検証であり、単純な重複ではない（削除・簡略化しないこと）。
     return stdin_is_interactive_console()
 
 
@@ -449,6 +425,11 @@ def _read_key() -> str:
     try:
         tty.setraw(fd)
         ch = sys.stdin.read(1)
+        if ch == "":
+            # EOF（read が空文字列）。空文字列を返すと _select_interactively() の
+            # ループが再描画しながら回り続け CPU ビジーループになるため、
+            # EOFError を送出して呼び出し元（cli_ask.handle の except EOFError）へ委ねる。
+            raise EOFError("stdin reached EOF while reading a key")
         if ch == "\x1b":
             nxt = sys.stdin.read(2)
             return {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}.get(nxt, "escape")
