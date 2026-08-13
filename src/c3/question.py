@@ -63,7 +63,7 @@ def answer_questions(
         if current_response is not None:
             selected = _select_from_response(question, current_response)
         else:
-            use_interactive = sys.stdin.isatty() if interactive is None else interactive
+            use_interactive = stdin_is_interactive_console() if interactive is None else interactive
             selected = _select_interactively(question) if use_interactive else _select_default(question)
         answers.append(_answer_payload(question, selected))
     return {"answers": answers}
@@ -382,8 +382,47 @@ def _clear_screen() -> None:
     print("\033[2J\033[H", end="")
 
 
+def stdin_is_interactive_console() -> bool:
+    """Return True only when stdin is attached to a real interactive console.
+
+    Windows の CRT ``_isatty()``（``sys.stdin.isatty()`` の内部実装）は対象ハンドルが
+    ``FILE_TYPE_CHAR`` かどうかしか見ておらず、NUL デバイス（``subprocess.DEVNULL`` /
+    ``NUL`` リダイレクト）もコンソールと同じ ``FILE_TYPE_CHAR`` に分類されるため
+    誤って True を返す（実測: debug-analysis-20260814-011032.md）。
+    Windows では ``GetConsoleMode``（実コンソールハンドルに対してのみ成功する
+    Win32 API）で実際のコンソール接続を確認し、NUL・パイプ・ファイルいずれの
+    リダイレクトも False として扱う。POSIX は ``isatty()`` が ``/dev/null`` に
+    対して標準どおり正しく False を返すためそのまま使う。
+    """
+    if os.name == "nt":
+        return _windows_console_attached()
+    return sys.stdin.isatty()
+
+
+def _windows_console_attached() -> bool:
+    try:
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        handle = msvcrt.get_osfhandle(0)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        mode = wintypes.DWORD()
+        return bool(kernel32.GetConsoleMode(wintypes.HANDLE(handle), ctypes.byref(mode)))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _raw_keyboard_supported() -> bool:
-    return os.name in ("nt", "posix")
+    # OS が raw keyboard API を持つかではなく、今この stdin に実コンソールが
+    # 接続されているかを見る。旧実装（os.name in ("nt", "posix")）は事実上
+    # 常に True を返し、NUL/パイプ/ファイルへのリダイレクト時でも
+    # _select_with_line_input() の安全網（input() → EOFError）を恒久的に
+    # 迂回させ msvcrt.getwch() の無限ブロックを招いていた
+    # （debug-analysis-20260814-011032.md 欠陥B）。
+    return stdin_is_interactive_console()
 
 
 def _read_key() -> str:

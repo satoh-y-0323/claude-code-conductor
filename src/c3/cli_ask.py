@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from c3.question import answer_questions, load_questions
+from c3.question import answer_questions, load_questions, stdin_is_interactive_console
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -47,7 +47,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def handle(args: argparse.Namespace) -> int:
-    if args.response is None and not sys.stdin.isatty():
+    if args.response is None and not stdin_is_interactive_console():
         print("c3 ask: --response is required in non-interactive mode", file=sys.stderr)
         return 1
 

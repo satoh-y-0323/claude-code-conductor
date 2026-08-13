@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-from c3 import cli_ask
+import pytest
+
+from c3 import cli_ask, question
 from c3.mcp_server import C3MCPServer, _force_utf8_stdio, _jsonrpc_line
 from c3.question import load_questions, mcp_requested_schema, normalize_mcp_answer
+
+REPO_SRC = Path(__file__).resolve().parent.parent / "src"
 
 
 QUESTION_JSON = json.dumps(
@@ -347,3 +355,156 @@ def test_mcp_jsonrpc_line_is_ascii_safe_for_windows_stdio():
 
 def test_mcp_stdio_reconfigure_helper_is_safe_to_call():
     _force_utf8_stdio()
+
+
+# ---------------------------------------------------------------------------
+# Windows NUL-stdin isatty() 誤判定によるハング回帰テスト
+# (debug-analysis-20260814-011032.md)
+#
+# 欠陥は二重ゲート構造だった: cli_ask.py の入口ゲートと question.py の
+# _raw_keyboard_supported() の両方が sys.stdin.isatty() (または OS 名のみ) に
+# 依存しており、どちらか一方だけを直しても他方が素通りしてハングに到達し得た。
+# 以下は両ゲートそれぞれについて、raw isatty() が嘘をついても安全側に倒れる
+# ことを回帰確認する。
+# ---------------------------------------------------------------------------
+
+
+def test_stdin_is_interactive_console_matches_isatty_on_posix(monkeypatch):
+    """POSIX では isatty() が /dev/null に対し正しく False を返すため変更不要。"""
+    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(
+        "sys.stdin", type("_FakeStdin", (), {"isatty": staticmethod(lambda: False)})()
+    )
+    assert question.stdin_is_interactive_console() is False
+
+    monkeypatch.setattr(
+        "sys.stdin", type("_FakeStdin", (), {"isatty": staticmethod(lambda: True)})()
+    )
+    assert question.stdin_is_interactive_console() is True
+
+
+def test_stdin_is_interactive_console_ignores_windows_isatty_nul_lie(monkeypatch):
+    """Windows: sys.stdin.isatty() が NUL を誤って True と判定しても、
+    実コンソール接続チェック (_windows_console_attached) の結果を優先する。
+    """
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(
+        "sys.stdin", type("_FakeStdin", (), {"isatty": staticmethod(lambda: True)})()
+    )
+    monkeypatch.setattr(question, "_windows_console_attached", lambda: False)
+
+    assert question.stdin_is_interactive_console() is False
+
+    monkeypatch.setattr(question, "_windows_console_attached", lambda: True)
+    assert question.stdin_is_interactive_console() is True
+
+
+def test_raw_keyboard_supported_delegates_to_console_check(monkeypatch):
+    """question.py 側ゲート: _raw_keyboard_supported() は OS 名のみでなく
+    stdin_is_interactive_console() に従う（旧実装は os.name in ("nt","posix")
+    で事実上常に True になり安全網 _select_with_line_input を恒久迂回していた）。
+    """
+    monkeypatch.setattr(question, "stdin_is_interactive_console", lambda: False)
+    assert question._raw_keyboard_supported() is False
+
+    monkeypatch.setattr(question, "stdin_is_interactive_console", lambda: True)
+    assert question._raw_keyboard_supported() is True
+
+
+def test_select_interactively_falls_back_to_line_input_when_console_not_attached(monkeypatch):
+    """実コンソール非接続時、msvcrt.getwch() 相当の _read_key() は一切呼ばれず
+    input() ベースの安全網 (_select_with_line_input) だけが使われる。
+    """
+    monkeypatch.setattr(question, "stdin_is_interactive_console", lambda: False)
+
+    def _read_key_must_not_be_called():
+        raise AssertionError("_read_key must not be called when no real console is attached")
+
+    monkeypatch.setattr(question, "_read_key", _read_key_must_not_be_called)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+
+    q = load_questions(SINGLE_QUESTION_JSON)[0]
+    selected = question._select_interactively(q)
+
+    assert selected == (0,)
+
+
+def test_select_interactively_eof_propagates_when_no_console_and_no_input(monkeypatch):
+    """安全網 (_select_with_line_input -> input()) が EOF を返す場合、EOFError が
+    そのまま呼び出し元へ伝播する（cli_ask.handle() が捕捉して exit 1 にする経路）。
+    """
+    monkeypatch.setattr(question, "stdin_is_interactive_console", lambda: False)
+
+    def _raise_eof(_prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _raise_eof)
+
+    q = load_questions(SINGLE_QUESTION_JSON)[0]
+    with pytest.raises(EOFError):
+        question._select_interactively(q)
+
+
+def test_cli_ask_gate_uses_safe_console_check_not_raw_isatty(monkeypatch, capsys):
+    """cli_ask.py 側ゲート: sys.stdin.isatty() が NUL 誤判定で True を返す状況でも、
+    実コンソール接続チェックが False を返せば入口ゲートで exit 1 になり、
+    interactive 選択 (answer_questions 以降) には一切進まない。
+    """
+    monkeypatch.setattr(
+        "sys.stdin", type("_FakeStdin", (), {"isatty": staticmethod(lambda: True)})()
+    )
+    monkeypatch.setattr(cli_ask, "stdin_is_interactive_console", lambda: False)
+
+    def _answer_questions_must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("answer_questions must not run past the non-interactive gate")
+
+    monkeypatch.setattr(cli_ask, "answer_questions", _answer_questions_must_not_be_called)
+
+    rc = cli_ask.handle(
+        argparse.Namespace(file=None, json_text=SINGLE_QUESTION_JSON, response=None, pretty=False)
+    )
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "non-interactive mode" in err
+
+
+def test_cli_ask_response_path_unaffected_by_console_check(monkeypatch, capsys):
+    """--response 指定時は console 接続チェックを経由せず既存挙動のまま動く。"""
+    monkeypatch.setattr(cli_ask, "stdin_is_interactive_console", lambda: False)
+
+    rc = cli_ask.handle(
+        argparse.Namespace(
+            file=None,
+            json_text=SINGLE_QUESTION_JSON,
+            response="1",
+            pretty=False,
+        )
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["answers"][0]["labels"] == ["A"]
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="NUL デバイスの isatty() 誤判定は Windows CRT 固有の挙動",
+)
+def test_c3_ask_exits_promptly_on_nul_stdin_without_response(tmp_path):
+    """実プロセスで --response 未指定 + stdin=NUL(DEVNULL) 実行時に無限ブロック
+    せず exit 1 になることを確認する（debug-analysis-20260814-011032.md の
+    再現条件そのもの）。timeout 到達 (TimeoutExpired) はテスト失敗として扱う。
+    """
+    q_file = tmp_path / "q.json"
+    q_file.write_text(SINGLE_QUESTION_JSON, encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "c3", "ask", "--file", str(q_file)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=15,
+        env={**os.environ, "PYTHONPATH": str(REPO_SRC)},
+    )
+
+    assert result.returncode == 1

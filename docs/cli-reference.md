@@ -102,7 +102,7 @@ c3 ask --json '{"questions":[...]}' --response 1,3
 | 1 | 入力エラー（JSON 不正・ファイル読み込み失敗・入力中断）、または非対話 stdin で `--response` 未指定 |
 | 130 | 対話プロンプト中の Ctrl-C（KeyboardInterrupt） |
 
-**既知の問題（Windows）**: Windows では `sys.stdin.isatty()` が NUL デバイスや `/dev/null` へのリダイレクト時にも `True` を誤って返すため、`--response` を指定せずに非対話 stdin（NUL / `/dev/null` リダイレクト）で実行すると exit 1 にならず、対話選択の入力待ち（`msvcrt.getwch()`）でハングする。CI・自動化ワークフロー等の非対話実行では、この問題を避けるため常に `--response` を明示的に指定すること。
+**Windows での非対話判定**: Windows では `sys.stdin.isatty()` が NUL デバイスへのリダイレクト時にも `True` を誤って返す CRT の癖があるが、`c3 ask` は実コンソール接続を `GetConsoleMode`（Win32 API）で直接判定するため、この誤判定の影響を受けない。`--response` を指定せずに非対話 stdin（NUL / パイプ / ファイルいずれのリダイレクト）で実行した場合は、上記の exit 1（`--response is required in non-interactive mode`）で即座に終了し、ハングしない。
 
 ## `c3 run` — 配布スクリプトの共通起動口 (v2.51.0+)
 
