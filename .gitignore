@@ -3,8 +3,12 @@
 !.claude/reports/.gitkeep
 
 # Session memory (personal)
-.claude/memory/sessions/
-.claude/memory/archive/
+# ディレクトリ形除外（`dir/`）の中へ git は降りないため否定行が効かない。
+# KEEP_PATTERNS（_excludes.py / hatch_build.py）は各ディレクトリの .gitkeep を
+# 配布対象としているため、`dir/*` 形＋否定行で .gitkeep だけを tracked にする。
+.claude/memory/sessions/*
+!.claude/memory/sessions/.gitkeep
+.claude/memory/archive/*
 !.claude/memory/archive/.gitkeep
 .claude/memory/patterns.json
 .claude/memory/agent-audit.log
@@ -15,7 +19,8 @@
 .claude/agent-memory/
 
 # Temporary files
-.claude/tmp/
+.claude/tmp/*
+!.claude/tmp/.gitkeep
 
 # PO task execution logs
 .claude/logs/

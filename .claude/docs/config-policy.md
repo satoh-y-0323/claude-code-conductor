@@ -280,6 +280,9 @@ C3 の wheel 配布除外パターンは **3 つのファイルに分散して�
 `hatch_build.py` の重複が必要な理由: hatch build hook はパッケージ import 前に走るため、
 `_excludes.py` を import できない。2 ファイルの完全一致が必須。
 
+**KEEP 対象が sdist exclude 配下にある場合は `pyproject.toml` の force-include も同期対象**:
+公開ビルドは sdist を経由するため、sdist から落ちたファイルは wheel にも届かない。
+
 ### 同期確認の方法
 
 `.dev/hooks/_sync_check.py`（PostToolUse hook）が、3 ファイルのいずれかを変更した時に
@@ -289,8 +292,8 @@ C3 の wheel 配布除外パターンは **3 つのファイルに分散して�
 
 1. `.gitignore` / `_excludes.py` / `hatch_build.py` のいずれかを変更
 2. `_sync_check.py` の警告を確認
-3. 残り 2 ファイルに同じパターンを追加（または削除）
-4. `python -m build --wheel` で wheel を再生成して実体検証
+3. 残り 2 ファイルに同じパターンを追加（または削除）。3 ファイルが既に同じ意図を持っている場合は、出遅れた 1 ファイルを合わせるだけでよい（配布元の root `.gitignore` を `KEEP_PATTERNS` の意図へ合わせた 2026-08-14 の是正が実例）
+4. 配布元では `python scripts/verify_wheel.py` で wheel 実体を機械検証する（`scripts/` は配布物に含まれないため、利用先には存在しないコマンド）
 
 ### 過去の同期漏れ defect
 

@@ -83,3 +83,34 @@ jobs:
 
       - name: Check deletions are recorded
         run: python scripts/check_deletions.py --check
+
+  # wheel 実体検証は zip 内パス文字列の判定で OS 差を持たないため ubuntu 1 構成で十分。
+  # 既定モード（フラグなし）は `python -m build`（引数なし＝ sdist を作りその sdist から
+  # wheel を作る）を実行し、publish.yml の公開経路とビルド入力まで一致させる。
+  # `--wheel <path>` を付けると既存アーティファクトの検証になり公開経路を回さないため付けない。
+  #
+  # 「空の緑」対策: sdist は VCS ignore を尊重するため、除外フィルタが実際に落とす候補は
+  # 自然には 1 件も存在しない（実測）。そこで pyproject.toml の sdist force-include で
+  # `.claude/state/setup_done.flag` を注入対照として sdist にだけ入れ、
+  # 「sdist に在る・wheel に無い・候補件数 1 以上」を verify_wheel.py が毎実行検証する。
+  # 対照検証は script 内蔵のため YAML 側にフラグは無い（凍結は tests/test_verify_wheel.py の P8）。
+  wheel-check:
+    name: verify_wheel (wheel 実体と _excludes 意図の突合)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install package + build backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install build
+
+      - name: Verify wheel contents
+        run: python scripts/verify_wheel.py

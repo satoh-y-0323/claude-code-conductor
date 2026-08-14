@@ -1,5 +1,28 @@
 # Changelog
 
+## [未リリース]
+
+<!-- リリース時にこの見出しを ## [X.Y.Z] - YYYY-MM-DD へ置換する（新設ではない） -->
+
+### 追加
+
+- **リリース前 wheel 実体検証を CI 機械化した**: `scripts/verify_wheel.py`（配布元専用 dev ツール・
+  wheel/sdist 非収録）を追加し、`.github/workflows/test.yml` に `wheel-check` job を新設した。
+  公開経路と同じビルド（sdist 経由）で作った wheel の中身が `src/c3/_excludes.py` の意図
+  （EXCLUDE 不混入・KEEP 全件存在・`breaking-changes.txt` 在／`state/c3_version.txt` 不在）と
+  一致するかを毎 push 検証する。exit code は 0 = PASS / 1 = 違反 / 3 = 検証不能。
+  「除外フィルタが実際には何も落としていないのに緑」になるのを防ぐため、
+  `.claude/state/setup_done.flag` を sdist にだけ注入する正の対照を組み込んでいる。
+
+### 修正
+
+- **KEEP 対象の `.gitkeep` が公開 wheel に届いていなかった問題を是正した**: `KEEP_PATTERNS` が
+  配布対象と定めている `.claude/memory/sessions/.gitkeep` と `.claude/tmp/.gitkeep` を新規作成し、
+  root `.gitignore` のディレクトリ形除外（否定行が効かない形）を `dir/*` 形＋否定行へ直した。
+  あわせて `pyproject.toml` の sdist force-include で `reports/.gitkeep` /
+  `memory/sessions/.gitkeep` / `tmp/.gitkeep` を救済し、sdist 経由の公開 wheel に KEEP 8 件が
+  すべて入るようにした（これまでの公開 wheel は `reports/.gitkeep` 等を欠いていた）。
+
 ## [2.72.0] - 2026-08-14
 
 ### 破壊的変更

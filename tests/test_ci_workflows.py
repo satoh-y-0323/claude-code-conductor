@@ -1,8 +1,18 @@
 """
 tests/test_ci_workflows.py
 
-.github/workflows/test.yml が `scripts/check_deletions.py --check` を実行する CI job を
-持ち続けること、かつその job の checkout が `fetch-depth: 0` を持ち続けることを守るテスト。
+.github/workflows/test.yml が dev script を実行する CI job を持ち続けることを守るテスト。
+
+対象は 2 系統:
+
+1. `scripts/check_deletions.py --check` を実行する job（＋ checkout の `fetch-depth: 0`）
+2. `scripts/verify_wheel.py` を実行する job（`wheel-check`。P6・**Red フェーズでは不在**）
+
+2 の凍結項目は 4 つ（architecture 改訂 3 ADR-5 改訂 2）:
+(1) job の存在 (2) run に `--wheel` を含まない（公開等価＝実ビルド経路の凍結）
+(3) `build`（PyPA build）のインストールステップ (4) `permissions == {contents: read}`。
+「空の緑」対策（注入対照の実働実証）は script 内蔵のため YAML では測らない
+（tests/test_verify_wheel.py の P8 が凍結する）。
 
 ## なぜ fetch-depth: 0 が本質か
 
@@ -54,6 +64,7 @@ YAML 1.1 のブール解決により、PyYAML の `yaml.safe_load()` は `on:` �
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -202,4 +213,115 @@ def test_test_yml_check_deletions_job_declares_permissions():
         f"job '{job_name}' の permissions が想定値と一致しない（実際の値: {permissions!r}）。"
         " 本 job は checkout して読み取り専用の削除検出を行うだけなので、"
         " permissions: {contents: read} を想定している。"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P6: wheel-check job（scripts/verify_wheel.py）の静的検査
+#
+# Red フェーズでは job 自体が test.yml に無いため、4 本とも「job が無い」で失敗する。
+# ---------------------------------------------------------------------------
+
+_VERIFY_WHEEL_MARKER = "verify_wheel.py"
+_WHEEL_FLAG_MARKER = "--wheel"
+# PyPA build の導入ステップ（`python -m pip install build` 等）。
+# `pip install -e .` と同一 job 内の別ステップでも良いよう、run 文字列単位で探す。
+_BUILD_INSTALL_RE = re.compile(r"pip\s+install\b[^\n]*\bbuild\b")
+
+
+def _iter_step_runs(job_def: dict) -> list[str]:
+    """job の各ステップの `run:` 文字列を列挙する。"""
+    runs: list[str] = []
+    steps = job_def.get("steps", [])
+    if not isinstance(steps, list):
+        return runs
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run", "")
+        if isinstance(run, str) and run:
+            runs.append(run)
+    return runs
+
+
+def _find_job_running_marker(workflow: dict, marker: str) -> tuple[str | None, dict | None]:
+    """`run:` 文字列に `marker` を含むステップを持つ job を探す（job 名に依存しない）。"""
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return None, None
+
+    for job_name, job_def in jobs.items():
+        if not isinstance(job_def, dict):
+            continue
+        if any(marker in run for run in _iter_step_runs(job_def)):
+            return job_name, job_def
+
+    return None, None
+
+
+def _require_wheel_check_job() -> tuple[str, dict]:
+    """wheel-check job を取得する。無ければ失敗させる（4 本共通の前提）。"""
+    workflow = _load_workflow("test.yml")
+    job_name, job_def = _find_job_running_marker(workflow, _VERIFY_WHEEL_MARKER)
+    assert job_name is not None and job_def is not None, (
+        "test.yml に 'python scripts/verify_wheel.py' を実行する job が見つからない。"
+        " リリース前の wheel 実体検証（/CLAUDE.md §3・§6 手順 5）を CI で機械強制するには、"
+        " 専用 job（wheel-check）のステップに verify_wheel.py の実行を追加する必要がある。"
+    )
+    return job_name, job_def
+
+
+def test_test_yml_has_wheel_check_job():
+    """P6-(1) test.yml に scripts/verify_wheel.py を実行する job が存在すること。"""
+    _require_wheel_check_job()
+
+
+def test_wheel_check_job_runs_the_build_route_not_an_existing_wheel():
+    """P6-(2) verify_wheel.py の run に `--wheel` を含まないこと。
+
+    `--wheel <path>` は「手元にある既存 wheel を検証する」モードであり、公開経路と
+    同一のビルド（sdist 経由）を回さない。CI がこちらに倒れると、検証対象が
+    「公開される wheel」ではなくなり、実ビルド経路の退行を検出できなくなる。
+    """
+    job_name, job_def = _require_wheel_check_job()
+
+    offending = [
+        run
+        for run in _iter_step_runs(job_def)
+        if _VERIFY_WHEEL_MARKER in run and _WHEEL_FLAG_MARKER in run
+    ]
+    assert not offending, (
+        f"job '{job_name}' の verify_wheel.py 実行に --wheel が含まれている: {offending!r}。"
+        " CI は既定（フラグなし＝ sdist 経由の実ビルド）で実行すること。"
+    )
+
+
+def test_wheel_check_job_installs_pypa_build():
+    """P6-(3) PyPA `build` を導入するステップがあること。
+
+    既定モードは `python -m build` を呼ぶため、build が未導入だと job は
+    BUILD_TOOL_MISSING（exit 3）で常に赤くなる。
+    """
+    job_name, job_def = _require_wheel_check_job()
+
+    runs = _iter_step_runs(job_def)
+    assert any(_BUILD_INSTALL_RE.search(run) for run in runs), (
+        f"job '{job_name}' に PyPA build を導入するステップ（例: "
+        f"`python -m pip install build`）が見つからない: {runs!r}"
+    )
+
+
+def test_wheel_check_job_declares_read_only_permissions():
+    """P6-(4) permissions が `{contents: read}` に完全一致すること。
+
+    job レベルで permissions を明示しないと、GITHUB_TOKEN はリポジトリ設定依存の
+    既定権限で動作する。本 job は checkout してビルドと読み取り検証を行うだけなので
+    最小権限に絞る（deletions-check job と同じ方針）。
+    """
+    job_name, job_def = _require_wheel_check_job()
+
+    permissions = job_def.get("permissions")
+    assert permissions == {"contents": "read"}, (
+        f"job '{job_name}' の permissions が {{contents: read}} と一致しない"
+        f"（実際の値: {permissions!r}）。"
     )
