@@ -13,12 +13,15 @@
   一致するかを毎 push 検証する。exit code は 0 = PASS / 1 = 違反 / 3 = 検証不能。
   「除外フィルタが実際には何も落としていないのに緑」になるのを防ぐため、
   `.claude/state/setup_done.flag` を sdist にだけ注入する正の対照を組み込んでいる。
+- sdist（第二の公開成果物）側の EXCLUDE 混入検査と対照サイズ検査を追加
+  （違反種別 `SDIST_EXCLUDE_VIOLATION` / `CONTROL_NOT_EMPTY`）。
 
 ### 修正
 
 - **KEEP 対象の `.gitkeep` が公開 wheel に届いていなかった問題を是正した**: `KEEP_PATTERNS` が
   配布対象と定めている `.claude/memory/sessions/.gitkeep` と `.claude/tmp/.gitkeep` を新規作成し、
   root `.gitignore` のディレクトリ形除外（否定行が効かない形）を `dir/*` 形＋否定行へ直した。
+  この是正により、既存の `.claude/memory/archive/.gitkeep` も新たに git 追跡対象になった。
   あわせて `pyproject.toml` の sdist force-include で `reports/.gitkeep` /
   `memory/sessions/.gitkeep` / `tmp/.gitkeep` を救済し、sdist 経由の公開 wheel に KEEP 8 件が
   すべて入るようにした（これまでの公開 wheel は `reports/.gitkeep` 等を欠いていた）。

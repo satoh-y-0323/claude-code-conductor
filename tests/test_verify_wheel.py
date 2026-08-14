@@ -1,13 +1,28 @@
 """tests/test_verify_wheel.py
 
-`scripts/verify_wheel.py`（リリース前 wheel 実体検証・**未実装**）の Red フェーズテスト。
+`scripts/verify_wheel.py`（リリース前 wheel 実体検証）のテスト。
 
-Red フェーズの期待失敗: `scripts/verify_wheel.py` が存在しないため、本ファイルは
-モジュール import の時点で `ModuleNotFoundError` になり収集エラーで全件失敗する
-（`tests/test_check_deletions.py` の Red と同型。構文エラー・タイポではなく
-「対象が不在」であることが失敗理由）。
+P1〜P8 は本体スライスで Green 済み（`scripts/verify_wheel.py` は実装済み）。
+Q1〜Q6 は **E 周回 1 是正（plan-report-20260814-220825.md）の Red フェーズ**として
+本ファイルへ追記した性質であり、sdist 側 2 検査・サニタイズ・PASS 行のモード分岐・
+評価順序が未実装であるために失敗する（構文エラー・タイポではなく「新 API / 新挙動が
+不在」であることが失敗理由）。
 
-## 測る性質（plan-report-20260814-195906.md の契約 P1〜P8）
+## 新 API を module-level の一括 import へ足さない（DC-AS-001・Red の構造要件）
+
+`from verify_wheel import (...)`（`:101-127` 相当）へ Red の新 literal / 新関数を足すと、
+実装不在の時点で **collection 時 ImportError** になり本ファイル全件が error になる
+（ベースライン「意図した赤は凍結テスト 1 本のみ」が構造的に成立しなくなる）。
+そのため Q1〜Q6 が参照する新 API は
+
+- `import verify_wheel` 済みの名前空間経由の**属性アクセス**（`verify_wheel.XXX`）、または
+- 文字列 literal（種別名の凍結そのものが目的の箇所）
+
+でのみ書く。こうすると未実装は `AttributeError` として**そのテストだけ**の Red になる。
+Green 後にこの規約を撤回して一括 import へ移してもよいが、次の Red で同じ罠に落ちるため
+本ファイルではこの書き方を既定とする。
+
+## 測る性質（P1〜P8: plan-report-20260814-195906.md / Q1〜Q6: plan-report-20260814-220825.md）
 
 | 性質 | 内容 | 主なテスト |
 |---|---|---|
@@ -19,6 +34,12 @@ Red フェーズの期待失敗: `scripts/verify_wheel.py` が存在しないた
 | P5b | 既定ビルド経路と outdir 成果物選別の凍結 | `TestBuildInvocation` / `TestArtifactSelection` |
 | P7 | 入力正規化（末尾 `/` は判定対象外） | `TestDirectoryEntriesAreIgnored` |
 | P8 | 注入対照（sdist 対照の在/不在・独立性・候補件数） | `TestInjectedControl` |
+| Q1 | sdist 側 EXCLUDE 混入検出（注入対照のみ許容・`should_skip` は正負両方向の注入） | `TestSdistExcludeViolation` |
+| Q2 | 注入対照メンバーのサイズ 0 検証（非 0 は違反） | `TestControlSize` |
+| Q3 | 違反 detail のサニタイズ（C0 制御文字・DEL・改行を**除去**・適用 3 サイト） | `TestDetailSanitization` |
+| Q4 | 既定経路からの配線（sdist EXCLUDE 検査・サイズ検査が実際に呼ばれる） | `TestSdistChecksAreWired` |
+| Q5 | PASS 行のモード分岐（`--wheel` は sdist 検査を主張しない） | `TestPassLineModeSplit` |
+| Q6 | 評価順序（`CONTROL_MISSING` 最優先で即 return・違反同士は合算 1 回出力） | `TestEvaluationOrder` |
 
 P6（CI job の静的検査）は `tests/test_ci_workflows.py` に置く（同ファイルの既存 job 検査と
 同じ道具立てを使うため）。
@@ -50,13 +71,40 @@ architecture は「純粋検出器の分離」「`should_skip` を明示引数�
 形が要るため、本ファイルが以下を契約として固定する（実装細部＝内部分割はなお自由）:
 
 - `find_violations(namelist, should_skip=c3._excludes.should_skip) -> list[tuple[str, str]]`
-  … `(違反種別, 該当エントリ or パターン)` の並び。EXCLUDE / KEEP / FR-2 / 対照混入 /
-  トップレベル逸脱の 5 種すべてをここから観測する。対照混入（`CONTROL_LEAKED`）の判定は
-  `should_skip` 引数に依存してはならない（P8(b) が実測で固定する）
+  … `(違反種別, 該当エントリ or パターン)` の並び。**wheel 側 5 種**（EXCLUDE / KEEP /
+  FR-2 / 対照混入 / トップレベル逸脱）をここから観測する。sdist 側 2 種は下記の新関数から
+  観測し、`VIOLATION_KINDS` は両者を合わせた **7 種**になる（Q1/Q2）。
+  対照混入（`CONTROL_LEAKED`）の判定は `should_skip` 引数に依存してはならない
+  （P8(b) が実測で固定する）
 - `find_unverifiable(namelist) -> str | None` … `TEMPLATE_EMPTY` / `LAYOUT_ANOMALY` / None
 - `count_exclude_candidates(names, should_skip=...) -> int` … sdist listing 中の
   `.claude/` 相対で should_skip True の件数
 - `find_sdist_control_reason(names, should_skip=...) -> str | None` … `CONTROL_MISSING` / None
+- `find_sdist_violations(names, should_skip=c3._excludes.should_skip)
+  -> list[tuple[str, str]]` （Q1・新規）… sdist member 名の一覧から、`.claude/` 相対で
+  should_skip True かつ**注入対照以外**のものを `(SDIST_EXCLUDE_VIOLATION, rel)` で列挙する。
+  対照のみなら空リスト。既存の名前ベース検出器と同じ入力形（member 名の列）を取り、
+  ディレクトリエントリ・`.claude/` 境界外は対象外
+- `find_control_size_violations(members) -> list[tuple[str, str]]` （Q2・新規）…
+  `(member 名, サイズ)` の列から、注入対照のサイズが 0 でなければ
+  `(CONTROL_NOT_EMPTY, detail)` を返す。detail には対照の相対パスと**実測サイズ**を含める。
+  対照が不在なら空リスト（不在は `find_sdist_control_reason` の `CONTROL_MISSING` の担当で、
+  二重報告しない）。`should_skip` 引数は**持たない**（`CONTROL_LEAKED` と同じく
+  SSOT 劣化から独立させるため）。既存純粋検出器のシグネチャは変更しない
+- `SDIST_EXCLUDE_VIOLATION` / `CONTROL_NOT_EMPTY` … 新規の違反種別 literal（exit 1 側）。
+  `VIOLATION_KINDS` は 7 種になる（`test_violation_kinds_are_exactly_seven` が凍結）
+
+## Q3〜Q6 が凍結する observable な挙動（関数名でなく出力で固定する）
+
+- **サニタイズ（Q3）**: 違反 detail / 検証不能 detail に含まれる C0 制御文字（`\\x00`-`\\x1f`）と
+  DEL（`\\x7f`）は**除去**する（置換ではない: 除去後の文字列が原文の連結と一致することを
+  assert する）。適用 3 サイトは (1) wheel 違反ループ (2) sdist 違反出力 (3) 検証不能 detail
+- **合算出力（Q6）**: 違反出力のヘッダ `配布物の退行を検出しました:` は 1 回だけ出し、
+  sdist 側・wheel 側の違反をその下に全件並べて exit 1（種別ごとに別ブロックにしない）
+- **PASS 行（Q5）**: 既定モードの PASS 行は `sdist EXCLUDE 混入なし` と `対照サイズ 0` を含み、
+  PASS 行とは**別の stdout 行**に対照サイズの実測値（`対照サイズ` を含む 1 行）を出す。
+  `--wheel` モードの PASS 行は既存文言のまま逐語不変とし、sdist 検査の主張を含めない。
+  代わりに `sdist 側 2 検査は未実施` を PASS 行以外の stdout 行で明示する
 - `select_single_artifact(outdir, pattern) -> tuple[str | None, str | None]` … (パス, 原因識別子)
 - `read_namelist(path) -> tuple[list[str] | None, str | None]` … (namelist, 原因識別子)
 - `run_build(outdir, runner=subprocess.run, find_spec=importlib.util.find_spec) -> str | None`
@@ -96,8 +144,17 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+import verify_wheel  # noqa: E402
+
 from c3 import _excludes  # noqa: E402
 from c3._excludes import KEEP_PATTERNS, should_skip  # noqa: E402
+
+# 注意（DC-AS-001）: 下記の一括 import には**実装済みの API だけ**を並べる。
+# Red で追加する新 API（`SDIST_EXCLUDE_VIOLATION` / `CONTROL_NOT_EMPTY` /
+# `find_sdist_violations` / `find_control_size_violations`）をここへ足すと、実装不在の
+# 時点で collection 時 ImportError になり本ファイル全件が error になる。
+# 新 API は上の `verify_wheel` 名前空間経由の属性アクセスで参照する
+# （モジュール docstring「新 API を module-level の一括 import へ足さない」を参照）。
 from verify_wheel import (  # noqa: E402
     BUILD_FAILED,
     BUILD_TOOL_MISSING,
@@ -149,6 +206,22 @@ _ORDINARY_RELPATHS = (
     "docs/config-policy.md",
 )
 
+# Q3（サニタイズ）の題材。C0 制御文字 `\x01`-`\x1f`（TAB / LF / CR / ESC を含む）と DEL。
+# NUL（`\x00`）は zip / tar のエントリ名として往復しない（実測: `zipfile` は
+# エントリ名を NUL で切り落とす）ため、アーカイブ経由の題材からは外し、
+# アーカイブを経由しない検証不能 detail（`--wheel` の不在パス）でのみ使う。
+_C0_AND_DEL = "".join(chr(c) for c in range(1, 32)) + "\x7f"
+_NUL_C0_AND_DEL = "\x00" + _C0_AND_DEL
+
+# PASS 行の識別と、`--wheel` モードで逐語不変であるべき既存文言（Q5）
+_PASS_LINE_PREFIX = "検証 PASS"
+_WHEEL_MODE_PASS_LINE = (
+    "検証 PASS: EXCLUDE 混入なし・KEEP 全件あり・FR-2 充足・注入対照は wheel に不在"
+)
+
+# 違反出力のヘッダ（Q6: 合算して 1 回だけ出す）
+_VIOLATION_HEADER = "配布物の退行を検出しました:"
+
 
 # ---------------------------------------------------------------------------
 # 合成 namelist ヘルパ
@@ -195,6 +268,23 @@ def clean_sdist_namelist(
     return names
 
 
+def clean_sdist_members(
+    extra: tuple[tuple[str, int], ...] = (),
+    with_control: bool = True,
+    control_size: int = 0,
+) -> list[tuple[str, int]]:
+    """sdist tarball の `(member 名, サイズ)` 一覧を組み立てる（Q2 / Q4 用）。
+
+    `clean_sdist_namelist()` と同じ member 集合をサイズ付きで返す。注入対照だけは
+    `control_size` でサイズを指定できる（既定 0 = 現行の実 sdist と同じ状態）。
+    """
+    members = [(name, 0) for name in clean_sdist_namelist(with_control=False)]
+    if with_control:
+        members.append((_SDIST_CLAUDE_PREFIX + _CONTROL_RELPATH, control_size))
+    members += list(extra)
+    return members
+
+
 def kinds(violations) -> set[str]:
     """`find_violations` の戻り値から違反種別の集合を取り出す。"""
     return {v[0] for v in violations}
@@ -208,6 +298,32 @@ def details(violations) -> list[str]:
 def always_false(rel_posix: str) -> bool:
     """常に False を返す should_skip（注入対照の独立性検証用・P8(b)）。"""
     return False
+
+
+def always_true(rel_posix: str) -> bool:
+    """常に True を返す should_skip（Q1 の正方向の注入確認用）。"""
+    return True
+
+
+def assert_no_control_chars(text: str, expected_lines: int) -> None:
+    """出力に C0 制御文字 / DEL が残っていないこと（Q3・除去方式の凍結）。
+
+    改行は `print` が出す行区切りとして正当に残るため、行区切り由来の `\\n` を
+    「残っていてよい制御文字」として扱い、代わりに **行数**で detail 中の改行が
+    除去されたことを判定する（`str.splitlines` は `\\x0b` `\\x0c` `\\x1c`-`\\x1e` でも
+    分割するが、それらは第 1 の assert で不在が保証済みのため判定は健全）。
+    """
+    leftover = sorted({ascii(c) for c in text if (ord(c) < 32 and c != "\n") or ord(c) == 127})
+    assert not leftover, f"出力に制御文字 / DEL が残っている: {leftover} / raw={ascii(text)}"
+    assert len(text.splitlines()) == expected_lines, (
+        f"出力の行数が {expected_lines} でない（detail 中の改行が除去されていない可能性）: "
+        f"{ascii(text)}"
+    )
+
+
+def pass_lines(out: str) -> list[str]:
+    """stdout から PASS 行（`検証 PASS` で始まる行）だけを取り出す（Q5）。"""
+    return [line for line in out.splitlines() if line.startswith(_PASS_LINE_PREFIX)]
 
 
 # ---------------------------------------------------------------------------
@@ -548,21 +664,37 @@ class TestExitCodesAndIdentifiers:
             "exit 2 は argparse の usage error と衝突するため使わない"
         )
 
-    def test_violation_kinds_are_exactly_five(self):
+    def test_violation_kinds_are_exactly_seven(self):
+        """E 周回 1 是正で sdist 側 2 種を追加し 5 種 → 7 種になる（意図した Red）。
+
+        新 literal は一括 import へ足さず属性アクセスで参照する（DC-AS-001）。
+        """
         assert set(VIOLATION_KINDS) == {
             "EXCLUDE_VIOLATION",
             "KEEP_MISSING",
             "FR2_VIOLATION",
             "CONTROL_LEAKED",
             "UNEXPECTED_TOPLEVEL",
+            "SDIST_EXCLUDE_VIOLATION",
+            "CONTROL_NOT_EMPTY",
         }
         assert len(set(VIOLATION_KINDS)) == len(VIOLATION_KINDS)
-        assert [EXCLUDE_VIOLATION, KEEP_MISSING, FR2_VIOLATION, CONTROL_LEAKED, UNEXPECTED_TOPLEVEL] == [
+        assert [
+            EXCLUDE_VIOLATION,
+            KEEP_MISSING,
+            FR2_VIOLATION,
+            CONTROL_LEAKED,
+            UNEXPECTED_TOPLEVEL,
+            verify_wheel.SDIST_EXCLUDE_VIOLATION,
+            verify_wheel.CONTROL_NOT_EMPTY,
+        ] == [
             "EXCLUDE_VIOLATION",
             "KEEP_MISSING",
             "FR2_VIOLATION",
             "CONTROL_LEAKED",
             "UNEXPECTED_TOPLEVEL",
+            "SDIST_EXCLUDE_VIOLATION",
+            "CONTROL_NOT_EMPTY",
         ]
 
     def test_unverifiable_reasons_are_exactly_seven(self):
@@ -734,12 +866,19 @@ def _write_wheel(path: Path, namelist) -> Path:
     return path
 
 
-def _write_sdist(path: Path, names) -> Path:
+def _write_sdist(path: Path, items) -> Path:
+    """合成 sdist を書き出す。
+
+    `items` の要素は member 名（サイズ 0）か `(member 名, サイズ)` タプル。
+    後者は Q2（対照サイズ検査）の負の対照を作るための拡張で、既存呼び出し
+    （名前だけの列）は従来どおり全 member size 0 の sdist になる。
+    """
     with tarfile.open(path, "w:gz") as tf:
-        for name in names:
+        for item in items:
+            name, size = item if isinstance(item, tuple) else (item, 0)
             info = tarfile.TarInfo(name)
-            info.size = 0
-            tf.addfile(info, io.BytesIO(b""))
+            info.size = size
+            tf.addfile(info, io.BytesIO(b"x" * size))
     return path
 
 
@@ -804,3 +943,375 @@ class TestCli:
             tmp_path / "c3-9.9.9-py3-none-any.whl", clean_wheel_namelist()
         )
         assert main(["--wheel", str(wheel)], build_runner=_ExplodingBuild()) == EXIT_PASS
+
+
+# ===========================================================================
+# E 周回 1 是正（plan-report-20260814-220825.md）の Red: Q1〜Q6
+#
+# 新 API はすべて `verify_wheel.<name>` の属性アクセスで参照する（DC-AS-001）。
+# 未実装の間は AttributeError が「そのテストだけ」の Red になり、本ファイルの
+# 既存テストは収集エラーにならない。
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Q1: sdist 側 EXCLUDE 混入検出（SR [F-1]）
+# ---------------------------------------------------------------------------
+
+
+class TestSdistExcludeViolation:
+    """sdist（第二の公開成果物）の `.claude/` 配下に注入対照以外の should_skip True が
+    在れば `SDIST_EXCLUDE_VIOLATION`。
+
+    sdist は wheel と違い `hatch_build.py` の実フィルタを通らないため、git 追跡されて
+    しまった EXCLUDE 対象は sdist にだけ残る（SR [F-1] の構造ギャップ）。
+    """
+
+    def test_clean_sdist_has_no_violation(self):
+        """正: 対照 1 件だけが should_skip True の clean な sdist では違反 0 件。"""
+        names = clean_sdist_namelist()
+        # 前提: この listing で should_skip True なのは注入対照ちょうど 1 件
+        assert count_exclude_candidates(names) == 1
+        assert verify_wheel.find_sdist_violations(names) == []
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            _EXCLUDED_SAMPLE,
+            "agent-memory/tester/MEMORY.md",
+            "reports/plan-report-20260814-220825.md",
+            "memory/patterns.json",
+            "settings.local.json",
+            "logs/session.log",
+        ],
+    )
+    def test_excess_excluded_entry_is_detected(self, rel):
+        """負: 対照以外の EXCLUDE 対象が sdist に在れば SDIST_EXCLUDE_VIOLATION。"""
+        names = clean_sdist_namelist(extra=(_SDIST_CLAUDE_PREFIX + rel,))
+        violations = verify_wheel.find_sdist_violations(names)
+        assert kinds(violations) == {verify_wheel.SDIST_EXCLUDE_VIOLATION}, (
+            f"{rel} の sdist 混入が検出されない: {violations!r}"
+        )
+        assert any(rel in d for d in details(violations)), (
+            f"違反の詳細に該当エントリが含まれない: {details(violations)!r}"
+        )
+
+    def test_control_itself_is_never_reported(self):
+        """注入対照は「在るべきもの」なので違反にしない（対照だけなら 0 件）。"""
+        violations = verify_wheel.find_sdist_violations(clean_sdist_namelist())
+        assert all(_CONTROL_RELPATH not in d for d in details(violations))
+
+    def test_should_skip_injection_works_in_both_directions(self):
+        """`should_skip` は明示引数注入で正負両方向に効く（no-op 注入の排除）。"""
+        names = clean_sdist_namelist(extra=(_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE,))
+
+        assert kinds(verify_wheel.find_sdist_violations(names)) == {
+            verify_wheel.SDIST_EXCLUDE_VIOLATION
+        }, "前提: 実 should_skip では余剰エントリが違反になる"
+
+        # 負方向: always-False を注入すると違反は消える（注入シームが効いている）
+        assert verify_wheel.find_sdist_violations(names, should_skip=always_false) == [], (
+            "always-False の should_skip を引数で与えても違反が消えない（注入が効いていない）"
+        )
+
+        # 正方向: always-True を注入すると通常ファイルまで違反になるが、
+        # 注入対照だけは常に除外され続ける（対照の扱いは should_skip の結果に依らない）
+        injected = details(verify_wheel.find_sdist_violations(names, should_skip=always_true))
+        assert set(injected) == set(_clean_relpaths()) | {_EXCLUDED_SAMPLE}, (
+            f"always-True 注入時の違反集合が想定と違う: {sorted(injected)!r}"
+        )
+        assert _CONTROL_RELPATH not in injected, (
+            "always-True の should_skip で注入対照まで違反として報告されている"
+        )
+
+    def test_should_skip_is_an_explicit_parameter_with_ssot_default(self):
+        """既存検出器（P1）と同じ ADR-7 追補の形を新関数にも要求する。"""
+        params = inspect.signature(verify_wheel.find_sdist_violations).parameters
+        assert "should_skip" in params, "find_sdist_violations に should_skip 引数が無い"
+        assert params["should_skip"].default is _excludes.should_skip, (
+            "find_sdist_violations の should_skip 既定値が c3._excludes.should_skip でない"
+            f"（実際: {params['should_skip'].default!r}）"
+        )
+
+    def test_directory_entries_are_ignored(self):
+        """P7 と同じ理由（`fnmatch("reports/", "reports/*")` は True）で末尾 `/` は対象外。"""
+        names = clean_sdist_namelist(
+            extra=(
+                _SDIST_CLAUDE_PREFIX + "reports/",
+                _SDIST_CLAUDE_PREFIX + "memory/sessions/",
+            )
+        )
+        assert verify_wheel.find_sdist_violations(names) == [], (
+            "ディレクトリエントリが判定対象に入り誤検出されている"
+        )
+
+    def test_entries_outside_claude_boundary_are_ignored(self):
+        """sdist ルート直下 `.claude/` の外（`src/` 等）は `.claude/` 相対で読まない。"""
+        names = clean_sdist_namelist(
+            extra=(
+                _SDIST_ROOT + "src/c3/state/tier_selection.json",
+                _SDIST_ROOT + "pyproject.toml",
+            )
+        )
+        assert verify_wheel.find_sdist_violations(names) == []
+
+
+# ---------------------------------------------------------------------------
+# Q2: 注入対照のサイズ 0 検証（SR [F-3]）
+# ---------------------------------------------------------------------------
+
+
+class TestControlSize:
+    """注入対照メンバーが 0 バイトでなければ `CONTROL_NOT_EMPTY`（exit 1 側の違反）。
+
+    非 0 バイトの対照は**その内容が sdist として実際に公開される**ため、検証不能
+    （`CONTROL_MISSING`・exit 3）ではなく配布物の退行（違反）に置く（DC-AS-003）。
+    """
+
+    def test_zero_size_control_is_clean(self):
+        """正: 現行どおり 0 バイトなら違反 0 件。"""
+        assert verify_wheel.find_control_size_violations(clean_sdist_members()) == []
+
+    @pytest.mark.parametrize("size", [1, 5, 4096])
+    def test_non_empty_control_is_detected(self, size):
+        """負: 対照のサイズが 0 でなければ CONTROL_NOT_EMPTY。"""
+        members = clean_sdist_members(control_size=size)
+        violations = verify_wheel.find_control_size_violations(members)
+        assert kinds(violations) == {verify_wheel.CONTROL_NOT_EMPTY}, (
+            f"対照 {size} バイトが CONTROL_NOT_EMPTY として検出されない: {violations!r}"
+        )
+        assert any(_CONTROL_RELPATH in d for d in details(violations)), (
+            f"違反の詳細に対照の相対パスが含まれない: {details(violations)!r}"
+        )
+        assert any(str(size) in d for d in details(violations)), (
+            f"違反の詳細に実測サイズが含まれない: {details(violations)!r}"
+        )
+
+    def test_absent_control_is_not_reported_here(self):
+        """対照の不在は CONTROL_MISSING（検証不能）の担当。ここでは二重報告しない。"""
+        members = clean_sdist_members(with_control=False)
+        assert verify_wheel.find_control_size_violations(members) == []
+
+    def test_other_members_size_is_irrelevant(self):
+        """通常ファイルのサイズは検査対象外（対照だけの前提を測る検査）。"""
+        members = clean_sdist_members(
+            extra=((_SDIST_CLAUDE_PREFIX + "agents/tester.md", 4096),)
+        )
+        assert verify_wheel.find_control_size_violations(members) == []
+
+    def test_same_name_outside_claude_boundary_is_not_the_control(self):
+        """`.claude/` 境界の外にある同名ファイルを対照と誤認しない。"""
+        members = clean_sdist_members(
+            extra=((_SDIST_ROOT + "src/" + _CONTROL_RELPATH, 999),)
+        )
+        assert verify_wheel.find_control_size_violations(members) == []
+
+    def test_size_check_is_independent_of_should_skip(self):
+        """対照検査は `CONTROL_LEAKED` と同じく should_skip に依存させない。
+
+        SSOT（`_excludes.py`）とフィルタ側複製（`hatch_build.py`）が同時に劣化しても
+        対照検査だけは生き残らせる、という既存設計の踏襲（P8(b) と同じ趣旨）。
+        """
+        params = inspect.signature(verify_wheel.find_control_size_violations).parameters
+        assert "should_skip" not in params, (
+            "対照サイズ検査が should_skip を受け取っている"
+            f"（SSOT 劣化時に検査が道連れになる）: {list(params)!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Q3: 違反 detail のサニタイズ（SR [F-4]・方式は「除去」）
+# ---------------------------------------------------------------------------
+
+
+class TestDetailSanitization:
+    """detail に含まれる C0 制御文字・DEL・改行を出力から**除去**する（3 サイト）。
+
+    置換（`?` 等）ではなく除去であることは「除去後の文字列が原文の連結と一致する」
+    ことで判定する。
+    """
+
+    def test_wheel_violation_detail_is_sanitized(self, capsys):
+        """サイト (1): 既存の wheel 違反ループ。"""
+        rel = "state/tier_" + _C0_AND_DEL + "selection.json"
+        assert should_skip(rel) is True, "前提: 題材が SSOT 上で除外対象であること"
+        wheel = clean_wheel_namelist(extra=(_WHEEL_TEMPLATE_PREFIX + rel,))
+        fake = _FakeBuild(wheel, clean_sdist_members())
+
+        assert main([], build_runner=fake) == EXIT_VIOLATION
+        err = capsys.readouterr().err
+        assert EXCLUDE_VIOLATION in err
+        assert "state/tier_selection.json" in err, (
+            f"制御文字を除去した名前が原文どおり残っていない（置換方式は不可）: {ascii(err)}"
+        )
+        assert_no_control_chars(err, expected_lines=2)
+
+    def test_sdist_violation_detail_is_sanitized(self, capsys):
+        """サイト (2): 新設の sdist 違反出力。"""
+        rel = "agent-memory/tester/MEM" + _C0_AND_DEL + "ORY.md"
+        assert should_skip(rel) is True, "前提: 題材が SSOT 上で除外対象であること"
+        fake = _FakeBuild(
+            clean_wheel_namelist(), clean_sdist_namelist(extra=(_SDIST_CLAUDE_PREFIX + rel,))
+        )
+
+        assert main([], build_runner=fake) == EXIT_VIOLATION
+        err = capsys.readouterr().err
+        assert verify_wheel.SDIST_EXCLUDE_VIOLATION in err
+        assert "agent-memory/tester/MEMORY.md" in err, (
+            f"制御文字を除去した名前が原文どおり残っていない: {ascii(err)}"
+        )
+        assert_no_control_chars(err, expected_lines=2)
+
+    def test_unverifiable_detail_is_sanitized(self, capsys):
+        """サイト (3): 検証不能の detail（アーカイブを経由しないので NUL も題材に含む）。"""
+        bad_path = "missing" + _NUL_C0_AND_DEL + "wheel.whl"
+
+        assert main(["--wheel", bad_path], build_runner=_ExplodingBuild()) == EXIT_UNVERIFIABLE
+        err = capsys.readouterr().err
+        assert err.splitlines()[0].startswith(WHEEL_NOT_FOUND), (
+            f"stderr 先頭行に原因識別子が無い: {ascii(err)}"
+        )
+        assert "missingwheel.whl" in err, (
+            f"制御文字を除去したパスが原文どおり残っていない: {ascii(err)}"
+        )
+        assert_no_control_chars(err, expected_lines=1)
+
+
+# ---------------------------------------------------------------------------
+# Q4: 既定経路からの配線（sdist 側 2 検査が実際に呼ばれること）
+# ---------------------------------------------------------------------------
+
+
+class TestSdistChecksAreWired:
+    """純粋検出器を作っただけで既定経路から呼ばれない、という空振りを塞ぐ。
+
+    資材は CLI 節の `_FakeBuild` / `_write_wheel` / `_write_sdist`（合成 outdir に
+    wheel と sdist を実際に書き出す）と同型（DC-AS-004）。
+    """
+
+    def test_default_route_reports_sdist_exclude_violation(self, capsys):
+        names = clean_sdist_namelist(extra=(_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE,))
+        fake = _FakeBuild(clean_wheel_namelist(), names)
+
+        assert main([], build_runner=fake) == EXIT_VIOLATION
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert verify_wheel.SDIST_EXCLUDE_VIOLATION in combined, (
+            "sdist EXCLUDE 検査が既定経路から呼ばれていない（種別が出力に現れない）"
+        )
+        assert _EXCLUDED_SAMPLE in combined
+        assert fake.calls, "ビルド実行部が呼ばれていない"
+
+    def test_default_route_reports_control_not_empty(self, capsys):
+        fake = _FakeBuild(clean_wheel_namelist(), clean_sdist_members(control_size=7))
+
+        assert main([], build_runner=fake) == EXIT_VIOLATION
+        captured = capsys.readouterr()
+        assert verify_wheel.CONTROL_NOT_EMPTY in (captured.out + captured.err), (
+            "対照サイズ検査が既定経路から呼ばれていない（種別が出力に現れない）"
+        )
+
+    def test_sized_clean_sdist_still_passes(self, capsys):
+        """fixture 健全性: サイズ付きで組んだ clean な sdist（対照 0 バイト）は PASS。"""
+        fake = _FakeBuild(clean_wheel_namelist(), clean_sdist_members())
+        assert main([], build_runner=fake) == EXIT_PASS
+
+
+# ---------------------------------------------------------------------------
+# Q5: PASS 行のモード分岐（DC-AM-001）
+# ---------------------------------------------------------------------------
+
+
+class TestPassLineModeSplit:
+    """検査していない性質を PASS 行が真と主張しないこと。"""
+
+    def test_default_mode_pass_line_asserts_sdist_checks(self, capsys):
+        """既定モードは sdist 側 2 検査を実施しているので PASS 行で主張してよい。"""
+        fake = _FakeBuild(clean_wheel_namelist(), clean_sdist_members())
+        assert main([], build_runner=fake) == EXIT_PASS
+
+        out = capsys.readouterr().out
+        lines = pass_lines(out)
+        assert len(lines) == 1, f"PASS 行が 1 行でない: {lines!r}"
+        assert "sdist EXCLUDE 混入なし" in lines[0], f"PASS 行: {lines[0]!r}"
+        assert "対照サイズ 0" in lines[0], f"PASS 行: {lines[0]!r}"
+
+        measured = [
+            line
+            for line in out.splitlines()
+            if "対照サイズ" in line and not line.startswith(_PASS_LINE_PREFIX)
+        ]
+        assert len(measured) == 1, (
+            f"対照サイズの実測値行（PASS 行とは別行）が 1 行でない: {out!r}"
+        )
+        assert "0" in measured[0], f"実測値行にサイズが無い: {measured[0]!r}"
+
+    def test_wheel_mode_pass_line_omits_sdist_claims(self, tmp_path, capsys):
+        """`--wheel` は sdist を作らないので PASS 行で sdist 検査を主張してはならない。"""
+        wheel = _write_wheel(tmp_path / "c3-9.9.9-py3-none-any.whl", clean_wheel_namelist())
+        assert main(["--wheel", str(wheel)], build_runner=_ExplodingBuild()) == EXIT_PASS
+
+        out = capsys.readouterr().out
+        lines = pass_lines(out)
+        assert len(lines) == 1, f"PASS 行が 1 行でない: {lines!r}"
+        assert lines[0] == _WHEEL_MODE_PASS_LINE, (
+            f"--wheel モードの PASS 行が既存文言から変わっている: {lines[0]!r}"
+        )
+        assert "sdist EXCLUDE 混入なし" not in lines[0]
+        assert "対照サイズ" not in lines[0]
+        assert "sdist 側 2 検査は未実施" in out, (
+            "sdist 側 2 検査が未実施であることが stdout で明示されていない"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Q6: 評価順序（DC-AM-005）
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluationOrder:
+    """検証不能の最優先・即 return と、違反同士の合算 1 回出力を observable に凍結する。"""
+
+    def test_control_missing_preempts_violations_and_violations_are_merged(self, capsys):
+        wheel_dirty = clean_wheel_namelist(extra=(_WHEEL_TEMPLATE_PREFIX + _EXCLUDED_SAMPLE,))
+
+        # (a) sdist 側の検証不能（CONTROL_MISSING）は最優先で即 return。
+        #     この経路では sdist / wheel の違反を 1 件も出力しない。
+        sdist_no_control = clean_sdist_namelist(
+            with_control=False, extra=(_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE,)
+        )
+        assert main([], build_runner=_FakeBuild(wheel_dirty, sdist_no_control)) == (
+            EXIT_UNVERIFIABLE
+        )
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert captured.err.splitlines()[0].startswith(CONTROL_MISSING), (
+            f"stderr 先頭行が CONTROL_MISSING でない: {captured.err!r}"
+        )
+        for kind in (
+            EXCLUDE_VIOLATION,
+            verify_wheel.SDIST_EXCLUDE_VIOLATION,
+            verify_wheel.CONTROL_NOT_EMPTY,
+        ):
+            assert kind not in combined, (
+                f"検証不能の経路で違反種別 {kind} が出力されている: {combined!r}"
+            )
+
+        # (b) 違反同士（sdist・wheel）は合算して 1 回で全件出力・exit 1。
+        sdist_dirty = clean_sdist_members(
+            control_size=3, extra=((_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0),)
+        )
+        assert main([], build_runner=_FakeBuild(wheel_dirty, sdist_dirty)) == EXIT_VIOLATION
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        for kind in (
+            EXCLUDE_VIOLATION,
+            verify_wheel.SDIST_EXCLUDE_VIOLATION,
+            verify_wheel.CONTROL_NOT_EMPTY,
+        ):
+            assert kind in combined, (
+                f"合算出力に違反種別 {kind} が含まれない: {combined!r}"
+            )
+        assert combined.count(_VIOLATION_HEADER) == 1, (
+            f"違反出力のヘッダが 1 回でない（合算 1 回出力になっていない）: {combined!r}"
+        )
