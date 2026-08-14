@@ -5,7 +5,6 @@
       "Bash(c3 run .claude/hooks/pre_tool.py*)",
       "Bash(c3 run .claude/hooks/pre_compact.py*)",
       "Bash(c3 run .claude/hooks/restore_session.py*)",
-      "Bash(c3 run .claude/hooks/permission_handler.py*)",
       "Bash(c3 run .claude/hooks/statusline.py*)",
       "Bash(c3 run .claude/hooks/recall_autorebuild.py*)",
       "Bash(c3 run .claude/skills/dev-workflow/scripts/detect_execution_verification.py*)",
@@ -164,18 +163,6 @@
             "type": "command",
             "command": "c3",
             "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/session_mode_watch.py"]
-          }
-        ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/permission_handler.py"]
           }
         ]
       }

@@ -20,7 +20,6 @@
 .claude/CLAUDE.md                      配布元・配布先共通（常時注入）
 .claude/settings.json                  プロジェクト共通設定（配布される）
 .claude/settings.local.json            個人 override（配布されない）
-.claude/permission_rules.json          C3 独自の自動承認パターン（配布される）
 .claude/rules/                         C3 配布デフォルトルール（配布される）
 .claude/rules/promoted/                プロジェクト固有昇格ルール（配布される、update は触らない）
 .claude/hooks/                         Claude Code lifecycle hooks（配布される）
@@ -36,7 +35,6 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 .claude/CLAUDE.md                      c3 init で配置・c3 update で更新
 .claude/settings.json                  c3 init で配置・c3 update で更新
 .claude/settings.local.json            ユーザーが個別作成（c3 は触らない）
-.claude/permission_rules.json          c3 init で配置・c3 update で更新
 .claude/rules/                         c3 init で配置・c3 update で更新
 .claude/rules/promoted/index.md        c3 init で空雛形のみ配置（c3 update は触らない）
 .claude/hooks/                         c3 init で配置・c3 update で更新
@@ -128,7 +126,7 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 
 ## 2. 設定優先順位と書き込み権限
 
-設定は性質の異なる **3 つのレイヤー** に分かれる。1 列に並べると誤解を生むため分離して記述する。
+設定は性質の異なる **3 つのレイヤー**（レイヤー B は v2.72.0 で削除済み）に分かれる。1 列に並べると誤解を生むため分離して記述する。
 
 ### レイヤー A: ツール権限（Claude Code 公式）
 
@@ -146,15 +144,10 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 
 ### レイヤー B: 自動承認パターン（C3 独自拡張）
 
-- `.claude/permission_rules.json` の `auto_allow` 配列
-- `permission_handler.py`（`PermissionRequest` hook）が読み込んで、パターンにマッチすれば自動承認
-- レイヤー A で `deny` 判定されたものを覆すことはできない（hook の決定権の範囲内）
-- `notify_on_auto: false` で通知を抑止できる
-
-> **注意**: `permission_rules.json` は Claude Code 公式の `permissions.allow` とは **独立した別レイヤー**。
-> 同列に並べると「どちらが優先されるか」で誤解が生じる。レイヤー A と B は並立している。
-
-> **注意**: `auto_allow` パターンは最小限に留めること。広範なパターン（例: `Bash(*)`）は C3 の意図する動作範囲を超えた危険コマンドも自動承認する可能性がある。
+（削除済み・v2.72.0）C3 独自の自動承認パターン（`.claude/permission_rules.json` の `auto_allow` 配列と
+`permission_handler.py` hook）は v2.72.0 で削除された。自動承認は上流 Claude Code の
+`permissions.allow`（レイヤー A）へ委譲する。移行手順は `.claude/breaking-changes.txt` の
+v2.72.0 行を参照。
 
 ### レイヤー C: LLM 指示・知識（CLAUDE.md / rules）
 
@@ -173,7 +166,6 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 |---|---|---|---|
 | `.claude/settings.json` | ○ | ○ | △（チーム合意のもと） |
 | `.claude/settings.local.json` | × | × | ○（個人 override / 秘匿情報） |
-| `.claude/permission_rules.json` | ○ | ○ | △（ファイル全体を上書き編集する場合は注意） |
 | `.claude/CLAUDE.md` | ○ | ○ | △（c3 update で上書きされる前提で） |
 | `.claude/rules/*.md` | ○ | ○ | △（同上） |
 | `.claude/rules/promoted/index.md` | ○（空雛形のみ） | × | ○（`/promote-pattern` が追記、手動編集も可） |
@@ -196,11 +188,11 @@ src/c3/migrations/                     SQLite schema migration SQL ファイル�
 | 6 | `.claude/docs/*.md` | △（一部のみ） | ○ | 利用先向けリファレンス。配布対象は `autonomous-mode-onboarding.md` / `config-policy.md`（本ドキュメント）/ `nul-boundary.md` / `parallel-agents-setup.md` / `platform-adapters.md` / `settings.json.md` の 6 ファイル。配布元固有の設計メモ等は `_excludes.py` で個別除外。`taxonomy.md` は tracked（GitHub 公開）だが EXCLUDE 対象のため wheel 非配布（詳細は §7 落とし穴 2 参照）。 |
 | 7 | `.claude/CLAUDE.md` | ○ | ○ | 配布先で常時注入される共通ルール |
 | 8 | `.claude/settings.json` | ○ | ○ | プロジェクト共通設定（hooks 登録・permissions など） |
-| 9 | `.claude/permission_rules.json` | ○ | ○ | C3 独自の自動承認パターン（PermissionRequest hook が参照） |
+| 9 | `.claude/permission_rules.json` | ×（削除済み・v2.72.0） | — | C3 独自の自動承認パターンは v2.72.0 で削除された。上流 `permissions.allow` へ委譲（移行手順は `.claude/breaking-changes.txt` の v2.72.0 行を参照） |
 | 10 | `.claude/settings.local.json` | × | — | 個人 override・秘匿情報。`_excludes.py` でも除外、`.gitignore` でも除外、c3 update も触らない |
 | 11 | `.claude/reports/*` / `memory/*` / `agent-memory/*` / `state/*` / `tmp/*` / `worktrees/*` / `logs/*` | × （`.gitkeep` のみ ○） | — | 実行時生成領域。空ディレクトリのみ `KEEP_PATTERNS` の `.gitkeep` で配布。データ本体は除外。v2.19.0 で `.claude/state/c3_version.txt`（バージョン checkpoint）を追加（`state/*` 一括除外により自動非配布） |
 | 12 | `.dev/*` / `/CLAUDE.md` / `/AGENTS.md` / `/.codex/` / `/.cursor/` / `/.agents/` | × | — | 配布元専用または adapter 生成物。wheel には構造的に含まれない（`src/c3/_template/.claude/` 配下のみ同梱）が、配布元 `.gitignore` で commit 混入も防ぐ |
-| 13 | `.claude/deletions.txt` | ○ | ○ | `c3 update` が読み込み、利用先 `.claude/` から該当ファイルを削除候補として扱う。配布元の `.claude/deletions.txt` に追記したエントリは次回 pip install → `c3 update` で利用先に伝播。`KEEP_PATTERNS` で明示配布。`c3 update` 自体は本ファイルを削除しない（§7 落とし穴 5 参照） |
+| 13 | `.claude/deletions.txt` | ○ | ○ | `c3 update` が読み込み、利用先 `.claude/` から該当ファイルを削除候補として扱う。配布元の `.claude/deletions.txt` に追記したエントリは次回 pip install → `c3 update` で利用先に伝播。`KEEP_PATTERNS` で明示配布。`c3 update` 自体は本ファイルを削除しない（§7 落とし穴 4 参照） |
 | 14 | `.claude/breaking-changes.txt` | ○ | ○ | `c3 update` が読み込み、利用先の `.claude/state/c3_version.txt`（バージョン checkpoint）と diff を計算して破壊的変更を表示する。MAJOR bump 時は y/N 承認プロンプトを発火。`KEEP_PATTERNS` で明示配布。配布元 `.claude/breaking-changes.txt` を更新すれば次回 pip install → `c3 update` で利用先に伝播。利用先 git 管理は tracked（上書きされる） |
 | 15 | `.claude/.gitignore` | ○ | ×（INIT_ONLY） | 利用先の実行時生成領域のうち「再生成可能」「セッション一時」だけを除外する配布 `.gitignore`（§1-2 の方針の実装）。プロジェクトルートの `.gitignore` は編集しないため既存設定と衝突しない。`INIT_ONLY_PATTERNS` により初回配置のみで **c3 update は上書きしない**（利用先の追記を守る）。C3 側で分類を更新した場合はリリースノートで手動マージを案内する |
 
@@ -391,11 +383,8 @@ C3 side で `promoted/` の雛形を更新した場合は、リリースノー�
 
 ### 落とし穴 5: `permission_rules.json` は `settings.json.permissions.deny` を覆せない（要検証）
 
-**現状**: `permission_handler.py` の実装を読む限り、`PermissionRequest` hook は
-Claude Code 側で `deny` 判定が出た後に発火するため、`permission_rules.json` の `auto_allow` で
-`deny` を覆すことはできないはず。ただし Claude Code 公式仕様に明記なし。
-
-**残課題**: v2.18.0 以降の検証タスクとして記録。現時点では「覆せない前提で設計する」ことを推奨。
+対象機能は v2.72.0 で削除済み（C3 独自の自動承認パターン一式）。上流 `permissions.allow` へ委譲した。
+移行手順は `.claude/breaking-changes.txt` の v2.72.0 行を参照。
 
 ### 落とし穴 6: `permissions.allow` のワイルドカードはプレフィックス一致のため `../` パストラバーサルに対応していない
 
@@ -471,11 +460,9 @@ CI のジョブ環境変数として設定する・親プロセスから子プ�
 | 除外パターン定義 | `src/c3/_excludes.py` | `EXCLUDE_PATTERNS` / `KEEP_PATTERNS` 定数 + `should_skip()` |
 | ビルド時除外 | `hatch_build.py` | `_excludes.py` の重複定義（ビルドフック用） |
 | 同期確認 hook | `.dev/hooks/_sync_check.py` | 3 ファイル変更時の警告（配布元専用） |
-| 自動承認 hook | `.claude/hooks/permission_handler.py` | `permission_rules.json` を読んで自動承認 |
 
 ### 残課題リンク（v2.18.0 以降）
 
-- `permission_rules.json` の `auto_allow` が `settings.json.permissions.deny` を覆せるか検証
 - `~/.claude/settings.json` のグローバル設定と `.claude/settings.json` の同キー競合時のマージ範囲確認
 - ~~`c3 update` の削除検出（`deletions.txt` 方式、v2.18.0 予定）~~ → v2.18.0 で実装
 - `c3 update` 時の Breaking changes 警告（v2.19.0 予定）

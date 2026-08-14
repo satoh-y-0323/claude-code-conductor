@@ -210,22 +210,22 @@ class TestKnownRelationsWithPremiseChecks:
     題材が消えた場合の代替: 各テストの docstring に、同じ形の代替 source 候補を書く。
     """
 
-    def test_row1_settings_hooks_section_to_permission_handler(self, repo_root, repo_graph):
-        """行 1: `settings.json` の hooks 登録 → `permission_handler.py`（`settings_hook`）.
+    def test_row1_settings_hooks_section_to_session_start(self, repo_root, repo_graph):
+        """行 1: `settings.json` の hooks 登録 → `session_start.py`（`settings_hook`）.
 
-        代替題材: hooks 節に登録されている他の hook（例: `session_stop.py`）でもよい。
+        代替題材: hooks 節に登録されている他の hook（例: `session_stop.py`〔Stop 登録〕）でもよい。
         """
         settings_text = (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
-        assert '"${CLAUDE_PROJECT_DIR}/.claude/hooks/permission_handler.py"' in settings_text, (
-            "premise gone: settings.json の hooks 節から permission_handler.py の登録が消えた"
+        assert '"${CLAUDE_PROJECT_DIR}/.claude/hooks/session_start.py"' in settings_text, (
+            "premise gone: settings.json の hooks 節から session_start.py の登録が消えた"
         )
 
         hits = _links(
             repo_graph,
             relation="settings_hook",
-            target=".claude/hooks/permission_handler.py",
+            target=".claude/hooks/session_start.py",
         )
-        assert len(hits) >= 1, "settings_hook edge to permission_handler.py is missing"
+        assert len(hits) >= 1, "settings_hook edge to session_start.py is missing"
 
     def test_row2_session_stop_importlib_to_four_modules(self, repo_root, repo_graph):
         """行 2: `session_stop.py` の importlib → 4 モジュール（`py_importlib`）."""
@@ -254,22 +254,29 @@ class TestKnownRelationsWithPremiseChecks:
         missing = sorted(expected - got)
         assert missing == [], f"py_importlib edges missing from session_stop.py: {missing}"
 
-    def test_row3_permission_handler_subprocess_to_toast(self, repo_root, repo_graph):
-        """行 3: `permission_handler.py` の subprocess → `permission_handler_toast.py`."""
-        text = (repo_root / ".claude" / "hooks" / "permission_handler.py").read_text(
+    def test_row3_session_guard_test_subprocess_to_script(self, repo_root, repo_graph):
+        """行 3: `tests/skills/test_session_guard.py` の subprocess → `session_guard.py`.
+
+        代替題材: `tests/hooks/test_session_start.py` → `.claude/hooks/session_start.py` のように、
+        `.claude/` 配下のスクリプトをパス組み立てして subprocess 起動する別ペアでもよい。
+        """
+        text = (repo_root / "tests" / "skills" / "test_session_guard.py").read_text(
             encoding="utf-8"
         )
-        assert "os.path.join(_HOOKS_DIR, 'permission_handler_toast.py')" in text, (
-            "premise gone: permission_handler.py から toast script の組み立てが消えた"
+        assert (
+            'SCRIPT = WORKTREE_ROOT / ".claude" / "skills" / "init-session" / "scripts" '
+            '/ "session_guard.py"'
+        ) in text, (
+            "premise gone: test_session_guard.py から session_guard.py のパス組み立てが消えた"
         )
 
         hits = _links(
             repo_graph,
             relation="py_subprocess_path",
-            source=".claude/hooks/permission_handler.py",
-            target=".claude/hooks/permission_handler_toast.py",
+            source="tests/skills/test_session_guard.py",
+            target=".claude/skills/init-session/scripts/session_guard.py",
         )
-        assert len(hits) >= 1, "py_subprocess_path edge to permission_handler_toast.py is missing"
+        assert len(hits) >= 1, "py_subprocess_path edge to session_guard.py is missing"
 
     def test_row4_parallel_agents_variant_table_to_wt_systematic_debugger(
         self, repo_root, repo_graph

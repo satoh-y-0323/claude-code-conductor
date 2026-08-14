@@ -294,7 +294,7 @@ class TestKnownRelations:
         assert bad_sources == [], f"settings_hook must originate from settings*.json: {bad_sources}"
 
         targets = {link.target for link in hook_links}
-        assert ".claude/hooks/permission_handler.py" in targets
+        assert ".claude/hooks/session_start.py" in targets
 
     def test_session_stop_importlib_loads_produce_py_importlib_edges(self, repo_graph):
         """行 2: `session_stop.py` の importlib → 4 モジュール（`py_importlib`）.
@@ -312,15 +312,15 @@ class TestKnownRelations:
         missing = sorted(expected - got)
         assert missing == [], f"py_importlib edges missing from session_stop.py: {missing}"
 
-    def test_permission_handler_subprocess_produces_py_subprocess_path_edge(self, repo_graph):
-        """行 3: `permission_handler.py` の subprocess → toast（`py_subprocess_path`）."""
+    def test_session_guard_test_subprocess_produces_py_subprocess_path_edge(self, repo_graph):
+        """行 3: `test_session_guard.py` の subprocess → `session_guard.py`（`py_subprocess_path`）."""
         hits = _links(
             repo_graph,
             relation="py_subprocess_path",
-            source=".claude/hooks/permission_handler.py",
-            target=".claude/hooks/permission_handler_toast.py",
+            source="tests/skills/test_session_guard.py",
+            target=".claude/skills/init-session/scripts/session_guard.py",
         )
-        assert len(hits) >= 1, "py_subprocess_path edge to permission_handler_toast.py is missing"
+        assert len(hits) >= 1, "py_subprocess_path edge to session_guard.py is missing"
 
     def test_parallel_agents_variant_table_produces_md_agent_variant_map_edges(self, repo_graph):
         """行 4: `parallel-agents/SKILL.md` の写像表 → `wt_*.md`（`md_agent_variant_map`）."""

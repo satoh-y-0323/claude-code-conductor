@@ -8,7 +8,7 @@
 # - 絶対パス / ../ を含むパス / シンボリックリンク は無視
 # - ディレクトリは削除しない（ファイルのみ）
 #
-# 詳細は .claude/docs/config-policy.md §3 #13 と §7 落とし穴 5 を参照。
+# 詳細は .claude/docs/config-policy.md §3 #13 と §7 落とし穴 4 を参照。
 
 # ---- v2.1.0: tdd-develop / worktree-tdd-workflow 廃止 ----
 agents/tdd-develop.md
@@ -87,3 +87,8 @@ hooks/po_heartbeat.py
 
 # ---- v2.41.0: tier-routing 学習シグナル再設計（record_agent_outcome.py へ置換） ----
 skills/dev-workflow/scripts/record_tier_outcome.py
+
+# ---- v2.72.0: permission_handler 一式廃止（上流 permissions.allow へ委譲） ----
+hooks/permission_handler.py
+hooks/permission_handler_toast.py
+permission_rules.json

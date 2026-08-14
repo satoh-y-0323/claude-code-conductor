@@ -822,7 +822,7 @@ class TestFilterLinksNarrowsBySourceCategory:
             link
             for link in live
             if link.relation == "settings_hook"
-            and link.target == ".claude/hooks/permission_handler.py"
+            and link.target == ".claude/hooks/session_start.py"
         ]
         assert len(kept) >= 1, "a live hook registration disappeared from the live view"
 

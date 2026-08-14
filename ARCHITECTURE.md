@@ -122,7 +122,6 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 | `PostToolUse` | `Write` / `Edit` | `planner_check.py` | plan-report の YAML/タイムスタンプ/reviewer 規約検査 |
 | `PostToolUse` | `Write` | `report_contract_check.py` | reports 直下の命名契約逸脱を warn（strict-4〔requirements/architecture/plan/design-review〕はタイムスタンプ形式の厳密検査、loose-3〔code-review/security-review/test〕はタイムスタンプ形式または task_id 形式のどちらかを許容する緩検査。stderr + additionalContext） |
 | `PostToolUse` | `Edit` | `session_mode_watch.py` | session.tmp のモード行挿入・plan= 差し替えを warn（stderr + additionalContext） |
-| `PermissionRequest` | （全て） | `permission_handler.py` | `permission_rules.json` の `auto_allow` で自動承認（[config-policy §2 レイヤー B](.claude/docs/config-policy.md)） |
 | `PreCompact` | （全て） | `pre_compact.py` | compact 前にチェックポイントマーカー注入 |
 | `Stop` | （全て） | `session_stop.py` | セッション終了処理のオーケストレータ |
 

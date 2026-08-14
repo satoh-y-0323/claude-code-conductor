@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.72.0] - 2026-08-14
+
+### 破壊的変更
+
+- **C3 独自の `PermissionRequest` hook 一式を削除した**: `.claude/hooks/permission_handler.py` /
+  `.claude/hooks/permission_handler_toast.py` / `.claude/permission_rules.json`、および
+  `pyproject.toml` の `[notify]` extra（`windows-toasts` 依存）。失うものは auto_allow による
+  自動承認・承認待ちの OS 通知（Windows トースト承認 UX）・`[notify]` extra。代替は上流
+  Claude Code の auto mode（Pro/Max/Team の新規セッション既定。**Enterprise/API/cloud の展開前・
+  既存セッションは対象外**）と `permissions.allow`（書式互換）、上流の通知設定。
+  移行手順（`c3 update` 実行中の視点で記述）:
+  1. `c3 update` 実行中にこの案内を見た時点では `settings.json` は新版へ更新済みだが、
+     旧ファイルの削除はまだ確定していない（直後の削除プロンプトは `[y/N]`・既定 N）
+  2. まだ転記していない場合: 削除プロンプトで N（既定）を選び、
+     `.claude/permission_rules.json` の `auto_allow` を `.claude/settings.local.json`
+     （個人設定・共有の `settings.json` ではない）の `permissions.allow` へ転記してから
+     `c3 update` を再実行して y で削除する。書式は同一のためそのまま転記できる
+  3. 但し書き: 上流はコマンドセパレータ（`&&` `||` `;` `|` `|&` `&` 改行）で分割した
+     各サブコマンドを独立に照合する（公式ドキュメント確認済み（2026-08-14））。
+     ただしコマンド置換（`$()` やバッククォート）の扱いは未確認のため、
+     `Bash(git *)` 等の広いワイルドカードはそのまま転記せず、必要最小のプレフィックスへ狭めること
+  4. auto mode が既定でない・使わない環境（Enterprise/API/cloud の展開前・既存セッション・
+     手動運用）では `permissions.allow` への転記が実質必須
+  5. `pip uninstall windows-toasts` 可。転記漏れは git 履歴から回収可能
+  詳細は `.claude/docs/config-policy.md` を参照。
+
 ## [2.71.1] - 2026-08-14
 
 ### 修正
