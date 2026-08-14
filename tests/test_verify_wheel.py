@@ -6,7 +6,18 @@ P1〜P8 は本体スライスで Green 済み（`scripts/verify_wheel.py` は実
 Q1〜Q6 は **E 周回 1 是正（plan-report-20260814-220825.md）の Red フェーズ**として
 本ファイルへ追記した性質であり、sdist 側 2 検査・サニタイズ・PASS 行のモード分岐・
 評価順序が未実装であるために失敗する（構文エラー・タイポではなく「新 API / 新挙動が
-不在」であることが失敗理由）。
+不在」であることが失敗理由）。Q1〜Q6 は E 周回 1 の impl で Green 済み。
+
+R1〜R2 は **E 周回 2 是正（plan-report-20260815-003232.md）の Red フェーズ**として
+追記した性質であり、
+
+- R1: `_sanitize` の除去集合が正本（`.claude/hooks/_hook_utils.py` の
+  `_TERMINAL_SANITIZE_RE`）より狭い（C0 + DEL のみで C1 / ゼロ幅 / 行区切り /
+  双方向制御 / BOM が素通りする）
+- R2: sdist member の読み取りが `(name, size)` の 2 要素かつ `isfile()` フィルタ固定で、
+  link member と未知種別 member が全検査を素通りする（種別射程が未実装）
+
+ために失敗する。失敗理由は「新挙動・新入力形が不在」であって構文エラーやタイポではない。
 
 ## 新 API を module-level の一括 import へ足さない（DC-AS-001・Red の構造要件）
 
@@ -22,7 +33,8 @@ Q1〜Q6 は **E 周回 1 是正（plan-report-20260814-220825.md）の Red フ�
 Green 後にこの規約を撤回して一括 import へ移してもよいが、次の Red で同じ罠に落ちるため
 本ファイルではこの書き方を既定とする。
 
-## 測る性質（P1〜P8: plan-report-20260814-195906.md / Q1〜Q6: plan-report-20260814-220825.md）
+## 測る性質（P1〜P8: plan-report-20260814-195906.md / Q1〜Q6: plan-report-20260814-220825.md
+## / R1〜R2: plan-report-20260815-003232.md）
 
 | 性質 | 内容 | 主なテスト |
 |---|---|---|
@@ -36,10 +48,16 @@ Green 後にこの規約を撤回して一括 import へ移してもよいが、
 | P8 | 注入対照（sdist 対照の在/不在・独立性・候補件数） | `TestInjectedControl` |
 | Q1 | sdist 側 EXCLUDE 混入検出（注入対照のみ許容・`should_skip` は正負両方向の注入） | `TestSdistExcludeViolation` |
 | Q2 | 注入対照メンバーのサイズ 0 検証（非 0 は違反） | `TestControlSize` |
-| Q3 | 違反 detail のサニタイズ（C0 制御文字・DEL・改行を**除去**・適用 3 サイト） | `TestDetailSanitization` |
+| Q3 | 違反 detail のサニタイズ（**正本と同一の全クラス**を**除去**・適用 3 サイト） | `TestDetailSanitization` |
 | Q4 | 既定経路からの配線（sdist EXCLUDE 検査・サイズ検査が実際に呼ばれる） | `TestSdistChecksAreWired` |
 | Q5 | PASS 行のモード分岐（`--wheel` は sdist 検査を主張しない） | `TestPassLineModeSplit` |
 | Q6 | 評価順序（`CONTROL_MISSING` 最優先で即 return・違反同士は合算 1 回出力） | `TestEvaluationOrder` |
+| R1a | sanitize 除去集合の代表文字が正負両方向で凍結される（除去側 / 残存側） | `TestSanitizeCoverage` |
+| R1b | sanitize 除去集合が正本 `_TERMINAL_SANITIZE_RE` と **U+0000–U+FFFF 全域で一致** | `TestSanitizeMatchesCanonicalSource` |
+| R1c | 除去後の detail は `str.splitlines()` で行分裂しない | `TestSanitizeCoverage` |
+| R2 | sdist member 読み取りが 3 要素 `(name, size, kind)`・kind 値域と未知種別の fail-closed | `TestSdistMemberKinds` |
+| R2c/e | 対照系 2 関数が 3 要素を受け、対照の成立・母数は **file member のみ** | `TestControlChecksTakeMemberKinds` |
+| R2a/b/d | 既定経路での種別射程（dir 対象外・EXCLUDE は file+link・母数は file のみ・未知は fail-closed） | `TestMemberKindScopeViaDefaultRoute` |
 
 P6（CI job の静的検査）は `tests/test_ci_workflows.py` に置く（同ファイルの既存 job 検査と
 同じ道具立てを使うため）。
@@ -78,27 +96,41 @@ architecture は「純粋検出器の分離」「`should_skip` を明示引数�
   （P8(b) が実測で固定する）
 - `find_unverifiable(namelist) -> str | None` … `TEMPLATE_EMPTY` / `LAYOUT_ANOMALY` / None
 - `count_exclude_candidates(names, should_skip=...) -> int` … sdist listing 中の
-  `.claude/` 相対で should_skip True の件数
-- `find_sdist_control_reason(names, should_skip=...) -> str | None` … `CONTROL_MISSING` / None
+  `.claude/` 相対で should_skip True の件数。**名前のみを受ける形は不変**（R2(e)）。
+  既定経路が渡すのは **kind == "file" の member 名だけ**（母数は file のみ・R2(d)）
+- `find_sdist_control_reason(members, should_skip=...) -> str | None` …
+  `CONTROL_MISSING` / None。**R2(e) で 3 要素 `(name, size, kind)` を受ける形へ改訂**。
+  対照の存在判定・候補件数の母数はいずれも **kind == "file" の member のみ**を入力とする
+  （対照名の member が link / dir なら「対照は不在」＝ `CONTROL_MISSING`・R2(c)）
 - `find_sdist_violations(names, should_skip=c3._excludes.should_skip)
   -> list[tuple[str, str]]` （Q1・新規）… sdist member 名の一覧から、`.claude/` 相対で
   should_skip True かつ**注入対照以外**のものを `(SDIST_EXCLUDE_VIOLATION, rel)` で列挙する。
   対照のみなら空リスト。既存の名前ベース検出器と同じ入力形（member 名の列）を取り、
-  ディレクトリエントリ・`.claude/` 境界外は対象外
-- `find_control_size_violations(members) -> list[tuple[str, str]]` （Q2・新規）…
-  `(member 名, サイズ)` の列から、注入対照のサイズが 0 でなければ
-  `(CONTROL_NOT_EMPTY, detail)` を返す。detail には対照の相対パスと**実測サイズ**を含める。
-  対照が不在なら空リスト（不在は `find_sdist_control_reason` の `CONTROL_MISSING` の担当で、
-  二重報告しない）。`should_skip` 引数は**持たない**（`CONTROL_LEAKED` と同じく
-  SSOT 劣化から独立させるため）。既存純粋検出器のシグネチャは変更しない
+  ディレクトリエントリ・`.claude/` 境界外は対象外。**名前のみを受ける形は不変**（R2(e)）。
+  既定経路が渡すのは **kind が "file" または "link" の member 名**（R2(b)）
+- `find_control_size_violations(members) -> list[tuple[str, str]]` （Q2）…
+  注入対照のサイズが 0 でなければ `(CONTROL_NOT_EMPTY, detail)` を返す。detail には対照の
+  相対パスと**実測サイズ**を含める。対照が不在なら空リスト（不在は
+  `find_sdist_control_reason` の `CONTROL_MISSING` の担当で、二重報告しない）。
+  `should_skip` 引数は**持たない**（`CONTROL_LEAKED` と同じく SSOT 劣化から独立させるため）。
+  **R2(e) で入力形を 3 要素 `(name, size, kind)` へ改訂**し、対照とみなすのは
+  kind == "file" の member のみ（link / dir の同名 member は対照ではない・R2(c)）
+- `read_sdist_members(path) -> tuple[list[tuple[str, int, str]] | None, str | None]` …
+  **R2 で 3 要素 `(name, size, kind)` へ改訂**。kind の値域は `"file"` / `"link"` / `"dir"`
+  の 3 値ちょうどで、`tarfile` の述語から `isfile()` → `"file"` /
+  `issym()` または `islnk()` → `"link"` / `isdir()` → `"dir"` と導出する。
+  **4 述語すべて False の member（FIFO・キャラクタ/ブロックデバイス等）は検証不能**
+  として `(None, LAYOUT_ANOMALY)` を返す（fail-closed。種別フィルタで検査を素通りさせない）。
+  tar として読めない場合は従来どおり `(None, ZIP_READ_ERROR)`
 - `SDIST_EXCLUDE_VIOLATION` / `CONTROL_NOT_EMPTY` … 新規の違反種別 literal（exit 1 側）。
   `VIOLATION_KINDS` は 7 種になる（`test_violation_kinds_are_exactly_seven` が凍結）
 
 ## Q3〜Q6 が凍結する observable な挙動（関数名でなく出力で固定する）
 
-- **サニタイズ（Q3）**: 違反 detail / 検証不能 detail に含まれる C0 制御文字（`\\x00`-`\\x1f`）と
-  DEL（`\\x7f`）は**除去**する（置換ではない: 除去後の文字列が原文の連結と一致することを
-  assert する）。適用 3 サイトは (1) wheel 違反ループ (2) sdist 違反出力 (3) 検証不能 detail
+- **サニタイズ（Q3 / R1）**: 違反 detail / 検証不能 detail に含まれる正本
+  （`.claude/hooks/_hook_utils.py` の `_TERMINAL_SANITIZE_RE`）と**同一の全クラス**を
+  **除去**する（置換ではない: 除去後の文字列が原文の連結と一致することを assert する）。
+  適用 3 サイトは (1) wheel 違反ループ (2) sdist 違反出力 (3) 検証不能 detail
 - **合算出力（Q6）**: 違反出力のヘッダ `配布物の退行を検出しました:` は 1 回だけ出し、
   sdist 側・wheel 側の違反をその下に全件並べて exit 1（種別ごとに別ブロックにしない）
 - **PASS 行（Q5）**: 既定モードの PASS 行は `sdist EXCLUDE 混入なし` と `対照サイズ 0` を含み、
@@ -119,6 +151,45 @@ architecture は「純粋検出器の分離」「`should_skip` を明示引数�
 導入されているか」に依存してしまう（CI の pytest matrix は `build` を入れない）。
 `main` は `build_runner` の戻り値だけで分岐すること。
 
+## R1 / R2 が凍結する契約（E 周回 2 是正・plan-report-20260815-003232.md）
+
+**R1: サニタイズ被覆は正本と同一（部分列挙をしない）**
+
+除去対象は正本 `_TERMINAL_SANITIZE_RE` の全クラス（2026-08-15 に正本を Read して照合）:
+C0（U+0000–U+001F）・DEL（U+007F）・C1（U+0080–U+009F・NEL U+0085 を含む）・
+ゼロ幅 U+200B–U+200F・行区切り U+2028 / U+2029・双方向 U+202A–U+202E・U+2066–U+2069・
+BOM U+FEFF。
+
+- (a) 代表文字の除去を正負両方向で凍結する。**残存側の題材は ASCII・日本語・ZWJ を含まない
+  単一コードポイント絵文字（U+1F600）に限定する**（ZWJ〔U+200D〕は正本の除去対象なので、
+  ZWJ 連結絵文字を題材にすると「残存すべき」という前提自体が成り立たない）
+- (b) 同一性の**機械突合**: テストから `.claude/hooks/_hook_utils.py` を
+  `importlib.util.spec_from_file_location` で読み込み、**U+0000–U+FFFF の全コードポイント**
+  について「正本の正規表現が除去するか」と「`verify_wheel._sanitize` が除去するか」の真偽が
+  一致することを突合する。**BMP 外（U+10000 以上）は現行正本に対象が無いため走査対象外**
+  とする（正本が BMP 外へ広がった場合、本突合はその追加分を検知しない。その場合は
+  比較ドメインの拡張が必要になる）。`scripts/` は配布物 hooks に依存させない方針のため
+  実装側は集合を**複製**する形になり、この突合が唯一の drift 検知手段になる
+- (c) 除去後の文字列は `str.splitlines()` で行分裂しない（BMP 内で `splitlines` が行境界と
+  みなす文字を機械導出して題材にする）
+
+**R2: sdist member 種別の射程（SR [G-1] の死角を閉じる）**
+
+入力形は `(name, size, kind)` の 3 要素。既定経路（`_verify_via_build`）は読み取った member を
+kind で振り分けてから各検出器へ渡す:
+
+| 検査 | 対象 kind | 根拠 |
+|---|---|---|
+| EXCLUDE 名前検査（`find_sdist_violations`） | file + link | link の名前自体が sdist として公開される（SR [G-1]） |
+| 候補件数の母数（`count_exclude_candidates`） | **file のみ** | link は内容を配布しないため「実フィルタが実ファイルを落とした」観測にならない（R2(d)） |
+| 対照の存在・空性（`find_sdist_control_reason` / `find_control_size_violations`） | **file のみ** | 対照は「実ファイルとして配布される内容の空性」を保証するものなので、link / dir の同名 member は対照ではない（R2(c)） |
+| dir member | 全検査の対象外 | tar は dir member 名の末尾スラッシュを剥がすため、パス名検査に入れると `agent-memory/tester` のようなディレクトリが EXCLUDE 違反として誤検出される（R2(a)） |
+| 4 述語すべて False（FIFO・デバイス等） | 検査せず `LAYOUT_ANOMALY` | 種別フィルタで新たな死角を作らないための fail-closed |
+
+link member の合成は **`tarfile.TarInfo` の `type` に `tarfile.SYMTYPE`（hardlink は
+`LNKTYPE`）を直接指定**して行う。FS 上に実体 symlink を作らない（Windows では
+symlink 作成が権限依存になるため）。この理由で `skipif` による回避も行わない。
+
 ## 射程外（confirm へ受け渡す観測）
 
 - `WHEEL_NOT_FOUND` の **CLI 層**での実測（`--wheel` に存在しないパスを与えて exit 3＋
@@ -129,6 +200,7 @@ architecture は「純粋検出器の分離」「`should_skip` を明示引数�
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 import io
 import sys
@@ -150,11 +222,14 @@ from c3 import _excludes  # noqa: E402
 from c3._excludes import KEEP_PATTERNS, should_skip  # noqa: E402
 
 # 注意（DC-AS-001）: 下記の一括 import には**実装済みの API だけ**を並べる。
-# Red で追加する新 API（`SDIST_EXCLUDE_VIOLATION` / `CONTROL_NOT_EMPTY` /
-# `find_sdist_violations` / `find_control_size_violations`）をここへ足すと、実装不在の
-# 時点で collection 時 ImportError になり本ファイル全件が error になる。
+# Red で追加する新 API（E 周回 1: `SDIST_EXCLUDE_VIOLATION` / `CONTROL_NOT_EMPTY` /
+# `find_sdist_violations` / `find_control_size_violations`、E 周回 2: `read_sdist_members` の
+# 3 要素化・`_sanitize` の被覆拡張）をここへ足すと、実装不在の時点で collection 時
+# ImportError になり本ファイル全件が error になる。
 # 新 API は上の `verify_wheel` 名前空間経由の属性アクセスで参照する
 # （モジュール docstring「新 API を module-level の一括 import へ足さない」を参照）。
+# E 周回 2 の Red も同じ規約に従い、`verify_wheel.read_sdist_members` /
+# `verify_wheel._sanitize` を属性アクセスで参照する。
 from verify_wheel import (  # noqa: E402
     BUILD_FAILED,
     BUILD_TOOL_MISSING,
@@ -196,6 +271,10 @@ _SDIST_CLAUDE_PREFIX = _SDIST_ROOT + ".claude/"
 _CONTROL_RELPATH = "state/setup_done.flag"
 # 実フィルタが落とすべき典型（v1.1.0 の混入 defect と同型）
 _EXCLUDED_SAMPLE = "state/tier_selection.json"
+# `should_skip` True になる**ディレクトリ**の `.claude/` 相対名（R2(a) の題材）。
+# tar は dir member 名の末尾スラッシュを剥がすため、種別を見ずにパス名検査へ入れると
+# このディレクトリが EXCLUDE 違反として誤検出される（`TestFixtureSanity` が前提を固定する）。
+_EXCLUDED_DIR_SAMPLE = "agent-memory/tester"
 
 # `.claude/` 相対で should_skip False の通常配布ファイル（fixture の素材）
 _ORDINARY_RELPATHS = (
@@ -212,6 +291,121 @@ _ORDINARY_RELPATHS = (
 # アーカイブを経由しない検証不能 detail（`--wheel` の不在パス）でのみ使う。
 _C0_AND_DEL = "".join(chr(c) for c in range(1, 32)) + "\x7f"
 _NUL_C0_AND_DEL = "\x00" + _C0_AND_DEL
+
+# ---------------------------------------------------------------------------
+# R1: サニタイズ被覆（正本 `.claude/hooks/_hook_utils.py` の `_TERMINAL_SANITIZE_RE`）
+# ---------------------------------------------------------------------------
+
+# 正本の実体パス。テスト層だけが配布物 hooks を読む（`scripts/` 側は複製する方針のため、
+# この機械突合が唯一の drift 検知手段になる）。
+_HOOK_UTILS_PATH = (
+    Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "_hook_utils.py"
+)
+
+# 機械突合の比較ドメイン（DC-AM-003 で確定）。BMP 外は現行正本に対象が無いため走査しない。
+_SANITIZE_COMPARE_DOMAIN = range(0x10000)
+
+# R1(a) 除去される側の代表文字（正本の全クラスから 1 つ以上ずつ・部分列挙にしない）。
+# ソースに不可視文字を直書きしないため `chr()` で書く（正本 `_hook_utils.py` と同じ流儀）。
+_SANITIZE_REMOVED_SAMPLES: tuple[tuple[str, str], ...] = (
+    (chr(0x0000), "U+0000 NUL (C0)"),
+    (chr(0x000A), "U+000A LF (C0 / 行分裂)"),
+    (chr(0x001B), "U+001B ESC (C0 / ANSI エスケープ)"),
+    (chr(0x007F), "U+007F DEL"),
+    (chr(0x0085), "U+0085 NEL (C1 / 行分裂)"),
+    (chr(0x009B), "U+009B CSI (C1)"),
+    (chr(0x200B), "U+200B ZERO WIDTH SPACE (ゼロ幅)"),
+    (chr(0x200D), "U+200D ZWJ (ゼロ幅)"),
+    (chr(0x200F), "U+200F RLM (ゼロ幅)"),
+    (chr(0x2028), "U+2028 LINE SEPARATOR (行区切り)"),
+    (chr(0x2029), "U+2029 PARAGRAPH SEPARATOR (行区切り)"),
+    (chr(0x202A), "U+202A LRE (双方向埋め込み)"),
+    (chr(0x202E), "U+202E RLO (双方向上書き・ファイル名偽装)"),
+    (chr(0x2066), "U+2066 LRI (双方向 isolate)"),
+    (chr(0x2069), "U+2069 PDI (双方向 isolate)"),
+    (chr(0xFEFF), "U+FEFF BOM"),
+)
+
+# R1(a) 残存する側の題材。ASCII・日本語・**ZWJ を含まない単一コードポイント絵文字**に限定する
+# （ZWJ〔U+200D〕は正本の除去対象なので、ZWJ 連結絵文字は「残存すべき」前提が成り立たない）。
+_SANITIZE_KEPT_SAMPLES: tuple[str, ...] = (
+    "state/tier_selection.json",
+    "reports/plan-report-20260815-003232.md",
+    "docs/c3追加予定機能リスト.md",
+    "エージェントメモリ.md",
+    "\U0001f600",
+    "smile\U0001f600.md",
+)
+
+# `str.splitlines()` が行境界とみなす BMP 内の全文字（機械導出・R1(c) の題材）。
+# 手で列挙せずここで数え上げることで、「列挙漏れのぶんだけ検査が甘くなる」形を避ける。
+_LINE_BREAKING_CHARS = "".join(
+    # nul-boundary: allow(題材文字列の組み立てであり機械可読な行集合の区切りではない)
+    ch
+    for ch in (chr(cp) for cp in _SANITIZE_COMPARE_DOMAIN)
+    if len(("a" + ch + "b").splitlines()) > 1
+)
+
+
+def load_hook_utils():
+    """正本 `.claude/hooks/_hook_utils.py` をファイルパスから読み込む。
+
+    hooks はスタンドアロン実行前提で package になっていないため、
+    `importlib.util.spec_from_file_location` で読み込む（`tests/test_archive_reports.py`
+    と同じ道具立て）。**不在時に skip しない**: この突合は複製された sanitize 集合の
+    唯一の drift 検知手段であり、静かに無検査へ落とすと R1 の実効が消えるため。
+    """
+    if not _HOOK_UTILS_PATH.is_file():
+        raise FileNotFoundError(
+            f"sanitize 集合の正本が見つからない: {_HOOK_UTILS_PATH}\n"
+            "（この突合が複製の drift 検知手段なので skip せず失敗させる）"
+        )
+    spec = importlib.util.spec_from_file_location(
+        "_hook_utils_for_verify_wheel_test", _HOOK_UTILS_PATH
+    )
+    assert spec is not None and spec.loader is not None, (
+        f"import spec を組めない: {_HOOK_UTILS_PATH}"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def canonical_bmp_removal_set() -> frozenset[int]:
+    """正本 `_TERMINAL_SANITIZE_RE` が U+0000–U+FFFF のうち除去するコードポイントの集合。
+
+    正本を 1 回だけ読み込み、比較ドメイン全域を走査して集合化する
+    （テストごとに 65536 回 hooks を読み直さないため）。
+    """
+    pattern = load_hook_utils()._TERMINAL_SANITIZE_RE
+    return frozenset(
+        cp for cp in _SANITIZE_COMPARE_DOMAIN if pattern.sub("", chr(cp)) == ""
+    )
+
+
+# ---------------------------------------------------------------------------
+# R2: sdist member の種別（kind）
+# ---------------------------------------------------------------------------
+
+# `read_sdist_members` が返す kind の値域（3 値ちょうど）。
+_KIND_FILE = "file"
+_KIND_LINK = "link"
+_KIND_DIR = "dir"
+_KINDS = (_KIND_FILE, _KIND_LINK, _KIND_DIR)
+
+# 合成 sdist の**書き出し専用**の種別指定（`_write_sdist` の第 3 要素）。
+# "file" / "link" / "dir" は読み戻したときの kind と同じ値になる。"hardlink" は kind "link" へ、
+# "fifo" は 4 述語すべて False（＝未知種別）へ落ちる。R2(f): FS 上に実体 symlink は作らず
+# `tarfile.TarInfo.type` を直接指定する（Windows で symlink 作成が権限依存になるため）。
+_TAR_SPEC_HARDLINK = "hardlink"
+_TAR_SPEC_FIFO = "fifo"
+_TAR_TYPE_BY_SPEC = {
+    _KIND_FILE: tarfile.REGTYPE,
+    _KIND_LINK: tarfile.SYMTYPE,
+    _KIND_DIR: tarfile.DIRTYPE,
+    _TAR_SPEC_HARDLINK: tarfile.LNKTYPE,
+    _TAR_SPEC_FIFO: tarfile.FIFOTYPE,
+}
 
 # PASS 行の識別と、`--wheel` モードで逐語不変であるべき既存文言（Q5）
 _PASS_LINE_PREFIX = "検証 PASS"
@@ -269,20 +463,33 @@ def clean_sdist_namelist(
 
 
 def clean_sdist_members(
-    extra: tuple[tuple[str, int], ...] = (),
+    extra: tuple[tuple[str, int, str], ...] = (),
     with_control: bool = True,
     control_size: int = 0,
-) -> list[tuple[str, int]]:
-    """sdist tarball の `(member 名, サイズ)` 一覧を組み立てる（Q2 / Q4 用）。
+) -> list[tuple[str, int, str]]:
+    """sdist tarball の `(member 名, サイズ, kind)` 一覧を組み立てる（Q2 / Q4 / R2 用）。
 
-    `clean_sdist_namelist()` と同じ member 集合をサイズ付きで返す。注入対照だけは
-    `control_size` でサイズを指定できる（既定 0 = 現行の実 sdist と同じ状態）。
+    `clean_sdist_namelist()` と同じ member 集合をサイズ・種別付きで返す。既定の member は
+    すべて `kind == "file"`。注入対照だけは `control_size` でサイズを指定できる
+    （既定 0 = 現行の実 sdist と同じ状態）。
+
+    R2(e) で対照系 2 関数の入力形が 3 要素になったため、本ヘルパも 3 要素へ改訂した
+    （`extra` も `(name, size, kind)` で渡す）。
     """
-    members = [(name, 0) for name in clean_sdist_namelist(with_control=False)]
+    members = [(name, 0, _KIND_FILE) for name in clean_sdist_namelist(with_control=False)]
     if with_control:
-        members.append((_SDIST_CLAUDE_PREFIX + _CONTROL_RELPATH, control_size))
+        members.append((_SDIST_CLAUDE_PREFIX + _CONTROL_RELPATH, control_size, _KIND_FILE))
     members += list(extra)
     return members
+
+
+def member_names(members, kinds: tuple[str, ...] = _KINDS) -> list[str]:
+    """3 要素 member 列から、指定 kind の member 名だけを取り出す。
+
+    既定経路が名前ベース検出器へ渡す入力（EXCLUDE 名前検査 = file + link /
+    候補件数の母数 = file のみ）を、テスト側で同じ形に組むためのヘルパ。
+    """
+    return [name for name, _size, kind in members if kind in kinds]
 
 
 def kinds(violations) -> set[str]:
@@ -352,6 +559,24 @@ class TestFixtureSanity:
         """注入する「違反エントリ」が SSOT 上で本当に除外対象であること。"""
         assert should_skip(_EXCLUDED_SAMPLE) is True
         assert should_skip(_CONTROL_RELPATH) is True
+
+    def test_dir_sample_would_be_a_violation_if_kind_were_ignored(self):
+        """R2(a) の題材が「種別を見なければ違反になる」ものであること。
+
+        tar は dir member 名の末尾スラッシュを剥がすため、この名前はパス名としては
+        `should_skip` True になる。dir 除外の検査が空回りしていないことの前提。
+        """
+        assert should_skip(_EXCLUDED_DIR_SAMPLE) is True, (
+            f"{_EXCLUDED_DIR_SAMPLE} が SSOT 上で除外対象でない"
+            "（dir 対象外の検査が「そもそも違反にならない名前」を測ってしまう）"
+        )
+
+    def test_line_breaking_chars_are_actually_collected(self):
+        """R1(c) の題材（機械導出した行境界文字）が空でないこと。"""
+        assert _LINE_BREAKING_CHARS, "splitlines の行境界文字が 1 つも集まっていない"
+        assert "\n" in _LINE_BREAKING_CHARS and chr(0x2028) in _LINE_BREAKING_CHARS, (
+            f"行境界文字の導出が壊れている: {ascii(_LINE_BREAKING_CHARS)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -579,21 +804,27 @@ class TestInjectedControl:
     # --- (a) sdist 側の在/不在 ------------------------------------------
 
     def test_sdist_with_control_is_ok(self):
-        """正: sdist listing に対照が在れば検証可能（None）。"""
-        assert find_sdist_control_reason(clean_sdist_namelist()) is None
+        """正: sdist member に対照（file）が在れば検証可能（None）。
+
+        R2(e) 追随: `find_sdist_control_reason` の入力形が 3 要素 `(name, size, kind)` に
+        なったため、`clean_sdist_namelist()`（名前のみ）から `clean_sdist_members()` へ変更。
+        """
+        assert find_sdist_control_reason(clean_sdist_members()) is None
 
     def test_sdist_without_control_is_control_missing(self):
         """負: 対照が sdist に無ければ CONTROL_MISSING（検証不能・対照喪失）。
 
-        候補件数だけは 1 件以上ある listing を使い、「対照の不在」が理由であることを
+        候補件数だけは 1 件以上ある member 列を使い、「対照の不在」が理由であることを
         (c) の候補件数 0 と分離する。
+
+        R2(e) 追随: 入力形を 3 要素へ変更（母数の観測は file member 名で行う）。
         """
-        names = clean_sdist_namelist(
+        members = clean_sdist_members(
             with_control=False,
-            extra=(_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE,),
+            extra=((_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_FILE),),
         )
-        assert count_exclude_candidates(names) >= 1
-        assert find_sdist_control_reason(names) == CONTROL_MISSING
+        assert count_exclude_candidates(member_names(members, (_KIND_FILE,))) >= 1
+        assert find_sdist_control_reason(members) == CONTROL_MISSING
 
     # --- (b) 独立性の実証（ADR-7 追補） ----------------------------------
 
@@ -642,10 +873,13 @@ class TestInjectedControl:
 
         always-False の should_skip を引数で与えて件数 0 を作る
         （＝ SSOT が劣化して「何も除外対象でない」と答える状況の再現）。
+
+        R2(e) 追随: `find_sdist_control_reason` へ渡す入力形を 3 要素へ変更。
         """
-        names = clean_sdist_namelist()
+        members = clean_sdist_members()
+        names = member_names(members, (_KIND_FILE,))
         assert count_exclude_candidates(names, should_skip=always_false) == 0
-        assert find_sdist_control_reason(names, should_skip=always_false) == CONTROL_MISSING
+        assert find_sdist_control_reason(members, should_skip=always_false) == CONTROL_MISSING
 
 
 # ---------------------------------------------------------------------------
@@ -869,16 +1103,35 @@ def _write_wheel(path: Path, namelist) -> Path:
 def _write_sdist(path: Path, items) -> Path:
     """合成 sdist を書き出す。
 
-    `items` の要素は member 名（サイズ 0）か `(member 名, サイズ)` タプル。
-    後者は Q2（対照サイズ検査）の負の対照を作るための拡張で、既存呼び出し
-    （名前だけの列）は従来どおり全 member size 0 の sdist になる。
+    `items` の要素は次の 3 形のいずれか:
+
+    - member 名（サイズ 0・通常ファイル）
+    - `(member 名, サイズ)`（通常ファイル。Q2 の対照サイズ検査の負の対照）
+    - `(member 名, サイズ, 種別指定)`（R2。種別指定は `_TAR_TYPE_BY_SPEC` のキー）
+
+    **R2(f)**: link member は `tarfile.TarInfo.type` に `SYMTYPE`（hardlink は `LNKTYPE`）を
+    **直接指定**して合成する。FS 上に実体 symlink を作らない（Windows では symlink 作成が
+    権限依存になるため）。この理由で `skipif` による回避も行わない。
+    `"fifo"` は 4 述語（isfile / issym / islnk / isdir）すべてが False になる代表として使う。
     """
     with tarfile.open(path, "w:gz") as tf:
         for item in items:
-            name, size = item if isinstance(item, tuple) else (item, 0)
+            if isinstance(item, tuple):
+                name, size = item[0], item[1]
+                spec = item[2] if len(item) > 2 else _KIND_FILE
+            else:
+                name, size, spec = item, 0, _KIND_FILE
             info = tarfile.TarInfo(name)
-            info.size = size
-            tf.addfile(info, io.BytesIO(b"x" * size))
+            info.type = _TAR_TYPE_BY_SPEC[spec]
+            if info.type == tarfile.REGTYPE:
+                info.size = size
+                tf.addfile(info, io.BytesIO(b"x" * size))
+                continue
+            # 非通常ファイルは tar 本体にデータを持たない（size は 0 でなければならない）
+            info.size = 0
+            if info.type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                info.linkname = "CLAUDE.md"
+            tf.addfile(info)
     return path
 
 
@@ -1093,16 +1346,22 @@ class TestControlSize:
         assert verify_wheel.find_control_size_violations(members) == []
 
     def test_other_members_size_is_irrelevant(self):
-        """通常ファイルのサイズは検査対象外（対照だけの前提を測る検査）。"""
+        """通常ファイルのサイズは検査対象外（対照だけの前提を測る検査）。
+
+        R2(e) 追随: `extra` を 3 要素 `(name, size, kind)` へ変更。
+        """
         members = clean_sdist_members(
-            extra=((_SDIST_CLAUDE_PREFIX + "agents/tester.md", 4096),)
+            extra=((_SDIST_CLAUDE_PREFIX + "agents/tester.md", 4096, _KIND_FILE),)
         )
         assert verify_wheel.find_control_size_violations(members) == []
 
     def test_same_name_outside_claude_boundary_is_not_the_control(self):
-        """`.claude/` 境界の外にある同名ファイルを対照と誤認しない。"""
+        """`.claude/` 境界の外にある同名ファイルを対照と誤認しない。
+
+        R2(e) 追随: `extra` を 3 要素 `(name, size, kind)` へ変更。
+        """
         members = clean_sdist_members(
-            extra=((_SDIST_ROOT + "src/" + _CONTROL_RELPATH, 999),)
+            extra=((_SDIST_ROOT + "src/" + _CONTROL_RELPATH, 999, _KIND_FILE),)
         )
         assert verify_wheel.find_control_size_violations(members) == []
 
@@ -1298,8 +1557,9 @@ class TestEvaluationOrder:
             )
 
         # (b) 違反同士（sdist・wheel）は合算して 1 回で全件出力・exit 1。
+        # R2(e) 追随: `extra` を 3 要素 `(name, size, kind)` へ変更。
         sdist_dirty = clean_sdist_members(
-            control_size=3, extra=((_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0),)
+            control_size=3, extra=((_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_FILE),)
         )
         assert main([], build_runner=_FakeBuild(wheel_dirty, sdist_dirty)) == EXIT_VIOLATION
         captured = capsys.readouterr()
@@ -1314,4 +1574,366 @@ class TestEvaluationOrder:
             )
         assert combined.count(_VIOLATION_HEADER) == 1, (
             f"違反出力のヘッダが 1 回でない（合算 1 回出力になっていない）: {combined!r}"
+        )
+
+
+# ===========================================================================
+# E 周回 2 是正（plan-report-20260815-003232.md）の Red: R1〜R2
+#
+# 新 API / 新入力形はすべて `verify_wheel.<name>` の属性アクセスで参照する（DC-AS-001）。
+# 既存の一括 import ブロックには足さない。
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# R1: サニタイズ被覆（CR [CR-M-001] / SR [G-2]）
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeCoverage:
+    """R1(a)(c): 除去集合の代表文字を正負両方向で凍結し、行分裂しないことを測る。
+
+    除去（置換ではない）であることは「除去後の文字列が原文の連結と一致する」ことで判定する
+    （Q3 と同じ方式）。
+    """
+
+    @pytest.mark.parametrize(
+        "ch, label",
+        _SANITIZE_REMOVED_SAMPLES,
+        ids=[label.split(" ")[0] for _ch, label in _SANITIZE_REMOVED_SAMPLES],
+    )
+    def test_representative_character_is_removed(self, ch, label):
+        """負: 正本の全クラスの代表文字は detail から除去される。"""
+        detail = "state/tier" + ch + "_selection.json"
+        sanitized = verify_wheel._sanitize(detail)
+        assert sanitized == "state/tier_selection.json", (
+            f"{label} が除去されていない（または置換方式になっている）: {ascii(sanitized)}"
+        )
+
+    @pytest.mark.parametrize("text", _SANITIZE_KEPT_SAMPLES)
+    def test_ordinary_text_is_left_untouched(self, text):
+        """正: ASCII・日本語・単一コードポイント絵文字は 1 文字も削られない。
+
+        残存側の題材を ZWJ 連結絵文字にしないのは、ZWJ（U+200D）自体が正本の除去対象で
+        あり「残存すべき」という前提が成り立たないため（R1(a)）。
+        """
+        assert verify_wheel._sanitize(text) == text, (
+            f"残存すべき文字列が削られている: {ascii(verify_wheel._sanitize(text))}"
+        )
+
+    def test_sanitized_detail_never_splits_into_multiple_lines(self):
+        """(c) 除去後の detail は `str.splitlines()` で行分裂しない。
+
+        題材は「BMP 内で `splitlines` が行境界とみなす全文字」を機械導出したもの
+        （手で列挙しないので、列挙漏れのぶんだけ検査が甘くなる形にならない）。
+        """
+        detail = "head" + _LINE_BREAKING_CHARS + "tail"
+        sanitized = verify_wheel._sanitize(detail)
+        assert sanitized == "headtail", (
+            f"行境界文字が除去されていない: {ascii(sanitized)}"
+        )
+        assert sanitized.splitlines() == ["headtail"], (
+            f"除去後の detail が複数行に分裂している: {ascii(sanitized)}"
+        )
+
+
+class TestSanitizeMatchesCanonicalSource:
+    """R1(b): 除去集合が正本 `_TERMINAL_SANITIZE_RE` と U+0000–U+FFFF 全域で一致する。
+
+    `scripts/` は配布物 hooks に依存させない方針のため実装側は集合を**複製**する。
+    `.dev/hooks/_sync_check.py` の SYNC_GROUP はこの複製対を監視しないので、本突合が
+    唯一の drift 検知手段になる。
+
+    **比較ドメインは U+0000–U+FFFF（BMP）**。BMP 外は現行正本に対象が 1 つも無いため
+    走査対象外とする。したがって正本が将来 BMP 外へ広がった場合、本突合はその追加分を
+    検知しない（そのときは `_SANITIZE_COMPARE_DOMAIN` の拡張が必要になる）。
+    """
+
+    def test_canonical_source_is_loaded_and_non_trivial(self):
+        """突合オラクル自身の健全性（正本の読み込みが壊れていないこと）。"""
+        canonical = canonical_bmp_removal_set()
+        not_covered = [
+            label for ch, label in _SANITIZE_REMOVED_SAMPLES if ord(ch) not in canonical
+        ]
+        assert not not_covered, (
+            f"正本が代表文字を除去対象にしていない（読み込みが壊れている）: {not_covered}"
+        )
+        contaminated = [
+            ascii(text)
+            for text in _SANITIZE_KEPT_SAMPLES
+            if any(ord(c) in canonical for c in text)
+        ]
+        assert not contaminated, (
+            f"残存側の題材に正本の除去対象が混ざっている: {contaminated}"
+        )
+
+    def test_removal_set_matches_canonical_over_the_whole_bmp(self):
+        """U+0000–U+FFFF の全コードポイントで「除去するか」の真偽が一致する。"""
+        canonical = canonical_bmp_removal_set()
+        script_removed = {
+            cp for cp in _SANITIZE_COMPARE_DOMAIN if verify_wheel._sanitize(chr(cp)) == ""
+        }
+        only_canonical = sorted(canonical - script_removed)
+        only_script = sorted(script_removed - canonical)
+        assert not only_canonical and not only_script, (
+            "`_sanitize` の除去集合が正本 `_hook_utils._TERMINAL_SANITIZE_RE` と一致しない"
+            f"（正本のみ {len(only_canonical)} 件: "
+            f"{[f'U+{cp:04X}' for cp in only_canonical[:20]]} / "
+            f"実装のみ {len(only_script)} 件: "
+            f"{[f'U+{cp:04X}' for cp in only_script[:20]]}）"
+        )
+
+
+# ---------------------------------------------------------------------------
+# R2: sdist member 種別の射程（SR [G-1]）
+# ---------------------------------------------------------------------------
+
+
+class TestMemberFixtureSanity:
+    """合成 member の種別が狙いどおりに作られていることの番人（R2(f)）。"""
+
+    def test_link_fixture_is_a_tar_symlink_member(self, tmp_path):
+        """link member は `TarInfo.type = tarfile.SYMTYPE` の直接指定で作る。
+
+        FS 上に実体 symlink を作らない（Windows では symlink 作成が権限依存になるため）。
+        この理由により `skipif` による回避も行わない。
+        """
+        path = _write_sdist(
+            tmp_path / "c3-9.9.9.tar.gz",
+            [(_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_LINK)],
+        )
+        with tarfile.open(path) as tf:
+            info = tf.getmembers()[0]
+        assert info.type == tarfile.SYMTYPE and info.issym(), (
+            f"link fixture が tar symlink member になっていない: {info.type!r}"
+        )
+
+    def test_hardlink_fixture_is_a_tar_hardlink_member(self, tmp_path):
+        """hardlink member は `TarInfo.type = tarfile.LNKTYPE` の直接指定で作る。"""
+        path = _write_sdist(
+            tmp_path / "c3-9.9.9.tar.gz",
+            [(_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _TAR_SPEC_HARDLINK)],
+        )
+        with tarfile.open(path) as tf:
+            info = tf.getmembers()[0]
+        assert info.type == tarfile.LNKTYPE and info.islnk()
+
+    def test_dir_fixture_loses_its_trailing_slash_when_read_back(self, tmp_path):
+        """R2(a) の根拠の実測: tar は dir member 名の末尾スラッシュを剥がす。
+
+        そのため種別を見ずにパス名検査へ入れると、ディレクトリが EXCLUDE 対象パスとして
+        誤検出される（末尾 `/` による除外〔P7〕が効かない）。
+        """
+        path = _write_sdist(
+            tmp_path / "c3-9.9.9.tar.gz",
+            [(_SDIST_CLAUDE_PREFIX + _EXCLUDED_DIR_SAMPLE, 0, _KIND_DIR)],
+        )
+        with tarfile.open(path) as tf:
+            info = tf.getmembers()[0]
+        assert info.isdir()
+        assert info.name == _SDIST_CLAUDE_PREFIX + _EXCLUDED_DIR_SAMPLE, (
+            f"dir member 名の実測が前提と違う: {info.name!r}"
+        )
+        assert not info.name.endswith("/"), (
+            "末尾スラッシュが残っている（R2(a) の前提が成り立たない）"
+        )
+
+    def test_fifo_fixture_matches_none_of_the_four_predicates(self, tmp_path):
+        """未知種別の題材が本当に 4 述語すべて False であること。"""
+        path = _write_sdist(
+            tmp_path / "c3-9.9.9.tar.gz",
+            [(_SDIST_CLAUDE_PREFIX + "tmp/pipe", 0, _TAR_SPEC_FIFO)],
+        )
+        with tarfile.open(path) as tf:
+            info = tf.getmembers()[0]
+        assert not (info.isfile() or info.issym() or info.islnk() or info.isdir()), (
+            "fifo fixture が既知の 4 述語のいずれかに該当している"
+        )
+
+
+class TestSdistMemberKinds:
+    """`read_sdist_members` は 3 要素 `(name, size, kind)` を返し、未知種別で fail-closed。"""
+
+    def test_members_carry_kind_derived_from_tar_predicates(self, tmp_path):
+        """kind は tarfile の述語から導出する（isfile→file / issym・islnk→link / isdir→dir）。"""
+        path = _write_sdist(
+            tmp_path / "c3-9.9.9.tar.gz",
+            [
+                (_SDIST_CLAUDE_PREFIX + "CLAUDE.md", 3, _KIND_FILE),
+                (_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_LINK),
+                (_SDIST_CLAUDE_PREFIX + _EXCLUDED_DIR_SAMPLE, 0, _KIND_DIR),
+                (_SDIST_CLAUDE_PREFIX + "logs/hard.log", 0, _TAR_SPEC_HARDLINK),
+            ],
+        )
+        members, reason = verify_wheel.read_sdist_members(str(path))
+        assert reason is None, f"読める sdist で原因識別子が返っている: {reason!r}"
+        assert members == [
+            (_SDIST_CLAUDE_PREFIX + "CLAUDE.md", 3, "file"),
+            (_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, "link"),
+            (_SDIST_CLAUDE_PREFIX + _EXCLUDED_DIR_SAMPLE, 0, "dir"),
+            (_SDIST_CLAUDE_PREFIX + "logs/hard.log", 0, "link"),
+        ], (
+            "3 要素 (name, size, kind) で全種別が返っていない"
+            f"（link / dir が isfile() フィルタで落ちていないか）: {members!r}"
+        )
+
+    def test_unknown_member_type_is_fail_closed(self, tmp_path):
+        """4 述語すべて False の member（FIFO・デバイス等）は LAYOUT_ANOMALY（検証不能）。
+
+        種別フィルタで静かに検査対象から外すと SR [G-1] と同じクラスの死角を新設することに
+        なるため、fail-open にしない。
+        """
+        path = _write_sdist(
+            tmp_path / "c3-9.9.9.tar.gz",
+            [
+                (_SDIST_CLAUDE_PREFIX + "CLAUDE.md", 3, _KIND_FILE),
+                (_SDIST_CLAUDE_PREFIX + "tmp/pipe", 0, _TAR_SPEC_FIFO),
+            ],
+        )
+        members, reason = verify_wheel.read_sdist_members(str(path))
+        assert members is None, (
+            f"未知種別を含む sdist で member 一覧が返っている（fail-open）: {members!r}"
+        )
+        assert reason == LAYOUT_ANOMALY, (
+            f"未知種別が LAYOUT_ANOMALY として報告されない: {reason!r}"
+        )
+
+    def test_unreadable_tar_is_still_zip_read_error(self, tmp_path):
+        """負の対照: tar として読めない場合は従来どおり ZIP_READ_ERROR。"""
+        broken = tmp_path / "broken.tar.gz"
+        broken.write_bytes(b"not a tarball")
+        members, reason = verify_wheel.read_sdist_members(str(broken))
+        assert members is None
+        assert reason == ZIP_READ_ERROR
+
+
+class TestControlChecksTakeMemberKinds:
+    """R2(c)(e): 対照系 2 関数は 3 要素を受け、対照の成立・母数は **file member のみ**。
+
+    対照は「実ファイルとして配布される内容の空性」を保証するものなので、同名の link / dir
+    member は対照ではない（＝対照は不在）。
+    """
+
+    @pytest.mark.parametrize("kind", [_KIND_LINK, _KIND_DIR])
+    def test_non_file_control_is_control_missing(self, kind):
+        """(c) 対照名の member が file でなければ CONTROL_MISSING。"""
+        as_non_file = clean_sdist_members(
+            with_control=False,
+            extra=(
+                (_SDIST_CLAUDE_PREFIX + _CONTROL_RELPATH, 0, kind),
+                (_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_FILE),
+            ),
+        )
+        assert find_sdist_control_reason(as_non_file) == CONTROL_MISSING, (
+            f"kind={kind} の対照が「存在する」と数えられている"
+        )
+
+        as_file = clean_sdist_members(
+            with_control=False,
+            extra=(
+                (_SDIST_CLAUDE_PREFIX + _CONTROL_RELPATH, 0, _KIND_FILE),
+                (_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_FILE),
+            ),
+        )
+        assert find_sdist_control_reason(as_file) is None, (
+            "前提: 同じ member 集合で kind だけ file なら対照は成立する"
+            "（kind 以外の理由で CONTROL_MISSING になっていない）"
+        )
+
+    def test_candidate_count_source_is_file_members_only(self):
+        """(d) 候補件数の母数は file member のみ（link は数えない）。
+
+        link は内容を配布しないため「実フィルタが実ファイルを落とした」観測にならない。
+        名前検査（file + link）との非対称はこの根拠による。
+        """
+
+        def only_the_sample(rel_posix: str) -> bool:
+            """`_EXCLUDED_SAMPLE` だけを除外対象とみなす注入 should_skip。"""
+            return rel_posix == _EXCLUDED_SAMPLE
+
+        base = clean_sdist_members(with_control=False)
+        control = (_SDIST_CLAUDE_PREFIX + _CONTROL_RELPATH, 0, _KIND_FILE)
+        as_file = base + [control, (_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_FILE)]
+        as_link = base + [control, (_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_LINK)]
+
+        assert find_sdist_control_reason(as_file, should_skip=only_the_sample) is None, (
+            "前提: 唯一の候補が file member なら母数 1 件で対照は成立する"
+        )
+        assert (
+            find_sdist_control_reason(as_link, should_skip=only_the_sample) == CONTROL_MISSING
+        ), (
+            "唯一の候補が link member のとき母数が 1 件と数えられている"
+            "（母数が file のみになっていない）"
+        )
+
+    @pytest.mark.parametrize("kind", [_KIND_LINK, _KIND_DIR])
+    def test_size_check_ignores_non_file_control(self, kind):
+        """(c) 系: 対照名の link / dir member はサイズ検査の対象にしない。
+
+        対照ではないので「不在」として空リストを返す（不在の報告は
+        `find_sdist_control_reason` の `CONTROL_MISSING` の担当・二重報告しない）。
+        """
+        members = clean_sdist_members(
+            with_control=False,
+            extra=((_SDIST_CLAUDE_PREFIX + _CONTROL_RELPATH, 999, kind),),
+        )
+        assert verify_wheel.find_control_size_violations(members) == [], (
+            f"kind={kind} の同名 member が対照として扱われている"
+        )
+
+
+class TestMemberKindScopeViaDefaultRoute:
+    """R2(a)(b)(d): 既定経路が member 種別で検査対象を振り分けること（配線の実観測）。"""
+
+    def test_excluded_link_is_reported_and_excluded_dir_is_not(self, capsys):
+        """(a)(b)(d) を 1 入力で同時に観測する。
+
+        - (b) EXCLUDE 対象名の **link** member は `SDIST_EXCLUDE_VIOLATION`
+        - (a) EXCLUDE 対象名の **dir** member は全検査の対象外（出力に現れない）
+        - (d) 候補件数の母数は **file のみ**（注入対照の 1 件だけ）
+        """
+        members = clean_sdist_members(
+            extra=(
+                (_SDIST_CLAUDE_PREFIX + _EXCLUDED_SAMPLE, 0, _KIND_LINK),
+                (_SDIST_CLAUDE_PREFIX + _EXCLUDED_DIR_SAMPLE, 0, _KIND_DIR),
+            )
+        )
+        fake = _FakeBuild(clean_wheel_namelist(), members)
+
+        assert main([], build_runner=fake) == EXIT_VIOLATION
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+
+        assert verify_wheel.SDIST_EXCLUDE_VIOLATION in combined, (
+            "EXCLUDE 対象名の link member が検査を素通りしている（SR [G-1] の死角）"
+        )
+        assert _EXCLUDED_SAMPLE in combined, (
+            f"違反の詳細に link member 名が含まれない: {combined!r}"
+        )
+        assert _EXCLUDED_DIR_SAMPLE not in combined, (
+            "dir member が検査対象に入り誤検出されている"
+            f"（tar が末尾スラッシュを剥がすため）: {combined!r}"
+        )
+
+        counted = [
+            line for line in captured.out.splitlines() if "EXCLUDE 実効候補件数" in line
+        ]
+        assert len(counted) == 1, f"候補件数の行が 1 行でない: {captured.out!r}"
+        assert counted[0].rstrip().endswith(": 1"), (
+            "候補件数の母数に file 以外の member が数えられている"
+            f"（注入対照 1 件のはず）: {counted[0]!r}"
+        )
+
+    def test_unknown_member_type_makes_the_run_unverifiable(self, capsys):
+        """未知種別（FIFO 等）を含む sdist は exit 3・stderr 先頭行に LAYOUT_ANOMALY。"""
+        members = clean_sdist_members(
+            extra=((_SDIST_CLAUDE_PREFIX + "tmp/pipe", 0, _TAR_SPEC_FIFO),)
+        )
+        fake = _FakeBuild(clean_wheel_namelist(), members)
+
+        assert main([], build_runner=fake) == EXIT_UNVERIFIABLE
+        err = capsys.readouterr().err
+        first_line = err.splitlines()[0] if err.splitlines() else ""
+        assert first_line.startswith(LAYOUT_ANOMALY), (
+            f"未知種別の member が fail-closed になっていない: {err!r}"
         )

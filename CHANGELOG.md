@@ -14,7 +14,11 @@
   「除外フィルタが実際には何も落としていないのに緑」になるのを防ぐため、
   `.claude/state/setup_done.flag` を sdist にだけ注入する正の対照を組み込んでいる。
 - sdist（第二の公開成果物）側の EXCLUDE 混入検査と対照サイズ検査を追加
-  （違反種別 `SDIST_EXCLUDE_VIOLATION` / `CONTROL_NOT_EMPTY`）。
+  （違反種別 `SDIST_EXCLUDE_VIOLATION` / `CONTROL_NOT_EMPTY`）。違反 detail のサニタイズは
+  正本 `.claude/hooks/_hook_utils.py` の `_TERMINAL_SANITIZE_RE` と同一の全クラス
+  （C0/DEL/C1・ゼロ幅・行区切り・双方向制御・BOM）へ被覆拡張し、sdist member は
+  種別（file/link/dir）で検査対象を振り分ける（EXCLUDE 名前検査は file+link・
+  候補件数の母数と対照系検査は file のみ・dir は全検査の対象外）。
 
 ### 修正
 

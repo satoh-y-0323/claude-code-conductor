@@ -31,6 +31,24 @@ wheel namelist のうち `_template/.claude/` 境界より後ろを `.claude/` �
 
 期待値の正本（SSOT）は `src/c3/_excludes.py`。本スクリプトにパターンを複製しない。
 
+### sdist member の種別（kind）による検査射程
+
+sdist の member は `read_sdist_members` が `tarfile` の述語から kind
+（`"file"` / `"link"` / `"dir"`）を導出して返す。既定経路は kind により検査対象を
+振り分ける:
+
+- EXCLUDE 名前検査（6）: **file + link** が対象。link の名前自体が sdist として
+  公開されるため（存在するだけで死角になる）
+- 候補件数の母数・対照の存在/空性判定（7・正の対照）: **file のみ**が対象。
+  link は内容を配布しないため「実フィルタが実ファイルを落とした」観測にならず、
+  対照は「実ファイルとして配布される内容の空性」を保証するものなので link / dir の
+  同名 member は対照ではない（＝不在扱い）
+- dir member: **全検査の対象外**。tar は dir member 名の末尾スラッシュを剥がすため、
+  種別を見ずにパス名検査へ入れるとディレクトリが EXCLUDE 違反として誤検出される
+- 4 述語（isfile/issym/islnk/isdir）すべて False の member（FIFO・デバイス等）は
+  `read_sdist_members` の時点で fail-closed（`LAYOUT_ANOMALY`・検証不能）にする。
+  種別フィルタで静かに検査対象から外すと新たな死角になるため
+
 ## 正の対照（空の緑の防止）
 
 sdist は VCS ignore を尊重するため、`.claude/` 配下に `should_skip` True の実効候補は
@@ -38,10 +56,12 @@ sdist は VCS ignore を尊重するため、`.claude/` 配下に `should_skip` 
 `[tool.hatch.build.targets.sdist.force-include]` で `.claude/state/setup_done.flag` を
 sdist にだけ注入し、
 
-- sdist に対照が**在る**こと（無ければ検証不能 `CONTROL_MISSING`）
-- sdist 側の候補件数が 1 件以上あること（0 件なら `CONTROL_MISSING`）
+- sdist に対照が **file member として**在ること（無ければ検証不能 `CONTROL_MISSING`。
+  対照名が link / dir なら「対照は不在」として扱う）
+- sdist 側の候補件数（**file member のみを母数**とする）が 1 件以上あること
+  （0 件なら `CONTROL_MISSING`）
 - wheel に対照が**無い**こと（在れば違反 `CONTROL_LEAKED`）
-- sdist 側の対照が **0 バイト**であること（非 0 なら違反 `CONTROL_NOT_EMPTY`）
+- sdist 側の対照（file member）が **0 バイト**であること（非 0 なら違反 `CONTROL_NOT_EMPTY`）
 
 の四点で「実フィルタが毎回 1 件を実際に落とした」ことを実証する。
 
@@ -174,9 +194,30 @@ _WHEEL_MODE_PASS_LINE = (
 )
 _DEFAULT_MODE_PASS_LINE = _WHEEL_MODE_PASS_LINE + "・sdist EXCLUDE 混入なし・対照サイズ 0"
 
-# 違反 detail のサニタイズで除去する文字（C0 制御文字 `\x00`-`\x1f` と DEL `\x7f`）。
+# 違反 detail のサニタイズで除去する文字の集合。
+# 出典: `.claude/hooks/_hook_utils.py` の `_TERMINAL_SANITIZE_RE`（同一集合をここに複製）。
+# `scripts/` は配布物 hooks に依存させない方針のためファイル内に複製する
+# （変更時は両方を更新すること）。同一性は `tests/test_verify_wheel.py` の
+# `test_removal_set_matches_canonical_over_the_whole_bmp` が U+0000–U+FFFF 全域で機械突合する。
 # `str.translate` の削除テーブルとして使う（ord -> None で除去。置換ではない）。
-_CONTROL_CHAR_DELETIONS: dict[int, None] = {code: None for code in [*range(32), 127]}
+#
+# 除去範囲（正本と同一）:
+#   - C0 制御文字 (\x00-\x1f) ・ DEL + C1 制御文字 (\x7f-\x9f・NEL/CSI を含む)
+#   - ゼロ幅 (U+200B-U+200F) ・ 行区切り (U+2028/U+2029)
+#   - 双方向埋め込み・上書き (U+202A-U+202E) ・ 双方向 isolate (U+2066-U+2069)
+#   - BOM (U+FEFF)
+_CONTROL_CHAR_DELETIONS: dict[int, None] = {
+    code: None
+    for code in [
+        *range(0x00, 0x20),
+        *range(0x7f, 0xa0),
+        *range(0x200b, 0x2010),
+        *range(0x2028, 0x202a),
+        *range(0x202a, 0x202f),
+        *range(0x2066, 0x206a),
+        0xfeff,
+    ]
+}
 
 
 # ---------------------------------------------------------------------------
@@ -190,11 +231,12 @@ def _normalize(name: str) -> str:
 
 
 def _sanitize(detail: str) -> str:
-    """出力用の detail から C0 制御文字・DEL を**除去**する（置換しない）。
+    """出力用の detail から正本と同一の全クラス（`_CONTROL_CHAR_DELETIONS` 参照）を
+    **除去**する（置換しない）。
 
     アーカイブ内エントリ名は外部由来の文字列であり、そのまま端末へ流すと
-    エスケープシーケンスとして解釈されうる（改行を含めれば違反 1 件を複数行に
-    見せかけることもできる）。
+    エスケープシーケンス（ANSI・双方向制御による表示偽装）として解釈されうる
+    （改行を含めれば違反 1 件を複数行に見せかけることもできる）。
 
     ヘルパを配布物 hooks から import せずこのファイル内に置くのは、`scripts/` を
     配布物（`.claude/hooks/`）に依存させないため（配布物側の変更で dev ツールが壊れない）。
@@ -353,30 +395,39 @@ def find_sdist_violations(
     ]
 
 
-def _control_member_sizes(members: Sequence[tuple[str, int]]) -> list[int]:
-    """`(member 名, サイズ)` の列から、注入対照に一致する member のサイズを列挙する。"""
+def _control_member_sizes(members: Sequence[tuple[str, int, str]]) -> list[int]:
+    """`(member 名, サイズ, kind)` の列から、注入対照に一致する **file** member の
+    サイズを列挙する。
+
+    対照は「実ファイルとして配布される内容の空性」を保証するものなので、同名の
+    link / dir member は対照とみなさない（R2(c)）。
+    """
     return [
-        size for name, size in members if _sdist_claude_relpath(name) == _CONTROL_RELPATH
+        size
+        for name, size, kind in members
+        if kind == "file" and _sdist_claude_relpath(name) == _CONTROL_RELPATH
     ]
 
 
 def find_control_size_violations(
-    members: Sequence[tuple[str, int]],
+    members: Sequence[tuple[str, int, str]],
 ) -> list[tuple[str, str]]:
-    """注入対照 member が 0 バイトでなければ違反として列挙する。
+    """注入対照 member（kind == "file"）が 0 バイトでなければ違反として列挙する。
 
     非 0 バイトの対照はその内容が sdist として実際に公開されるため、検証不能
     （`CONTROL_MISSING`・exit 3）ではなく違反（exit 1）に置く。
 
     Args:
-        members: sdist tarball の `(member 名, サイズ)` のリスト
+        members: sdist tarball の `(member 名, サイズ, kind)` のリスト（R2 で 3 要素化）。
+            対照とみなすのは kind == "file" の member のみ。link / dir の同名 member は
+            対照ではない（＝不在として扱う。不在の報告は `find_sdist_control_reason` の
+            `CONTROL_MISSING` の担当で、ここでは二重報告しない）
 
     Returns:
         `(CONTROL_NOT_EMPTY, 対照の相対パスと実測サイズ)` のリスト。
 
-    注: 対照の**不在**はここでは報告しない（`find_sdist_control_reason` の
-    `CONTROL_MISSING` の担当・二重報告を避ける）。`should_skip` 引数を持たないのは、
-    `CONTROL_LEAKED` と同じく SSOT 劣化から独立させるため。
+    注: `should_skip` 引数は持たない。`CONTROL_LEAKED` と同じく SSOT 劣化から
+    独立させるため。
     """
     return [
         (
@@ -427,18 +478,26 @@ def count_exclude_candidates(
 
 
 def find_sdist_control_reason(
-    names: Sequence[str],
+    members: Sequence[tuple[str, int, str]],
     should_skip: Callable[[str], bool] = _excludes.should_skip,
 ) -> str | None:
     """注入対照が sdist 側で成立しているかを判定する。
 
+    Args:
+        members: sdist tarball の `(member 名, サイズ, kind)` のリスト（R2(e) で
+            3 要素化）。対照の存在判定・候補件数の母数はいずれも **kind == "file"**
+            の member のみを対象にする（R2(c)）。対照名の member が link / dir なら
+            「対照は不在」＝ `CONTROL_MISSING` になる。
+
     Returns:
-        `CONTROL_MISSING`（対照が sdist に不在 / 候補件数 0）または None
+        `CONTROL_MISSING`（対照が file として sdist に不在 / 候補件数〔file のみ〕0）
+        または None
     """
-    rels = set(_sdist_claude_relpaths(names))
+    file_names = [name for name, _size, kind in members if kind == "file"]
+    rels = set(_sdist_claude_relpaths(file_names))
     if _CONTROL_RELPATH not in rels:
         return CONTROL_MISSING
-    if count_exclude_candidates(names, should_skip=should_skip) == 0:
+    if count_exclude_candidates(file_names, should_skip=should_skip) == 0:
         return CONTROL_MISSING
     return None
 
@@ -487,19 +546,38 @@ def read_namelist(path: str | Path) -> tuple[list[str] | None, str | None]:
 
 def read_sdist_members(
     path: str | Path,
-) -> tuple[list[tuple[str, int]] | None, str | None]:
-    """sdist（tar.gz）のファイル member の `(名前, サイズ)` 一覧を読む。
+) -> tuple[list[tuple[str, int, str]] | None, str | None]:
+    """sdist（tar.gz）の全 member の `(名前, サイズ, kind)` 一覧を読む（R2）。
 
-    サイズは対照サイズ検査（`find_control_size_violations`）が使う。名前だけが要る
-    検査には `[name for name, _ in members]` を渡す（tar を 2 回開かない）。
+    kind は `tarfile` の述語から導出する: `isfile()` → `"file"` /
+    `issym()` または `islnk()` → `"link"` / `isdir()` → `"dir"`。
+    **4 述語すべて False の member（FIFO・キャラクタ/ブロックデバイス等）は検証不能**
+    として `(None, LAYOUT_ANOMALY)` を返す（fail-closed。種別フィルタで静かに
+    検査対象から外すと SR [G-1] と同じクラスの死角になるため）。
+
+    呼び出し側（`_verify_via_build`）は kind により検査対象を振り分ける
+    （EXCLUDE 名前検査 = file + link・候補件数の母数と対照系検査 = file のみ・
+    dir は全検査の対象外）。
 
     Returns:
-        `(members, 原因識別子)`。読めなければ `(None, ZIP_READ_ERROR)`
-        （アーカイブ読取失敗を wheel 側と同じ識別子で表す）。
+        `(members, 原因識別子)`。tar として読めなければ `(None, ZIP_READ_ERROR)`
+        （アーカイブ読取失敗を wheel 側と同じ識別子で表す）。未知種別を含む場合は
+        `(None, LAYOUT_ANOMALY)`。
     """
     try:
         with tarfile.open(path) as tf:
-            return [(m.name, m.size) for m in tf.getmembers() if m.isfile()], None
+            members: list[tuple[str, int, str]] = []
+            for m in tf.getmembers():
+                if m.isfile():
+                    kind = "file"
+                elif m.issym() or m.islnk():
+                    kind = "link"
+                elif m.isdir():
+                    kind = "dir"
+                else:
+                    return None, LAYOUT_ANOMALY
+                members.append((m.name, m.size, kind))
+            return members, None
     except (OSError, ValueError, tarfile.TarError):
         return None, ZIP_READ_ERROR
 
@@ -609,62 +687,113 @@ def _verify_existing_wheel(wheel_path: str) -> int:
     return _check_wheel(namelist)
 
 
+def _sdist_member_names_by_kind(
+    members: Sequence[tuple[str, int, str]], kinds: tuple[str, ...]
+) -> list[str]:
+    """3 要素 member 列から、指定 kind の member 名だけを取り出す（R2 の種別振り分け）。"""
+    return [name for name, _size, kind in members if kind in kinds]
+
+
+def _prepare_build_artifacts(
+    outdir: str | Path,
+    build_runner: Callable[[str], str | None],
+) -> tuple[tuple[str, list[str], str, list[tuple[str, int, str]]] | None, int | None]:
+    """ビルド実行・成果物選別・両アーカイブの読み取りをまとめる（`_verify_via_build` の分割）。
+
+    Returns:
+        成功時 `((wheel_path, namelist, sdist_path, sdist_members), None)`。
+        失敗時 `(None, exit_code)`（`_unverifiable` が既に出力済み）。
+    """
+    reason = build_runner(outdir)
+    if reason is not None:
+        return None, _unverifiable(reason, "公開等価ビルド（sdist 経由）を完了できませんでした")
+
+    wheel_path, reason = select_single_artifact(outdir, _WHEEL_GLOB)
+    if reason is not None:
+        return None, _unverifiable(
+            reason, f"ビルド成果物 {_WHEEL_GLOB} をちょうど 1 件に特定できません"
+        )
+
+    sdist_path, reason = select_single_artifact(outdir, _SDIST_GLOB)
+    if reason is not None:
+        return None, _unverifiable(
+            reason, f"ビルド成果物 {_SDIST_GLOB} をちょうど 1 件に特定できません"
+        )
+
+    namelist, reason = read_namelist(wheel_path)
+    if reason is not None:
+        return None, _unverifiable(reason, f"wheel を zip として読めません: {wheel_path}")
+
+    sdist_members, reason = read_sdist_members(sdist_path)
+    if reason is not None:
+        return None, _unverifiable(reason, f"sdist を tar として読めません: {sdist_path}")
+
+    return (wheel_path, namelist, sdist_path, sdist_members), None
+
+
+def _evaluate_sdist_side(
+    sdist_members: list[tuple[str, int, str]],
+) -> tuple[list[tuple[str, str]] | None, int | None]:
+    """R2: member を kind で振り分けて sdist 側 2 検査を評価する（`_verify_via_build` の分割）。
+
+    名前検査（EXCLUDE）の対象は file + link・候補件数の母数と対照系検査の対象は
+    file のみ・dir は全検査の対象外（`_sdist_member_names_by_kind` 参照）。
+
+    Returns:
+        成功時 `(sdist_violations, None)`。`CONTROL_MISSING` 時は `(None, exit_code)`
+        （`_unverifiable` が既に出力済み・最優先で即 return する評価順序）。
+    """
+    file_names = _sdist_member_names_by_kind(sdist_members, ("file",))
+    name_and_link_names = _sdist_member_names_by_kind(sdist_members, ("file", "link"))
+
+    print(
+        "EXCLUDE 実効候補件数（sdist の .claude/ 配下で should_skip True・母数は "
+        f"file member のみ）: {count_exclude_candidates(file_names)}"
+    )
+
+    reason = find_sdist_control_reason(sdist_members)
+    if reason is not None:
+        return None, _unverifiable(
+            reason,
+            "注入対照が成立していません"
+            f"（sdist の `{_CONTROL_RELPATH}`〔file member〕の存在と"
+            "候補件数 1 以上を確認してください）",
+        )
+
+    # 上の CONTROL_MISSING 検査を通過した時点で対照 file member は必ず 1 件以上ある
+    # （同じ member 列から対照の存在を確認しているため）。
+    print(
+        "注入対照の対照サイズ（sdist 内実測）: "
+        f"{_control_member_sizes(sdist_members)[0]} バイト"
+    )
+
+    violations = find_sdist_violations(name_and_link_names) + find_control_size_violations(
+        sdist_members
+    )
+    return violations, None
+
+
 def _verify_via_build(build_runner: Callable[[str], str | None]) -> int:
     """既定モード: 公開等価ビルド（sdist 経由）を実行して検証する。
 
     評価順序: sdist 側の検証不能（`CONTROL_MISSING`）は最優先で即 return し、その場合
     違反は 1 件も出力しない（検査が成立していない以上、違反の有無を主張できないため）。
-    違反（sdist 側・wheel 側）は合算して 1 回で全件出力する。
+    違反（sdist 側・wheel 側）は合算して 1 回で全件出力する（`_evaluate_sdist_side` 参照）。
     """
     outdir = tempfile.mkdtemp(prefix="c3-verify-wheel-")
     try:
-        reason = build_runner(outdir)
-        if reason is not None:
-            return _unverifiable(reason, "公開等価ビルド（sdist 経由）を完了できませんでした")
-
-        wheel_path, reason = select_single_artifact(outdir, _WHEEL_GLOB)
-        if reason is not None:
-            return _unverifiable(reason, f"ビルド成果物 {_WHEEL_GLOB} をちょうど 1 件に特定できません")
-
-        sdist_path, reason = select_single_artifact(outdir, _SDIST_GLOB)
-        if reason is not None:
-            return _unverifiable(reason, f"ビルド成果物 {_SDIST_GLOB} をちょうど 1 件に特定できません")
-
-        namelist, reason = read_namelist(wheel_path)
-        if reason is not None:
-            return _unverifiable(reason, f"wheel を zip として読めません: {wheel_path}")
-
-        sdist_members, reason = read_sdist_members(sdist_path)
-        if reason is not None:
-            return _unverifiable(reason, f"sdist を tar として読めません: {sdist_path}")
-
-        sdist_names = [name for name, _ in sdist_members]
+        artifacts, exit_code = _prepare_build_artifacts(outdir, build_runner)
+        if artifacts is None:
+            return exit_code
+        wheel_path, namelist, sdist_path, sdist_members = artifacts
 
         print(f"検証対象 wheel: {Path(wheel_path).name}")
         print(f"対照入力 sdist: {Path(sdist_path).name}")
-        print(
-            "EXCLUDE 実効候補件数（sdist の .claude/ 配下で should_skip True）: "
-            f"{count_exclude_candidates(sdist_names)}"
-        )
 
-        reason = find_sdist_control_reason(sdist_names)
-        if reason is not None:
-            return _unverifiable(
-                reason,
-                "注入対照が成立していません"
-                f"（sdist の `{_CONTROL_RELPATH}` の存在と候補件数 1 以上を確認してください）",
-            )
+        sdist_violations, exit_code = _evaluate_sdist_side(sdist_members)
+        if sdist_violations is None:
+            return exit_code
 
-        # 上の CONTROL_MISSING 検査を通過した時点で対照 member は必ず 1 件以上ある
-        # （同じ member 名の列から対照の存在を確認しているため）。
-        print(
-            "注入対照の対照サイズ（sdist 内実測）: "
-            f"{_control_member_sizes(sdist_members)[0]} バイト"
-        )
-
-        sdist_violations = find_sdist_violations(sdist_names) + find_control_size_violations(
-            sdist_members
-        )
         return _check_wheel(
             namelist,
             sdist_violations=sdist_violations,
