@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.71.1] - 2026-08-14
+
+### 修正
+
+- **`c3 ask` の Windows 非対話判定が機能せず無限ハングする欠陥を修正した**（v2.71.0
+  「既知の問題」の解消）。`sys.stdin.isatty()` が Windows で stdin を NUL / `/dev/null` へ
+  リダイレクトした場合にも True を誤返却し、`--response` 未指定で exit 1 にならず
+  `msvcrt.getwch()`（実コンソール直読み）で無限ハングしていた。判定を
+  `stdin_is_interactive_console()`（Windows は GetConsoleMode で実コンソール接続を判定・
+  POSIX は従来どおり `isatty()`）へ置換し、入口ゲートと対話パス直前の二重ゲートを
+  同一判定へ統一した
+- 判定ヘルパーを共有モジュール `src/c3/_terminal.py` へ移設し、関数全体を一箇所集約で
+  fail-closed 化した（想定外例外でも非対話扱い＝exit 1 契約を維持・KeyboardInterrupt /
+  SystemExit は伝播。`question.py` 側は re-export でシーム維持）
+- `_read_key` の POSIX 分岐に空読み EOF ガードを追加した（EOF 時のビジーループを解消し
+  既存の exit 1 経路へ接続）
+- `docs/cli-reference.md` の v2.71 既知問題注記を修正後の実挙動へ更新した
+
+### 内部
+
+- `tests/test_cli_ask.py` に回帰・凍結テスト計 17 件を追加した（修正前状態での赤化実証・
+  内部依存注入による fail-closed 凍結・Windows 限定 subprocess+timeout 統合テストを含む。
+  フルスイート 3322 緑・CI 全緑 run 31755508514）
+
 ## [2.71.0] - 2026-08-14
 
 ### 追加
