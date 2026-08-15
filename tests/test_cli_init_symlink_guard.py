@@ -2,22 +2,29 @@
 
 ## 対象
 
-``src/c3/cli_init.py`` の ``_copytree(src, dst, *, root=None)``。
+``src/c3/cli_init.py`` の ``_copytree(src, dst, *, root=None, real_root=None)``。
 ``c3 init`` が bundled template を利用先へ展開する唯一の経路であり、
 ``entry.is_dir()`` / ``entry.is_file()`` / ``shutil.copy2`` はいずれも
 **リンクを暗黙に辿る（dereference する）**。
 
-## 群の分類（この 1 ファイルに A 群と B 群が同居する）
+## 群の分類（この 1 ファイルに A 群・A2 群・B 群が同居する）
 
 - **A 群 = Red 群**: 是正前の ``_copytree`` で **赤になるべき** 性質。
   リンク entry をスキップし、スキップ 1 件につき stderr に 1 行警告する契約。
+- **A2 群 = E 周回 1 是正の Red 群**: A 群の是正（realpath 完全一致判定）を入れた
+  実装に対して **さらに赤になるべき** 性質。対象は 2 点。
+  (a) entry 側 ``os.path.realpath`` が ``OSError``（ELOOP 等）を送出したときの
+  fail-soft（当該 entry を警告付きスキップして続行・異常終了しない）
+  (b) ``shutil.copy2`` 直前のリンク再検証（TOCTOU 窓の縮小）
+  **A2 群は実リンクを作らず monkeypatch のみで性質を測るため、全プラットフォームで
+  実測可能**（下記「プラットフォーム差」の環境申告は A2 群には適用されない）。
 - **B 群 = 回帰ガード群**: 是正前から **緑であるべき** 性質。
   リンク防御を入れた結果として「全件スキップ」「exit code 変化」「件数表示のずれ」
   といった縮退を起こしていないことを検知する対照。
   **B 群は最初から Pass することが正しい。** Red 化する方向へ書き換えてはならない
   （書き換えると全件スキップ縮退が正の仕様として凍結される）。
 
-各テストの docstring 冒頭に ``[A群]`` / ``[B群]`` を明示する。
+各テストの docstring 冒頭に ``[A群]`` / ``[A2群]`` / ``[B群]`` を明示する。
 
 ## 警告の契約（A 群が要求するもの）
 
@@ -41,11 +48,16 @@
 したがって **Windows のローカル実行で Red を実測できるのは junction ケースのみ**であり、
 symlink 系ケースは skip される。これは想定内であり、初回の実行は次回 push 時の
 3 OS CI（ubuntu / macos）になる。
+
+**この環境申告が及ぶのは A 群 / B 群のうち実リンクを作るテストだけ**であり、
+実リンクを作らない A2 群（monkeypatch で性質を測る）には適用されない。
+A2 群は win32 を含む全プラットフォームで実行・実測される。
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import sys
@@ -54,6 +66,7 @@ from pathlib import Path
 import pytest
 
 from c3 import cli_init
+from c3._excludes import should_skip
 
 # リンク作成ヘルパーは tests/conftest.py に集約（tests/test_stop_agent_memory_warn.py と共有）。
 # tests/__init__.py が実在するパッケージ構成のため絶対 import で参照する。
@@ -354,6 +367,183 @@ class TestDanglingLinkWarns:
         cli_init._copytree(src, dst)
 
         _assert_single_skip_warning(capsys.readouterr().err, "broken")
+
+
+# ===========================================================================
+# A2 群 = E 周回 1 是正の Red 群
+#   （realpath 完全一致判定を入れた実装に対して さらに 赤になるべきもの）
+#   実リンクを作らず monkeypatch のみで測るため全プラットフォームで実行される。
+# ===========================================================================
+
+
+def _raise_realpath_for(monkeypatch, target: Path, err: int) -> None:
+    """``os.path.realpath`` が ``target`` に対してのみ ``OSError`` を送出するようにする.
+
+    seam を ``os.path.realpath`` に取るのは、是正が「entry 側 realpath を
+    ``try/except OSError`` で包む」ものであり、root 側の失敗は伝播させる契約
+    （architecture 改訂 6 の ADR-3 追補 1）だから。パス一致で対象を 1 件に絞ることで
+    root 側の解決には影響を与えない。それ以外のパスは本物へ委譲する
+    （pytest 自身や pathlib が realpath を使うため、無条件に壊すと計測が成立しない）。
+    """
+    real_realpath = os.path.realpath
+    target_key = os.path.normcase(os.path.abspath(os.fspath(target)))
+
+    def fake_realpath(path, *args, **kwargs):
+        if os.path.normcase(os.path.abspath(os.fspath(path))) == target_key:
+            raise OSError(err, "injected realpath failure")
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", fake_realpath)
+
+
+class TestEntryRealpathOSErrorIsFailSoft:
+    """[A2群] entry 側 realpath が OSError のとき、異常終了せず警告付きスキップで続行する.
+
+    現行実装（コミット 18fa5cb）の期待値（＝赤の正体）: ``_is_link_entry`` の
+    ``os.path.realpath(entry)`` は例外を捕捉しないため、``OSError`` が
+    ``_copytree`` / ``handle`` の外まで伝播して異常終了する。
+    """
+
+    @pytest.mark.parametrize(
+        "err",
+        [errno.ELOOP, errno.EACCES],
+        ids=["ELOOP", "EACCES"],
+    )
+    def test_copytree_skips_entry_and_continues(self, tmp_path, monkeypatch, capsys, err):
+        """[A2群] 例外を出す entry だけをスキップし、隣の通常ファイルは copy し続ける.
+
+        errno を 2 種で測るのは、契約が「``OSError`` を捕捉する」であって
+        特定 errno 限定ではないことを固定するため（ELOOP は代表例にすぎない）。
+        """
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "normal.md").write_text("normal", encoding="utf-8")
+        (src / "boom.md").write_text("boom", encoding="utf-8")
+
+        _raise_realpath_for(monkeypatch, src / "boom.md", err)
+
+        dst = tmp_path / "dst"
+        try:
+            copied = cli_init._copytree(src, dst)
+        except OSError as exc:
+            pytest.fail(f"entry 側 realpath の OSError が捕捉されず伝播した: {exc!r}")
+
+        assert not os.path.lexists(dst / "boom.md"), (
+            "realpath が解決できない entry がコピーされている（fail-soft の方向が逆）"
+        )
+        assert (dst / "normal.md").is_file(), "巻き添えで隣接する通常ファイルまでスキップしている"
+        assert copied == 1, f"コピー件数は通常ファイルの 1 件であるべき: {copied}"
+
+        _assert_single_skip_warning(capsys.readouterr().err, "boom.md")
+
+    def test_init_exit_code_is_zero_when_entry_realpath_raises(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """[A2群] ``c3 init`` 全体としても異常終了せず exit 0 で完了する.
+
+        ``_copytree`` 単体だけでなく CLI 入口まで fail-soft が届いていることを測る
+        （途中の層が握り潰して 0 件コピーの成功に化ける、の逆方向も件数表示で検知する）。
+        """
+        template = tmp_path / "template"
+        template.mkdir()
+        (template / "top.md").write_text("top", encoding="utf-8")
+        (template / "boom.md").write_text("boom", encoding="utf-8")
+
+        monkeypatch.setattr("c3.cli_init.templates_dir", lambda: template)
+        _raise_realpath_for(monkeypatch, template / "boom.md", errno.ELOOP)
+
+        target = tmp_path / "target"
+        try:
+            rc = cli_init.handle(
+                argparse.Namespace(
+                    target=target, force=False, platform="claude", git=False, no_git=True
+                )
+            )
+        except OSError as exc:
+            pytest.fail(f"c3 init が entry 側 realpath の OSError で異常終了した: {exc!r}")
+
+        assert rc == 0, f"リンク疑いの警告付きスキップで exit code が 0 でなくなった: {rc}"
+
+        captured = capsys.readouterr()
+        dest = target / ".claude"
+        assert (dest / "top.md").is_file(), "巻き添えで通常ファイルまでスキップしている"
+        assert not os.path.lexists(dest / "boom.md"), "realpath 解決不能な entry がコピーされている"
+
+        match = re.search(r"initialized .* \((\d+) files copied\)", captured.out)
+        assert match, f"stdout に件数表示が見つからない: {captured.out!r}"
+        assert int(match.group(1)) == len(_rel_files(dest)), (
+            f"stdout の件数表示 {match.group(1)} が実際の出力ファイル数と一致しない: "
+            f"{sorted(_rel_files(dest))!r}"
+        )
+
+        _assert_single_skip_warning(captured.err, "boom.md")
+
+
+class TestLinkCheckIsRepeatedBeforeCopy:
+    """[A2群] ``shutil.copy2`` の直前にリンク判定が再検証される（TOCTOU 窓の縮小）.
+
+    現行実装（コミット 18fa5cb）の期待値（＝赤の正体）: ``_is_link_entry`` は
+    ``should_skip`` 前段の 1 回しか呼ばれないため、初回判定の後にリンクへ
+    差し替わっても検知されず ``shutil.copy2`` がそのまま走る。
+
+    実時間のレースは組まない。注入点（seam）は ``cli_init._is_link_entry`` の
+    monkeypatch 差し替えに固定し、fake は ``(*args, **kwargs)`` を受けるため
+    是正で入るシグネチャ変更（``real_root`` の受け取り）に依存しない。
+    対象ツリーは通常ファイル 1 件に限定し、「2 回目」は
+    **当該 entry についての 2 回目の呼び出し** と定義する。
+    """
+
+    @staticmethod
+    def _entry_key(args, kwargs) -> str:
+        """fake が受けた entry を位置引数・キーワード引数のどちらでも取り出す."""
+        entry = args[0] if args else kwargs["entry"]
+        return os.fspath(entry)
+
+    def test_second_check_for_same_entry_prevents_copy(self, tmp_path, monkeypatch, capsys):
+        """[A2群] 2 回目の判定でリンク疑いになったファイルはコピーされない.
+
+        正の対照（常に False を返す fake）を同テスト内に置き、
+        「fake を挟んだこと自体でコピーが止まった」のではないことを示す。
+        """
+        src = tmp_path / "src"
+        src.mkdir()
+        # should_skip に一致しない通常ファイル 1 件のみ
+        # （EXCLUDE 一致名やディレクトリでは現行実装でもコピーされず Red が観測できない）。
+        (src / "normal.md").write_text("normal", encoding="utf-8")
+        assert not should_skip("normal.md"), "題材が EXCLUDE に一致している（Red が観測できない）"
+
+        # --- 正の対照: 常に False（リンクでない）→ 通常どおりコピーされる ---
+        monkeypatch.setattr(cli_init, "_is_link_entry", lambda *a, **kw: False)
+        dst_control = tmp_path / "dst_control"
+        copied_control = cli_init._copytree(src, dst_control)
+
+        assert (dst_control / "normal.md").is_file(), (
+            "fake を挟むだけでコピーが止まっている（この後の Red が偽陽性になる）"
+        )
+        assert copied_control == 1, f"正の対照のコピー件数が 1 でない: {copied_control}"
+        assert _warn_lines(capsys.readouterr().err) == [], "リンクでないのに警告が出ている"
+
+        # --- 本題: 当該 entry の 2 回目の呼び出しだけリンク疑いを返す ---
+        calls: dict[str, int] = {}
+
+        def fake_is_link_entry(*args, **kwargs):
+            key = self._entry_key(args, kwargs)
+            calls[key] = calls.get(key, 0) + 1
+            return calls[key] >= 2
+
+        monkeypatch.setattr(cli_init, "_is_link_entry", fake_is_link_entry)
+        dst = tmp_path / "dst"
+        cli_init._copytree(src, dst)
+        capsys.readouterr()  # 再検証時の警告文面は契約に含めない
+
+        assert calls.get(os.fspath(src / "normal.md"), 0) >= 2, (
+            "当該 entry についてリンク判定が 1 回しか呼ばれていない"
+            f"（copy2 直前の再検証が無い）: {calls!r}"
+        )
+        assert not os.path.lexists(dst / "normal.md"), (
+            "2 回目の判定でリンク疑いになった entry がコピーされている"
+            "（copy2 直前の再検証が結果に効いていない）"
+        )
 
 
 # ===========================================================================

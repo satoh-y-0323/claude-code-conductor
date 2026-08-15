@@ -24,7 +24,6 @@ import os
 import re
 import shutil
 import stat
-import sys
 import tempfile
 import types
 from pathlib import Path
