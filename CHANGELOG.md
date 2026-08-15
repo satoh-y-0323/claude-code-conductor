@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.75.0] - 2026-08-16
+
+### 追加
+
+- **`c3 init` のテンプレート展開（`_copytree`）に symlink / NTFS ジャンクション防御を追加した**:
+  各 entry の realpath が「コピー元ルートの realpath ＋ 相対パス」と完全一致することを検査し、
+  一致しない entry（symlink・ジャンクション・壊れたリンク）はコピーせず stderr へ 1 件 1 行の警告を
+  出してスキップする。`is_symlink()` 単体判定はジャンクションに `False` を返すため採用せず、
+  realpath 完全一致方式に一本化した。比較の両辺とも realpath 済みのため、コピー元ルート自体が
+  リンク経由（macOS の `/tmp` 等）でも全件スキップに縮退しない。加えて:
+  - entry 側の realpath が `OSError`（`ELOOP` 含む）を送出した場合は「リンク疑い」として
+    警告付きスキップに倒す（fail-soft・`c3 init` 全体は異常終了しない。ルート側の解決不能は
+    テンプレート根本の異常のため従来どおり例外で停止する）
+  - `shutil.copy2` 直前にリンク再検証を行い、検査とコピーの間の差し替え（TOCTOU）の窓を狭めた
+    （残余の窓は脅威モデル上許容・docstring に記録）
+  - 性質テスト `tests/test_cli_init_symlink_guard.py` を新設（symlink 系・ジャンクション実測・
+    ルートをリンク経由で渡す回帰ガード・例外系/再検証の検知テストを含む）。ジャンクション/リンク作成の
+    テストヘルパー `_make_link` は `tests/conftest.py` へ共有化した
+- `.claude/hooks/statusline.py` の reconfigure 保護テスト
+  `tests/hooks/test_statusline_reconfigure_guard.py` を新設した（`reconfigure` 属性を持たない
+  ストリーム環境でも hook のロードがクラッシュしないこと）
+
+### 変更
+
+- `.claude/hooks/statusline.py` のストリーム reconfigure を canonical 順序（stdin→stdout→stderr）＋
+  `try/except AttributeError` の確立イディオムへ統一した（配布 hook 22 本で唯一の無保護だった）
+- `README.md` / `docs/getting-started.md` の前提条件に仮想環境（venv）の作成手順を追加した。
+  PEP 668（externally-managed-environment）環境で素の `pip install` が失敗する旨と、
+  隔離環境の但し書き 3 点（Claude Code を起動するシェルでも同じ venv を activate すること・
+  `pipx install claude-code-conductor` の代替・同一シェルでの `c3 doctor` による PATH 解決確認）を明記した
+- root `.gitignore` に `.claude/pytest_temp.ini` のガード行を追加した（2026-05-02 に agent 作業残骸として
+  混入し v0.4.2 で削除＋`EXCLUDE_PATTERNS` ガード化された経緯の git 側の対）。これに伴い
+  `tests/test_three_file_sync.py` の許容リスト A から同エントリを削除し、実効検査件数の下限を
+  16 / 16（遊びなし）へ締めた
+
 ## [2.74.0] - 2026-08-15
 
 ### 追加
