@@ -283,17 +283,34 @@ C3 の wheel 配布除外パターンは **3 つのファイルに分散して�
 **KEEP 対象が sdist exclude 配下にある場合は `pyproject.toml` の force-include も同期対象**:
 公開ビルドは sdist を経由するため、sdist から落ちたファイルは wheel にも届かない。
 
+この辺（KEEP ↔ sdist exclude / force-include）は `tests/test_three_file_sync.py` が双方向に機械検証する
+（救済漏れと、用途不明な force-include キーの増殖の両方を検出する）。
+ただし **KEEP に相当する配布必須ファイルは force-include による救済を認めず、ignore 規則そのもの（否定行）で戻す**
+（force-include で救うと git 履歴から消える脆い救済になるため。force-include が担うのは sdist exclude 経路の救済に限る）。
+`tests/` は配布物に含まれないため、利用先にはこの検査は存在しない（配布元専用の検査）。
+
 ### 同期確認の方法
 
 `.dev/hooks/_sync_check.py`（PostToolUse hook）が、3 ファイルのいずれかを変更した時に
 残り 2 ファイルの同期を `stderr` で警告する。警告が出たら必ず対応する。
+
+同期の実効一致はテスト 2 本が機械検証する（hook の警告は編集時の即時注意喚起、テストは CI /
+フルスイートでの機械判定という役割分担）:
+
+| テスト | 検証する辺 |
+|---|---|
+| `tests/test_excludes.py` | `_excludes.py` ↔ `hatch_build.py`（パターン集合の完全一致） |
+| `tests/test_three_file_sync.py` | `.gitignore` ↔ `_excludes.py`（挙動の一致）・`pyproject.toml` の sdist exclude / force-include |
+
+`tests/` は配布物に含まれないため、利用先にはこれらのテストは存在しない（配布元専用の検査）。
 
 ### 変更手順
 
 1. `.gitignore` / `_excludes.py` / `hatch_build.py` のいずれかを変更
 2. `_sync_check.py` の警告を確認
 3. 残り 2 ファイルに同じパターンを追加（または削除）。3 ファイルが既に同じ意図を持っている場合は、出遅れた 1 ファイルを合わせるだけでよい（配布元の root `.gitignore` を `KEEP_PATTERNS` の意図へ合わせた 2026-08-14 の是正が実例）
-4. 配布元では `python scripts/verify_wheel.py` で wheel 実体を機械検証する（`scripts/` は配布物に含まれないため、利用先には存在しないコマンド）
+4. 意図的差分（3 ファイルの意図をあえて揃えない例外）を増減する場合は、`tests/test_three_file_sync.py` の許容リスト（理由文字列必須）と件数定数群を同時更新する（配布元専用。増減いずれの場合もレビュー対象）
+5. 配布元では `python scripts/verify_wheel.py` で wheel 実体を機械検証する（`scripts/` は配布物に含まれないため、利用先には存在しないコマンド）
 
 ### 過去の同期漏れ defect
 

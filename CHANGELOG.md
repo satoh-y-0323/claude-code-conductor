@@ -1,5 +1,32 @@
 # Changelog
 
+## [未リリース]
+
+<!-- リリース時にこの見出しを ## [X.Y.Z] - YYYY-MM-DD へ置換する（新設ではない） -->
+
+### 追加
+
+- **3 ファイル同期（`.gitignore` / `_excludes.py` / `pyproject.toml`）を機械検証化した**:
+  `tests/test_three_file_sync.py`（検査）と `tests/_sync_semantics.py`（検出器・引数注入の
+  純粋関数）を追加した。これまで `.dev/hooks/_sync_check.py` の警告（編集時の注意喚起）しか
+  無かった辺を、CI / フルスイートで機械判定する:
+  - 辺 1: `_excludes.py` の `EXCLUDE_PATTERNS` / `KEEP_PATTERNS` と root `.gitignore` の意図一致を、
+    表記の一致ではなく**挙動の一致**（プローブパス＋`git check-ignore` の実挙動／`should_skip`）で
+    双方向に検証する
+  - 辺 2: `KEEP_PATTERNS` と `pyproject.toml` の sdist force-include を双方向に検証する
+    （救済漏れと、用途不明な force-include キーの増殖の両方を検出）
+  - 辺 3: sdist exclude の `.claude/` エントリが `should_skip` の意図と整合することを検証する
+
+  意図的差分は理由文字列必須の許容リストとして明示し、実効検査件数の下限・許容リスト件数を
+  凍結して「何も検査していないのに緑」になる退化を塞いでいる。
+  `.dev/hooks/_sync_check.py` は編集時の即時フィードバック層として存置する。
+
+### 変更
+
+- `/CLAUDE.md` §2 と `.claude/docs/config-policy.md` §6 に、上記の機械検証 2 本と
+  許容リスト・件数定数群の同時更新の運用を追記した（`tests/` は配布物に含まれないため
+  配布元専用の検査である旨の但し書き付き）。
+
 ## [2.73.0] - 2026-08-15
 
 ### 追加
