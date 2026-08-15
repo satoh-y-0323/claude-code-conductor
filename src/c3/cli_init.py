@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from collections.abc import Callable
@@ -181,6 +182,28 @@ def _do_git_init(target_root: Path) -> None:
         )
 
 
+def _is_link_entry(entry: Path, root: Path, rel: str) -> bool:
+    """FR-4 choke point: realpath 完全一致でリンク経由の entry を検出する。
+
+    ``entry.is_symlink()`` は NTFS ディレクトリジャンクションに ``False`` を返し
+    素通りする（ADR-3・既知パターンの再発 5 回）ため採用しない。判定は
+    「entry の realpath」と「コピー元ルートの realpath ＋ ルートからの相対パス」の
+    完全一致（``.claude/skills/start/scripts/archive_reports.py`` の
+    ``_archive_dir_is_contained`` と同じ realpath 封じ込め方式）。
+
+    比較の両辺とも realpath 済みであること。``root`` 側の realpath を怠ると、
+    コピー元ルート自体がリンク経由のとき全 entry が「配下でない」と誤判定され、
+    全件スキップに縮退する。
+    """
+    real_root = os.path.realpath(root)
+    # expected は「rel の各コンポーネントをリンクとして解決せず」文字列結合した
+    # 期待パス。os.path.realpath はここでは呼ばない（呼ぶと entry 側と同じ
+    # リンクを辿ってしまい、判定そのものが無効化される）。
+    expected = os.path.normpath(os.path.join(real_root, *rel.split("/")))
+    actual = os.path.realpath(entry)
+    return actual != expected
+
+
 def _copytree(src: Path, dst: Path, *, root: Path | None = None) -> int:
     """Copy ``src`` -> ``dst`` recursively, skipping personal/working files.
 
@@ -195,6 +218,16 @@ def _copytree(src: Path, dst: Path, *, root: Path | None = None) -> int:
     for entry in src.iterdir():
         rel = entry.relative_to(root).as_posix()
         target = dst / entry.name
+        # FR-4: リンク経由の entry は is_dir()/is_file() 分岐より前にスキップする
+        # （両者ともリンクを暗黙に辿るため）。EXCLUDE 対象かどうかに関わらず
+        # 検査するため should_skip より前段に置く（架空の EXCLUDE リンクも警告する・
+        # architecture DC-GP-003 裁定）。
+        if _is_link_entry(entry, root, rel):
+            print(
+                f"c3 init: リンク（symlink/junction）疑いの entry をスキップしました: {rel}",
+                file=sys.stderr,
+            )
+            continue
         if entry.is_dir():
             count += _copytree(entry, target, root=root)
             # Drop directories that ended up empty (everything inside was skipped).

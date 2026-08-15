@@ -86,3 +86,7 @@ site/
 # Personal Claude Code overrides (per-user / per-worktree, never committed)
 # wheel からは _excludes.py / hatch_build.py で既に除外済み。git でも tracking しない方針。
 .claude/settings.local.json
+
+# agent 作業残骸 pytest_temp.ini の再発防止ガード（2026-05-02 混入・v0.4.2〔44be00f〕で削除＋
+# EXCLUDE_PATTERNS ガード化。本行はその git 側の対）
+.claude/pytest_temp.ini
