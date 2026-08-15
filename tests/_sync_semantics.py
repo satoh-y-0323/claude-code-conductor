@@ -99,6 +99,16 @@ class Verdict(NamedTuple):
 # ---------------------------------------------------------------------------
 
 
+def _replace_glob_with_probe(s: str) -> str:
+    """グロブ ``*`` をプローブ名 ``__sync_probe__`` へ置換する（導出 3 関数の共通部分）.
+
+    切り出しの射程は**グロブ置換のみ**であり、``.claude/`` プレフィックスの付与・剥離は
+    各導出関数に残す（方向〔付与 / 剥離〕も戻り値型も関数ごとに異なるため・CR-M-001）。
+    公開 API・挙動は不変。
+    """
+    return s.replace("*", PROBE_NAME)
+
+
 def derive_probe_from_pattern(pattern: str) -> str | None:
     """``EXCLUDE_PATTERNS`` / ``KEEP_PATTERNS`` のパターン → プローブパス.
 
@@ -107,7 +117,7 @@ def derive_probe_from_pattern(pattern: str) -> str | None:
     ``.claude/reports/__sync_probe__``）。プローブの実体は作らない
     （``git check-ignore`` はパス実在を要求しない・ADR-6。D-1 で実測固定済み）。
     """
-    return CLAUDE_PREFIX + pattern.replace("*", PROBE_NAME)
+    return CLAUDE_PREFIX + _replace_glob_with_probe(pattern)
 
 
 def derive_probe_from_gitignore_line(line: str) -> tuple[str, bool] | None:
@@ -137,7 +147,7 @@ def derive_probe_from_gitignore_line(line: str) -> tuple[str, bool] | None:
     if rel.endswith("/"):
         rel += PROBE_NAME
     else:
-        rel = rel.replace("*", PROBE_NAME)
+        rel = _replace_glob_with_probe(rel)
     return rel, negated
 
 
@@ -153,7 +163,7 @@ def _derive_probe_from_sdist_entry(entry: str) -> str | None:
     rel = entry[len(CLAUDE_PREFIX) :]
     if not rel:
         return None
-    return rel.replace("*", PROBE_NAME)
+    return _replace_glob_with_probe(rel)
 
 
 # ---------------------------------------------------------------------------

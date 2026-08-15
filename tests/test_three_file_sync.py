@@ -281,7 +281,10 @@ def _real_check_ignore_fn(repo: Path) -> Callable[[str], bool]:
 
     def _check(probe: str) -> bool:
         proc = subprocess.run(
-            [_GIT, "-c", "core.excludesFile=", "check-ignore", "-q", probe],
+            # `--`（オプション終端）を probe の直前に置く [SR-INJ-002]。
+            # derive_probe は外部注入可能なため、`-` 始まりの probe がフラグとして
+            # 解釈される引数注入面を構造的に塞ぐ（判定値 0/1 は変えない）。
+            [_GIT, "-c", "core.excludesFile=", "check-ignore", "-q", "--", probe],
             cwd=repo,
         )
         if proc.returncode == 0:
@@ -1259,6 +1262,36 @@ class TestP7NegativeControls:
             KEEP_PATTERNS, sdist_exclude, force_include_keys, INJECTION_CONTROLS
         )
         assert _violations(records) == []
+
+
+# ===========================================================================
+# SR-INJ-002 回帰: `-` 始まりプローブが引数注入面にならないこと
+# ===========================================================================
+
+
+@requires_git
+class TestCheckIgnoreOptionTerminator:
+    """`git check-ignore` 呼び出しの `--`（オプション終端）の回帰固定 [SR-INJ-002].
+
+    `derive_probe` はキーワード引数として外部から自由に注入できる設計であり、
+    将来 `-` 始まりの値を返す導出関数で呼ばれうる。`--` が無いと git は当該値を
+    フラグとして解釈し `returncode=129`（unknown switch）を返すため、
+    `_real_check_ignore_fn` は ADR-6 の fail-loud で例外を送出して赤化する。
+
+    測る性質は 1 点のみ: **`-` 始まりのプローブでも例外を送出せず、
+    returncode 0/1 に対応する判定値（bool）が返ること**。
+    """
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            "-c3_sync_probe_arg_injection",
+            "--c3-sync-probe-arg-injection",
+        ],
+    )
+    def test_dash_leading_probe_yields_a_verdict_without_raising(self, probe, root_only_repo):
+        check_fn = _real_check_ignore_fn(root_only_repo)
+        assert isinstance(check_fn(probe), bool)
 
 
 # ===========================================================================

@@ -67,12 +67,18 @@ def ignore_verdicts(tmp_path_factory):
     """一時 git リポジトリを作り、実際の git に ignore 判定をさせる.
 
     静的なパターン読解ではなく `git check-ignore` の実挙動を真とする。
+
+    [CR-NEW] 隔離手順（`tests/test_three_file_sync.py` の DC-AS-002 準拠 fixture から
+    バックポート）: `git init` 直後に `.git/info/exclude` を空へ上書きし、判定時に
+    `core.excludesFile` を空指定することで、init テンプレート由来・ユーザー全体設定
+    由来の実効パターンを排し、判定入力を配置した `.claude/.gitignore` のみに隔離する。
     """
     if _GIT is None:
         pytest.skip("git が見つからない環境ではスキップ")
 
     repo = tmp_path_factory.mktemp("gitignore_probe")
     subprocess.run([_GIT, "init", "-q"], cwd=repo, check=True)
+    (repo / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
 
     claude = repo / ".claude"
     claude.mkdir()
@@ -84,8 +90,9 @@ def ignore_verdicts(tmp_path_factory):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("x", encoding="utf-8")
         # check-ignore: exit 0 = ignored, exit 1 = not ignored
+        # `--` はオプション終端 [SR-INJ-002]・`core.excludesFile=` は隔離 [CR-NEW]
         proc = subprocess.run(
-            [_GIT, "check-ignore", "-q", f".claude/{rel}"],
+            [_GIT, "-c", "core.excludesFile=", "check-ignore", "-q", "--", f".claude/{rel}"],
             cwd=repo,
         )
         verdicts[rel] = proc.returncode == 0
@@ -156,8 +163,12 @@ class TestUpstreamRepoInteraction:
         for path in sorted(state_dir.iterdir()):
             if not path.is_file():
                 continue
+            # `--` はオプション終端 [SR-INJ-002]。隔離（`core.excludesFile=` /
+            # `.git/info/exclude` 空上書き）は本検査には適用しない: ここは配布元
+            # リポジトリの**実ルートの実挙動**を測るためのもので、隔離すると
+            # 検査対象そのものが変わる。
             proc = subprocess.run(
-                [_GIT, "check-ignore", "-q", str(path)],
+                [_GIT, "check-ignore", "-q", "--", str(path)],
                 cwd=WORKTREE_ROOT,
             )
             if proc.returncode != 0:  # exit 1 = not ignored

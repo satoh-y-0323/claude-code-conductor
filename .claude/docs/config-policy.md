@@ -287,7 +287,10 @@ C3 の wheel 配布除外パターンは **3 つのファイルに分散して�
 （救済漏れと、用途不明な force-include キーの増殖の両方を検出する）。
 ただし **KEEP に相当する配布必須ファイルは force-include による救済を認めず、ignore 規則そのもの（否定行）で戻す**
 （force-include で救うと git 履歴から消える脆い救済になるため。force-include が担うのは sdist exclude 経路の救済に限る）。
-`tests/` は配布物に含まれないため、利用先にはこの検査は存在しない（配布元専用の検査）。
+この検査は**配布元 C3 のリポジトリ専用**である: 配布元 C3 が公開する wheel に `tests/` は含まれず、
+利用先プロジェクトにこの検査は配置されない。ただし**配布元 C3 が PyPI へ公開する第二の成果物である
+sdist には `tests/` が含まれる**（`pyproject.toml` の sdist `include`）。sdist は PyPI で公開されるため
+`tests/` 配下の内容は第三者が閲覧可能であり、機密情報を書いてはならない。
 
 ### 同期確認の方法
 
@@ -302,7 +305,10 @@ C3 の wheel 配布除外パターンは **3 つのファイルに分散して�
 | `tests/test_excludes.py` | `_excludes.py` ↔ `hatch_build.py`（パターン集合の完全一致） |
 | `tests/test_three_file_sync.py` | `.gitignore` ↔ `_excludes.py`（挙動の一致）・`pyproject.toml` の sdist exclude / force-include |
 
-`tests/` は配布物に含まれないため、利用先にはこれらのテストは存在しない（配布元専用の検査）。
+これらのテストも**配布元 C3 のリポジトリ専用**である: 配布元 C3 が公開する wheel に `tests/` は
+含まれず、利用先プロジェクトにこれらのテストは配置されない。ただし**配布元 C3 が PyPI へ公開する
+第二の成果物である sdist には `tests/` が含まれる**（`pyproject.toml` の sdist `include`）。
+sdist は PyPI で公開されるため `tests/` 配下の内容は第三者が閲覧可能であり、機密情報を書いてはならない。
 
 ### 変更手順
 
