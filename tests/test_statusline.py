@@ -14,7 +14,16 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 # pytest の DontReadFromInput との非互換を回避
-# statusline.py はモジュールレベルで sys.stdin/stdout/stderr.reconfigure を呼ぶ
+# statusline.py はモジュールレベルで sys.stdin/stdout/stderr.reconfigure を呼ぶ。
+# [FR-3] 以降この reconfigure は try/except AttributeError で保護されているため、
+# 「reconfigure を持たないストリームでもロードは落ちない」のが実態であり、
+# 本注入はロード成立の必須条件ではなくなった。
+# それでも注入を残すのは意図的な据え置き（保護の有無に関わらず本ファイルが
+# 素の DontReadFromInput に依存しないようにするため。削除は挙動変更を伴うので別途扱う）。
+# なお本注入は sys.stdin をグローバル置換したまま復元しない。保護そのものを検証する
+# 性質テストは ambient なストリームに依存できないため、
+# tests/hooks/test_statusline_reconfigure_guard.py 側で monkeypatch により
+# テスト内へ閉じた注入を行っている。
 sys.stdin = MagicMock()
 sys.stdin.reconfigure = MagicMock()
 sys.stdout.reconfigure = MagicMock()

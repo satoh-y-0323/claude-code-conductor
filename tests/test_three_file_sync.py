@@ -139,8 +139,8 @@ requires_git = pytest.mark.skipif(_GIT is None, reason="git が見つからな�
 # 許容リスト（理由文字列必須の定数・検出器へは引数で渡す）
 #
 # 出所（節種別まで逐語・plan P0 の指示どおり）:
-#   許容リスト A = architecture-report-20260815-151833.md（改訂 2）§2-1 の表
-#                  （2 行・pytest_temp.ini は改訂 2 で正直化された文言）
+#   許容リスト A = architecture-report-20260815-151833.md（改訂 2）§2-1 の表（1 行）
+#                  改訂: 小粒バックログ消化スライス architecture-report-20260815-222450（改訂 5）§2 FR-1 で pytest_temp.ini を削除
 #   許容リスト B = architecture-report-20260815-122018.md（改訂 1）§2-1 の表（2 行・逐語）
 #   注入対照     = architecture-report-20260815-122018.md（改訂 1）§2-2 の箇条
 #                  （pyproject.toml:75-86 の群 2 コメントとの対応を含む）
@@ -154,14 +154,8 @@ ALLOWLIST_A: Mapping[str, str] = {
         "GitHub 公開済み。gitignore と wheel 配布は別レイヤー"
         "（.gitignore:61-63・config-policy.md 落とし穴 2 に明文化済み）"
     ),
-    "pytest_temp.ini": (
-        "実行時生成物の想定で EXCLUDE に置かれたが、実体不在・生成箇所なし・"
-        "root .gitignore 未記載＝追記漏れの可能性あり（未確定・要調査）。"
-        "実データ非編集の本スライスでは現状（git 側に規則なし）を許容として凍結し、"
-        "来歴確定と gitignore 追記可否をバックログで扱う"
-    ),
 }
-ALLOWLIST_A_COUNT = 2  # 現状値。増減時は理由文字列とセットで更新する（ADR-10）
+ALLOWLIST_A_COUNT = 1  # 現状値。増減時は理由文字列とセットで更新する（ADR-10）
 
 # 許容リスト B: derive_probe_from_gitignore_line の出力プローブ（.claude/ を剥がした
 # 相対パス）-> 理由。行そのものは ".claude/agents/tdd-develop.md" /
@@ -217,10 +211,14 @@ UNIVERSAL_SHOULD_SKIP_COUNT = 3  # 現状値（== 3）
 # セットでレビューする・DC-AM-003 運用行）
 # ---------------------------------------------------------------------------
 
-MIN_EXCLUDE_IGNORED = 15  # EXCLUDE 由来 17 件 - 許容リスト A 2 件（遊びなし）
+# EXCLUDE 由来 17 件 - 許容リスト A 1 件（遊びなし）。
+# 実効検査件数（母数）の下限。遊びを持たせるとレコードが 1 件消えても気付けない
+MIN_EXCLUDE_IGNORED = 16
 MIN_KEEP_NOT_IGNORED = 8  # KEEP 8 件全数（許容リストなし）
 MIN_KEEP_COMPOSITE_NOT_IGNORED = 8  # 合成 KEEP 判定も KEEP 8 件全数
-MIN_CLAUDE_LINE_TRUE = 15  # root .gitignore の .claude/ 非否定行 17 - 許容リスト B 2 件
+# root .gitignore の .claude/ 非否定行 18 - 許容リスト B 2 件。
+# 実効検査件数（母数）の下限。遊びを持たせるとレコードが 1 件消えても気付けない
+MIN_CLAUDE_LINE_TRUE = 16
 MIN_CLAUDE_LINE_FALSE = 5  # 同・否定行 5 件全数（許容リストなし）
 MIN_EDGE2_RESCUE = 3  # sdist exclude 配下の KEEP 3 件（許容リスト概念なし）
 MIN_EDGE2_CLASSIFY = 4  # force-include キー 4 件全数（許容リスト適用の有無を問わない）

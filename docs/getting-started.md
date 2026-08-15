@@ -11,6 +11,30 @@ C3 を初めて使う方向けのガイド。インストールから最初の�
 - Python **3.10 以上** がインストール済みであること
 - Git が使えること
 
+### 仮想環境（venv）の準備（推奨）
+
+Python の導入方法によっては、素の `pip install` が PEP 668（externally-managed-environment）により拒否されます（Debian/Ubuntu の apt 版 Python、Homebrew の Python など）。仮想環境（venv）を作ってその中へインストールすれば、この制約を受けずに済みます。
+
+Windows（PowerShell）:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+macOS / Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+venv に入れた場合の注意:
+
+- C3 の hook は `c3 run` で起動されるため、**Claude Code を起動するシェルでも同じ venv を activate してください**。activate されていないシェルから Claude Code を起動すると `c3` が見つからず、hook が動作しません
+- venv を使わずグローバルに使いたい場合は [pipx](https://pipx.pypa.io/) が代替になります: `pipx install claude-code-conductor`
+- インストール後は、**Claude Code を起動するのと同じシェルで** `c3 doctor` を実行し、`c3` が PATH で解決されることを確認してください（`c3 doctor` が検査するのは実行中シェルの PATH です。別のシェルで実行しても、Claude Code の hook が起動される文脈は再現できません）
+
 ## インストール
 
 ### 推奨: PyPI から
@@ -18,6 +42,8 @@ C3 を初めて使う方向けのガイド。インストールから最初の�
 ```bash
 pip install claude-code-conductor
 ```
+
+このコマンドが PEP 668（externally-managed-environment）で拒否される場合や、インストール後に hook が動作しない場合は、[前提条件](#前提条件)の venv 手順（activate するシェルの注意点を含む）を参照してください。
 
 これで `c3` CLI と `.claude/` テンプレートが入ります。v2.0.0 以降は Claude Code の Agent ツール並列起動と `isolation: "worktree"` を使うため、別途のプロセスは不要です。
 

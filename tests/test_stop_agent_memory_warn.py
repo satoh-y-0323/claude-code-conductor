@@ -31,6 +31,11 @@ from pathlib import Path
 
 import pytest
 
+# リンク作成ヘルパーは tests/conftest.py へ移設し、
+# tests/test_cli_init_symlink_guard.py と共有している。
+# tests/__init__.py が実在するパッケージ構成のため絶対 import で参照する。
+from tests.conftest import _make_link
+
 WORKTREE_ROOT = Path(__file__).parent.parent
 STOP_PY = WORKTREE_ROOT / ".claude" / "hooks" / "stop.py"
 
@@ -726,27 +731,6 @@ class TestScanFailOpen:
         monkeypatch.setattr(stop_mod, "is_worktree", lambda _c: False)
 
         assert stop_mod.run({}) == 0
-
-
-def _make_link(target: Path, link: Path) -> None:
-    """走査対象ディレクトリの内側に、外部ディレクトリへのリンクを作る.
-
-    Windows は junction（_winapi.CreateJunction・管理者権限不要）、
-    POSIX は os.symlink を使う。作成に失敗した場合は skip せず fail させる
-    （skip すると「リンクを辿らない」という契約が全 OS で無検証になりうる）。
-    """
-    if sys.platform == "win32":
-        try:
-            import _winapi
-
-            _winapi.CreateJunction(str(target), str(link))
-        except Exception as exc:  # pragma: no cover - 環境不備時のみ
-            pytest.fail(f"junction の作成に失敗した（skip せず fail させる契約）: {exc!r}")
-    else:
-        try:
-            os.symlink(str(target), str(link), target_is_directory=True)
-        except OSError as exc:  # pragma: no cover - 環境不備時のみ
-            pytest.fail(f"symlink の作成に失敗した（skip せず fail させる契約）: {exc!r}")
 
 
 def _patch_lstat_as_reparse_point(mod, monkeypatch, target: Path) -> None:
