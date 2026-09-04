@@ -161,6 +161,7 @@
 | 入力 | 環境変数 `C3_TIER_AUTOAPPLY_DISABLE`（`:107,372`）／stdin の `tool_name`・`tool_input.{subagent_type,model,prompt}`・`session_id`（`:376-408`）／`.claude/state/tier_selection.json`（`:84,216-225`）／`c3.pricing` モジュール（`:128-135`） |
 | 出力 | exit 0 固定（`:474,484`）。注入時は stdout に `{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{…"model":tier}}}`（`:464-472`）。`.claude/state/tier_autoapply.jsonl` へ 1 行追記（+ 1MB 超で末尾 500 行にローテート `:275-291`、ロックファイル `…jsonl.lock` 作成 `:328,345`）。失敗時 stderr `[tier_autoapply] …`（`:340,361,483`） |
 | 無効化手段 | `C3_TIER_AUTOAPPLY_DISABLE=1`（注入も記録も行わない・`:107,370-373`） |
+| 上流依存の注意 | 環境変数 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`（Claude Code v2.1.257+）が設定されていると、注入した `model` はハーネス側で無視され全サブエージェントが強制モデルで起動する（hook は注入と `tier_autoapply.jsonl` 記録を行うため、記録 tier と実適用モデルが乖離する）。C3 は同変数を設定しない。`CLAUDE_CODE_SUBAGENT_MODEL`（既定値扱い・v2.1.251+）は注入が優先されるため影響なし |
 | 根拠 | `.claude/hooks/tier_autoapply.py:369-484` / `.claude/settings.json:106-120` |
 
 ## post_tool.py
