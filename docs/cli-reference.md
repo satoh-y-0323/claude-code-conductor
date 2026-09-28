@@ -236,7 +236,7 @@ c3 metrics --examples N             # 事前検出実例の表示件数上限（
 
 以下は Claude Code 内（スラッシュコマンド）で扱う領域:
 
-- `/init-session` / `/setup` / `/start` / `/develop` / `/review-phase` / `/promote-pattern` / `/pattern-status` / `/doc` / `/mcp-config` / `/extract-lib` / `/recall` / `/brainstorm` / `/codex-review`
+- `/init-session` / `/setup` / `/start` / `/develop` / `/review-phase` / `/promote-pattern` / `/pattern-status` / `/doc` / `/extract-lib` / `/recall` / `/brainstorm`
 - 詳細は [スキル一覧](skills.md) を参照
 
 Codex では `.agents/skills/` に生成された `$start` などの skills と `.codex/agents/` の custom agents を使う。Cursor では `.cursor/rules/c3-core.mdc` が `.claude/skills/` と `.claude/agents/` を参照する。OpenCode では `.opencode/agents/` の `@c3-*`（agent）と `@c3-skill-*`（skill）を `@mention` で起動する。

@@ -11,7 +11,7 @@
 **注記**: 両モード共通に分類されたルール（5・R2・R4・R6 等）が `writes` や reviewer タスクの存在を前提とする場合、**その前提を作るルール（9・3）も sequential プランで満たすこと**。`"0.1"` 限定の趣旨は『並列度・worktree 取り込み衝突に関する制約』に限られ、成果物宣言・レビュー配置の規律はモードを問わない。
 
 planner agent が本ファイルを参照する。
-plan-report 生成時はこれを確実に読んでから出力すること（D-012 準拠）。
+plan-report はこのガイドラインに従って出力する。
 
 規約・対策の配置先を決めるときは `reachability-map.md` で読み手に届くかを確認する。
 
@@ -23,9 +23,9 @@ plan-report 生成時はこれを確実に読んでから出力すること（D-
 2. **直列化の自己チェック** — 出力直前に「`depends_on` チェーンの最大長が `タスク数 / 2` を超えていないか」を確認する。N 個のタスクが N-1 段の依存チェーンになっていたら **並列度 1** で並列実行を使う意味がない
 3. **レビュー系タスクは末尾に集約** — `code-reviewer` / `security-reviewer` は `read_only: true` で全 dev タスクに `depends_on` を付ける（すべての実装が終わった後に走る）
 
-## TDD タスクは 3-wave に分解する（v2.1.0+）
+## TDD タスクは 3-wave に分解する
 
-v2.1.0 で `tdd-develop` エージェントを廃止した。TDD を伴う機能実装は、planner が以下の **3 タスクペア**に分解する:
+TDD を伴う機能実装は、planner が以下の **3 タスクペア**に分解する:
 
 | 役割 | agent (plan-report に書く名前) | 順序 | writes 例 |
 |---|---|---|---|
@@ -33,7 +33,7 @@ v2.1.0 で `tdd-develop` エージェントを廃止した。TDD を伴う機能
 | Green: 最小実装でテストを通す | `wt_developer` | Red に depends_on | `src/c3/foo.py` |
 | Green 確認: 全テスト合格を確認 | `wt_tester` | Green に depends_on | `.claude/reports/test-report-confirm-foo.md` |
 
-> **v2.2.0+**: 並列実行（`parallel-agents` skill 経由）では `wt_*` プレフィックス agent を使う。`wt_tester` / `wt_developer` / `wt_systematic-debugger` は frontmatter に `permissionMode: bypassPermissions` を持ち、worktree 内で permission プロンプトをスキップする。reviewer 系（`code-reviewer` / `security-reviewer`）はそのままの名前を使用（元 agent に `permissionMode` 付き）。
+> 並列実行（`parallel-agents` skill 経由）では `wt_*` プレフィックス agent を使う。`wt_tester` / `wt_developer` / `wt_systematic-debugger` は frontmatter に `permissionMode: bypassPermissions` を持ち、worktree 内で permission プロンプトをスキップする。reviewer 系（`code-reviewer` / `security-reviewer`）はそのままの名前を使用（元 agent に `permissionMode` 付き）。
 >
 > 直接起動経路（`dev-workflow` フェーズ D-1〜D-5 の単発 TDD 等）では元の `tester` / `developer` / `systematic-debugger` を使う。これにより main リポジトリでの bypassPermissions を防ぐ。
 
@@ -45,7 +45,7 @@ v2.1.0 で `tdd-develop` エージェントを廃止した。TDD を伴う機能
 
 4. **TDD タスクの命名規約（推奨）** — `test-{機能}` / `impl-{機能}` / `confirm-{機能}` の 3 タスクで 1 機能を表現する。命名は強制ではないが、レポート整理と `depends_on` の見通しのために統一を推奨する
 5. **test-report ファイル名の衝突回避** — Red 用 tester と Green 確認用 tester は **別 worktree** で動くため物理衝突は起きないが、main 取り込み後の上書きを避けるため `writes` には `.claude/reports/test-report-{task_id}.md` のように **task_id ベース**のファイル名を宣言する。tester agent 内では `report-timestamp` Skill でタイムスタンプ取得 → 出力ファイル名を `writes` 宣言と一致させるよう、各 `prompt` に明記する。逐次経路では worktree を使わないが、task_id ベースの固定名により上書き・混同を同様に回避できるため、本ルールは両モード共通である
-6. **Stuck Signal の経路は変わらない** — developer が 3 回以上同じ問題で詰まった場合 `.claude/reports/debug-needed-*.md` を出力する仕様は維持。Green wave が失敗した場合は `parallel-agents` skill 2-E（リトライ / スキップ / 中断）で吸収する。リトライ時に親 Claude が後続 wave で `systematic-debugger` を呼ぶ運用に統一
+6. **Stuck Signal の経路** — developer が 3 回以上同じ問題で詰まった場合 `.claude/reports/debug-needed-*.md` を出力する。Green wave が失敗した場合は `parallel-agents` skill 2-E（リトライ / スキップ / 中断）で吸収する。リトライ時に親 Claude が後続 wave で `systematic-debugger` を呼ぶ運用に統一
 
 ## タスクの粒度（基本: ファイル/モジュール単位）
 
@@ -72,7 +72,7 @@ v2.1.0 で `tdd-develop` エージェントを廃止した。TDD を伴う機能
 
 実装時に踏みやすい入力ミス。dry-run で検出できるが、出力前に planner 側で潰しておく:
 
-13. **`depends_on: []` を空配列で書かない** — `c3 plan validate` の構造チェックで lint されるリスクがある（依存が無いタスクは `depends_on` フィールド**自体を省略**する慣習）
+13. **依存が無いタスクは `depends_on` フィールド自体を省略する** — 表記統一のための慣習（`c3 plan validate` は空配列も省略と同じに扱う）
 
 ## worktree 実行経路の制約（運用ルール・機械強制なし）
 
@@ -80,7 +80,7 @@ v2.1.0 で `tdd-develop` エージェントを廃止した。TDD を伴う機能
    - **planner は該当タスクの `writes` 宣言を変更不要** — 運用層（`parallel-agents` skill）で読み替える設計のため、plan-report 側は従来通り `wt_tester` / `wt_developer` を宣言してよい
    - **main 直接経路のタスク取り込み時の検証** — worktree 隔離が失われるため、親 Claude は当該タスク完了後に `git status --short` で `writes` 宣言外のファイルへの書き込みが発生していないことを確認する（宣言外の変更があれば、通常の permission プロンプトに頼らず明示的に指摘して取り込みを中止する）
    - **R5 との同族関係** — R5（`read_only: true` タスク worktree 禁止）と同じく gitignored-only write を理由に isolation を外すが、R5 は hook で機械強制、本ルール 14 は**文書ルール（機械強制なし）**であり段階的対処の段階 1
-   - **再発実績の積み上がり時** は機械化（hook 拡張）への昇格を検討する（v2.55.1 で初実測）
+   - **再発実績の積み上がり時** は機械化（hook 拡張）への昇格を検討する
 
 ## 直列・並列交互パターンの取り扱い
 
@@ -191,11 +191,12 @@ plan-report を Write する前に以下を必ず確認する:
 
 ## 自動検査対象（PostToolUse hook 検査ルール）
 
-配布元では `.dev/hooks/_planner_check.py`（PostToolUse Write/Edit）が `.claude/reports/plan-report-*.md` の YAML frontmatter を機械検査する。
-以下 3 ルールに違反すると stderr に `[PlannerCheck WARN]` または `[PlannerCheck BLOCK]` が出る。
-plan-report 出力前に以下を必ず潰すこと。
+`.claude/reports/plan-report-*.md` の YAML frontmatter は hook が機械検査する。
+- R2・R4・R6: PostToolUse の `.claude/hooks/planner_check.py`（違反時は stderr に `[PlannerCheck WARN]` / `[PlannerCheck BLOCK]`）
+- R5: PreToolUse の `.claude/hooks/check_agent_invocation.py`（起動時に `[CheckAgentInvocation BLOCK]` で止まる）
+- R3: 配布元専用の `.dev/hooks/_planner_check.py`
 
-> **R1 は v2.1.0 で廃止**（`tdd-develop` agent 廃止に伴う）。`agent: tdd-develop` を含む既存 plan-report は `c3 plan validate` の `agent file not found` で検出される。
+以下のルールを plan-report 出力前に潰すこと。
 
 - **R2 (reviewer ファイル名は task_id ベース)** — `agent: code-reviewer` / `security-reviewer` の `writes` ファイル名は `task_id` を含む固定名にし、タイムスタンプ（`YYYYMMDD` / `YYYYMMDD-HHMMSS` 形式）を含めない。
   例: `.claude/reports/code-review-report-review1.md` ✓ / `.claude/reports/code-review-report-20260510.md` ✗。

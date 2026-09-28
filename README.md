@@ -19,7 +19,7 @@ Claude Code Conductor（C3）は「親 Claude が複数の専門エージェン�
 
 ```
 ユーザー
-    ↓ /start, /develop, /review-phase, /doc, /mcp-config, /extract-lib ...
+    ↓ /start, /develop, /review-phase, /doc, /extract-lib ...
 親 Claude（オーケストレーター）
     ├─ interviewer         ← ヒアリング
     ├─ architect           ← 設計
@@ -140,11 +140,9 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | スキル | 役割 |
 |---|---|
 | `/doc` | ドキュメントをヒアリングして生成（mermaid 図・README・API 仕様書など） |
-| `/mcp-config` | MCP サーバーの追加・一覧・削除（プロジェクトスコープ） |
 | `/extract-lib` | 複数プロジェクトのコードを横断解析し、共通処理をライブラリとして設計・生成 |
 | `/recall` | 過去のセッション・レポート・パターンから類似情報を意味検索（numpy ベクトル検索 + 多言語 embedding） |
 | `/brainstorm` | 仕事・設計の相談を、資料（PDF/画像）を読み込んだ上で気軽に発散・壁打ち。視点・選択肢・論点を増やす方向（grill＝詰めるとは逆）（v2.29.0〜） |
-| `/codex-review` | Codex CLI に `.codex/agents/` の定義を読み込ませ、code-reviewer / security-reviewer ペルソナでレビューを並走実行（Codex adapter セットアップ済み環境のみ・レポート契約は C3 と共通） |
 
 ### 内部参照スキル（`/start` などから自動呼び出し）
 
@@ -187,7 +185,7 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 >
 > なお「自動」はコマンドを覚えていなくても**連鎖起動される**という意味で、`/setup` 自体は使用言語・規約のヒアリング（数問）を行うため、初回はそれに回答する必要があります（規約設定を無人でスキップするわけではありません）。
 
-> **公式コマンドとの名前衝突について:** C3 のスキル名は Claude Code 公式コマンドと重複しないよう設計しています。`/review-phase`（≠ 公式 `/code-review` / `/review`）、`/mcp-config`（≠ 公式 `/mcp`）はこの方針に基づく命名です。公式コマンドが追加された場合は衝突回避のために本フレームワークの skill 名を変更することがあります（v2.15.1 で `/code-review` → `/review-phase` に変更しました）。
+> **公式コマンドとの名前衝突について:** C3 のスキル名は Claude Code 公式コマンドと重複しないよう設計しています。`/review-phase`（≠ 公式 `/code-review` / `/review`）はこの方針に基づく命名です。公式コマンドが追加された場合は衝突回避のために本フレームワークの skill 名を変更することがあります（v2.15.1 で `/code-review` → `/review-phase` に変更しました）。
 
 ---
 

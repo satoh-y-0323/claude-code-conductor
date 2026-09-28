@@ -34,7 +34,7 @@ tools:
 - 既存の requirements-report があれば Read して差分ヒアリングに備える
 
 **During:**
-- 目的・背景・制約・非機能要件の順でヒアリングする
+- 聞く観点と進め方は `.claude/skills/dev-workflow/references/interview-rubric.md` に従う（床 5 観点のうち未判明のものだけを確認する）
 - 曖昧な点は具体例を求めて深掘りする
 - 「なぜそれが必要か」まで確認する
 

@@ -171,7 +171,7 @@ paths:
 | 種別 | 説明 | 例 |
 |---|---|---|
 | **オーケストレーション skill** | 複数エージェントをまたぐフェーズ構成・受け渡し・TDD サイクル等 | `dev-workflow` / `develop` / `parallel-agents` |
-| **ユーティリティ skill** | エージェント起動を伴わないユーザー向け対話型ツール。`disable-model-invocation: true` が目印 | `mcp-config` / `pattern-status` / `recall` |
+| **ユーティリティ skill** | エージェント起動を伴わないユーザー向け対話型ツール。`disable-model-invocation: true` が目印 | `pattern-status` / `recall` |
 
 > **Skill = オーケストレーション手順 または ユーザー向けユーティリティ**（どちらも skills/ に置く）。
 > 単一エージェントの作業手順は `agents/` に書く。参照知識は `rules/` に書く。

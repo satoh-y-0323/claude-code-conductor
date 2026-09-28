@@ -15,7 +15,7 @@ Claude Code Conductor (C3) は、Claude Code を業務開発で使うときに�
 
 ```
 ユーザー
-    ↓ /start, /develop, /review-phase, /doc, /mcp-config, /extract-lib ...
+    ↓ /start, /develop, /review-phase, /doc, /extract-lib ...
 親 Claude（オーケストレーター）
     ├─ interviewer         ← ヒアリング
     ├─ architect           ← 設計
@@ -46,7 +46,7 @@ C3 は **役割を分離**し、**フェーズに沿った承認フロー**を�
 
 ## 主要機能
 
-- **13 のスキル**（`/init-session` / `/setup` / `/start` / `/develop` / `/review-phase` / `/promote-pattern` / `/pattern-status` / `/doc` / `/mcp-config` / `/extract-lib` / `/recall` / `/brainstorm` / `/codex-review`）
+- **11 のスキル**（`/init-session` / `/setup` / `/start` / `/develop` / `/review-phase` / `/promote-pattern` / `/pattern-status` / `/doc` / `/extract-lib` / `/recall` / `/brainstorm`）
 - **5 フェーズの開発ワークフロー**（ヒアリング → 設計 → 計画 → TDD → レビュー。計画承認後に design-critic による任意監査あり）
 - **14 専門エージェント**（interviewer / architect / planner / design-critic / developer / tester / code-reviewer / security-reviewer / doc-writer / systematic-debugger / project-setup + 並列 worktree 専用の wt_developer / wt_tester / wt_systematic-debugger）
 - **並列実行 (parallel-agents skill)**: plan-report を親 Claude の Agent ツール並列起動 + 公式 `isolation: "worktree"` で並列実行

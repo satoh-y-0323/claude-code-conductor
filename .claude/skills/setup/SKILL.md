@@ -10,7 +10,7 @@ description: 技術スタックと独自規約をヒアリングして project-s
 > **起動経路の制約**: 本 skill の起動は (a) ユーザーの `/setup` 明示呼び出し、
 > (b) `init-session` ガード G-2 が `SETUP_NEEDED` を検出した際のチェーン起動、の 2 経路のみ。
 > それ以外の場面で LLM の判断により自発的に起動してはならない
-> （frontmatter で model invocation を禁止しない理由は G-2 チェーン起動を許可するため。v2.38.0 設計）。
+> （frontmatter で model invocation を禁止していないのは、G-2 のチェーン起動を許可するため）。
 
 ---
 
@@ -26,10 +26,8 @@ AskUserQuestion ツール:
     "options": [
       { "label": "Python", "description": "バージョンを後で確認します" },
       { "label": "TypeScript / JavaScript", "description": "バージョンを後で確認します" },
-      { "label": "Go", "description": "バージョンを後で確認します" },
       { "label": "Java / Kotlin", "description": "バージョンを後で確認します" },
-      { "label": "C# / .NET", "description": "バージョンを後で確認します" },
-      { "label": "その他・自由入力" }
+      { "label": "C# / .NET", "description": "バージョンを後で確認します" }
     ]
   }]
 }
@@ -64,8 +62,7 @@ AskUserQuestion ツール:
       { "label": "サーバーサイド（API・バックエンド）" },
       { "label": "ブラウザ（フロントエンド）" },
       { "label": "両方（フルスタック）" },
-      { "label": "CLI ツール" },
-      { "label": "その他・自由入力" }
+      { "label": "CLI ツール" }
     ]
   }]
 }
@@ -82,8 +79,6 @@ AskUserQuestion ツール:
       { "label": "PostgreSQL" },
       { "label": "MySQL / MariaDB" },
       { "label": "SQLite" },
-      { "label": "MongoDB" },
-      { "label": "その他・自由入力" },
       { "label": "使わない" }
     ]
   }]
@@ -137,8 +132,7 @@ AskUserQuestion ツール:
       { "label": "最小限にする", "description": "コード自体を読みやすく書く" },
       { "label": "積極的に書く" },
       { "label": "英語で統一" },
-      { "label": "日本語で統一" },
-      { "label": "特になし" }
+      { "label": "日本語で統一" }
     ],
     "multiSelect": true
   }]
@@ -155,8 +149,7 @@ AskUserQuestion ツール:
     "options": [
       { "label": "80% 以上" },
       { "label": "クリティカルパスのみ" },
-      { "label": "数値目標なし" },
-      { "label": "その他・自由入力" }
+      { "label": "数値目標なし" }
     ]
   }]
 }
@@ -223,7 +216,7 @@ project-setup エージェントが 2 ファイルを生成したら、Bash で 
 c3 run .claude/skills/init-session/scripts/session_guard.py setup-mark
 ```
 
-書き込みが失敗した場合は `.claude/skills/init-session/scripts/session_guard.py` が例外で停止する（握り潰さない・ADR-4 整合）。フラグ未書き込みなら次回 `/init-session` 実行時に G-2 が SETUP_NEEDED を返し `/setup` が再起動されるためリカバリ可能。
+書き込みが失敗した場合は `.claude/skills/init-session/scripts/session_guard.py` が例外で停止する（握り潰さない）。フラグ未書き込みなら次回 `/init-session` 実行時に G-2 が SETUP_NEEDED を返し `/setup` が再起動されるためリカバリ可能。
 
 その後、以下を報告する:
 

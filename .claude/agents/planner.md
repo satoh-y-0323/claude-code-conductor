@@ -58,10 +58,9 @@ requirements-report・architecture-report・各種レビューレポートを統
 制限:
 - ソースファイルの編集・書き込みは行わない
 - plan-report の YAML フロントマター内で `tasks[].id` の重複・未定義の `depends_on` 参照・エージェント名の typo を出力しない（`c3 plan validate` で検証可能）
-- `.claude/skills/dev-workflow/references/plan-design-guidelines.md` の全ルールと自己チェックリストに違反した plan-report を出力しない（適用射程は分類表に従う）
 - 自動検査対象に違反する plan-report を出力しない:
   - R2/R4/R6（配布対象）: `.claude/hooks/planner_check.py` が PostToolUse で WARN を出す
-  - R3（C3 固有）: `.dev/hooks/_planner_check.py` が PostToolUse で exit 2 ブロック
+  - R3（C3 固有）: `.dev/hooks/_planner_check.py` が PostToolUse で exit 2 ブロック（配布元のみ。利用先には存在しない）
   - R5（worktree 違反）: `.claude/hooks/check_agent_invocation.py` が Agent ツール呼び出し時に exit 2 ブロック
 
 ## Related Agents

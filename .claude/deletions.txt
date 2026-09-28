@@ -92,3 +92,7 @@ skills/dev-workflow/scripts/record_tier_outcome.py
 hooks/permission_handler.py
 hooks/permission_handler_toast.py
 permission_rules.json
+
+# ---- v2.80.0: mcp-config / codex-review skill 廃止 ----
+skills/mcp-config/SKILL.md
+skills/codex-review/SKILL.md

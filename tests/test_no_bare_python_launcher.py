@@ -299,20 +299,18 @@ class TestProseIsNotFlagged:
         )
         assert find_markdown_violations(md) == []
 
-    def test_synthetic_json_prose_mention_not_flagged(self):
-        """mcp-config SKILL.md の JSON 例示中の「python」言及（実行形でない）は検出しない。"""
-        target = SKILLS_DIR / "mcp-config" / "SKILL.md"
-        if not target.exists():
-            pytest.skip("mcp-config SKILL.md が見つかりません")
-        violations = find_markdown_violations(target)
-        flagged_lines = {line_no for _, line_no, _ in violations}
-        for i, line in enumerate(target.read_text(encoding="utf-8").splitlines(), start=1):
-            if "node / python / バイナリ等" in line:
-                assert i not in flagged_lines, (
-                    f"JSON 例示中の非実行形 python 言及が誤って検出されました: line {i}"
-                )
-                return
-        pytest.skip("対象行が見つからないため前提が変化している可能性があります")
+    def test_synthetic_json_prose_mention_not_flagged(self, tmp_path):
+        """JSON 例示中の「python」言及（実行形でない）は検出しない。"""
+        md = tmp_path / "SKILL.md"
+        md.write_text(
+            "# example\n\n"
+            "```json\n"
+            '{ "label": "stdio", "description": "コマンドとして起動するサーバー'
+            '（node / python / バイナリ等。実行ファイルは絶対パス推奨）" }\n'
+            "```\n",
+            encoding="utf-8",
+        )
+        assert find_markdown_violations(md) == []
 
 
 # ---------------------------------------------------------------------------

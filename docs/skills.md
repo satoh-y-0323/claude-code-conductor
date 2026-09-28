@@ -19,11 +19,9 @@ C3 のスラッシュコマンドはすべてスキル（`.claude/skills/{name}/
 | スキル | 役割 |
 |---|---|
 | `/doc` | ドキュメントをヒアリングして生成（mermaid 図・README・API 仕様書など） |
-| `/mcp-config` | MCP サーバーの追加・一覧・削除（プロジェクトスコープ） |
 | `/extract-lib` | 複数プロジェクトのコードを横断解析し、共通処理をライブラリとして設計・生成 |
 | `/recall` | 過去のセッション・レポート・パターンから類似情報を意味検索で取得（v2.10.0+ / numpy ベクトル検索 + 多言語 embedding） |
 | `/brainstorm` | 仕事・設計の相談を、資料（PDF/画像）を読み込んだ上で気軽に発散・壁打ち。視点・選択肢・論点を増やす方向で結論を急がない（grill＝詰めるとは逆）。Excel は PDF に書き出して渡す（v2.29.0+） |
-| `/codex-review` | Codex CLI に `.codex/agents/` の定義を読み込ませ、code-reviewer / security-reviewer ペルソナでレビューを実行。単一ファイルモードとワークフローモード（git diff 全体の並走レビュー）があり、レポート契約（`[CR-XX-NNN]` / `[SR-XX-NNN]`）は C3 と共通。Codex adapter（`c3 init --platform codex`）セットアップ済み環境のみ有効 |
 
 ## 内部参照スキル（`/start` などから自動呼び出し）
 
@@ -92,7 +90,6 @@ model 列は既定値です。developer / wt_developer、および v2.54.0 以�
 - [skills/promote-pattern/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/promote-pattern/SKILL.md)
 - [skills/brainstorm/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/brainstorm/SKILL.md)
 - [skills/pattern-status/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/pattern-status/SKILL.md)
-- [skills/codex-review/SKILL.md](https://github.com/satoh-y-0323/claude-code-conductor/blob/main/.claude/skills/codex-review/SKILL.md)
 
 ## 次に読むページ
 

@@ -1,9 +1,9 @@
 ---
-description: plan-report の wave 単位で親 Claude の Agent ツール並列起動 + isolation:worktree で実装する手順。develop skill がフェーズ D で参照する PO（Parallel Orchestra）後継。
+description: plan-report の wave 単位で親 Claude の Agent ツール並列起動 + isolation:worktree で実装する手順。develop skill がフェーズ D で参照する。
 user-invocable: false
 ---
 
-# Parallel Agents（PO 後継、v1.12.0+）
+# Parallel Agents
 
 `/develop` のフェーズ D で plan-report に YAML フロントマター内の `po_plan_version` 値が `"0.1"` のときに Read される手順（`"sequential"` または フロントマター無しのプランは dev-workflow の legacy TDD 経路へ振り分けられる）。
 
@@ -13,21 +13,21 @@ C3 の親 Claude が plan-report の DAG を **wave 単位** で歩く:
 2. 各 Agent は `isolation: "worktree"` 付きで独立した git worktree 内で完結
 3. 親 Claude が wave 完了後に各 worktree の成果物を取り込み、一括コミット
 
-permission race の構造的修正（2026-05-11 PoC で 15 並列・101 tool 呼び出し 0 失敗確認）と公式 `isolation: "worktree"` フロントマターにより、旧 PO（Parallel Orchestra）の並列実行レイヤを Claude Code 公式機能で代替する。
+並列実行は Claude Code 公式の `isolation: "worktree"` フロントマターに依拠する（15 並列・101 tool 呼び出しで permission 失敗 0 を確認済み）。
 
 ---
 
 ## depth 1 制限について
 
-Claude Code のサブエージェントは **更にサブエージェントを spawn できない**（公式仕様 depth 1 制限）。v2.2.0 時点で配布されている全 agent は内部で Agent ツールを使わない設計のため、**すべて並列起動可能**。
+Claude Code のサブエージェントは **更にサブエージェントを spawn できない**（公式仕様 depth 1 制限）。配布 agent はいずれも内部で Agent ツールを使わない設計のため、**すべて並列起動可能**。
 
-将来的に「内部で Agent ツールを使う agent」を追加する場合は、その agent を含む wave のタスク数を 1 に絞る運用ガードが必要になる（v2.0.0 まで存在した `tdd-develop` agent はこのパターンだった）。
+将来的に「内部で Agent ツールを使う agent」を追加する場合は、その agent を含む wave のタスク数を 1 に絞る運用ガードが必要になる。
 
-## subagent_type 明示指定と wt_* 名前空間（v2.2.0+）
+## subagent_type 明示指定と wt_* 名前空間
 
 `subagent_type` パラメータには **カスタム agent (`.claude/agents/*.md`) も指定可能**（公式仕様）。これにより frontmatter の `permissionMode` / `tools` / `model` / `memory` が subagent 起動レイヤーで自動適用される。
 
-並列実行で permission プロンプトに詰まらないよう、v2.2.0 から **worktree 専用の `wt_*` プレフィックス agent** を導入した:
+並列実行で permission プロンプトに詰まらないよう、**worktree 専用の `wt_*` プレフィックス agent** を使う:
 
 - `wt_tester` / `wt_developer` / `wt_systematic-debugger`: frontmatter に `permissionMode: bypassPermissions` を持つ並列専用バリアント
 - 本体ロジックはオリジナルの `tester` / `developer` / `systematic-debugger` と同等。差分はレポート出力のファイル名規約のみで、並列専用 agent は `test-report-{task_id}.md` / `debug-needed-{task_id}.md` / `debug-analysis-{task_id}.md` を主経路とする（タイムスタンプ形式は task_id 不在時の保険）
@@ -114,7 +114,7 @@ stdout の JSON 形式:
 | impl-login | developer | `wt_developer` | false | src/auth/login.py |
 | confirm-login | tester | `tester` | false | .claude/reports/test-report-confirm-login.md |
 
-v2.2.0 以降、全 agent が並列起動可能のため `parallelizable` 列は省略する。subagent_type マッピングは 2-C 参照。confirm-login は writes が gitignored レポートのみのため 2-C の isolation ルール（gitignored-only writes は main 直接経路・素の agent）適用。
+全 agent が並列起動可能のため `parallelizable` 列は省略する。subagent_type マッピングは 2-C 参照。confirm-login は writes が gitignored レポートのみのため 2-C の isolation ルール（gitignored-only writes は main 直接経路・素の agent）適用。
 
 ### 2-B: マイルストーン確認（設定時のみ）
 
@@ -157,7 +157,7 @@ wave を起動する前に `git status` が空（未コミット変更なし）�
 各 Agent ツール呼び出しに以下を指定:
 
 - `subagent_type`: 上記マッピング表の値
-- `model`: **親 Claude は `model:` を指定しない**。`wt_developer` タスクは起動時に PreToolUse hook（`.claude/hooks/tier_autoapply.py`）が `[tier-routing 推奨]`（developer 基準）の推奨 Tier を `model:` へ自動適用する（機械適用・親 Claude が model: を転記する必要はない）。この推奨 Tier の SSOT は `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、kickoff の UserPromptSubmit で 1 度確定して以降 wave をまたいで安定する（`[tier-routing 推奨]` の表示テキストはその派生表示）。hook は実適用した model を `.claude/state/tier_autoapply.jsonl` に記録する（適用者=記録 SSOT）。並列 wave 内に複数の `wt_developer` が居る場合、**全 wt_developer は同一の推奨 Tier（単一 tier_selection.json.tier）で起動される。これは本 MVP の設計として明示的に許容する**（per-task complexity に応じて wt_developer ごとに tier を変える機能は本 MVP のスコープ外・フェーズ 3 以降）。推奨と異なる Tier を使いたい場合のみ `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。**上流環境変数の注意**: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`（Claude Code v2.1.257+）が設定されていると、ハーネスは per-spawn の `model:`（hook 注入・明示指定とも）と agent 定義の `model:` を無視して全サブエージェントを強制モデルで起動する。hook は注入と `tier_autoapply.jsonl` 記録を行うため、記録された tier と実適用モデルが乖離する。C3 は同変数を設定しない。tier-routing を使う環境ではこの変数を設定しないこと（`CLAUDE_CODE_SUBAGENT_MODEL` は既定値扱いで注入が優先されるため影響なし・v2.1.251+）。`wt_tester` は **test- タスク（Red）に限り機械適用対象**（`C3_TASK_ID` マーカーの `test-` プレフィックスで RED_APPLY_ROLES 注入・confirm- 等の非 test- タスクは対象外＝frontmatter 任せ）。`wt_systematic-debugger` / `code-reviewer` / `security-reviewer` は **model: 指定対象外**（frontmatter/元 agent 任せ・機械適用対象外）。fork は model 上書き不可のため対象外。
+- `model`: **親 Claude は `model:` を指定しない**。`wt_developer` タスクは起動時に PreToolUse hook（`.claude/hooks/tier_autoapply.py`）が `[tier-routing 推奨]`（developer 基準）の推奨 Tier を `model:` へ自動適用する（機械適用・親 Claude が model: を転記する必要はない）。この推奨 Tier の SSOT は `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、kickoff の UserPromptSubmit で 1 度確定して以降 wave をまたいで安定する（`[tier-routing 推奨]` の表示テキストはその派生表示）。hook は実適用した model を `.claude/state/tier_autoapply.jsonl` に記録する（適用者=記録 SSOT）。並列 wave 内に複数の `wt_developer` が居る場合、**全 wt_developer は同一の推奨 Tier（単一 tier_selection.json.tier）で起動される**（タスク単位の tier 切替は行わない）。推奨と異なる Tier を使いたい場合のみ `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。**上流環境変数の注意**: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`（Claude Code v2.1.257+）が設定されていると、ハーネスは per-spawn の `model:`（hook 注入・明示指定とも）と agent 定義の `model:` を無視して全サブエージェントを強制モデルで起動する。hook は注入と `tier_autoapply.jsonl` 記録を行うため、記録された tier と実適用モデルが乖離する。C3 は同変数を設定しない。tier-routing を使う環境ではこの変数を設定しないこと（`CLAUDE_CODE_SUBAGENT_MODEL` は既定値扱いで注入が優先されるため影響なし・v2.1.251+）。`wt_tester` は **test- タスク（Red）に限り機械適用対象**（`C3_TASK_ID` マーカーの `test-` プレフィックスで RED_APPLY_ROLES 注入・confirm- 等の非 test- タスクは対象外＝frontmatter 任せ）。`wt_systematic-debugger` / `code-reviewer` / `security-reviewer` は **model: 指定対象外**（frontmatter/元 agent 任せ・機械適用対象外）。fork は model 上書き不可のため対象外。
 - `isolation`: **`read_only: false` タスクのみ `"worktree"` を指定する。ただし `writes` が全て gitignored ファイル（実質 `.claude/reports/` のレポートのみ）のタスク（confirm- 系が典型）は git 的に「未変更」の worktree となるため Agent 完了時に auto-cleanup され、親が取り込む前に成果物が消失する（2026-07-26 実測）ため、worktree を使わず `isolation` を省略して main 直接経路・素の agent（読み替え: `wt_tester`→`tester` 等）で起動する。`read_only: true`（code-reviewer / security-reviewer）はソースを変更しないため worktree 不要。`isolation` を省略して main リポジトリで直接実行し、レポートを main の `.claude/reports/` に直接書かせる。**
   > **R5 hook による機械強制**: 上記ルールに違反して `read_only: true` のレビュータスクに `isolation: "worktree"` を指定した場合、`.claude/hooks/check_agent_invocation.py`（PreToolUse Agent hook）が exit 2 でブロックする。詳細は `.claude/skills/dev-workflow/references/plan-design-guidelines.md` R5 参照。
 - `run_in_background`: `true`
@@ -178,7 +178,7 @@ wave を起動する前に `git status` が空（未コミット変更なし）�
     ```
     worktree_guard.py はこの env 未設定時 `sys.exit(0)` で完全無効化されるため、wt_* agent 起動プロンプトで（マーカー行の直後・書き込み発生より前に）必ず設定すること。マーカーを 1 行目に移したのは `\A` 抽出との整合のためで、`worktree_guard.py` は env 変数のみを消費しプロンプト内の位置に依存しないため export 指示を 2 行目に置いても保護は不変（SR-V-002 の意図＝書き込み前に export、は順序非依存）。
   - タスクの `prompt` 本文
-  - 「**禁止事項: git add / git commit / git push を実行しないこと**。コミットは親 Claude がユーザー承認後に行う」
+  - 「**禁止事項: git add / git commit / git push を実行しないこと**。コミットは親 Claude が行う（2-F-2）」
   - 「**返り値フォーマット厳守**:
     ```
     [Result]
@@ -232,10 +232,10 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 - **test- タスク（wt_tester Red）の失敗** → `--gate D-1`（Red 成果物への帰属・条件 1/2/3）。failed した test-X タスクそのものに加え、**条件 3**（impl-X のテスト修正は writes 専属性により取り込み時に破棄され、confirm-X が旧テストで失敗して wave 失敗として顕在化する）で所在判定＝テストコード欠陥のときは対応する test-X へ `--gate D-1 failure --task test-{X}` を帰属する。
   - **除外境界（条件 3）**: テスト側修正を「仕様変更追随」として failure 記録から除外できるのは、**その裁定がセッションファイルに記録されている場合のみ**（裁定記録が無ければ既定で failure を記録する）。
   - **所在判定チェック観点（条件 3）**: impl- が誤アサーションへ source を over-fit させた場合 confirm- が pass し条件 3 が検知されない残余がある（本設計は逐次 D-3 と同一意味論の統一までを保証し over-fit 検知は保証しない・E フェーズが下流網）。所在判定では source が誤アサーションへ追従（over-fit）していないかを併せて確認する。
-- **confirm- / impl- タスクの失敗** → `--gate 2-E`（現行のまま・bandit 外イベントログ）。
+- **confirm- / impl- タスクの失敗** → `--gate 2-E`（bandit 外イベントログ）。
 
 **tier 記録ルール（ADR-AS-4 解消・applied-state task_id 突合）**:
-- `wt_developer`→`developer` の記録は **`--tier` を付けない**。起動時に PreToolUse hook（`tier_autoapply`）が applied-state（`tier_autoapply.jsonl`）に記録した実適用 tier を、record が `(session_id, role, task_id)` 突合で機械解決する（優先2a）。**`--task {task_id}` は突合キーとして必須**であり、2-C のマーカー `C3_TASK_ID: {task_id}` と完全一致させる。**従来 `--task` は dedupe 専用の任意引数だったが、T8 で突合の必須キーへ役割が変わる**（未注入だと優先2b フォールバック＝session_id 一致だけの曖昧解決に戻り、並列で誤 tier 帰属リスクが残る）。applied-state の `task_id` 突合により、並列 wave 内の複数 wt_developer が同一 session_id でも task 単位で**一意**に実適用 tier を解決できる（ADR-AS-4 解消・T8）。hook の書き込み先が main の `.claude/state/` であること（cwd リーク下でも `__file__` 基準で不変）は T4 E2E で実測確認済み（2026-07-07・並列 wt_developer×2 で worktree 側 jsonl 0 件・main 側 2 行・record が `--tier` なしで正解 tier を機械解決）。
+- `wt_developer`→`developer` の記録は **`--tier` を付けない**。起動時に PreToolUse hook（`tier_autoapply`）が applied-state（`tier_autoapply.jsonl`）に記録した実適用 tier を、record が `(session_id, role, task_id)` 突合で機械解決する（優先2a）。**`--task {task_id}` は突合キーとして必須**であり、2-C のマーカー `C3_TASK_ID: {task_id}` と完全一致させる（未注入だと優先2b フォールバック＝session_id 一致だけの曖昧解決に戻り、並列で誤 tier 帰属リスクが残る）。applied-state の `task_id` 突合により、並列 wave 内の複数 wt_developer が同一 session_id でも task 単位で**一意**に実適用 tier を解決できる。hook の書き込み先が main の `.claude/state/` であること（cwd リーク下でも `__file__` 基準で不変）は T4 E2E で実測確認済み（2026-07-07・並列 wt_developer×2 で worktree 側 jsonl 0 件・main 側 2 行・record が `--tier` なしで正解 tier を機械解決）。
 - `wt_tester`→`tester` の記録も **`--tier` を付けない**。**test- タスクは applied-state 突合（優先2a）で機械解決**され（Red 限定注入の実適用 tier に帰属）、**confirm- 等の非 test- タスクは frontmatter 自己解決**となる（record 側が `--task` の `test-` プレフィックスで soft-apply を gating し、優先2b の session-latest 誤帰属を封じるため）。
 
 ```bash
@@ -295,6 +295,8 @@ cp "<worktreePath2>/src/auth/logout.py" "src/auth/logout.py"
 
 #### 2-F-2: 親 Claude が一括コミット
 
+このコミットは次 wave の worktree に成果物を届けるためのローカルコミットであり（未コミットの変更は worktree に届かない）、plan-report の承認（C-2）をもって承認済みとする。push は行わない。
+
 親 Claude が `git status --short` を確認し、wave の成果物だけがステージングされていることを確認してから:
 
 ```bash
@@ -306,7 +308,7 @@ git commit -m "Wave {N}: {要約}"
 
 #### 2-F-3: worktree クリーンアップ（残留チェックのみ）
 
-Claude Code 2.1.x（少なくとも 2.1.150 で実測確認、2026-05-23）以降、`isolation:"worktree"` 付き Agent は完了時に worktree を auto-cleanup する仕様となっている（foreground / background / 並列 / 失敗ケース全パターンで検証済み。検証レポートは C3 配布元でのみ作成されたもので、現在は archive 済みのため利用先には存在しない）。ただし実測では **git 的に未変更の worktree は自動削除されるが、変更が残る worktree は残留しうる**（2026-07-26 実測）。
+Claude Code 2.1.x（少なくとも 2.1.150 で実測確認、2026-05-23）以降、`isolation:"worktree"` 付き Agent は完了時に worktree を auto-cleanup する仕様となっている（foreground / background / 並列 / 失敗ケース全パターンで検証済み）。ただし実測では **git 的に未変更の worktree は自動削除されるが、変更が残る worktree は残留しうる**（2026-07-26 実測）。
 
 したがって明示的な `git worktree remove` は基本的に不要だが、auto-cleanup が完全に走らなかった場合のセーフティとして残留チェック + 手動 cleanup で後始末する:
 
@@ -336,7 +338,7 @@ git branch -D worktree-agent-{id}
   - Wave N 成功時: `現在地: Wave {N} 完了 / 次: Wave {N+1}`
   - 最終 Wave 完了時: `現在地: 完了`（レビューへ遷移する場合は `現在地: フェーズE レビュー中`）
   - Wave をスキップした時: `現在地: Wave {N} skipped / 次: Wave {N+1}`
-- `session_utils.append_checkpoint()` を呼び出して checkpoint ブロックを追記。自由記述サマリ（`{要約}`）を Python 文字列リテラルにも bash heredoc にも直接埋め込まない。**親 Claude が `Write` ツールでサマリ本文を固定パス `<ROOT>/.claude/tmp/wave-checkpoint-summary.txt` へ書き込み**、bash 側は固定コード + 固定ファイルパス引数で `append_checkpoint` を呼ぶだけにする。`Write` ツールはテキストをそのまま書き込むだけで bash/heredoc のような区切り子解釈（終端行衝突・変数展開・コマンド置換）を持たないため、この注入クラスを構造的に排除できる。さらに固定パス方式により、**bash に可変内容（パス文字列の置換）を渡さないため、クォート脱出トリガ文字（`'` や `"` など）の混入を完全に無効化できる**（周回5 SR-INJ-002 指摘の構造的対処）。同一リポで複数の親 Claude セッションを並行させた場合、サマリが上書きされうるが、上書きで起きるのは checkpoint 本文の取り違え（コマンド実行には至らない）に限られ、C3 の想定運用（1 リポ 1 親セッション）では発生しないため許容：
+- `session_utils.append_checkpoint()` を呼び出して checkpoint ブロックを追記。自由記述サマリ（`{要約}`）を Python 文字列リテラルにも bash heredoc にも直接埋め込まない。**親 Claude が `Write` ツールでサマリ本文を固定パス `<ROOT>/.claude/tmp/wave-checkpoint-summary.txt` へ書き込み**、bash 側は固定コード + 固定ファイルパス引数で `append_checkpoint` を呼ぶだけにする。`Write` ツールはテキストをそのまま書き込むだけで bash/heredoc のような区切り子解釈（終端行衝突・変数展開・コマンド置換）を持たないため、この注入クラスを構造的に排除できる。さらに固定パス方式により、**bash に可変内容（パス文字列の置換）を渡さないため、クォート脱出トリガ文字（`'` や `"` など）の混入を完全に無効化できる**。同一リポで複数の親 Claude セッションを並行させた場合、サマリが上書きされうるが、上書きで起きるのは checkpoint 本文の取り違え（コマンド実行には至らない）に限られ、C3 の想定運用（1 リポ 1 親セッション）では発生しないため許容：
 
   1. **親 Claude が `Write` ツール**でサマリ本文を **`<ROOT>/.claude/tmp/wave-checkpoint-summary.txt`** へ書き込む。本文例:
      ```
@@ -368,13 +370,13 @@ append_checkpoint(os.path.join(SESSIONS_DIR, '{YYYYMMDD}.tmp'),
 
 **tier-routing 結果記録（成功タスクのみ・Red 成否 4 条件写像）**: この wave で成功した各タスクのうち `wt_developer`/`wt_tester` で起動したものについて記録する（`--execution subagent`。`code-reviewer`/`security-reviewer`/`wt_systematic-debugger` は記録対象外。`--complexity` は dev-workflow 開始時の `[tier-routing 推奨]` 表示の複雑度をそのまま渡す）。この記録は親 Claude が **main リポジトリ（2-F-0 の `cd <ROOT>` 後）で実行**する。gate を task_id プレフィックスで分岐する（逐次 D-1〜D-3 と同一意味論）:
 
-- **impl- タスク（wt_developer）の成功** → `--role developer --gate 2-D`（現行のまま）。
-- **test- タスク（wt_tester Red）の成功** → **success を記録しない**（**現行の `--gate 2-D` success 記録は廃止**＝成功の確定は confirm- 全合格まで遅延）。ただし wave 完了処理で親が test-report を確認し、**条件 1（Red の失敗理由が意図と違う）・条件 2（ベースライン破壊）** の違反があれば `--role tester --outcome failure --gate D-1 --task test-{X}` を記録する（違反が無ければこの時点では何も記録しない）。
+- **impl- タスク（wt_developer）の成功** → `--role developer --gate 2-D`。
+- **test- タスク（wt_tester Red）の成功** → **success を記録しない**（成功の確定は confirm- 全合格時）。ただし wave 完了処理で親が test-report を確認し、**条件 1（Red の失敗理由が意図と違う）・条件 2（ベースライン破壊）** の違反があれば `--role tester --outcome failure --gate D-1 --task test-{X}` を記録する（違反が無ければこの時点では何も記録しない）。
 - **confirm- タスク（plain tester・main 直接経路）の成功** → **2 件**記録する（ルール 14 により gitignored-only writes のため main 直接経路で起動される。記録ルールは同一）:
   1. confirm-X 自身のイベントログ `--role tester --outcome success --gate 2-D --task confirm-{X}`（現行のまま・bandit 外）。
   2. **条件 4（Red 成果物の生存確定）**: confirm-X 全合格（wave 成功）は Red が要求した挙動が実装で満たされた確定点なので、対応する test-X の成功を `--role tester --outcome success --gate D-1 --task test-{X}` として記録する（逐次 D-3 全合格時と同じ確定点）。
 
-**tier 記録ルール（ADR-AS-4 解消・2-E と同一）**: `wt_developer`→`developer` は **`--tier` を付けない**。起動時に hook（`tier_autoapply`）が applied-state（`tier_autoapply.jsonl`）に記録した実適用 tier を、record が `(session_id, role, task_id)` 突合で機械解決する（優先2a）。**`--task {task_id}` は突合キーとして必須**であり、2-C のマーカー `C3_TASK_ID: {task_id}` と完全一致させる（従来 `--task` は dedupe 専用の任意引数だったが、T8 で突合の必須キーへ役割が変わる）。applied-state の `task_id` 突合により、同一 session_id の複数 wt_developer を task 単位で**一意**に分離できる（ADR-AS-4 解消・T8）。hook の書き込み先が main の `.claude/state/` であること（cwd リーク下でも `__file__` 基準で不変）は T4 E2E で実測確認済み（2026-07-07・並列 wt_developer×2 で worktree 側 jsonl 0 件・main 側 2 行・record が `--tier` なしで正解 tier を機械解決）。 `wt_tester`→`tester` も **`--tier` を付けない**。**test- タスクは applied-state 突合（優先2a）で機械解決**され（confirm- 全合格時の条件 4 success も `--task test-{X}` で Red 注入 tier に帰属する）、**confirm- 等の非 test- タスクは frontmatter 自己解決**となる（record 側が `--task` の `test-` プレフィックスで soft-apply を gating するため）。
+**tier 記録ルール（2-E と同一）**: `wt_developer`→`developer` は **`--tier` を付けない**。起動時に hook（`tier_autoapply`）が applied-state（`tier_autoapply.jsonl`）に記録した実適用 tier を、record が `(session_id, role, task_id)` 突合で機械解決する（優先2a）。**`--task {task_id}` は突合キーとして必須**であり、2-C のマーカー `C3_TASK_ID: {task_id}` と完全一致させる。applied-state の `task_id` 突合により、同一 session_id の複数 wt_developer を task 単位で**一意**に分離できる。hook の書き込み先が main の `.claude/state/` であること（cwd リーク下でも `__file__` 基準で不変）は T4 E2E で実測確認済み（2026-07-07・並列 wt_developer×2 で worktree 側 jsonl 0 件・main 側 2 行・record が `--tier` なしで正解 tier を機械解決）。 `wt_tester`→`tester` も **`--tier` を付けない**。**test- タスクは applied-state 突合（優先2a）で機械解決**され（confirm- 全合格時の条件 4 success も `--task test-{X}` で Red 注入 tier に帰属する）、**confirm- 等の非 test- タスクは frontmatter 自己解決**となる（record 側が `--task` の `test-` プレフィックスで soft-apply を gating するため）。
 
 ```bash
 # impl- タスク: wt_developer→developer（tier フラグは付けない・applied-state task 突合で機械解決）
@@ -413,7 +415,7 @@ checkpoint の summary には KEEP ルール（設計判断・決定事項・解
 
 ## 知識蓄積
 
-- 並列実行で **特定パターンが詰まりがち** と気付いたら、セッションファイルの `## 試みたが失敗したアプローチ` に追記し `patterns` に登録する
+- 並列実行で **特定パターンが詰まりがち** と気付いたら、セッションファイルの `## 試みたが失敗したアプローチ` に追記する。patterns の観測としても残す場合は、同じセッションファイル末尾の `C3:SESSION:JSON` ブロックの `patterns` 配列に `{"id": ..., "description": ...}` を追記する（Stop hook が patterns.json へ取り込む。patterns.json は直接編集しない）
 - 並列度を増やして race の兆候が出た場合は本 skill の上限値 15 を見直す（PoC では 15 並列まで 0 失敗確認済み）
 - agent ツール並列起動の `<task-notification>` の到着順序は保証されないため、結果集約の表は task_id でソートして提示する
 - Claude Code 2.1.x 以降は Agent 完了時に worktree auto-cleanup されるため、明示的な `git worktree remove` は基本不要（2-F-3 参照）。`.claude/worktrees/` に dead worktree が残る場合は古い Claude Code バージョンで作成された残骸の可能性が高い

@@ -1,5 +1,46 @@
 # Changelog
 
+## [2.80.0] - 2026-09-29
+
+### 破壊的変更
+
+- **`mcp-config` skill と `codex-review` skill を削除した**: `.claude/skills/mcp-config/` と
+  `.claude/skills/codex-review/` を配布物から外した。`mcp-config` は MCP サーバー定義を
+  `.claude/settings.json` の `mcpServers` に読み書きしていたが、Claude Code の公式ドキュメントでは
+  プロジェクトスコープの MCP サーバーは `.mcp.json`、ローカルスコープは `~/.claude.json` に置く仕様であり、
+  この skill で登録したサーバーは読み込まれない可能性が高かった。MCP サーバーの追加・削除は Claude Code 標準の
+  `/mcp` または `claude mcp add` を使う。`codex-review` は使用しないため削除した（Codex adapter
+  〔`c3 init --platform codex`〕の生成物は変更していない）。`c3 update` 実行時、利用先の両 SKILL.md は
+  削除候補として提示される（`.claude/deletions.txt` に記載）
+
+### 変更
+
+- **Claude Opus 5.5 を基準にしたプロンプト監査を行い、指摘を反映した**。対象は `.claude/CLAUDE.md`・
+  `.claude/rules/`・`.claude/agents/`・`.claude/skills/` の指示文で、規則の中身（承認ゲート・安全境界・
+  レポート契約）は変えていない
+  - 事実との食い違いを修正した: `dev-workflow` の autonomous-mode 配布状況の記述（実際は配布済み）、
+    `autonomous-mode` の親の職掌の件数（5 種 → 6 種）と item 参照、`plan-design-guidelines` の自動検査の
+    担当 hook と警告形式、ルール 13（`depends_on: []`）の理由、`parallel-agents` の patterns への記録経路
+    （`C3:SESSION:JSON` ブロック経由。patterns.json は直接編集しない）、辿れない節番号参照
+  - 規約間の衝突を解消した: E-3 判断基準 1 を「根本解決の原則」に合わせた（PR diff 量を縮小の理由に
+    使わない）、E-3 判断基準 2 の「許容」の意味を明確化、interviewer のヒアリング観点を interview-rubric に
+    一本化、`start` の D-0 分岐説明を `develop` と一致させた、`design-rubric` の B-1〜B-2 表記、
+    `extract-lib` のレポート名を report-timestamp 規約（`lib-extract-{timestamp}.md`）に統一
+  - `parallel-agents` 2-F-2 の wave ごとのローカルコミットは plan-report の承認で許可済みと明記し、
+    agent への注入文と `autonomous-mode` の人間の関所の記述を整合させた（push はしない）
+  - `autonomous-mode` の逸脱時の破棄手段を、親の変更の Edit による逆適用を既定とし、`git checkout -- <path>` は
+    `git diff` に親の変更以外の差分が無い場合に限るよう改めた（developer の未コミット成果を巻き込まないため）
+  - `setup` の AskUserQuestion の選択肢を上限 4 個に収めた（「その他」は自動で付くため選択肢から外した）
+  - 数値の出力上限と判断作業の手順指定を目的の記述に置き換えた: 計画提示・資料要約の行数上限、
+    `systematic-debugger` の調査手順、`extract-lib` の解析手順、E-0 で検証する性質（対象に応じて選ぶ）
+  - 旧版との差分を前提にした言い回し（「従来」「PO 後継」「vX.Y.Z から」など）・日付付きの経緯・
+    配布先から辿れない内部 ID を現在形に整理した。配布元の保守向けの相互参照を `autonomous-mode` から外した
+  - `developer` / `wt_developer` の tools に `TaskCreate` / `TaskUpdate` / `TaskList` / `TaskGet` を追加した
+    （`TodoWrite` は上流で既定無効のため）
+  - 引き継ぎバックログの照合で、字面が一致しなくても内容で該当する行を候補に含めるようにした
+- `tests/test_no_bare_python_launcher.py` の `mcp-config` 実ファイル依存のテストを、同じ性質（JSON 例示中の
+  非実行形の `python` 言及を検出しない）を一時ファイルで検査する形に置き換えた
+
 ## [2.79.0] - 2026-09-18
 
 ### 追加

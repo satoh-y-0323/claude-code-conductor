@@ -1,6 +1,6 @@
 # tier-routing 結果記録プロトコル
 
-各フェーズの承認ゲート・タスク単位で `.claude/skills/dev-workflow/scripts/record_agent_outcome.py` を呼び、role 別に実際に使われた tier の成功/失敗を記録する（architecture-report-20260702-214748.md §3-4）。全記録ブロック共通のルール:
+各フェーズの承認ゲート・タスク単位で `.claude/skills/dev-workflow/scripts/record_agent_outcome.py` を呼び、role 別に実際に使われた tier の成功/失敗を記録する。全記録ブロック共通のルール:
 
 ## 記録規約
 
@@ -45,7 +45,7 @@ developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 
 
 「推奨 Tier」の唯一のソースは `.claude/state/tier_selection.json` の `tier`（無ければ `suggested_model`）であり、`[tier-routing 推奨]` の additionalContext テキストはその値を人間可読に射影した派生表示で SSOT ではない。この値は kickoff プロンプトの UserPromptSubmit で select_tier が 1 度だけ書き、E-3 完了側の `--gate E-2` 記録（`--final` 付き）で削除されるまで wave/ゲートをまたいで安定する（承認応答は UserPromptSubmit を発火しないため途中で上書きされない）。
 
-## 集計注記（DC-AS-002 / ADR-25-3）
+## 集計注記
 
 - bandit params・escalation 判定の**集計対象 gate は role 別（`BANDIT_GATES_BY_ROLE`）**である: developer 等の既定 role は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）**、**tester は D-1 のみ**（D-3/D-5 の tester 記録はイベントログとして残るが集計対象外）。E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、その成否は従来どおり個別の集計から除外される（意図どおり・read-side フィルタで実現）。
 - **reviewer role（code-reviewer/security-reviewer・および E-gate のみの role）は BANDIT_GATES に該当 gate を持たないため、`c3 tier stats` 等の表示で当該 role の bandit は常に uniform（全 tier `(1.0,1.0,0)`・0 trials）になる**。これは設計意図の帰結であり退行ではない。tier 選択の実消費者は `select_tier`（developer role 固定）のみで、reviewer role の bandit が uniform でも tier 選択ロジックには影響しない。
