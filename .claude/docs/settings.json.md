@@ -190,6 +190,7 @@ Claude Code のイベントに対してフックを登録する。マッチし�
 | `hooks[].type` | フックの種類（下記参照） |
 | `hooks[].if` | フックレベルの追加フィルタ。許可ルール構文（`Bash(git *)`、`Edit(*.ts)` 等）。ツールイベントのみ有効 |
 | `hooks[].timeout` | タイムアウト秒数。デフォルト 600秒（10分） |
+| `hooks[].onFailure` | hook 自体の失敗時の扱い。`"continue"`（既定）/ `"block"`。command / http hook で使える。Claude Code 2.1.295 以降（下記 `command` と「終了コードによる動作」を参照） |
 
 ---
 
@@ -201,6 +202,21 @@ Claude Code のイベントに対してフックを登録する。マッチし�
 
 ```json
 { "type": "command", "command": "python script.py" }
+```
+
+| フィールド | 説明 |
+|---|---|
+| `command` | 実行するコマンド |
+| `args` | 引数の配列。指定すると `command` をシェルを介さず実行する（exec 形式。C3 の登録はすべてこの形式） |
+| `onFailure` | hook 自体が失敗したとき（起動できない・タイムアウト・0 と 2 以外の終了コード）の扱い。`"continue"`（既定）は失敗を通知して続行する。`"block"` は exit 2 と同じ扱いでアクションをブロックする。Claude Code 2.1.295 以降 |
+
+```json
+{
+  "type": "command",
+  "command": "c3",
+  "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_tool.py"],
+  "onFailure": "block"
+}
 ```
 
 #### `http`
@@ -252,7 +268,31 @@ Claude Code のイベントに対してフックを登録する。マッチし�
 | `2` | アクションをブロック。stderr の内容が Claude へのフィードバックになる。ブロック不可イベントでは stderr をユーザーに表示し続行 |
 | その他 | 続行。トランスクリプトに `<hook name> hook error` 通知 + stderr 1行目を表示 |
 
+> **`onFailure: "block"` のエントリ**: 0 と 2 以外の終了コード・起動失敗・タイムアウトは exit 2 と同じ扱い（アクションをブロックし、stderr が Claude へのフィードバックになる）。このときエラーには `PreToolUse:Bash hook error: [<hook のコマンド>]: failed; blocking because onFailure is "block"` のように、イベント名・ツール名・失敗した hook のコマンドが出る。onFailure 未指定（`"continue"`）では上表「その他」のとおり続行する。
+
 > **注意**: exit 2 と JSON 出力を混在させないこと。Claude Code は exit 2 時に JSON を無視する。
+
+### C3 の `onFailure` 方針
+
+(i) **onFailure: "block" を付けている hook**（`.claude/settings.json` の PreToolUse・7 エントリ）:
+
+| hook | matcher |
+|---|---|
+| `pre_tool.py` | `Bash` |
+| `worktree_guard.py` | `Write` / `Edit` |
+| `patterns_guard.py` | `Write` / `Edit` |
+| `report_path_guard.py` | `Write` |
+| `check_agent_invocation.py` | `Agent` |
+
+(ii) **判断基準**: 安全境界（破壊的コマンド・secret・書き込み先・reviewer の起動条件などの関所）の PreToolUse hook に付ける。hook 自体が失敗したときに関所を素通りさせないため。利便用の hook（例: `tier_autoapply.py`）や、失敗時に全操作を止めてしまう hook（UserPromptSubmit 系など）には付けない。PostToolUse は実行後のため、Stop 系は効果が無いため付けない。対象外の hook には `"continue"` も書かず、キー自体を省略する。
+
+(ii-a) **onFailure が拾う範囲**: 拾うのは hook 自体の失敗（起動不能・0 と 2 以外の終了コード・タイムアウト・不正な JSON 出力）である。hook が意図して exit 0 で通す入力（stdin の JSON の解析失敗など）は失敗ではないため対象外で、そのまま通過する。
+
+(ii-b) **block 対象に hook を加えるときの確認**: block 時は stderr 全文が Claude に渡るため、その hook が例外時に stderr へ機密（トークン・環境変数・ファイル内容など）を出さないことを確認する。
+
+(iii) **自分の hook に付けるかの指針**: `settings.local.json` 等に登録した自分の PreToolUse hook が「失敗時に通すと困る関所」なら `"block"` を付け、「失敗しても作業を続けたい補助」なら付けない。
+
+分類の正本は C3 開発リポジトリの `tests/test_settings_hooks_registration.py`（配布物には含まれない）にある閉じた分類表で、配布元が `.claude/settings.json` の PreToolUse の全 hook を「block 対象」か「非対象」に分類して機械検査している。`c3 run` で起動される hook は、`c3` が見つからない（venv が activate されていない等）と起動に失敗するため、上記の hook が付いたツール（Bash / Write / Edit / Agent）がブロックされる。対処は README の「前提条件」を参照。
 
 ---
 

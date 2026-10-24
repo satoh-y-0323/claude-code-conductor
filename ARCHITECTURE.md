@@ -112,11 +112,11 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 | `SessionStart` | （全て） | `session_start.py` | file-history クリア・sandbox 有効化・`c3.db` 初期化 |
 | `UserPromptSubmit` | （全て） | `select_tier.py` | 複雑度判定 → Tier ルーティング推奨（[§4](#4-知能基盤)） |
 | `UserPromptSubmit` | （全て） | `recall_inject.py` | 過去類似情報を意味検索しコンテキスト注入（[§4](#4-知能基盤)） |
-| `PreToolUse` | `Bash` | `pre_tool.py` | 破壊的コマンド（`rm -rf` 等）ブロック・secret スキャン |
-| `PreToolUse` | `Write` / `Edit` | `worktree_guard.py` | worktree 外への書き込み禁止（`PO_WORKTREE_GUARD=1` 設定時のみ作動。parallel-agents が並列実行時に有効化） |
-| `PreToolUse` | `Write` / `Edit` | `patterns_guard.py` | patterns.json への直接編集を block（許可フラグ TTL 600 秒・C3_PATTERNS_GUARD_DISABLE=1 で無効化） |
-| `PreToolUse` | `Write` | `report_path_guard.py` | レポート 9 prefix の書き先を検査し逸脱を block（封じ込め: `.claude/reports/` 直下の二層判定 / 上書き: タイムスタンプ形式の既存ファイル / 形式: strict-4 の非タイムスタンプ命名。`C3_REPORT_GUARD_DISABLE=1` で無効化） |
-| `PreToolUse` | `Agent` | `check_agent_invocation.py` | エージェント起動の検査 |
+| `PreToolUse` | `Bash` | `pre_tool.py` | 破壊的コマンド（`rm -rf` 等）ブロック・secret スキャン（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
+| `PreToolUse` | `Write` / `Edit` | `worktree_guard.py` | worktree 外への書き込み禁止（`PO_WORKTREE_GUARD=1` 設定時のみ作動。parallel-agents が並列実行時に有効化）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
+| `PreToolUse` | `Write` / `Edit` | `patterns_guard.py` | patterns.json への直接編集を block（許可フラグ TTL 600 秒・C3_PATTERNS_GUARD_DISABLE=1 で無効化）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
+| `PreToolUse` | `Write` | `report_path_guard.py` | レポート 9 prefix の書き先を検査し逸脱を block（封じ込め: `.claude/reports/` 直下の二層判定 / 上書き: タイムスタンプ形式の既存ファイル / 形式: strict-4 の非タイムスタンプ命名。`C3_REPORT_GUARD_DISABLE=1` で無効化）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
+| `PreToolUse` | `Agent` | `check_agent_invocation.py` | エージェント起動の検査（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
 | `PreToolUse` | `Agent` | `tier_autoapply.py` | 推奨 Tier の `model:` 自動注入（既存登録の表への追随・乖離是正） |
 | `PostToolUse` | `Write` / `Edit` | `post_tool.py` | skills 変更通知・品質パターン（TODO 等）スキャン |
 | `PostToolUse` | `Write` / `Edit` | `planner_check.py` | plan-report の YAML/タイムスタンプ/reviewer 規約検査 |
@@ -137,7 +137,8 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 ### 設計原則
 
 - **非ブロッキング**: 観測系 hook は失敗しても `exit 0` でセッションを止めない（DB 不在・index 不在でも本体は動く）。
-- **`exit 2` は自己修正用**: PostToolUse の `exit 2` は LLM の system reminder に block error として surface される（「自動修正させたい違反」は exit 2、「ログだけ」は exit 0 + stderr で書き分ける）。例は配布元専用 `.dev/hooks/_planner_check.py` の R3。なお PreToolUse の `exit 2`（`check_agent_invocation.py` の R5 等）は動作をブロックするが LLM コンテキストへは注入されず、設計が異なる。
+- **安全境界はブロックに倒す**: 安全境界の PreToolUse hook は、hook 自体の失敗時（起動できない・タイムアウト・想定外の終了コード）に `onFailure: "block"` でブロックに倒す（対象は上表の注記の 5 本・7 エントリ）。
+- **`exit 2` は stderr を Claude に渡す**: PreToolUse の `exit 2`（`check_agent_invocation.py` の R5 等）は動作をブロックし、stderr がイベント名・ツール名・hook のコマンドを前置したツールのエラーとして Claude に渡る。PostToolUse の `exit 2` はツールの実行後に stderr を Claude に渡す（実行自体は取り消せない）。どちらも「Claude に読ませて直させたい違反」は exit 2、「ログだけ」は exit 0 + stderr で書き分ける。PostToolUse の例は配布元専用 `.dev/hooks/_planner_check.py` の R3。
 - **配布元専用 hook** は `.dev/hooks/` に分離（`settings.local.json` で登録・配布されない）: `_template_guard.py` / `_sync_check.py` / `_pip_reinstall_reminder.py` / `_planner_check.py`。
 
 ---

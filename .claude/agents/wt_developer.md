@@ -11,11 +11,6 @@ tools:
   - Bash
   - Glob
   - Grep
-  - TodoWrite
-  - TaskCreate
-  - TaskUpdate
-  - TaskList
-  - TaskGet
   - Skill
 ---
 

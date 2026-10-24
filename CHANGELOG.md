@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.81.0] - 2026-10-24
+
+### 変更
+
+- **安全境界の PreToolUse hook 5 本に `onFailure: "block"` を付けた**。対象は `.claude/settings.json` の
+  `pre_tool.py`（Bash）・`worktree_guard.py`（Write / Edit）・`patterns_guard.py`（Write / Edit）・
+  `report_path_guard.py`（Write）・`check_agent_invocation.py`（Agent）の 7 エントリ。これまでは hook 自体が
+  失敗したとき（起動できない・タイムアウト・想定外の終了コード）にツール呼び出しがそのまま通っていたが、
+  exit 2 と同じ扱いでブロックされるようになる。`tier_autoapply.py` と PreToolUse 以外の hook には付けていない。
+  この設定には **Claude Code 2.1.295 以降が必要**（README の「前提条件」に追記した）。venv を activate して
+  いないシェルから Claude Code を起動するなど `c3` を起動できない環境では、Bash / Write / Edit / Agent の
+  呼び出しがブロックされる（README・`docs/getting-started.md` に症状と対処を記載した）。
+  `.claude/docs/settings.json.md` に `onFailure` の仕様と C3 の方針を、`ARCHITECTURE.md` の設計原則に
+  安全境界の原則を追記し、PreToolUse の `exit 2` の stderr が Claude に渡らないとしていた誤った記述を直した
+- **developer / wt_developer の tools から、提供されないツールを外した**。Claude Code v2.1.268 以降、
+  TodoWrite と Task 系ツール（TaskCreate / TaskUpdate / TaskList / TaskGet）は Opus 4.7 以前・Sonnet 4.6 以前・
+  Haiku 4.5 でしか提供されず、developer を opus（claude-opus-5-5）と haiku（claude-haiku-5-5）で起動して
+  確認したところ 5 本とも提供されていなかった。TodoWrite は v2.80.0 以前から記載していたもの、
+  TaskCreate / TaskUpdate / TaskList / TaskGet は v2.80.0 で追加したもの。agent 本文はこれらのツールに
+  依存しておらず、挙動は変わらない
+
 ## [2.80.0] - 2026-09-29
 
 ### 破壊的変更

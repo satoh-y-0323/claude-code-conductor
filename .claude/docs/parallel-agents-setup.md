@@ -16,7 +16,7 @@ C3 の `parallel-agents` skill（`/develop` から間接起動）を快適に使
 
 | 項目 | 推奨値 | 既定との差 |
 |---|---|---|
-| Claude Code バージョン | **2.1.150 以降** | 古いと auto-cleanup 不在 |
+| Claude Code バージョン | **2.1.295 以降**（C3 全体の下限。README の「前提条件」を参照。worktree auto-cleanup が安定するのは 2.1.150 以降で、下限を満たせばこちらも満たす） | 2.1.150 未満だと auto-cleanup 不在 |
 | `worktree.baseRef` | **`"head"`** | 既定は `"fresh"` (= `origin/<default>` から作成) |
 
 設定しなくても skill 自体は動くが、以下の問題に遭遇しやすくなる:
@@ -83,7 +83,11 @@ parallel-agents は「直近の修正を反映した worktree で並列実装さ
 
 ## Claude Code バージョン要件
 
-### 2.1.150 以降を推奨する理由
+### 2.1.150 以降が必要な理由（worktree auto-cleanup）
+
+C3 全体の下限は 2.1.295 であり（README の「前提条件」を参照）、下限を満たす環境では
+以下の 2.1.150 条件も常に満たされる。ここでは parallel-agents に関わる 2.1.150 の
+意味だけを説明する。
 
 `isolation: "worktree"` 付き Agent が **完了時に worktree を auto-cleanup** する
 挙動が安定したのが 2.1.150 系。これにより:
@@ -95,7 +99,7 @@ parallel-agents は「直近の修正を反映した worktree で並列実装さ
 2.1.150 未満の場合、SKILL.md Step 2-F-3 のフォールバック手順
 （`git worktree remove -f -f` + `git branch -D worktree-agent-<id>`）が
 **毎回必要** になる。dead worktree が積み重なるとパフォーマンス・容量への
-影響もあるため、可能ならアップグレードを推奨する。
+影響もあるため、アップグレードを推奨する（C3 の下限 2.1.295 を満たせば不要）。
 
 ### auto-cleanup の信頼度
 

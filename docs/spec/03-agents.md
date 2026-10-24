@@ -76,7 +76,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| frontmatter | `name: developer` / `model: sonnet` / `memory: project` / `tools: Read, Write, Edit, Bash, Glob, Grep, TodoWrite, Skill`（`permissionMode` なし） |
+| frontmatter | `name: developer` / `model: sonnet` / `memory: project` / `tools: Read, Write, Edit, Bash, Glob, Grep, Skill`（`permissionMode` なし） |
 | 入力 | plan-report を Read・既存コードを Glob/Grep／bug-fix・stuck 再実行時は debug-analysis の**ファイルパスのみ**を受領し agent 側で Read |
 | 出力 | ソース実装（1 タスク = 1 コミット）／stuck 時のみ `.claude/reports/debug-needed-{timestamp}.md`／`.claude/agent-memory/developer/MEMORY.md`（定常レポート出力は**なし**） |
 | 起動元 | `.claude/skills/dev-workflow/SKILL.md:598`（D-2 bug-fix）・`:663`（D-2 Green）・`:679`（D-2.5 の再実行）・`:767`（D-4 Refactor） |
@@ -180,7 +180,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| frontmatter | `name: wt_developer` / `model: sonnet` / `memory: project` / `permissionMode: bypassPermissions` / `tools: Read, Write, Edit, Bash, Glob, Grep, TodoWrite, Skill` |
+| frontmatter | `name: wt_developer` / `model: sonnet` / `memory: project` / `permissionMode: bypassPermissions` / `tools: Read, Write, Edit, Bash, Glob, Grep, Skill` |
 | 入力 | plan-report を Read ＋ 起動プロンプト 1 行目の `C3_TASK_ID: {task_id}` マーカー ＋ 2 行目以降の `export PO_WORKTREE_GUARD=1` 指示（task_id は description / record `--task` と三者一致） |
 | 出力 | ソース実装（worktree 内）／stuck 時 `.claude/reports/debug-needed-{task_id}.md`（保険経路のみ `-{timestamp}`）／`.claude/agent-memory/wt_developer/MEMORY.md` |
 | 起動元 | `.claude/skills/parallel-agents/SKILL.md:150` マッピング表（plan-report の `agent: developer`・`isolation: "worktree"` 付き並列起動）。単発起動では**使わない**と定義本文が明示 |

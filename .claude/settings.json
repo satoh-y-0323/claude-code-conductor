@@ -70,7 +70,8 @@
           {
             "type": "command",
             "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_tool.py"]
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/pre_tool.py"],
+            "onFailure": "block"
           }
         ]
       },
@@ -80,17 +81,20 @@
           {
             "type": "command",
             "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"],
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/patterns_guard.py"]
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/patterns_guard.py"],
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/report_path_guard.py"]
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/report_path_guard.py"],
+            "onFailure": "block"
           }
         ]
       },
@@ -100,12 +104,14 @@
           {
             "type": "command",
             "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"]
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree_guard.py"],
+            "onFailure": "block"
           },
           {
             "type": "command",
             "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/patterns_guard.py"]
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/patterns_guard.py"],
+            "onFailure": "block"
           }
         ]
       },
@@ -115,7 +121,8 @@
           {
             "type": "command",
             "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/check_agent_invocation.py"]
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/check_agent_invocation.py"],
+            "onFailure": "block"
           },
           {
             "type": "command",

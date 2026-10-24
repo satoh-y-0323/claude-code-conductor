@@ -219,6 +219,7 @@ C3 の `.claude/` はプロジェクトコードに一切触れません。既�
 ### 前提条件
 
 - [Claude Code](https://claude.ai/code) がインストール済みでログインしていること
+- Claude Code **2.1.295 以降**であること（C3 は安全境界の hook に `onFailure` を指定しており、この設定はこの版以降で使えます）
 - Python 3.10 以上がインストール済みであること
 
 **仮想環境（venv）の準備（推奨）**
@@ -241,7 +242,7 @@ source .venv/bin/activate
 
 venv に入れた場合の注意:
 
-- C3 の hook は `c3 run` で起動されるため、**Claude Code を起動するシェルでも同じ venv を activate してください**。activate されていないシェルから Claude Code を起動すると `c3` が見つからず、hook が動作しません
+- C3 の hook は `c3 run` で起動されるため、**Claude Code を起動するシェルでも同じ venv を activate してください**。activate されていないシェルから Claude Code を起動すると `c3` が見つかりません。このとき安全境界の hook（一覧は `.claude/docs/settings.json.md` の「C3 の `onFailure` 方針」を参照）は起動に失敗し、`onFailure: "block"` の設定によりツール呼び出しをブロックします。Bash / Write / Edit / Agent が使えなくなり、エラーには `PreToolUse:Bash hook error: [<hook のコマンド>]: failed; blocking because onFailure is "block"` のように、イベント名・ツール名・失敗した hook のコマンドが表示されます（それ以外の hook は動作しないまま処理が続きます）。この症状が出たら Claude Code を終了し、venv を activate したシェルで `c3 doctor` を実行して `c3` が解決されることを確認してから、そのシェルで Claude Code を起動し直してください
 - venv を使わずグローバルに使いたい場合は [pipx](https://pipx.pypa.io/) が代替になります: `pipx install claude-code-conductor`
 - インストール後は、**Claude Code を起動するのと同じシェルで** `c3 doctor` を実行し、`c3` が PATH で解決されることを確認してください（`c3 doctor` が検査するのは実行中シェルの PATH です。別のシェルで実行しても、Claude Code の hook が起動される文脈は再現できません）
 
@@ -253,7 +254,11 @@ venv に入れた場合の注意:
 pip install claude-code-conductor
 ```
 
-> このコマンドが PEP 668（externally-managed-environment）で拒否される場合や、インストール後に hook が動作しない場合は、[前提条件](#前提条件)の venv 手順（activate するシェルの注意点を含む）を参照してください。
+> 次のいずれかの場合は、[前提条件](#前提条件)の venv 手順（activate するシェルの注意点を含む）を参照してください。
+>
+> - このコマンドが PEP 668（externally-managed-environment）で拒否される
+> - インストール後に hook が動作しない
+> - Bash / Write / Edit / Agent の呼び出しが `blocking because onFailure is "block"` を含むエラーでブロックされる
 
 **2. プロジェクトに `.claude/` を展開する**
 
@@ -442,7 +447,7 @@ TDD を伴う機能実装は、planner が「test- → impl- → confirm-」の 
 
 | 項目 | 推奨値 | 理由 |
 |---|---|---|
-| Claude Code バージョン | 2.1.150 以降 | worktree auto-cleanup の安定動作 |
+| Claude Code バージョン | 2.1.295 以降（C3 全体の下限。[前提条件](#前提条件)を参照） | 下限は `onFailure` の利用に必要。うち worktree auto-cleanup が安定するのは 2.1.150 以降で、2.1.295 以降ならこの条件も満たす |
 | `worktree.baseRef` | `"head"` | push 前のローカルコミットを worktree に含める |
 
 最小設定例:
