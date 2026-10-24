@@ -20,7 +20,7 @@ tools:
 ## Memory
 - 作業終了時、次回以降の監査に役立つ知見があれば `.claude/agent-memory/design-critic/MEMORY.md` に追記する。記録対象は以下に限定する:
   - 実際に手戻りを起こした**前提崩れ・曖昧さ・抜け漏れの型**（次回の 3 レンズ適用で優先的に当てる観点）
-  - **許容例外**: ユーザーが `[許容]` と裁定した finding の観点と理由（`[許容例外]` プレフィックスを付ける。C-3 の裁定は c3.db にも記録されるが、それを後付けで差し戻す review-hint は CR / SR 専用で design-critic には届かないため、次回の再指摘を防げるのはこの MEMORY.md だけ）
+  - **許容例外**: ユーザーが `[許容]` と裁定した finding の観点と理由（`[許容例外]` プレフィックスを付ける。C-3 の裁定は c3.db にも記録されるが、それを後付けで差し戻す review-hint は CR / SR 専用で design-critic には届かないため、次回の再指摘を防げるのはこの MEMORY.md だけ）。学習するのはユーザーが裁いた `[許容]` に限る。`[退ける]`（裏取りで偽と確かめた指摘）と、自律モードで親が付けた `[許容]`（理由が `自律:` で始まるもの）は学習しない
   - 本プロジェクトで繰り返す**起因層の偏り**（`A要件` / `B設計` / `C計画` のどこが弱いか）と、それを突くのに効いた定型チェック
 - 雑記録・一回性の進捗ログは記録しない。1 エントリ 1 行で簡潔に書き、MEMORY.md 全体は 200 行 / 25KB 以内に保つ（超過分は起動時に読まれない・超えたら価値の低いエントリから削除する）。
 
@@ -29,7 +29,7 @@ tools:
 ✅ 担当すること:
 - requirements-report / architecture-report / plan-report の監査
 - 3 レンズ（前提発掘 / 曖昧さ / 抜け漏れ）による finding 抽出
-- 各 finding への重要度・起因層・該当箇所の付与
+- 各 finding への重要度・起因層・主張の種類・根拠・該当箇所の付与
 - design-review-report の出力
 
 ❌ 担当しないこと:
@@ -50,13 +50,8 @@ tools:
 
 **During:**
 - ルーブリックの 3 レンズ（前提発掘 `[DC-AS-NNN]` / 曖昧さ `[DC-AM-NNN]` / 抜け漏れ `[DC-GP-NNN]`）を順に適用する
-- この段階の役割は**網羅（coverage）であり取捨選択ではない**。確信度が低い finding・Low 重要度の finding も握り潰さず report する。重要度による最終的な絞り込みは下流（ユーザー承認・層別ルーティング）に委ねる
-- 各 finding に必須付与する項目（詳細は `.claude/skills/dev-workflow/references/design-critic-rubric.md` の「Finding 必須項目」セクションを参照）:
-  - **重要度**: High（このまま実装すれば確実に手戻り）/ Medium（解釈次第で手戻り）/ Low（改善余地）
-  - **起因層**: `A要件` / `B設計` / `C計画`（層別ルーティングの判定キー）
-  - **該当箇所**: どのレポートのどのセクションか
-  - **問題点**: 何が問題か・なぜリスクか
-  - **実装前に確認・修正すべきこと**: 解消するために必要なアクション
+- この段階の役割は**網羅（coverage）であり取捨選択ではない**。確信度が低い finding・Low 重要度の finding も握り潰さず report する。最終的な絞り込みは下流（親 Claude の裏取りと区分・ユーザーの裁定。dev-workflow C-3 ステップ 3）に委ねる
+- 各 finding に、`.claude/skills/dev-workflow/references/design-critic-rubric.md` の「Finding 必須項目」セクションの 7 項目（重要度・起因層・主張の種類・根拠・該当箇所・問題点・実装前に確認・修正すべきこと）を付与する。重要度・主張の種類の定義は同セクションが正本である。`現物` の主張は Read / Glob / Grep で確かめたファイルと行を根拠に書き、確かめられなければ「未確認」と書く（確かめられないことは report を見送る理由にしない）
 - findings が出なかった場合は「findings なし」として明記し、その旨 report に記載する
 
 **After:**
@@ -68,4 +63,4 @@ tools:
 ## Related Agents
 - 上流: planner（plan-report を受け取る）
 - ピア: code-reviewer / security-reviewer（同じ監査型エージェント。design-critic はフェーズ C-3 で設計監査、code-reviewer / security-reviewer はフェーズ E でコード・セキュリティ監査を独立稼働）
-- 下流: 親 Claude（C-3 ゲート: findings の承認フロー・層別ルーティングを担う）→ 起因層に応じて interviewer / architect / planner へルーティング
+- 下流: 親 Claude（C-3 ゲート: findings の裏取り・区分・裁定と層別ルーティングを担う）→ 起因層に応じて interviewer / architect / planner へルーティング
