@@ -35,7 +35,7 @@ interviewer/architect/planner を**親 Claude ペルソナ**で採用した場�
 
 developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）では、PreToolUse hook（`.claude/hooks/tier_autoapply.py`）が `[tier-routing 推奨]` の推奨 Tier を Agent 呼び出しの `model:` に自動適用する（機械適用・学習データ収集中の期間も含め常に適用する。親 Claude が `model:` を転記する必要はない。fork は model 上書き不可のため対象外）。推奨と異なる Tier を使いたい場合のみ Agent 呼び出しで `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。
 
-**tester は Red 起動（D-1 のマーカー付き `test-` タスク）のみ機械適用対象**（RED_APPLY_ROLES・Red 限定注入）で、D-3/D-5 等の非 Red 起動と systematic-debugger は対象外＝従来どおり frontmatter 任せとする。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
+**tester は Red 起動（D-1 のマーカー付き `test-` タスク）のみ機械適用対象**（RED_APPLY_ROLES・Red 限定注入）で、D-3/D-5 等の非 Red 起動と systematic-debugger は対象外であり、agent 定義の frontmatter の `model:` で起動する。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
 
 ### opus 固定不変則（ADR-6）
 
@@ -47,7 +47,7 @@ developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 
 
 ## 集計注記
 
-- bandit params・escalation 判定の**集計対象 gate は role 別（`BANDIT_GATES_BY_ROLE`）**である: developer 等の既定 role は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）**、**tester は D-1 のみ**（D-3/D-5 の tester 記録はイベントログとして残るが集計対象外）。E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、その成否は従来どおり個別の集計から除外される（意図どおり・read-side フィルタで実現）。
+- bandit params・escalation 判定の**集計対象 gate は role 別（`BANDIT_GATES_BY_ROLE`）**である: developer 等の既定 role は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）**、**tester は D-1 のみ**（D-3/D-5 の tester 記録はイベントログとして残るが集計対象外）。E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、E-1/E-2 はどの role の集計対象 gate にも含まれないため、その成否は集計から除外される（意図どおり・read-side フィルタで実現）。
 - **reviewer role（code-reviewer/security-reviewer・および E-gate のみの role）は BANDIT_GATES に該当 gate を持たないため、`c3 tier stats` 等の表示で当該 role の bandit は常に uniform（全 tier `(1.0,1.0,0)`・0 trials）になる**。これは設計意図の帰結であり退行ではない。tier 選択の実消費者は `select_tier`（developer role 固定）のみで、reviewer role の bandit が uniform でも tier 選択ロジックには影響しない。
 
 ## E-3 統合裁定の帰属判定共通規定

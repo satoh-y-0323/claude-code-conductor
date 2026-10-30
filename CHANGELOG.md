@@ -1,5 +1,49 @@
 # Changelog
 
+## [2.83.0] - 2026-10-30
+
+### 破壊的変更
+
+- **自律モードの opt-in を、ユーザー自身の発話に置き換えた**。これまでのモード行（セッションファイルの
+  「モード: 自律 plan=...」）と委任プラン・資源同意・cycles による opt-in をやめ、dev-workflow の A-4 / B-3 / C-2 の
+  承認で「承認・以降は自律で進める」を選ぶか、単位を始める依頼の中で示したときに自律になる。
+  範囲はその単位だけ。既存のモード行は効かなくなる
+- **自律モードの opt-in の仕組みに使っていたファイルを削除した**: `.claude/skills/autonomous-mode/scripts/mode_line.py`、
+  `.claude/hooks/session_mode_watch.py`（`.claude/settings.json` の登録も削除）、
+  `.claude/docs/autonomous-mode-onboarding.md`（`.claude/deletions.txt` に記載）。`settings.json` をカスタムしている
+  場合は `session_mode_watch.py` の登録を外す必要がある
+- **自律では親がローカル commit まで行うようにした**。commit の前に、変わったファイルが plan の `writes` に収まることを
+  確かめる。plan-report の無い単位（/review-phase から直接始めた単位等）ではローカル commit をせず、コミットの提案で
+  止まる。ファイルの削除と、作業成果を失わせうる git 操作（reset・checkout --・restore・clean・rebase・push 等）、
+  tag・release は人間に聞き、削除は計画が承認済みでも直前に 1 問聞く。dev-workflow・parallel-agents の手順が
+  条件付きで指示する後始末（作業ファイル・worktree）は、その条件どおりに行う。親は Red テストの
+  呼び出しの形の機械修正（`.claude/CLAUDE.md`「テストとプロダクトの関係」の段 3）も直接行える
+- **autonomous-mode skill を Codex / Cursor / OpenCode の adapter 生成物へも出力するようにした**（他プラットフォームでの
+  実動作は未検証）。ただし `c3 ask` で質問する環境（MCP の elicitation が使えないクライアント）では自律を使わず、
+  自律中に `c3 ask` へ落ちたら HITL に戻る（`c3 ask` の回答は誰が書いたか区別できないため）
+- **フェーズ E の統合裁定（E-3）の指摘ありの選択肢を C-3 と同じ 4 択にした**: 「推奨どおり裁く (Recommended)」
+  「全て対応する」「区分を変える指摘を選ぶ」「否認・再レビューを依頼する」。旧「対応する指摘を選ぶ」は
+  「区分を変える指摘を選ぶ」に置き換え、旧「全て許容して完了」は削除した（全件を台帳で閉じる区分にすれば
+  同じ完了処理になる）
+- **worktree_guard の作動条件を変えた**: `PO_WORKTREE_GUARD` 環境変数を撤去した。settings の env で `PO_WORKTREE_GUARD=1` を設定していた場合、その設定は読まれなくなり、ガードの対象が wt_* agent に限られる（作動は hook 入力の agent_type が `wt_developer` / `wt_tester` / `wt_systematic-debugger` のとき。緊急無効化は `C3_WORKTREE_GUARD_DISABLE=1`）
+
+### 変更
+
+- **フェーズ E の Low を内容で裁くようにした**（HITL・自律共通）。下限に触れる Low は直す。今回触る箇所の中で
+  小さく直せる Low は理由を 1 行書いて直してよい。それ以外は台帳に記録して閉じる。小さな是正を確かめるためだけの
+  周回は足さない。是正後の再レビューは、是正の diff が振る舞いを変えるときに 1 回行い、文面だけの是正は D-3 の
+  確認で閉じる（HITL では推奨を示して 2 択で聞く）。Medium 以上は直すのが既定で、台帳で閉じられるのは HITL で
+  ユーザーが裁定した場合だけ（セキュリティ Medium 以上と機能欠陥は不可）。自律で親が付けた許容（理由が「自律:」で
+  始まる）は code-reviewer・security-reviewer・design-critic の学習とセッションの `[許容例外]` から外す
+- **自律の C-3・E から数値の上限を外した**。根本解決の反映と是正ループの打切条件で打ち切る
+- **コンパクト・セッション交代・日付の変わり目の後は、自律を続けるかを 1 問確認してから再開するようにした**
+- **テストに書くもの・書かないものを規約にした**。書き方を固定するだけのテスト（Markdown の規約・文書の言い回し・見出し・語の有無や回数を測るもの）を削除し、テストに書くのは壊れたら利用者に届く振る舞い・安全境界・実際に起きた欠陥の回帰に限るとした。規約・文書だけを変えるタスクには Red を置かず、確認はレビュー（E）で行う
+- **skill・agent 定義・hook の文言を見直した**（プロンプト監査）。事実と食い違う記述（patterns_guard のブロック時の案内が存在しない記録経路を指していた等）、選択肢の無い AskUserQuestion（自由入力はテキストで尋ねる）、「従来どおり」や日付・版などの経緯の記述を直した。developer / wt_developer の停止条件を `.claude/CLAUDE.md`「テストとプロダクトの関係」とそろえ、parallel-agents の最終 wave の後は必ずフェーズ E へ進む（reviewer タスクが wave にあっても E を省かず、E-1/E-2 で再起動しない）。自律中の parallel-agents 2-E（wave の失敗）は止まって聞く。interviewer / architect / planner はサブエージェントとして起動しても同じ契約で動く
+
+### 修正
+
+- **worktree_guard が一度も作動していなかった問題を直した**: 作動条件の env（`PO_WORKTREE_GUARD`）が hook に届く経路が無かったため、wt_* agent の worktree 外への Write/Edit を止められていなかった。作動条件を hook 入力の agent_type（`wt_developer` / `wt_tester` / `wt_systematic-debugger`）へ変え、worktree の外（セッションの scratchpad を含む）への書き込みを止める。一時ファイルは worktree 内の `.claude/tmp/` に置く（wt_* agent 定義で指示）。
+
 ## [2.82.0] - 2026-10-25
 
 ### 変更

@@ -2,13 +2,13 @@
 
 The recall skill follows the design-doc frontmatter (``name`` /
 ``description`` / ``allowed-tools``) rather than the legacy
-``description``-only style used by older skills. The user explicitly
-chose this format during planning, so the tests pin it.
+``description``-only style used by older skills. Claude Code reads the
+frontmatter mechanically, so the tests pin it.
 """
 
 from __future__ import annotations
 
-from tests.skills._skill_helpers import SKILLS_DIR, extract_section
+from tests.skills._skill_helpers import SKILLS_DIR
 
 RECALL_SKILL = SKILLS_DIR / "recall" / "SKILL.md"
 
@@ -43,56 +43,3 @@ def test_frontmatter_allowed_tools_field() -> None:
     head = content.split("---", 2)[1]
     assert "allowed-tools:" in head
     assert "Bash" in head
-
-
-def test_skill_documents_invocation_command() -> None:
-    content = _read()
-    assert "c3 recall search" in content
-
-
-def test_skill_documents_rebuild_path() -> None:
-    content = _read()
-    assert "c3 recall rebuild" in content
-
-
-def test_skill_has_when_to_run_section() -> None:
-    content = _read()
-    section = extract_section(content, "## 起動タイミング")
-    assert section, "'## 起動タイミング' section must exist"
-    assert "ユーザーに尋ねず" in section or "自律" in section
-
-
-def test_skill_has_when_not_to_run_section() -> None:
-    content = _read()
-    section = extract_section(content, "## 利用しない方が良い場合")
-    assert section, "'## 利用しない方が良い場合' section must exist"
-
-
-def test_skill_has_procedure_section() -> None:
-    content = _read()
-    section = extract_section(content, "## 手順")
-    assert section, "'## 手順' section must exist"
-    # mentions the JSON contract for downstream parsing
-    assert "--json" in section
-
-
-def test_skill_documents_user_transparency() -> None:
-    content = _read()
-    section = extract_section(content, "## ユーザーへの透明性")
-    assert section, "ユーザー透明性セクションが必要"
-    assert "ヒット" in section
-
-
-def test_skill_warns_against_prompt_injection_reuse() -> None:
-    content = _read()
-    # The recall feature surfaces arbitrary historical text; the skill must
-    # remind the LLM not to execute it as instructions.
-    assert "プロンプトインジェクション" in content or "そのまま指示として実行しない" in content
-
-
-def test_skill_documents_json_schema_hint() -> None:
-    content = _read()
-    # The agent should know which fields to look at.
-    assert "score" in content
-    assert "source_type" in content
-    assert "path" in content

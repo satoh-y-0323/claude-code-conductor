@@ -145,32 +145,52 @@ def test_init_codex_scaffolds_adapter_without_moving_claude(tmp_path: Path):
     assert "PYTHONPATH" in config_text
 
 
-def test_init_codex_excludes_autonomous_mode_skill(tmp_path: Path):
-    """CLI-level e2e (DC-GP-002): `c3 init --platform codex` must not emit the
-    autonomous-mode skill into the codex adapter output, while still emitting
-    an existing skill like brainstorm."""
+def test_init_codex_includes_autonomous_mode_skill(tmp_path: Path):
+    """CLI-level e2e: `c3 init --platform codex` must emit the autonomous-mode
+    skill into the codex adapter output (2026-10-29 裁定で adapter 固有の除外を
+    撤廃), alongside an existing skill like brainstorm."""
     rc = _run_init(tmp_path, platform="codex")
     assert rc == 0
 
     codex_skills = tmp_path / ".agents" / "skills"
-    assert not (codex_skills / "autonomous-mode").exists(), (
-        "autonomous-mode must be excluded from codex adapter output"
+    assert (codex_skills / "autonomous-mode" / "SKILL.md").is_file(), (
+        "autonomous-mode must be included in codex adapter output"
     )
     assert (codex_skills / "brainstorm" / "SKILL.md").is_file(), (
         "existing skill brainstorm must be present in codex adapter output"
     )
 
 
-def test_init_opencode_excludes_autonomous_mode_skill(tmp_path: Path):
-    """CLI-level e2e (DC-GP-002): `c3 init --platform opencode` must not emit the
-    autonomous-mode skill into the opencode adapter output, while still emitting
-    an existing skill like brainstorm."""
+def test_init_codex_skills_output_never_contains_should_skip_paths(tmp_path: Path):
+    """CLI-level e2e: every file emitted under .agents/skills/ must correspond
+    to a .claude/skills/ path that the wheel exclusion rules (should_skip) do
+    not exclude."""
+    from c3._excludes import should_skip
+
+    rc = _run_init(tmp_path, platform="codex")
+    assert rc == 0
+
+    codex_skills = tmp_path / ".agents" / "skills"
+    emitted = [
+        p.relative_to(codex_skills).as_posix()
+        for p in codex_skills.rglob("*")
+        if p.is_file()
+    ]
+    assert emitted, "precondition: codex adapter must emit skills"
+    leaked = [rel for rel in emitted if should_skip(f"skills/{rel}")]
+    assert leaked == []
+
+
+def test_init_opencode_includes_autonomous_mode_skill(tmp_path: Path):
+    """CLI-level e2e: `c3 init --platform opencode` must emit the autonomous-mode
+    skill into the opencode adapter output (2026-10-29 裁定で adapter 固有の除外を
+    撤廃), alongside an existing skill like brainstorm."""
     rc = _run_init(tmp_path, platform="opencode")
     assert rc == 0
 
     oc_agents = tmp_path / ".opencode" / "agents"
-    assert not (oc_agents / "c3-skill-autonomous-mode.md").exists(), (
-        "autonomous-mode must be excluded from opencode adapter output"
+    assert (oc_agents / "c3-skill-autonomous-mode.md").is_file(), (
+        "autonomous-mode must be included in opencode adapter output"
     )
     assert (oc_agents / "c3-skill-brainstorm.md").is_file(), (
         "existing skill brainstorm must be present in opencode adapter output"

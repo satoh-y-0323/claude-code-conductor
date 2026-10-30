@@ -20,7 +20,6 @@ from c3.adapters import (
     MANAGED_CODEX_TOML_END,
     MANAGED_OPENCODE_BEGIN,
     MANAGED_OPENCODE_END,
-    _adapter_skip,
     _codex_agent_toml,
     _convert_skill,
     _opencode_agent_md,
@@ -1509,102 +1508,173 @@ def test_toml_multiline_escape_map_is_derived_from_basic_escape_map():
 
 
 # -----------------------------------------------------------------------
-# NEW: Adapter exclusion mechanism (AD-1 ~ AD-4 / S-11)
+# Adapter skill mapping (AD-1 ~ AD-6)
+#
+# 2026-10-29 ユーザー裁定: autonomous-mode はスクリプト（mode_line.py）に
+# 依存しなくなったため adapter 固有の除外を撤廃し、adapter 生成物の除外規則は
+# wheel の除外規則（c3._excludes.should_skip）と一致させる。
+#   (1) autonomous-mode skill は codex / opencode の生成物に含まれる
+#   (2) should_skip に当たるファイルは従来どおり生成物に含まれない
+# Cursor は skills を生成物として書き出さない（.claude/skills を直接読む）ため
+# (1) の射程外。
 # -----------------------------------------------------------------------
 
-# AD-1: autonomous-mode を除外
-def test_adapter_skip_excludes_autonomous_mode():
-    """_adapter_skip must exclude autonomous-mode from adapter outputs."""
-    assert _adapter_skip("skills/autonomous-mode/SKILL.md") is True
-    assert _adapter_skip("skills/autonomous-mode/scripts/mode_line.py") is True
 
-
-# AD-2: 大文字パスは大小文字区別により除外されない
-def test_adapter_skip_uppercase_path_not_excluded():
-    """_adapter_skip must be case-sensitive (fnmatchcase): an uppercase
-    variant of the autonomous-mode path must NOT be excluded, matching
-    should_skip's case-sensitive policy (CR-Q-004 regression guard)."""
-    assert _adapter_skip("skills/AUTONOMOUS-MODE/SKILL.md") is False
-
-
-# AD-3: 既存 skill は除外しない
-def test_adapter_skip_does_not_exclude_existing_skills():
-    """_adapter_skip must allow existing skills like brainstorm."""
-    assert _adapter_skip("skills/brainstorm/SKILL.md") is False
-
-
-# AD-4: should_skip 既存 挙動 を維持（OR 結合）
-def test_adapter_skip_inherits_should_skip_rules():
-    """_adapter_skip must preserve should_skip exclusions (reports, docs, etc)."""
-    # reports are excluded by should_skip
-    assert _adapter_skip("reports/plan-report-20260427-232152.md") is True
-    # personal memory is excluded by should_skip
-    assert _adapter_skip("memory/patterns.json") is True
-
-
-# AD-5: e2e 自動回帰テスト（_write_codex_skills / _write_opencode_skills）
-def test_adapter_skip_e2e_codex_excludes_autonomous_mode(tmp_path: Path):
-    """_adapter_skip must exclude autonomous-mode from codex skills generation."""
-    # Create minimal .claude tree with autonomous-mode and brainstorm skills
+def _make_skill_tree(tmp_path: Path) -> Path:
+    """Create a minimal .claude/skills tree with autonomous-mode and brainstorm."""
     (tmp_path / ".claude").mkdir()
     skills_dir = tmp_path / ".claude" / "skills"
     skills_dir.mkdir()
 
-    # Create autonomous-mode skill (should be excluded from adapter outputs)
     autonomous_dir = skills_dir / "autonomous-mode"
     autonomous_dir.mkdir()
     (autonomous_dir / "SKILL.md").write_text(
         "---\ndescription: Autonomous mode\n---\n# autonomous-mode\nBody\n",
         encoding="utf-8",
     )
+    (autonomous_dir / "reference.md").write_text(
+        "# autonomous-mode reference\n", encoding="utf-8"
+    )
 
-    # Create brainstorm skill (should be included in adapter outputs)
     brainstorm_dir = skills_dir / "brainstorm"
     brainstorm_dir.mkdir()
     (brainstorm_dir / "SKILL.md").write_text(
         "---\ndescription: Brainstorm\n---\n# brainstorm\nBody\n",
         encoding="utf-8",
     )
+    return skills_dir
 
-    # Test codex skills generation
+
+# AD-1: codex の skills 生成物に autonomous-mode が含まれる
+def test_codex_skills_include_autonomous_mode(tmp_path: Path):
+    """_write_codex_skills must emit autonomous-mode (SKILL.md and its
+    supporting files) alongside other skills such as brainstorm."""
+    _make_skill_tree(tmp_path)
+
     adapters._write_codex_skills(tmp_path, dry_run=False)
-    assert not (
-        tmp_path / ".agents" / "skills" / "autonomous-mode"
-    ).exists(), "autonomous-mode should be excluded from codex skills"
-    assert (tmp_path / ".agents" / "skills" / "brainstorm").exists(), (
-        "brainstorm should be included in codex skills"
+
+    out = tmp_path / ".agents" / "skills"
+    assert (out / "autonomous-mode" / "SKILL.md").is_file(), (
+        "autonomous-mode SKILL.md must be included in codex skills"
+    )
+    assert (out / "autonomous-mode" / "reference.md").is_file(), (
+        "autonomous-mode supporting files must be included in codex skills"
+    )
+    assert (out / "brainstorm" / "SKILL.md").is_file(), (
+        "brainstorm must be included in codex skills"
     )
 
 
-# AD-6: e2e 自動回帰テスト（_write_opencode_skills）
-def test_adapter_skip_e2e_opencode_excludes_autonomous_mode(tmp_path: Path):
-    """_adapter_skip must exclude autonomous-mode from opencode skills generation."""
-    # Create minimal .claude tree with autonomous-mode and brainstorm skills
-    (tmp_path / ".claude").mkdir()
-    skills_dir = tmp_path / ".claude" / "skills"
-    skills_dir.mkdir()
+# AD-2: opencode の skills 生成物に autonomous-mode が含まれる
+def test_opencode_skills_include_autonomous_mode(tmp_path: Path):
+    """_write_opencode_skills must emit c3-skill-autonomous-mode.md alongside
+    other skills such as brainstorm."""
+    _make_skill_tree(tmp_path)
 
-    # Create autonomous-mode skill (should be excluded from adapter outputs)
-    autonomous_dir = skills_dir / "autonomous-mode"
-    autonomous_dir.mkdir()
-    (autonomous_dir / "SKILL.md").write_text(
-        "---\ndescription: Autonomous mode\n---\n# autonomous-mode\nBody\n",
-        encoding="utf-8",
-    )
-
-    # Create brainstorm skill (should be included in adapter outputs)
-    brainstorm_dir = skills_dir / "brainstorm"
-    brainstorm_dir.mkdir()
-    (brainstorm_dir / "SKILL.md").write_text(
-        "---\ndescription: Brainstorm\n---\n# brainstorm\nBody\n",
-        encoding="utf-8",
-    )
-
-    # Test opencode skills generation
     adapters._write_opencode_skills(tmp_path, dry_run=False)
-    assert not (
-        tmp_path / ".opencode" / "agents" / "c3-skill-autonomous-mode.md"
-    ).exists(), "autonomous-mode should be excluded from opencode skills"
-    assert (tmp_path / ".opencode" / "agents" / "c3-skill-brainstorm.md").exists(), (
-        "brainstorm should be included in opencode skills"
+
+    out = tmp_path / ".opencode" / "agents"
+    assert (out / "c3-skill-autonomous-mode.md").is_file(), (
+        "autonomous-mode must be included in opencode skills"
     )
+    assert (out / "c3-skill-brainstorm.md").is_file(), (
+        "brainstorm must be included in opencode skills"
+    )
+
+
+# AD-3: codex skills の生成物集合 = should_skip に当たらない source 集合
+def test_codex_skills_output_set_equals_should_skip_complement(
+    tmp_path: Path, monkeypatch
+):
+    """The set of files written under .agents/skills/ must equal exactly the
+    set of .claude/skills/ files for which should_skip is False — i.e. there
+    is no adapter-specific exclusion beyond the wheel exclusion rules."""
+    import c3._excludes
+    from c3._excludes import should_skip as _should_skip
+
+    skills_dir = _make_skill_tree(tmp_path)
+    excluded_dir = skills_dir / "__synthetic_excluded__"
+    excluded_dir.mkdir()
+    (excluded_dir / "SKILL.md").write_text(
+        "---\ndescription: Excluded\n---\n# excluded\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        c3._excludes,
+        "EXCLUDE_PATTERNS",
+        c3._excludes.EXCLUDE_PATTERNS + ("skills/__synthetic_excluded__/*",),
+    )
+    assert _should_skip("skills/__synthetic_excluded__/SKILL.md"), (
+        "precondition: synthetic skill must be excluded by should_skip"
+    )
+
+    adapters._write_codex_skills(tmp_path, dry_run=False)
+
+    expected = {
+        p.relative_to(skills_dir).as_posix()
+        for p in skills_dir.rglob("*")
+        if p.is_file()
+        and not _should_skip(f"skills/{p.relative_to(skills_dir).as_posix()}")
+    }
+    out_root = tmp_path / ".agents" / "skills"
+    actual = {
+        p.relative_to(out_root).as_posix()
+        for p in out_root.rglob("*")
+        if p.is_file()
+    }
+    assert actual == expected
+    assert "autonomous-mode/SKILL.md" in actual
+    assert "__synthetic_excluded__/SKILL.md" not in actual
+
+
+# AD-4: wheel 除外規則（should_skip）は従来どおり reports / 個人 memory を除外する
+def test_should_skip_still_excludes_reports_and_personal_memory():
+    """Adapter outputs rely on should_skip directly; its exclusions for
+    reports and personal memory must remain in force."""
+    from c3._excludes import should_skip as _should_skip
+
+    assert _should_skip("reports/plan-report-20260427-232152.md") is True
+    assert _should_skip("memory/patterns.json") is True
+
+
+# AD-5: codex skills 生成物から should_skip 対象が除外される（公開経路）
+def test_codex_skills_skip_should_skip_excluded(tmp_path: Path, monkeypatch):
+    """Skills matching should_skip must not be written to .agents/skills/."""
+    import c3._excludes
+
+    monkeypatch.setattr(
+        c3._excludes,
+        "EXCLUDE_PATTERNS",
+        c3._excludes.EXCLUDE_PATTERNS + ("skills/__synthetic_excluded__/*",),
+    )
+    (tmp_path / ".claude").mkdir()
+    skill_dir = tmp_path / ".claude" / "skills" / "__synthetic_excluded__"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\ndescription: Excluded\n---\n\nbody\n", encoding="utf-8"
+    )
+
+    adapters._write_codex_skills(tmp_path, dry_run=False)
+
+    assert not (tmp_path / ".agents" / "skills" / "__synthetic_excluded__").exists()
+
+
+# AD-6: codex agents 生成物から should_skip 対象が除外される（公開経路）
+def test_codex_agents_skip_should_skip_excluded(tmp_path: Path, monkeypatch):
+    """Agents matching should_skip must not be written to .codex/agents/."""
+    import c3._excludes
+
+    monkeypatch.setattr(
+        c3._excludes,
+        "EXCLUDE_PATTERNS",
+        c3._excludes.EXCLUDE_PATTERNS + ("agents/__synthetic_excluded__.md",),
+    )
+    (tmp_path / ".claude").mkdir()
+    agents_dir = tmp_path / ".claude" / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "__synthetic_excluded__.md").write_text(
+        "---\ndescription: Excluded\n---\n\nbody\n", encoding="utf-8"
+    )
+
+    adapters._write_codex_agents(tmp_path, dry_run=False)
+
+    assert not (tmp_path / ".codex" / "agents" / "__synthetic_excluded__.toml").exists()

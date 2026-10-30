@@ -33,7 +33,7 @@ disable-model-invocation: true
 | 昇格済み | `promoted: true` |
 | 昇格候補 | `promotion_candidate: true` かつ `promoted: true` でない |
 | 蓄積中 | `promotion_candidate` が false または未設定で、`promoted` が true でない |
-| 期限切れ間近 | `registered_date` から 25 日以上経過（30 日で自動削除） |
+| 期限切れ間近 | `promoted` が true でなく、`registered_date` から 25 日以上経過（30 日で自動削除。昇格済みは削除されない） |
 
 「期限切れ間近」は他区分と排他ではない（蓄積中かつ期限切れ間近 → 両方に表示してよい）。
 

@@ -157,7 +157,7 @@ AskUserQuestion で 3 択を提示する:
 
 [注 1] **実装から** の D-0 判定: plan-report-*.md の YAML フロントマターの `po_plan_version` 値に応じて分岐する。`"0.1"` なら parallel-agents モード、`"sequential"` またはフロントマター自体が無ければ legacy TDD モード、フロントマターがあって値が不正・キー欠落なら fail-loud 停止する。plan-report が無い場合はフェーズ C へ案内される。
 
-[注 2] **デバッグ調査から** の D-0 判定: systematic-debugger が当日タイムスタンプの debug-analysis-*.md を出力するため、D-0 がそれを検出して bug-fix モードで動作する。D-1（Red tester）と D-4（Refactor）はスキップされる。
+[注 2] **デバッグ調査から** の D-0 判定: systematic-debugger が当日タイムスタンプの debug-analysis-*.md を出力し、plan-report が無ければ D-0 がそれを検出して bug-fix モードで動作する（D-1（Red tester）と D-4（Refactor）はスキップされる）。D-0 は plan-report を先に判定するため、Step 0 で plan-report を残した場合は bug-fix モードにならず、その plan-report の実行モードになる。
 
 **最初に必ず** 遷移先の `.claude/skills/dev-workflow/SKILL.md` を Read してから実行する。記憶・推測で進めず、各フェーズに記述された AskUserQuestion・Edit・セッションファイル更新の手順を省略しないこと。
 

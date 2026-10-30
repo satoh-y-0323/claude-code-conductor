@@ -99,3 +99,8 @@ skills/codex-review/SKILL.md
 
 # ---- v2.82.0: C-3省略宣言プロトコル廃止（E→C 差し戻し時の C-3 判定へ置換） ----
 skills/dev-workflow/references/c3-omission-declaration.md
+
+# ---- v2.83.0: 自律モードの opt-in をユーザーの発話へ置換（モード行の検証・監視と導入手引きを廃止） ----
+skills/autonomous-mode/scripts/mode_line.py
+hooks/session_mode_watch.py
+docs/autonomous-mode-onboarding.md

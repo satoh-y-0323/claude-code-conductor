@@ -79,7 +79,7 @@ C3 は、業務アプリケーション開発で製品としての品質を保�
 
 コンテキストに応じて選択肢を追加してよい。
 
-自律モード（autonomous-mode skill・opt-in 必須）が有効な場合のみ、上記の承認ゲートは同 skill のゲート対応表に従って客観条件へ付け替わる。既定は常に HITL であり、opt-in なしに挙動が変わることはない（ただしこれは文書規約レベルの不変則であり、モード行挿入自体を機械的に承認と紐付ける仕組みではない。詳細は SKILL.md「モード行挿入の前提条件（不変則）」を参照）。
+既定は常に HITL である。自律の opt-in はユーザー自身の発話に限る: 承認ゲートで「承認・以降は自律で進める」を選んだ場合、または単位（ワークフロー・フェーズ等）を始める依頼の中で自律を示した場合に、その単位だけ自律が有効になる。自律が有効な間、各ゲートは `.claude/skills/autonomous-mode/SKILL.md`「ゲートでの動作」に従う。セッションを再開したときは自律を引き継がず、続けるかを 1 問で確認する。規約の詳細は同 SKILL.md を参照。
 
 ## Compact Instructions
 
@@ -98,8 +98,7 @@ C3 は、業務アプリケーション開発で製品としての品質を保�
 ## Directory Structure
 
 `.claude/docs/` は人間向けリファレンスのためエージェントは読まなくてよい。
-詳細は `.claude/docs/taxonomy.md` を参照。
-設定の優先順位・配布判断は `.claude/docs/config-policy.md` を参照。
+人間向けの詳細は `.claude/docs/taxonomy.md`、設定の優先順位・配布判断は `.claude/docs/config-policy.md` にある。
 
 ## Platform Compatibility
 
@@ -111,7 +110,7 @@ C3 は、業務アプリケーション開発で製品としての品質を保�
 - **`Skill` ツール / `/<skill>`** の参照は、Codex では `.agents/skills/<name>/SKILL.md`、Cursor では `.claude/skills/<name>/SKILL.md` を直接読み込む。OpenCode では `.opencode/agents/c3-skill-<name>.md`（`.claude/skills/<name>/SKILL.md` を本文に埋め込み済み）を `@mention` で起動する（スラッシュコマンド自動展開は Claude Code 専用機能）
 - **`isolation: worktree`** / **`permissionMode`** / **`tools` 制限** など agent フロントマターの一部キーは Claude Code 仕様。adapter 側では読み替え不能なものは無視される（OpenCode adapter は全 agent に `bash/read/edit/write/websearch` を一律付与する）
 
-- **自律モード**: autonomous-mode は Claude Code 専用。Codex / Cursor / OpenCode では自律宣言は常に無効＝HITL で動作する（モード行の検証は `mode_line.py`・Bash 経由に依存し、他プラットフォームで安全に再現できないため。検証できない → HITL の fail-closed 原則がそのまま正しい挙動になる）。adapter 生成物にも autonomous-mode skill は写像されない。
+- **自律モード**: Claude Code / Codex / Cursor / OpenCode のすべてで同じ自律を使う（opt-in はユーザーの承認の回答または単位を始める依頼の中の発話で、プラットフォーム固有の検証機構に依存しない。ただし `c3 ask` で質問する環境では自律を使わない）。規約は `.claude/skills/autonomous-mode/SKILL.md` で、adapter 生成物にも他の skill と同様に写像される。
 - **`.claude/rules/` の自動ロード**は Claude Code の機能。OpenCode では adapter が `AGENTS.md` に rules を埋め込む。**Codex / Cursor の生成物には rules は写像されない**（規律を効かせたい場合は各プラットフォームの規約ファイルへ手動転記する）
 
 レポート（`.claude/reports/`）・state（`.claude/state/`）・memory（`.claude/agent-memory/`）のファイル名と書き込み先は全プラットフォーム共通。adapter 生成物の詳細は `c3 init --platform codex|cursor|opencode` で出力される `AGENTS.md` / `.cursor/rules/c3-core.mdc` / `.opencode/agents/` を参照。

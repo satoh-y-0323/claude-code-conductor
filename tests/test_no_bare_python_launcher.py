@@ -12,7 +12,8 @@ architecture-report-20260718-114347.md §2-5 (test-lint タスク定義) に基�
   3. .claude/agents/*.md
 
 `.claude/docs/` は走査対象外（人間向けリファレンスで LLM 実行文脈を持たない）。
-除外ディレクトリ: `.claude/skills/autonomous-mode/`（配布対象外・git 非追跡）。
+除外ディレクトリ: なし（`.claude/skills/` 配下の全 SKILL.md を走査する。autonomous-mode も
+配布対象のため走査対象）。
 
 実行文脈の判定（正規表現で確定・散文は拾わない）:
   - フェンス付きコードブロック（``` ... ```）内の行で、行頭（インデント除去後）が
@@ -40,7 +41,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -51,9 +51,6 @@ CLAUDE_DIR = REPO_ROOT / ".claude"
 SETTINGS_JSON = CLAUDE_DIR / "settings.json"
 SKILLS_DIR = CLAUDE_DIR / "skills"
 AGENTS_DIR = CLAUDE_DIR / "agents"
-
-# 配布対象外（git 非追跡・自律モード skill は開発中のため除外）
-EXCLUDED_SKILL_DIR_NAMES = {"autonomous-mode"}
 
 # ---------------------------------------------------------------------------
 # 許容リスト（DC-AM-002: 安定部分文字列の部分一致）
@@ -160,12 +157,7 @@ def find_settings_json_violations(path: Path) -> list[Violation]:
 def _iter_skill_md_files() -> list[Path]:
     if not SKILLS_DIR.exists():
         return []
-    files = sorted(SKILLS_DIR.glob("**/SKILL.md"))
-    return [
-        f
-        for f in files
-        if not (EXCLUDED_SKILL_DIR_NAMES & set(f.relative_to(SKILLS_DIR).parts))
-    ]
+    return sorted(SKILLS_DIR.glob("**/SKILL.md"))
 
 
 def _iter_agent_md_files() -> list[Path]:
@@ -240,17 +232,17 @@ class TestNoBarePythonLauncherInDistribution:
 
 
 # ---------------------------------------------------------------------------
-# autonomous-mode 除外の確認（除外ディレクトリが走査対象に含まれないこと）
+# autonomous-mode も走査対象であることの確認（配布対象のため除外しない）
 # ---------------------------------------------------------------------------
 
 
-class TestAutonomousModeExcluded:
-    def test_autonomous_mode_dir_not_in_scanned_skill_files(self):
-        files = _iter_skill_md_files()
-        for f in files:
-            assert "autonomous-mode" not in f.parts, (
-                f"{f} は配布対象外の autonomous-mode 配下だが走査対象に含まれている"
-            )
+class TestAutonomousModeScanned:
+    def test_autonomous_mode_skill_md_in_scanned_skill_files(self):
+        target = SKILLS_DIR / "autonomous-mode" / "SKILL.md"
+        assert target.is_file(), f"{target} が見つからない"
+        assert target in _iter_skill_md_files(), (
+            f"{target} は配布対象だが走査対象に含まれていない"
+        )
 
 
 # ---------------------------------------------------------------------------

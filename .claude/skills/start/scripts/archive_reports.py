@@ -34,7 +34,8 @@
     作成できる）に `False` を返し素通りするため（実測: exit 0 の成功扱いで外部ディレクトリへ
     移動し移動元が削除された）。判定は「`os.path.realpath(archive_dir)` が
     `os.path.realpath(reports_dir)` 直下の `archive` と一致すること」（reparse の種別を問わない）。
-    既存の解決パターン（`mode_line.py` の plan-path 検査）と同じ realpath 封じ込め方式に揃えた
+    realpath 封じ込めは「解決後の実パスが期待位置と一致するか」だけを見るため、
+    symlink・ジャンクションを含むあらゆる reparse を一つの判定で塞げる
   - `src` 側（ファイル）の `is_symlink()` 判定は据え置き（ジャンクションはディレクトリ専用で
     ファイルには張れないため影響を受けない）
 
@@ -142,9 +143,8 @@ def _archive_dir_is_contained(archive_dir: Path) -> bool:
     `archive_dir.parent` を対象ディレクトリとして扱える（`_move_one` は設計 §3-3b で
     引数を `src` / `archive_dir` の 2 個に固定しているため、`reports_dir` を別引数で渡さない）。
 
-    既存の解決パターン（`mode_line.py` の plan-path 検査）と同じ `os.path.realpath` を使う。
-    例外の扱いも引用元に揃える（`mode_line.py:132-136` は `realpath` を `try/except OSError` で
-    包み、失敗を無効側へ倒している）。判定関数が例外を送出すると設計 §3-3 の
+    判定には `os.path.realpath` を使い、`realpath` の呼び出しを `try/except OSError` で包んで
+    解決の失敗を無効側（収まっていない）へ倒す。判定関数が例外を送出すると設計 §3-3 の
     「exit code は戻り値で表し例外で表さない」契約を破るため、**解決できない時点で
     「収まっていない」と扱う**（安全側・SR-NEW-1）。
     """

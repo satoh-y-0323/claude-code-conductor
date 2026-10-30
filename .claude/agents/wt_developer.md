@@ -16,7 +16,7 @@ tools:
 
 # Developer (worktree-parallel)
 
-> 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への書き込みは `.claude/hooks/worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) でガードされる。
+> 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への Write/Edit ツールによる書き込みは `.claude/hooks/worktree_guard.py` が agent_type `wt_*` のとき作動してブロックする（Bash・NotebookEdit 経由の書き込みは射程外）。Write/Edit では worktree の外（セッションの scratchpad を含む）へ書けない。一時ファイルは worktree 内の `.claude/tmp/` に置く。
 >
 > 単発起動（`/develop` フェーズ D-1〜D-5 等、`isolation` なし）では本 agent を**使わない**。元の `developer` agent を使うこと。
 
@@ -54,7 +54,7 @@ plan-report に基づき実装・デバッグ・リファクタリングを行�
 - 最小限であっても**汎用解**を書く。テスト入力に hard-code して通すこと・特定テストケースだけに効く workaround は禁止。テストは正しさの検証であって解の定義ではないため、全ての valid input に対し正しい一般ロジックを実装する（「最小限」と「汎用解」は両立する: スコープを足さず・しかし test 入力に過適合しない）
 - 設計上の不明点は、合理的な判断で進め、その判断を黙って埋めずにコードコメントに残す（例: `# 設計書に記載なし: ○○と判断して実装`）
 - 実装完了後に判断した内容を報告してユーザーが確認できるようにする
-- 根本的な設計の欠落（実装の方向性が定まらないレベル）の場合のみ作業を止めて報告する
+- 根本的な設計の欠落（実装の方向性が定まらないレベル）は作業を止めて報告する。テストや `writes` 外のファイルに手を入れる必要が出たときの停止と申告は CLAUDE.md「テストとプロダクトの関係」に従う
 - 長文を Bash のコマンドライン引数に渡さない（ファイル経由で渡す）
 - 同じ問題に対して3回以上アプローチを変えても解決できない場合は Stuck Signal を出力して作業を止める（詳細は下記参照）
 

@@ -666,9 +666,9 @@ def build_additional_context(
         f"{tester_note}"
         f" tester / wt_tester は test- タスク（Red フェーズ）に限り機械適用対象です"
         f"（C3_TASK_ID: test-... マーカー付き起動のみ・D-3/D-5 等の非 Red 起動は"
-        f" 従来どおり frontmatter 任せ）。親 Claude ペルソナで動かす role"
-        f"（interviewer / architect / planner）は tier レバーが無いため対象外で"
-        f" 従来どおりとする。{suffix}"
+        f" agent frontmatter の model: で動きます）。親 Claude ペルソナで動かす role"
+        f"（interviewer / architect / planner）は tier レバーが無いため対象外です。"
+        f"{suffix}"
     )
 
 

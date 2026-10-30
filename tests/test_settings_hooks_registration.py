@@ -1,15 +1,15 @@
-"""Tests for .claude/settings.json registration of P1/P2/P3 hooks (未実装 — Red フェーズ)
+"""Tests for .claude/settings.json registration of hooks (patterns_guard / report_contract_check / report_path_guard)
 
 plan-report-20260725-180252.md T1(4) / architecture-report-20260725-175915.md §2 D-4 の
 仕様に基づく。
 
-## Red の理由
+## 現行の位置づけ
 
-`.claude/settings.json` にはまだ patterns_guard.py / report_contract_check.py /
-session_mode_watch.py の登録が無い（T2 developer 実装前）。本ファイルのテストは
-JSON の内容検査のみで完結する（hook スクリプト自体の実在は問わない）ため、
-`.claude/settings.json` 自体は実在するファイルを対象にした通常のアサーション失敗
-（AssertionError）として Red になる。構文エラー・タイポによる失敗ではない。
+`.claude/settings.json` に patterns_guard.py / report_contract_check.py /
+report_path_guard.py が登録されていること、および旧自律機構の
+session_mode_watch.py がどこにも登録されていない（未登録）ことを測る。
+本ファイルのテストは JSON の内容検査のみで完結する（hook スクリプト自体の
+実在は問わない）。
 
 ## 検証対象
 
@@ -20,11 +20,12 @@ JSON の内容検査のみで完結する（hook スクリプト自体の実在�
 
     1. PreToolUse "Write"・"Edit" に patterns_guard.py が登録されている
     2. PostToolUse "Write" に report_contract_check.py が登録されている
-    3. PostToolUse "Edit" に session_mode_watch.py が登録されている
+    3. session_mode_watch.py はどのイベント・matcher にも登録されていない
+       （旧自律機構＝モード行の撤去・ユーザー裁定 2026-10-29。旧仕様は
+       PostToolUse "Edit" への登録を要求していた）
     4. 相互の取り違え・過剰登録が無いこと
        （patterns_guard は PostToolUse に出現しない・report_contract_check は
-       PreToolUse/PostToolUse Edit に出現しない・session_mode_watch は
-       PreToolUse/PostToolUse Write に出現しない）
+       PreToolUse/PostToolUse Edit に出現しない）
     5. 形式は `command: "c3"` + `args: ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/<name>.py"]`
     6. 既存登録の不変確認（PreToolUse Bash/Write/Edit/Agent・PostToolUse Write/Edit の
        既存 hook 列挙）・各 matcher 配列の末尾に追記されていること
@@ -240,55 +241,67 @@ class TestReportContractCheckRegistration:
 
 
 # ---------------------------------------------------------------------------
-# 3. session_mode_watch.py: PostToolUse Edit のみ
+# 3. session_mode_watch.py: どのイベント・matcher にも登録されていない
+#    （旧自律機構＝モード行の撤去・ユーザー裁定 2026-10-29）
 # ---------------------------------------------------------------------------
 
 
-class TestSessionModeWatchRegistration:
-    def test_registered_in_posttooluse_edit(self) -> None:
+def _all_registered_args(settings: dict) -> list[tuple[str, object, str]]:
+    """全イベント・全 matcher の hook args を (event, matcher, arg) で列挙する。"""
+    out: list[tuple[str, object, str]] = []
+    hooks_root = settings.get("hooks", {})
+    for event, entries in hooks_root.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for h in entry.get("hooks", []) or []:
+                if not isinstance(h, dict):
+                    continue
+                for arg in h.get("args", []) or []:
+                    out.append((event, entry.get("matcher"), arg))
+                command = h.get("command")
+                if isinstance(command, str):
+                    out.append((event, entry.get("matcher"), command))
+    return out
+
+
+class TestSessionModeWatchNotRegistered:
+    """session_mode_watch.py（モード行の編集監視）は撤去された。
+
+    settings.json のどのイベント・matcher にも、args・command のどちらの形でも
+    session_mode_watch.py が現れないこと。
+    """
+
+    def test_not_registered_anywhere(self) -> None:
         settings = _load_settings()
-        hooks = _matcher_hooks(settings, "PostToolUse", "Edit")
-        assert SESSION_MODE_WATCH_ARG in _all_args(hooks), (
-            "PostToolUse/Edit に session_mode_watch.py が登録されていない"
+        hits = [
+            (event, matcher, value)
+            for event, matcher, value in _all_registered_args(settings)
+            if "session_mode_watch.py" in value
+        ]
+        assert hits == [], (
+            f"撤去済みの session_mode_watch.py が settings.json に登録されている: {hits}"
         )
 
-    def test_entry_shape_matches_convention(self) -> None:
-        settings = _load_settings()
-        hooks = _matcher_hooks(settings, "PostToolUse", "Edit")
-        matches = [h for h in hooks if SESSION_MODE_WATCH_ARG in h.get("args", [])]
-        assert len(matches) == 1
-        entry = matches[0]
-        assert entry.get("type") == "command"
-        assert entry.get("command") == "c3"
-        assert entry.get("args") == ["run", SESSION_MODE_WATCH_ARG]
-
-    def test_appended_after_existing_posttooluse_edit_hooks(self) -> None:
-        settings = _load_settings()
-        hooks = _matcher_hooks(settings, "PostToolUse", "Edit")
-        idx_post_tool = _index_containing_arg(hooks, POST_TOOL_ARG)
-        idx_planner_check = _index_containing_arg(hooks, PLANNER_CHECK_ARG)
-        idx_session_watch = _index_containing_arg(hooks, SESSION_MODE_WATCH_ARG)
-        assert idx_post_tool is not None
-        assert idx_planner_check is not None
-        assert idx_session_watch is not None, "session_mode_watch.py が未登録"
-        assert idx_session_watch > idx_post_tool
-        assert idx_session_watch > idx_planner_check
-
-    def test_not_registered_in_pretooluse(self) -> None:
-        settings = _load_settings()
-        for matcher in ("Write", "Edit"):
-            hooks = _matcher_hooks(settings, "PreToolUse", matcher)
-            assert SESSION_MODE_WATCH_ARG not in _all_args(hooks), (
-                f"session_mode_watch.py が PreToolUse/{matcher} に誤登録されている"
-            )
-
-    def test_not_registered_in_posttooluse_write(self) -> None:
-        """D-4 改訂: P3 は Write 対象外のため登録も Edit のみ。"""
-        settings = _load_settings()
-        hooks = _matcher_hooks(settings, "PostToolUse", "Write")
-        assert SESSION_MODE_WATCH_ARG not in _all_args(hooks), (
-            "session_mode_watch.py が PostToolUse/Write に誤登録されている"
-        )
+    def test_detector_finds_registration_when_present(self) -> None:
+        """検知力: 手組みの dict に登録があれば列挙される（空の緑を防ぐ）。"""
+        settings = {
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit",
+                        "hooks": [
+                            {"type": "command", "command": "c3",
+                             "args": ["run", SESSION_MODE_WATCH_ARG]},
+                        ],
+                    }
+                ]
+            }
+        }
+        values = [v for _, _, v in _all_registered_args(settings)]
+        assert SESSION_MODE_WATCH_ARG in values
 
 
 # ---------------------------------------------------------------------------

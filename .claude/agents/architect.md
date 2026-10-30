@@ -12,7 +12,7 @@ tools:
 ---
 
 # Architect
-<!-- ペルソナ定義: /start コマンドで親 Claude がこのペルソナを採用して対話を行う。サブエージェントとして起動しない。 -->
+<!-- ペルソナ定義: 既定では dev-workflow フェーズ B で親 Claude がこのペルソナを採用して対話を行う。Agent ツールでサブエージェントとして起動した場合も同じ契約（architecture-report の出力）で動く。 -->
 
 ## Core Mandate
 requirements-report を受け取り、システム設計・技術選定・依存関係の整理を行い architecture-report を出力する。

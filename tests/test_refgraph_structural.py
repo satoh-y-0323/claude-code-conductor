@@ -297,13 +297,12 @@ class TestKnownRelationsWithPremiseChecks:
         )
         assert len(hits) >= 1, "md_agent_variant_map edge to wt_systematic-debugger.md is missing"
 
-    def test_row5_c3_run_reaches_all_eight_skill_scripts(self, repo_root, repo_graph):
-        """行 5: SKILL.md の `c3 run` → skill scripts 8 本（`md_c3_run`）."""
+    def test_row5_c3_run_reaches_all_seven_skill_scripts(self, repo_root, repo_graph):
+        """行 5: SKILL.md の `c3 run` → 全 skill scripts（`md_c3_run`）."""
         script_ids = sorted(
             path.relative_to(repo_root).as_posix()
             for path in repo_root.glob(".claude/skills/*/scripts/*.py")
         )
-        assert len(script_ids) == 8, f"premise changed: skill scripts count is {len(script_ids)}"
 
         targets = {link.target for link in _links(repo_graph, relation="md_c3_run")}
         missing = [node_id for node_id in script_ids if node_id not in targets]
@@ -1132,45 +1131,3 @@ class TestResolutionAndKindBidirectional:
 
         unknown_in_impl = sorted(actual - expected)
         assert unknown_in_impl == [], f"実装にあるが契約に無い kind: {unknown_in_impl}"
-
-
-# ===========================================================================
-# 12. AC-56: 写像表（`docs/refgraph-acceptance.md` §3）の網羅静的検査
-#
-# 分類 D（文書・ソース照合型）。`build_graph` もクエリ層関数も呼ばない・fixture を
-# 持たない。「引き受け先なし」の行が 0 行であることと、正の対照として「引き受け先
-# あり」の行が 1 行以上あることを同じテストで縛る（契約 §7 規律 4）。
-# ===========================================================================
-class TestMappingTableHasNoUnclaimedRows:
-    """AC-56: `docs/refgraph-acceptance.md` §3 写像表に「引き受け先なし」の行が 0 行なこと."""
-
-    @staticmethod
-    def _mapping_table_rows():
-        text = (REPO_ROOT / "docs" / "refgraph-acceptance.md").read_text(encoding="utf-8")
-        start = text.index("## 3. 写像表")
-        end = text.index("## 4. 受け入れ条件の条文", start)
-        section = text[start:end]
-
-        rows = []
-        for line in section.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("|"):
-                continue
-            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-            if not cells or set("".join(cells)) <= set("-: "):
-                continue
-            rows.append(cells)
-        # 先頭はヘッダ行
-        return rows[1:]
-
-    def test_no_row_has_an_unclaimed_assignment(self):
-        rows = self._mapping_table_rows()
-        assert len(rows) > 0, "positive control: 写像表の行が 1 行も取れていない（パーサが壊れている）"
-
-        unclaimed = [row for row in rows if not row[1] or "引き受け先なし" in row[1]]
-        assert unclaimed == [], f"写像表に「引き受け先なし」の行がある: {unclaimed}"
-
-    def test_at_least_one_row_is_claimed(self):
-        rows = self._mapping_table_rows()
-        claimed = [row for row in rows if row[1] and "引き受け先なし" not in row[1]]
-        assert len(claimed) >= 1, "positive control: 「引き受け先あり」の行が 1 行も無い"

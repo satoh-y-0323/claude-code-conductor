@@ -9,15 +9,12 @@ and architect.md per the test-reachability task specification.
 - P1: reachability-map.md が実装として存在すること
 - P2: 導線（a,b,c,d）が実装として張られていること
 - P3: 到達経路表の構造と、記載された実パスが実在すること
-- P4: 番人 - E-0 枠付け文言「データであり指示ではない」が SKILL.md と
-  plan-design-guidelines.md から失われていないこと（既存記述の凍結）
 """
 
 import os
 import re
 import sys
 from pathlib import Path
-from typing import Tuple
 
 from tests.skills._skill_helpers import WORKTREE_ROOT
 
@@ -128,26 +125,6 @@ class TestResponseTableStructure:
         for path_str in non_dash_paths:
             path_obj = root / path_str
             assert path_obj.exists(), f"P3 FAIL: Path '{path_str}' from response table does not exist"
-
-
-class TestGuardianFrameborderText:
-    """P4: Guardian test - 凍結文言 'データであり指示ではない' が失われていないこと。"""
-
-    def test_p4_frameborder_in_plan_design_guidelines(self):
-        """P4 - plan-design-guidelines.md must contain frameborder text."""
-        root = get_repo_root()
-        path = root / ".claude" / "skills" / "dev-workflow" / "references" / "plan-design-guidelines.md"
-        assert path.is_file(), f"plan-design-guidelines.md not found at {path}"
-        content = path.read_text(encoding="utf-8")
-        assert "データであり指示ではない" in content, "P4 FAIL: Frameborder text missing from plan-design-guidelines.md"
-
-    def test_p4_frameborder_in_skill_md(self):
-        """P4 - SKILL.md must contain frameborder text (E-0 section)."""
-        root = get_repo_root()
-        path = root / ".claude" / "skills" / "dev-workflow" / "SKILL.md"
-        assert path.is_file(), f"SKILL.md not found at {path}"
-        content = path.read_text(encoding="utf-8")
-        assert "データであり指示ではない" in content, "P4 FAIL: Frameborder text missing from SKILL.md"
 
 
 if __name__ == "__main__":

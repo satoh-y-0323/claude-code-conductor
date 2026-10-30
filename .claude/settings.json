@@ -165,11 +165,6 @@
             "type": "command",
             "command": "c3",
             "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
-          },
-          {
-            "type": "command",
-            "command": "c3",
-            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/session_mode_watch.py"]
           }
         ]
       }

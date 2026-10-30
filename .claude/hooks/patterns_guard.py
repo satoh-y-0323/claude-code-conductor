@@ -124,8 +124,9 @@ def main():
 
     message = (
         f"[PatternGuard BLOCK] patterns.json への直接編集がブロックされました。\n"
-        f"正規経路: session.tmp の「##残タスク」へ記載後、promote-pattern skill を実行してください\n"
-        f"          または LLM が patterns.json を直接編集する場合は以下を実行:\n"
+        f"正規経路: 新しいパターンは session.tmp（.claude/memory/sessions/YYYYMMDD.tmp）の JSON ブロックの "
+        f"`patterns` 配列へ追記する（Stop hook が patterns.json へ取り込む）\n"
+        f"          promote-pattern skill の昇格記録など、patterns.json を意図的に直接編集する場合は以下を実行:\n"
         f"{flag_create_instruction}\n"
         f"恒久 bypass: C3_PATTERNS_GUARD_DISABLE=1 環境変数を設定してください"
     )

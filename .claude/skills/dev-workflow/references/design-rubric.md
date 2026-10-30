@@ -1,7 +1,7 @@
 # Design Rubric（設計・ルーブリック）
 
 `dev-workflow` フェーズ B（設計）で architect ペルソナが参照する**動的設計確認の指針**。
-`/start` で親 Claude が `.claude/agents/architect.md` のペルソナを採用した後、本ファイルを Read して
+dev-workflow フェーズ B で `.claude/agents/architect.md` のペルソナを採用した後（サブエージェント起動でも同じ）、本ファイルを Read して
 **床観点をルーブリックに従って動的に確認する**。フェーズ B（B-1〜B-2）専用。
 
 設計思想（ハイブリッド）: **確認する観点カテゴリ＝固定**（予測可能）／

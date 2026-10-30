@@ -10,6 +10,7 @@
 > （注記 2026-08-13: tier_autoapply.py のロック機構が非ブロック試行＋ms リトライ（締切 5 秒）へ置換されました。02-hooks.md の tier_autoapply 出力欄と 05-state-db.md §6-11 のロック記述は旧実装（ブロッキング LK_LOCK）を前提としています。plan-report-20260813-104839.md を参照してください）
 > （注記 2026-08-14: `.claude/memory/sessions/.gitkeep` と `.claude/tmp/.gitkeep` を新規作成し（既存の `.claude/memory/archive/.gitkeep` は root `.gitignore` 是正により新規に git 追跡対象化）、root `.gitignore` と sdist 設定〔force-include〕を是正したため、06-distribution.md の `[未文書化] #1`・00-index.md の既知問題該当行・05-state-db.md の `.gitkeep` 記述は旧記述である）
 > （注記 2026-08-14: permission_handler 一式〔`permission_handler.py` / `permission_handler_toast.py` / `permission_rules.json`〕と `[notify]` extra は v2.72.0 で削除された。02-hooks.md の両 hook の節・登録一覧表の PermissionRequest 行・未検証項目 6/10、06-distribution.md の `.claude/` 直下 6 件の列挙はすべて旧記述である）
+> （注記 2026-10-30: v2.83.0 で旧自律機構〔モード行・委任プラン・資源同意・cycles・`mode_line.py`・`session_mode_watch.py`・adapter の `ADAPTER_EXCLUDE_PATTERNS`・`autonomous-mode-onboarding.md`〕を撤去し、自律の opt-in を承認の回答に置き換えた。02-hooks.md の session_mode_watch の節と登録、04-skills.md の autonomous-mode とモード行、05-state-db.md の session.tmp のモード行、06-distribution.md の配布 docs 件数と `ADAPTER_EXCLUDE_PATTERNS` の契約はすべて旧記述である）
 >
 > ### なぜ凍結するのか
 >

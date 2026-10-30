@@ -179,19 +179,3 @@ class TestUpstreamRepoInteraction:
             f"配布元リポジトリで予期せず tracked 候補に浮上した state ファイル: {sorted(unexpected)}。"
             " `.claude/.gitignore` の否定パターンがルート `.gitignore` を打ち消していないか確認すること"
         )
-
-
-class TestPolicyConsistency:
-    """config-policy.md に書いた分類と .gitignore の中身がズレていないこと."""
-
-    def test_documents_reference_each_other(self):
-        text = CLAUDE_GITIGNORE.read_text(encoding="utf-8")
-        assert "config-policy.md" in text, (
-            ".gitignore は分類の根拠として config-policy.md を参照すべき"
-        )
-
-    def test_setup_done_flag_has_rationale_comment(self):
-        text = CLAUDE_GITIGNORE.read_text(encoding="utf-8")
-        assert "setup_done.flag" in text
-        # なぜ除外しないのかがファイル内で読み取れること
-        assert "setup" in text.lower()

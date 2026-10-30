@@ -15,7 +15,7 @@ F5（`sanitize_for_terminal` の共有化）の未実装による Red。
 
   - `_hook_utils.sanitize_for_terminal()` が存在し、既存 `_CONTROL_CHARS_RE`
     （C0 + DEL + C1）と同じ除去範囲を持つこと
-  - (f) 重複消滅の機械検査: P1/P2/P3 の 3 hook に `def _sanitize` の独自定義が
+  - (f) 重複消滅の機械検査: P1/P2（および P4）の hook に `def _sanitize` の独自定義が
     残っていないこと（既存 `test_no_duplicate_write_debug_log_definitions` と同型・
     rework2 DC-GP-004）
 """
@@ -36,10 +36,10 @@ HOOK_UTILS_PATH = HOOK_DIR / "_hook_utils.py"
 PLANNER_CHECK_PATH = HOOK_DIR / "planner_check.py"
 AGENT_HOOK_PATH = HOOK_DIR / "check_agent_invocation.py"
 
-# T5 追加分: F5 の共有化対象となる 3 hook（P1 / P2 / P3）
+# T5 追加分: F5 の共有化対象となる hook（P1 / P2。P3 session_mode_watch.py は
+# 旧自律機構＝モード行の撤去〔ユーザー裁定 2026-10-29〕で母数から外した）
 PATTERNS_GUARD_PATH = HOOK_DIR / "patterns_guard.py"
 REPORT_CONTRACT_CHECK_PATH = HOOK_DIR / "report_contract_check.py"
-SESSION_MODE_WATCH_PATH = HOOK_DIR / "session_mode_watch.py"
 
 # task test-reg 追記分: P4（新規 PreToolUse hook・未実装）
 REPORT_PATH_GUARD_PATH = HOOK_DIR / "report_path_guard.py"
@@ -322,8 +322,8 @@ def test_sanitize_for_terminal_keeps_plain_text_unchanged(tmp_path: Path) -> Non
     )
 
 
-def test_no_duplicate_sanitize_definitions_in_p1_p2_p3() -> None:
-    """[F5(f)・Red] P1/P2/P3 の 3 hook から `_sanitize` の独自定義が消えている。
+def test_no_duplicate_sanitize_definitions_in_p1_p2_p4() -> None:
+    """[F5(f)・Red] P1/P2/P4 の hook から `_sanitize` の独自定義が消えている。
 
     共有 `_hook_utils.sanitize_for_terminal()` への置換後は、hook ファイル側に
     `def _sanitize` / `def sanitize_for_terminal` の関数定義が残っていてはならない
@@ -332,7 +332,6 @@ def test_no_duplicate_sanitize_definitions_in_p1_p2_p3() -> None:
     for path in (
         PATTERNS_GUARD_PATH,
         REPORT_CONTRACT_CHECK_PATH,
-        SESSION_MODE_WATCH_PATH,
         REPORT_PATH_GUARD_PATH,
     ):
         assert path.is_file(), f"{path} が見つからない"
@@ -346,12 +345,11 @@ def test_no_duplicate_sanitize_definitions_in_p1_p2_p3() -> None:
         )
 
 
-def test_p1_p2_p3_import_sanitize_from_hook_utils() -> None:
-    """[F5・Red] 3 hook が _hook_utils から sanitize_for_terminal を import している。"""
+def test_p1_p2_p4_import_sanitize_from_hook_utils() -> None:
+    """[F5・Red] P1/P2/P4 の hook が _hook_utils から sanitize_for_terminal を import している。"""
     for path in (
         PATTERNS_GUARD_PATH,
         REPORT_CONTRACT_CHECK_PATH,
-        SESSION_MODE_WATCH_PATH,
         REPORT_PATH_GUARD_PATH,
     ):
         source = path.read_text(encoding="utf-8")
@@ -366,8 +364,8 @@ def test_p1_p2_p3_import_sanitize_from_hook_utils() -> None:
 # ===========================================================================
 # task test-reg 追記分（Red）— P4: report_path_guard.py の norm_component 共有
 #
-# 共有ループ検査（test_no_duplicate_sanitize_definitions_in_p1_p2_p3 /
-# test_p1_p2_p3_import_sanitize_from_hook_utils）は対象リストへ
+# 共有ループ検査（test_no_duplicate_sanitize_definitions_in_p1_p2_p4 /
+# test_p1_p2_p4_import_sanitize_from_hook_utils）は対象リストへ
 # REPORT_PATH_GUARD_PATH を足すだけとし、アサーション内容
 # （sanitize_for_terminal のみ）は変更していない。
 # 理由（実測）: リスト内の既存 hook `patterns_guard.py:37` は
@@ -383,8 +381,7 @@ def test_report_path_guard_imports_norm_component_from_hook_utils() -> None:
     """[P4・Red] report_path_guard.py が _hook_utils から norm_component を import する。
 
     パス成分比較（`.claude/reports/` 判定）は共有ヘルパー
-    `_hook_utils.norm_component()` に委ねる（report_contract_check.py /
-    session_mode_watch.py と同型）。hook 未実装の現状では
+    `_hook_utils.norm_component()` に委ねる（report_contract_check.py と同型）。hook 未実装の現状では
     「ファイルが存在しない」ため AssertionError で Red になる。
     """
     assert REPORT_PATH_GUARD_PATH.is_file(), (

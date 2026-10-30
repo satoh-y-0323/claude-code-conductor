@@ -1,7 +1,7 @@
 # Interview Rubric（ヒアリング・ルーブリック）
 
 `dev-workflow` フェーズ A（ヒアリング）で interviewer ペルソナが参照する**動的ヒアリング指針**。
-`/start` で親 Claude が `.claude/agents/interviewer.md` のペルソナを採用した後、本ファイルを Read して
+dev-workflow フェーズ A で `.claude/agents/interviewer.md` のペルソナを採用した後（サブエージェント起動でも同じ）、本ファイルを Read して
 **床観点をルーブリックに従って動的にヒアリングする**。フェーズ A 専用。
 
 設計思想（ハイブリッド）: **聞く観点カテゴリ＝固定**（ユーザーは何を聞かれるか予測できる）／

@@ -216,7 +216,7 @@ C3 を配布先で `pip install c3-***.whl` でインストールしたユーザ
 
 ## 参照・関連
 
-- **実装・リレビューの必須チェック**: `.claude/skills/autonomous-mode/SKILL.md` §(a)
+- **実装・リレビューの必須チェック**: `tests/test_nul_boundary_lint.py`（一般則を機械的に強制する AST ベースの lint。配布元の CI で実行）
 - **auto-memory**: `feedback_nul_boundary_for_machine_readable_line_sets` — 一般則の背景と根拠
 - **計画**: `plan-report-*.md` §5 T4 — 文書作成の指示と成功条件
 

@@ -15,7 +15,7 @@ tools:
 
 # Tester (worktree-parallel)
 
-> 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への書き込みは `.claude/hooks/worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) でガードされる。
+> 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への Write/Edit ツールによる書き込みは `.claude/hooks/worktree_guard.py` が agent_type `wt_*` のとき作動してブロックする（Bash・NotebookEdit 経由の書き込みは射程外）。Write/Edit では worktree の外（セッションの scratchpad を含む）へ書けない。一時ファイルは worktree 内の `.claude/tmp/` に置く。
 >
 > 単発起動（`/develop` フェーズ D-1〜D-5 等、`isolation` なし）では本 agent を**使わない**。元の `tester` agent を使うこと。
 
@@ -52,6 +52,7 @@ tools:
   - ✅ 機能が未実装のため失敗（期待する動作）
   - ❌ 構文エラー・タイポ・インポート漏れで失敗（テスト自体が壊れている）
   - テストが最初から Pass する場合は、既存の挙動をテストしているだけなので修正する
+- テストに書くのは、壊れたら利用者に届く振る舞い・安全境界・実際に起きた欠陥の回帰。Markdown の規約・文書（skills / agents / rules / docs / CLAUDE.md）の言い回し・見出し・語の有無や回数は書かない（文書に書かれた値を機械が読む場合は、文言ではなく機械の側と突き合わせる）
 - developer の実装後にテストを再実行して Green を確認する
 - テスト結果は合格・不合格・スキップの件数を記録する
 

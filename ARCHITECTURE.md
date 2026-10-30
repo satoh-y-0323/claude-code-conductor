@@ -113,7 +113,7 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 | `UserPromptSubmit` | （全て） | `select_tier.py` | 複雑度判定 → Tier ルーティング推奨（[§4](#4-知能基盤)） |
 | `UserPromptSubmit` | （全て） | `recall_inject.py` | 過去類似情報を意味検索しコンテキスト注入（[§4](#4-知能基盤)） |
 | `PreToolUse` | `Bash` | `pre_tool.py` | 破壊的コマンド（`rm -rf` 等）ブロック・secret スキャン（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
-| `PreToolUse` | `Write` / `Edit` | `worktree_guard.py` | worktree 外への書き込み禁止（`PO_WORKTREE_GUARD=1` 設定時のみ作動。parallel-agents が並列実行時に有効化）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
+| `PreToolUse` | `Write` / `Edit` | `worktree_guard.py` | worktree 外への書き込み禁止（hook 入力の agent_type が `wt_developer` / `wt_tester` / `wt_systematic-debugger` のとき自動で作動。worktree の外（scratchpad を含む）へは書けない。緊急無効化は `C3_WORKTREE_GUARD_DISABLE=1`）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
 | `PreToolUse` | `Write` / `Edit` | `patterns_guard.py` | patterns.json への直接編集を block（許可フラグ TTL 600 秒・C3_PATTERNS_GUARD_DISABLE=1 で無効化）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
 | `PreToolUse` | `Write` | `report_path_guard.py` | レポート 9 prefix の書き先を検査し逸脱を block（封じ込め: `.claude/reports/` 直下の二層判定 / 上書き: タイムスタンプ形式の既存ファイル / 形式: strict-4 の非タイムスタンプ命名。`C3_REPORT_GUARD_DISABLE=1` で無効化）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
 | `PreToolUse` | `Agent` | `check_agent_invocation.py` | エージェント起動の検査（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
@@ -121,7 +121,6 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 | `PostToolUse` | `Write` / `Edit` | `post_tool.py` | skills 変更通知・品質パターン（TODO 等）スキャン |
 | `PostToolUse` | `Write` / `Edit` | `planner_check.py` | plan-report の YAML/タイムスタンプ/reviewer 規約検査 |
 | `PostToolUse` | `Write` | `report_contract_check.py` | reports 直下の命名契約逸脱を warn（strict-4〔requirements/architecture/plan/design-review〕はタイムスタンプ形式の厳密検査、loose-3〔code-review/security-review/test〕はタイムスタンプ形式または task_id 形式のどちらかを許容する緩検査。stderr + additionalContext） |
-| `PostToolUse` | `Edit` | `session_mode_watch.py` | session.tmp のモード行挿入・plan= 差し替えを warn（stderr + additionalContext） |
 | `PreCompact` | （全て） | `pre_compact.py` | compact 前にチェックポイントマーカー注入 |
 | `Stop` | （全て） | `session_stop.py` | セッション終了処理のオーケストレータ |
 

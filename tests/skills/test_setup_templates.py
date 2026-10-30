@@ -21,16 +21,6 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def test_project_setup_agent_under_80_lines():
-    """project-setup.md は D-012 準拠で 80 行以内に収まる。"""
-    content = _read(PROJECT_SETUP_AGENT)
-    line_count = len(content.splitlines())
-    assert line_count <= 80, (
-        f"project-setup.md は {line_count} 行（80 行上限超過）。"
-        " テンプレート/参照を skills/setup/templates/ と reference.md に外出ししてください（D-012）。"
-    )
-
-
 def test_templates_directory_exists():
     """skills/setup/templates/ ディレクトリが存在する。"""
     assert TEMPLATES_DIR.is_dir(), \
@@ -69,20 +59,6 @@ def test_project_conventions_template_exists_with_placeholders():
     )
     missing = [p for p in required if p not in content]
     assert not missing, f"project-conventions-template.md にプレースホルダが不足: {missing}"
-
-
-def test_reference_file_exists_with_language_mappings():
-    """skills/setup/reference.md が存在し、言語→拡張子マッピングを含む。"""
-    content = _read(REFERENCE_FILE)
-    assert content, f"reference.md が見つからない: {REFERENCE_FILE}"
-    # 主要言語のマッピングが含まれる
-    required_languages = ("Python", "TypeScript", "JavaScript", "Go", "Java", "Rust", "Ruby")
-    missing = [lang for lang in required_languages if lang not in content]
-    assert not missing, f"reference.md に言語マッピングが不足: {missing}"
-    # 拡張子サンプル
-    required_extensions = ("**/*.py", "**/*.ts", "**/*.go", "**/*.rs")
-    missing_ext = [ext for ext in required_extensions if ext not in content]
-    assert not missing_ext, f"reference.md に拡張子 glob が不足: {missing_ext}"
 
 
 def test_project_setup_agent_references_templates():

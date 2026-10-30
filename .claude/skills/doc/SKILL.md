@@ -33,14 +33,9 @@ AskUserQuestion ツール:
 
 ## Step 2: 対象ファイル・ディレクトリの指定
 
-AskUserQuestion ツール:
-```json
-{
-  "questions": [{
-    "question": "ドキュメント化する対象ファイル・ディレクトリを教えてください（例: src/api/、models/user.py）"
-  }]
-}
-```
+自由入力のため AskUserQuestion は使わず、テキストで尋ねる（AskUserQuestion と `c3_ask_user_question` は選択肢が必須）:
+
+> ドキュメント化する対象ファイル・ディレクトリを教えてください（例: src/api/、models/user.py）
 
 ---
 
@@ -115,7 +110,7 @@ AskUserQuestion ツール:
   "questions": [{
     "question": "ドキュメントの出力先を選択してください",
     "options": [
-      { "label": "レポートとして保存", "description": ".claude/reports/doc-{名前}.md に保存（一時保管）" },
+      { "label": "レポートとして保存", "description": ".claude/reports/doc-{名前}-{timestamp}.md に保存（一時保管）" },
       { "label": "プロジェクト内の指定パスに保存", "description": "次の入力でパスを指定する（例: docs/architecture.md）" },
       { "label": "ここに表示するだけ", "description": "ファイル保存せずチャットに出力" }
     ]
@@ -123,14 +118,9 @@ AskUserQuestion ツール:
 }
 ```
 
-「プロジェクト内の指定パスに保存」が選ばれた場合: 続けて出力パスを確認する:
-```json
-{
-  "questions": [{
-    "question": "保存先のパスを入力してください（例: docs/architecture.md）"
-  }]
-}
-```
+「プロジェクト内の指定パスに保存」が選ばれた場合: 続けて出力パスをテキストで尋ねる（自由入力のため AskUserQuestion は使わない）:
+
+> 保存先のパスを入力してください（例: docs/architecture.md）
 
 ---
 

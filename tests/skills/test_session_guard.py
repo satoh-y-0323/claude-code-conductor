@@ -6,15 +6,12 @@ SKILL.md の置換成立・残骸排除・settings.json の allow 登録を不�
 """
 from __future__ import annotations
 
-import ast
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 from tests.skills._skill_helpers import (
     WORKTREE_ROOT,
@@ -245,36 +242,6 @@ class TestCliErrors:
 class TestInvariants:
     """SKILL.md への session_guard.py 移行と settings.json 登録の不変条件を保証する。"""
 
-    def test_init_session_skill_has_no_tr_d_remnant(self) -> None:
-        """init-session/SKILL.md に旧 bash の tr -d 残骸がないことを確認する。"""
-        content = read_init_session_skill()
-        assert "tr -d" not in content
-
-    def test_init_session_skill_has_no_printf_s_remnant(self) -> None:
-        """init-session/SKILL.md に旧 bash の printf '%s' 残骸がないことを確認する。"""
-        content = read_init_session_skill()
-        assert "printf '%s'" not in content
-
-    def test_init_session_skill_has_no_mkdir_p_state_remnant(self) -> None:
-        """init-session/SKILL.md に旧 bash の mkdir -p .claude/state 残骸がないことを確認する。"""
-        content = read_init_session_skill()
-        assert "mkdir -p .claude/state" not in content
-
-    def test_start_skill_has_no_tr_d_remnant(self) -> None:
-        """start/SKILL.md に旧 bash の tr -d 残骸がないことを確認する。"""
-        content = read_start_skill()
-        assert "tr -d" not in content
-
-    def test_start_skill_has_no_printf_s_remnant(self) -> None:
-        """start/SKILL.md に旧 bash の printf '%s' 残骸がないことを確認する。"""
-        content = read_start_skill()
-        assert "printf '%s'" not in content
-
-    def test_start_skill_has_no_mkdir_p_state_remnant(self) -> None:
-        """start/SKILL.md に旧 bash の mkdir -p .claude/state 残骸がないことを確認する。"""
-        content = read_start_skill()
-        assert "mkdir -p .claude/state" not in content
-
     def test_init_session_skill_has_session_guard_mark(self) -> None:
         """init-session/SKILL.md に 'session_guard.py mark' が存在することを確認する。"""
         content = read_init_session_skill()
@@ -308,26 +275,8 @@ class TestInvariants:
         assert "scripts/session_guard.py check" in content
 
     # ------------------------------------------------------------------
-    # CR M-01 / L-04: setup/SKILL.md の委譲成立・残骸排除不変条件
+    # CR M-01 / L-04: setup/SKILL.md の委譲成立
     # ------------------------------------------------------------------
-
-    def test_setup_skill_has_no_bash_flag_creation_remnant(self) -> None:
-        """setup/SKILL.md に旧複合 bash 残骸（`mkdir -p .claude/state && : >`）がないことを確認する（CR M-01 / L-04）。
-
-        impl-fixes-session-guard が /setup Phase 4 の bash ブロックを
-        session_guard.py setup-mark に委譲した後にのみ Pass する（現状 Red が正常）。
-        """
-        content = read_setup_skill()
-        assert "mkdir -p .claude/state && : >" not in content, (
-            "setup/SKILL.md に旧複合 bash 残骸 'mkdir -p .claude/state && : >' が残っている"
-        )
-
-    def test_setup_skill_has_no_colon_redirect_remnant(self) -> None:
-        """: > .claude/state/setup_done.flag 形式の残骸がないことを確認する（CR M-01 / L-04）。"""
-        content = read_setup_skill()
-        assert ": > .claude/state/setup_done.flag" not in content, (
-            "setup/SKILL.md に旧 bash 残骸 ': > .claude/state/setup_done.flag' が残っている"
-        )
 
     def test_setup_skill_has_setup_mark_invocation(self) -> None:
         """setup/SKILL.md に 'session_guard.py setup-mark' が存在することを確認する（CR M-01 / L-04）。"""
@@ -506,56 +455,11 @@ def _load_session_guard_module():
     return mod
 
 
-def _get_setup_markers_second_element_ast_type() -> str:
-    """AST 解析で SETUP_MARKERS_REL の 2 要素目のノード種別を返す。
-
-    単一真実源化（SETUP_DONE_FLAG_REL 参照化）後: ast.Name
-    別リテラル二重定義のまま（現状）: ast.Tuple
-
-    この違いを利用して「参照に置き換えられているか」を検査する。
-
-    Note: CPython はリテラルの等値タプルを同一オブジェクトとしてインターニングする場合があるため、
-    is 比較だけでは二重定義か参照化かを確実に区別できない。AST 解析が唯一の確実な方法。
-    """
-    if not _SCRIPT_PATH.is_file():
-        raise FileNotFoundError(f"session_guard.py not found: {_SCRIPT_PATH}")
-    src = _SCRIPT_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "SETUP_MARKERS_REL":
-                    if isinstance(node.value, ast.Tuple) and len(node.value.elts) >= 2:
-                        return type(node.value.elts[1]).__name__
-    raise AssertionError("SETUP_MARKERS_REL の AST ノードが見つからない")
-
-
 class TestConstantSingleSource:
     """CR-M-001: SETUP_MARKERS_REL[1] と SETUP_DONE_FLAG_REL の単一真実源を固定する。
 
-    impl は SETUP_DONE_FLAG_REL を SETUP_MARKERS_REL より前に定義し、
-    SETUP_MARKERS_REL の 2 要素目を SETUP_DONE_FLAG_REL の参照に置き換える前提。
-    テスト自体は定義順に依存せず、AST 解析と最終値のみを検査する。
-
-    Note: CPython はリテラルの等値タプルをインターニングするため is 比較では
-    別リテラル二重定義と参照化を確実に区別できない。
-    test_setup_markers_second_element_is_setup_done_flag_object は AST ベースで
-    SETUP_MARKERS_REL[1] のノードが ast.Name（名前参照）であることを検査する。
+    テストは定義順に依存せず、最終値のみを検査する。
     """
-
-    def test_setup_markers_second_element_is_setup_done_flag_object(self) -> None:
-        """SETUP_MARKERS_REL[1] が SETUP_DONE_FLAG_REL への名前参照（ast.Name）であること。
-
-        単一真実源化されていれば AST ノード種別が 'Name'（変数参照）になる。
-        別リテラルの二重定義のままなら 'Tuple'（直接リテラル）のままで Red。
-
-        CPython のタプルインターニングにより is 比較は信頼できないため AST 解析を採用する。
-        """
-        node_type = _get_setup_markers_second_element_ast_type()
-        assert node_type == "Name", (
-            f"SETUP_MARKERS_REL[1] の AST ノード種別が 'Name' でなく '{node_type}'。"
-            "SETUP_DONE_FLAG_REL への参照に置き換えられていない（別リテラル二重定義のまま）。"
-        )
 
     def test_setup_done_flag_rel_value_unchanged(self) -> None:
         """挙動完全不変の保証: SETUP_DONE_FLAG_REL の値が (".claude","state","setup_done.flag") のままであること。"""

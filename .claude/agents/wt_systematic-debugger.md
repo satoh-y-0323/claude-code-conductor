@@ -15,7 +15,7 @@ tools:
 
 # Systematic Debugger (worktree-parallel)
 
-> 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への書き込みは `.claude/hooks/worktree_guard.py` (PreToolUse, `PO_WORKTREE_GUARD=1`) でガードされる。
+> 本 agent は `parallel-agents` skill が `isolation: "worktree"` 付きで起動する **並列実行専用** バリアント。`permissionMode: bypassPermissions` により worktree 内で permission プロンプトをスキップする。worktree 外への Write/Edit ツールによる書き込みは `.claude/hooks/worktree_guard.py` が agent_type `wt_*` のとき作動してブロックする（Bash・NotebookEdit 経由の書き込みは射程外）。Write/Edit では worktree の外（セッションの scratchpad を含む）へ書けない。一時ファイルは worktree 内の `.claude/tmp/` に置く。
 >
 > 単発起動（worktree なしで親 Claude から直接 Agent ツールで起動するケース等）では本 agent を**使わない**。元の `systematic-debugger` agent を使うこと。
 

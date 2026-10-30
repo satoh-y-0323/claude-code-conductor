@@ -1,5 +1,5 @@
 ---
-description: 技術スタックと独自規約をヒアリングして project-setup エージェントに .claude/rules/coding-standards.md と .claude/rules/project-conventions.md を生成させる。プロジェクト開始時に使用する。
+description: 技術スタックと独自規約をヒアリングして project-setup エージェントに .claude/rules/coding-standards.md と .claude/rules/project-conventions.md を生成させる。ユーザーの /setup 明示呼び出しと、init-session が SETUP_NEEDED を検出したときの連鎖起動でのみ使う。
 ---
 
 # setup
@@ -209,7 +209,7 @@ agent は `.claude/skills/setup/templates/` と `.claude/skills/setup/reference.
 ## Phase 4: 完了報告
 
 project-setup エージェントが 2 ファイルを生成したら、Bash で setup 実行済みマーカーを記録する
-（`/init-session` の setup ガードが再発火しないようにするため。`state/*` は gitignore＋配布除外済み）。
+（`/init-session` の setup ガードが再発火しないようにするため。このフラグは wheel に含まれず、利用先では git 管理されてチームの他メンバーにも setup 済みとして伝わる）。
 このフラグは**存在自体がマーカー**であり中身は不要（空ファイルで可）:
 
 ```bash
