@@ -18,6 +18,10 @@ PYTHONPATH に追加してから `from _hook_utils import ...` する経路を�
 - ``timestamp_pattern(prefix)`` — ``{prefix}YYYYMMDD-HHMMSS.md`` のフルマッチ用
   正規表現（``re.compile`` オブジェクト）を返す。全角数字偽装防止のため ``re.ASCII``
   を指定。
+- ``is_reports_direct_child(path)`` — ``path`` が ``.claude/reports/`` 直下のファイルの
+  形をしているか（親が ``reports``・祖父が ``.claude``）を名前だけで判定する。比較は
+  ``norm_component`` で正規化してから行う（report_contract_check /
+  report_path_guard の第 1 層 / design_review_count_check）。
 """
 
 from __future__ import annotations
@@ -79,6 +83,21 @@ def norm_component(s: str) -> str:
     `.lower().rstrip('. ')` で正規化してから比較する。
     """
     return str(s).lower().rstrip('. ')
+
+
+def is_reports_direct_child(path: Path) -> bool:
+    """``path`` が ``.claude/reports/`` 直下の形をしているかを名前だけで判定する。
+
+    親ディレクトリ名が ``reports``・その親が ``.claude`` であることを
+    ``norm_component`` で正規化して比較する（ケース非依存 FS の別名・末尾ドット/スペースを
+    吸収する）。resolve はしない（上流に同名の ``reports/`` があっても誤アンカーしない）。
+    実体の照合（リンク偽装の排除）は行わないため、必要な呼び出し側が別途行う。
+    """
+    parent = path.parent
+    return (
+        norm_component(parent.name) == 'reports'
+        and norm_component(parent.parent.name) == '.claude'
+    )
 
 
 def sanitize_for_terminal(text: str) -> str:

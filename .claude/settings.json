@@ -150,6 +150,11 @@
             "type": "command",
             "command": "c3",
             "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/report_contract_check.py"]
+          },
+          {
+            "type": "command",
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/design_review_count_check.py"]
           }
         ]
       },
@@ -165,6 +170,11 @@
             "type": "command",
             "command": "c3",
             "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/planner_check.py"]
+          },
+          {
+            "type": "command",
+            "command": "c3",
+            "args": ["run", "${CLAUDE_PROJECT_DIR}/.claude/hooks/design_review_count_check.py"]
           }
         ]
       }

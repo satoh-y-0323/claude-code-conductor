@@ -121,6 +121,7 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 | `PostToolUse` | `Write` / `Edit` | `post_tool.py` | skills 変更通知・品質パターン（TODO 等）スキャン |
 | `PostToolUse` | `Write` / `Edit` | `planner_check.py` | plan-report の YAML/タイムスタンプ/reviewer 規約検査 |
 | `PostToolUse` | `Write` | `report_contract_check.py` | reports 直下の命名契約逸脱を warn（strict-4〔requirements/architecture/plan/design-review〕はタイムスタンプ形式の厳密検査、loose-3〔code-review/security-review/test〕はタイムスタンプ形式または task_id 形式のどちらかを許容する緩検査。stderr + additionalContext） |
+| `PostToolUse` | `Write` / `Edit` | `design_review_count_check.py` | reports 直下の design-review-report について、サマリ表の件数と本文の `### [DC-…]（重要度…` 見出しの数の食い違いを warn（exit 0 + additionalContext + stderr。直させる知らせ） |
 | `PreCompact` | （全て） | `pre_compact.py` | compact 前にチェックポイントマーカー注入 |
 | `Stop` | （全て） | `session_stop.py` | セッション終了処理のオーケストレータ |
 
@@ -137,7 +138,7 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 
 - **非ブロッキング**: 観測系 hook は失敗しても `exit 0` でセッションを止めない（DB 不在・index 不在でも本体は動く）。
 - **安全境界はブロックに倒す**: 安全境界の PreToolUse hook は、hook 自体の失敗時（起動できない・タイムアウト・想定外の終了コード）に `onFailure: "block"` でブロックに倒す（対象は上表の注記の 5 本・7 エントリ）。
-- **`exit 2` は stderr を Claude に渡す**: PreToolUse の `exit 2`（`check_agent_invocation.py` の R5 等）は動作をブロックし、stderr がイベント名・ツール名・hook のコマンドを前置したツールのエラーとして Claude に渡る。PostToolUse の `exit 2` はツールの実行後に stderr を Claude に渡す（実行自体は取り消せない）。どちらも「Claude に読ませて直させたい違反」は exit 2、「ログだけ」は exit 0 + stderr で書き分ける。PostToolUse の例は配布元専用 `.dev/hooks/_planner_check.py` の R3。
+- **`exit 2` は stderr を Claude に渡す**: PreToolUse の `exit 2`（`check_agent_invocation.py` の R5 等）は動作をブロックし、stderr がイベント名・ツール名・hook のコマンドを前置したツールのエラーとして Claude に渡る。PostToolUse の `exit 2` はツールの実行後に stderr を Claude に渡す（実行自体は取り消せない）。どちらも「Claude に読ませて直させたい違反」は exit 2 か、exit 0 + additionalContext、「ログだけ」は exit 0 + stderr で書き分ける（配布の PostToolUse hook で Claude に直させているものの例: `planner_check.py` / `report_contract_check.py` / `design_review_count_check.py`）。PostToolUse の例は配布元専用 `.dev/hooks/_planner_check.py` の R3。
 - **配布元専用 hook** は `.dev/hooks/` に分離（`settings.local.json` で登録・配布されない）: `_template_guard.py` / `_sync_check.py` / `_pip_reinstall_reminder.py` / `_planner_check.py`。
 
 ---

@@ -44,14 +44,17 @@ report_contract_check.py と統一したポリシー: **prefix 一致判定は
 `norm_component()` 正規化後の basename・形式（timestamp フルマッチ）判定は
 元の basename** に対して行う。これにより大文字混じり prefix（`Plan-Report-`）は
 prefix 一致として検出しつつ、`.MD` のような大文字混じり拡張子は timestamp 形式として
-誤許可しない（ケース非依存 FS では正規名と同一実体になりうるため、この場合は
-strict-4 なら検査 3 で block・非 strict-4 なら通常の新規作成として許可される）。
+誤許可しない（strict-4 なら検査 3 で block する）。既存の上書きの判定（検査 2）だけは、
+書き込み先の名前でなく既存の実体の名前で行う（下記）。
 
 ## 検査 2: 上書き block
 
-元の basename が timestamp 形式（prefix + `\\d{8}-\\d{6}\\.md` の `re.ASCII`
-フルマッチ）かつ書き込み先実体が既存 → block。task_id 形式（非 timestamp）の
-既存上書きは許可する（同一 task の再実行で更新する正規経路のため）。
+書き込み先の実体が既存で、その**実体の名前**（親ディレクトリの項目のうち書き込み先と
+`os.path.samefile` で一致するものの名前）が timestamp 形式（prefix +
+`\\d{8}-\\d{6}\\.md` の `re.ASCII` フルマッチ）→ block。ケース非依存 FS の大文字混じり名や、
+末尾のドットを落とす FS の `.md.` のように、書き込み先の名前が timestamp 形式でなくても
+既存の timestamp 形式のレポートと同じ実体に届く別名を、ここで止める。task_id 形式
+（非 timestamp）の既存上書きは許可する（同一 task の再実行で更新する正規経路のため）。
 
 ## 検査 3: strict-4 形式 block
 
@@ -82,6 +85,7 @@ from pathlib import Path
 # PYTHONPATH に追加する。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_utils import (  # noqa: E402
+    is_reports_direct_child,
     norm_component,
     sanitize_for_terminal,
     STRICT4_PREFIXES,
@@ -132,6 +136,28 @@ def _is_timestamp_name(basename, prefix):
     return timestamp_pattern(prefix).fullmatch(basename) is not None
 
 
+def _existing_entity_name(target):
+    """書き込み先の実体が既存ならその実体の名前を、無ければ None を返す。
+
+    書き込み先の名前は別名（ケース非依存 FS の大文字混じり名・末尾ドット等）でありうるので、
+    親ディレクトリの項目から書き込み先と同じ実体のものを探す。実体が既存なのに項目が
+    見つからないときは書き込み先の名前を返す。
+    """
+    path = str(target)
+    if not os.path.exists(path):
+        return None
+    with os.scandir(os.path.dirname(path)) as entries:
+        for entry in entries:
+            try:
+                same = os.path.samefile(entry.path, path)
+            except OSError:
+                # 壊れたリンク等の無関係な項目で全体を止めない
+                continue
+            if same:
+                return entry.name
+    return os.path.basename(path)
+
+
 def _allowed_roots():
     """許可 root（root A / root B）の候補パスを返す。
 
@@ -157,10 +183,8 @@ def _is_contained(target):
     """target が許可 root 直下に封じ込められているか（二層 AND）。"""
     # 第 1 層: 名前判定（`.claude/reports/` 直下の形をしているか）。
     # `..` を含む脱出パスは親の名前が `..` になるためここで落ちる。
-    parent = target.parent
-    if norm_component(parent.name) != REPORTS_DIR_NAME:
-        return False
-    if norm_component(parent.parent.name) != CLAUDE_DIR_NAME:
+    # 判定は _hook_utils.is_reports_direct_child() に集約（norm_component 正規化）。
+    if not is_reports_direct_child(target):
         return False
 
     # 第 2 層: 実体照合（リンク偽装で名前だけ揃えた経路をここで落とす）。
@@ -266,8 +290,9 @@ def main():
 
         is_timestamp = _is_timestamp_name(raw_basename, prefix)
 
-        # 検査 2: 上書き block（timestamp 形式の既存のみ）
-        if is_timestamp and os.path.exists(str(target)):
+        # 検査 2: 上書き block（実体の名前が timestamp 形式の既存のみ）
+        existing_name = _existing_entity_name(target)
+        if existing_name is not None and _is_timestamp_name(existing_name, prefix):
             _block_overwrite(display_name)
 
         # 検査 3: strict-4 形式 block

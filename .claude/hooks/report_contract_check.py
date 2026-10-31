@@ -56,6 +56,7 @@ from pathlib import Path
 # PYTHONPATH に追加する。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_utils import (  # noqa: E402
+    is_reports_direct_child,
     norm_component,
     sanitize_for_terminal,
     STRICT4_PREFIXES,
@@ -147,16 +148,12 @@ def main():
     # `.claude/reports/` 直下かどうかの判定
     path_obj = Path(file_path)
     basename = path_obj.name
-    parent = path_obj.parent
 
     # 構造判定: 親が `reports` かつ祖父が `.claude`（= `.claude/reports/` 直下）。
-    # 上流に同名の `reports/` があっても誤アンカーしない（resolve は使わない）。
-    # ケース非依存 FS（Windows・macOS）では `.CLAUDE` や `REPORTS` は `.claude` / `reports` と
-    # 同一実体の別名のため、比較は norm_component() で正規化してから行う。
-    # Windows の末尾ドット・スペースも norm_component() が除去する。
+    # 判定は _hook_utils.is_reports_direct_child() に集約（norm_component 正規化・resolve なし）。
     # 例: `/foo/.claude/reports/plan-report-20260725-180252.md` → 対象
     # 例: `/foo/.claude/reports/archive/plan-report-final.md` → 対象外（直下でない）
-    if norm_component(parent.name) != 'reports' or norm_component(parent.parent.name) != '.claude':
+    if not is_reports_direct_child(path_obj):
         sys.exit(0)
 
     # basename を正規化（ケース非依存化・末尾ドット/スペース除去）してから prefix 判定。

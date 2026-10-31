@@ -64,6 +64,15 @@ architecture-report-20261024-230403.md（revision 4）ADR-1・ADR-3 に基づく
         付け忘れ・誤付与・未分類・キーを取り出せない形の各ケースで失敗し、
         正しい dict でだけ成功することを示す（plan-design-guidelines ルール 19）
 
+## 追記分（task test-count・Red）— design_review_count_check.py
+
+新規 PostToolUse hook（design-review-report のサマリ件数と見出しの数の食い違い警告）の登録。
+
+    16. PostToolUse "Write" と "Edit" の両 matcher に 1 件ずつ、
+        `command: "c3"` + `args: ["run", "<hooks>/design_review_count_check.py"]` で登録
+        — 未登録の現状では AssertionError で Red
+    17. 負側（回帰ガード・現状でも緑）: PreToolUse のどの matcher にも現れない
+
 **分類表は本ファイルが SSOT。PreToolUse に新しい hook を追加したら、
 `_ONFAILURE_CLASSIFICATION` への分類の追加（block 対象か、非対象なら理由）と
 `_EXPECTED_PRETOOLUSE_ORDER` の並び順の更新が必要（追加しないと 11 / 14 が赤になる）。**
@@ -87,6 +96,7 @@ PATTERNS_GUARD_ARG = _HOOK_DIR_PREFIX + "patterns_guard.py"
 REPORT_CONTRACT_CHECK_ARG = _HOOK_DIR_PREFIX + "report_contract_check.py"
 SESSION_MODE_WATCH_ARG = _HOOK_DIR_PREFIX + "session_mode_watch.py"
 REPORT_PATH_GUARD_ARG = _HOOK_DIR_PREFIX + "report_path_guard.py"
+DESIGN_REVIEW_COUNT_CHECK_ARG = _HOOK_DIR_PREFIX + "design_review_count_check.py"
 
 PRE_TOOL_ARG = _HOOK_DIR_PREFIX + "pre_tool.py"
 WORKTREE_GUARD_ARG = _HOOK_DIR_PREFIX + "worktree_guard.py"
@@ -378,6 +388,50 @@ class TestReportPathGuardRegistration:
             assert REPORT_PATH_GUARD_ARG not in _all_args(hooks), (
                 f"report_path_guard.py が PostToolUse/{matcher} に誤登録されている"
             )
+
+
+# ---------------------------------------------------------------------------
+# 3-c. design_review_count_check.py: PostToolUse Write / Edit（task test-count 追記分）
+# ---------------------------------------------------------------------------
+
+
+class TestDesignReviewCountCheckRegistration:
+    """design_review_count_check.py の settings 登録。
+
+    Red 群: test_registered_in_posttooluse_with_convention_shape（Write / Edit）
+        → `.claude/settings.json` に未登録のため AssertionError で失敗する。
+    回帰ガード: test_not_registered_in_pretooluse → 現状でも緑。
+    """
+
+    def test_registered_in_posttooluse_write_with_convention_shape(self) -> None:
+        self._assert_registered("Write")
+
+    def test_registered_in_posttooluse_edit_with_convention_shape(self) -> None:
+        self._assert_registered("Edit")
+
+    @staticmethod
+    def _assert_registered(matcher: str) -> None:
+        settings = _load_settings()
+        hooks = _matcher_hooks(settings, "PostToolUse", matcher)
+        matches = [h for h in hooks if DESIGN_REVIEW_COUNT_CHECK_ARG in h.get("args", [])]
+        assert len(matches) == 1, (
+            f"PostToolUse/{matcher} の design_review_count_check.py の登録が 1 件でない: {matches}"
+        )
+        entry = matches[0]
+        assert entry.get("type") == "command"
+        assert entry.get("command") == "c3"
+        assert entry.get("args") == ["run", DESIGN_REVIEW_COUNT_CHECK_ARG]
+
+    def test_not_registered_in_pretooluse(self) -> None:
+        settings = _load_settings()
+        hits = [
+            (matcher, value)
+            for event, matcher, value in _all_registered_args(settings)
+            if event == "PreToolUse" and "design_review_count_check.py" in value
+        ]
+        assert hits == [], (
+            f"design_review_count_check.py が PreToolUse に誤登録されている: {hits}"
+        )
 
 
 # ---------------------------------------------------------------------------

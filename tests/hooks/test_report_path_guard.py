@@ -667,6 +667,37 @@ class TestOverwriteCheck:
 
         assert result.returncode == 0, _detail(result, target)
 
+    @pytest.mark.parametrize("prefix", ["test-report-", "code-review-report-"])
+    @pytest.mark.parametrize(
+        "alias",
+        [
+            pytest.param(lambda name: name.title(), id="mixed-case"),
+            pytest.param(lambda name: name[:-3] + ".MD", id="upper-ext"),
+            pytest.param(lambda name: name + ".", id="trailing-dot"),
+        ],
+    )
+    def test_block_alias_of_existing_timestamp_file(
+        self, tmp_path: Path, prefix: str, alias
+    ) -> None:
+        """既存判定は書き込み先の実体の名前で行う。
+
+        ケース非依存 FS・末尾ドットを落とす FS では、別名が既存の timestamp 形式の
+        レポートと同じ実体になる。別名が実体に届かない FS（Linux 等）では対象外。
+        """
+        repo = _make_repo(tmp_path)
+        existing = _reports(repo) / f"{prefix}{TS}.md"
+        existing.write_text("既存レポート\n", encoding="utf-8")
+        target = _reports(repo) / alias(existing.name)
+        if not (target.exists() and os.path.samefile(target, existing)):
+            pytest.skip("この FS では別名が既存の実体に届かない")
+
+        result = _run_hook(_payload("Write", str(target)), cwd=repo)
+
+        assert result.returncode == 2, (
+            f"既存の timestamp 形式レポートへの別名の上書きが許可された: {_detail(result, str(target))}"
+        )
+        assert existing.read_text(encoding="utf-8") == "既存レポート\n"
+
 
 # ===========================================================================
 # 性質 6: strict-4 形式 block（検査 3）

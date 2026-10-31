@@ -5,12 +5,12 @@
 `.claude/agents/` の本体 3 本（`developer.md` / `systematic-debugger.md` /
 `tester.md`）と、対応する並列 worktree バリアント 3 本（`wt_developer.md` /
 `wt_systematic-debugger.md` / `wt_tester.md`）の **行単位 diff の差分行すべて**が、
-下記「既知の意図的変換 9 カテゴリ」のいずれかの許容パターンに一致すること。
+下記「既知の意図的変換 10 カテゴリ」のいずれかの許容パターンに一致すること。
 
 一致しない差分行が 1 行でもあれば、それは本体側の更新が wt_* 側に反映されていない
 （あるいはその逆の）**同期漏れ**なので、ファイル名・行番号・行内容を列挙して fail させる。
 
-## 既知の意図的変換 9 カテゴリ
+## 既知の意図的変換 10 カテゴリ
 
 | # | 変換 | 許容パターン（実装は本ファイルの PAIR_RULES / INSERT_RULES / DELETE_RULES） |
 |---|---|---|
@@ -23,6 +23,7 @@
 | 7 | 本文中のピア agent 名の `wt_` 化 | 既知 agent 名（3 本）を `wt_` 化する置換のみで一致 |
 | 8 | 「- 直接起動版: ...」行の追加 | `` - 直接起動版: `{base}` (worktree なしの単発実行向け) `` と完全一致 |
 | 9 | 「保険（task_id が読み取れない異常系のみ）」条項の追加 | 保険条項の必須語（保険見出し・`report-timestamp`・`{timestamp}` レポートパス・「通常運用ではこの経路に入ってはいけない」）を全て含む |
+| 10 | tester の Before のレポート読み込みを worktree 向けに差し替え（wt 側は名前を挙げたものだけ読み、無ければ別のレポートで代えない） | 旧が `.claude/reports/` と「各種類の最新」を含み、新が「worktree に届くのはコミット済みのファイルだけ」と「別のレポート（各種類の最新など）で代えず」を含む |
 
 ## 過剰な許容をしない設計
 
@@ -31,7 +32,7 @@
   ``元の `{base}` agent を使うこと。`` で終わることを要求する（任意の `> ` 行は通さない）。
 - 変換 5 / 7 は「置換を適用したら他方と完全一致する」という関係で判定するので、
   同じ行に別の編集が同居していれば一致せず検出される。
-- 変換 3 / 6 / 9 は日本語本文が変わるため関係式で縛れない。代わりに
+- 変換 3 / 6 / 9 / 10 は日本語本文が変わるため関係式で縛れない。代わりに
   「新旧それぞれが当該カテゴリ固有のトークンを含むこと」を要求する。
   特に変換 6 の新側は `.claude/reports/<name>-{task_id}.md` というパス形状を必須にしている。
 - どのルールも「任意の 1 行を通す」ワイルドカードを持たない。したがって本文の
@@ -40,7 +41,7 @@
 ## 既知の限界
 
 - 行単位の判定なので、ある行が「変換 6 の対象であり、かつ同じ行に同期漏れも含む」
-  場合、変換 6 として通ってしまう可能性がある（変換 3 / 6 / 9 のみ）。
+  場合、変換 6 として通ってしまう可能性がある（変換 3 / 6 / 9 / 10 のみ）。
 - DELETE_RULES は timestamp 機構に言及する行の削除を無条件に許容する。これは
   変換 6 が「旧 2 行 → 新 1 行」に畳む形を取るため（`wt_developer.md` の Stuck Signal）。
 """
@@ -74,6 +75,7 @@ CATEGORY_NAMES: dict[int, str] = {
     7: "本文中のピア agent 名の wt_ 化",
     8: "「- 直接起動版: ...」行の追加",
     9: "「保険（異常系のみ）」条項の追加",
+    10: "Before のレポート読み込みの worktree 向け差し替え",
 }
 
 #: 変換 4 の blockquote 1 行目（3 ファイルで完全一致することを実測済み）
@@ -104,6 +106,13 @@ FALLBACK_CLAUSE_TOKENS = (
     "保険（task_id がプロンプトから読み取れない異常系のみ）",
     "report-timestamp",
     "通常運用ではこの経路に入ってはいけない",
+)
+
+#: 変換 10 の旧側（本体）・新側（wt）がそれぞれ必ず含む語
+WORKTREE_REPORT_INPUT_BASE_TOKENS = (".claude/reports/", "各種類の最新")
+WORKTREE_REPORT_INPUT_WT_TOKENS = (
+    "worktree に届くのはコミット済みのファイルだけ",
+    "別のレポート（各種類の最新など）で代えず",
 )
 
 #: 変換 5 / 7 で wt_ 化する既知 agent 名（長いものから当てる）
@@ -167,6 +176,12 @@ def _rule_peer_rename(removed: str, added: str, base: str) -> bool:
     return added != removed and added == wtize(removed)
 
 
+def _rule_worktree_report_input(removed: str, added: str, base: str) -> bool:
+    return all(t in removed for t in WORKTREE_REPORT_INPUT_BASE_TOKENS) and all(
+        t in added for t in WORKTREE_REPORT_INPUT_WT_TOKENS
+    )
+
+
 PAIR_RULES: tuple[tuple[int, object], ...] = (
     (1, _rule_name),
     (3, _rule_description),
@@ -174,6 +189,7 @@ PAIR_RULES: tuple[tuple[int, object], ...] = (
     (5, _rule_memory_path),
     (6, _rule_report_task_id),
     (7, _rule_peer_rename),
+    (10, _rule_worktree_report_input),
 )
 
 
@@ -335,7 +351,7 @@ def _analyze_real_pair(base: str) -> DiffAnalysis:
 
 def _format_failure(base: str, analysis: DiffAnalysis) -> str:
     header = (
-        f"{base}.md と wt_{base}.md の差分に、既知の意図的変換 9 カテゴリで"
+        f"{base}.md と wt_{base}.md の差分に、既知の意図的変換 {len(CATEGORY_NAMES)} カテゴリで"
         f"説明できない行が {len(analysis.unmatched)} 件あります（同期漏れの疑い）:"
     )
     return "\n".join([header, *(u.render() for u in analysis.unmatched)])
@@ -376,8 +392,8 @@ class TestWtAgentSync:
         analysis = _analyze_real_pair(base)
         assert not analysis.unmatched, _format_failure(base, analysis)
 
-    def test_all_nine_categories_are_exercised(self):
-        """9 カテゴリすべてが実ファイルで少なくとも 1 回使われていること。
+    def test_all_categories_are_exercised(self):
+        """全カテゴリが実ファイルで少なくとも 1 回使われていること。
 
         使われていないカテゴリがあれば、その許容パターンは（実態と合っていない
         ために）機能していないか、対応する意図的変換が失われている。

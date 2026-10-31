@@ -22,6 +22,7 @@ F5（`sanitize_for_terminal` の共有化）の未実装による Red。
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -449,3 +450,68 @@ def test_report_guard_and_contract_check_import_timestamp_pattern() -> None:
         assert "timestamp_pattern" in source, (
             f"{path.name} が timestamp_pattern を import していない"
         )
+
+
+# ---------------------------------------------------------------------------
+# task test-count 追記分（Red）: is_reports_direct_child(path)
+#
+# design_review_count_check.py（新規 PostToolUse hook）と report_contract_check.py が
+# 共有する「`.claude/reports/` 直下か」の判定。親ディレクトリ名が reports・その親が
+# .claude であることを norm_component と同じ正規化（大文字小文字・末尾ドット/スペース）で
+# 比較する。Red の理由: _hook_utils に is_reports_direct_child が未定義（ImportError）。
+# ---------------------------------------------------------------------------
+
+
+def _is_reports_direct_child(parts: list[str]) -> bool:
+    """subprocess で `_hook_utils.is_reports_direct_child(Path(*parts))` を評価する。"""
+    script = textwrap.dedent(f"""
+        import json, sys
+        sys.path.insert(0, {str(HOOK_DIR)!r})
+        from pathlib import Path
+        from _hook_utils import is_reports_direct_child
+        sys.stdout.write(json.dumps(is_reports_direct_child(Path(*{parts!r}))))
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    assert result.returncode == 0, (
+        f"is_reports_direct_child の呼び出しに失敗（未実装のため Red）: {result.stderr}"
+    )
+    value = json.loads(result.stdout)
+    assert isinstance(value, bool), f"bool を返していない: {value!r}"
+    return value
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["proj", ".claude", "reports", "x.md"],
+        [".claude", "reports", "design-review-report-20261030-162815.md"],
+        ["proj", ".CLAUDE", "REPORTS", "x.md"],
+        ["proj", ".Claude", "Reports", "x.md"],
+        ["proj", ".claude.", "reports", "x.md"],
+        ["proj", ".claude", "reports ", "x.md"],
+        ["proj", ".claude .", "reports. ", "x.md"],
+    ],
+)
+def test_is_reports_direct_child_true(parts: list[str]) -> None:
+    assert _is_reports_direct_child(parts) is True
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["proj", ".claude", "reports", "archive", "x.md"],
+        ["proj", "reports", "x.md"],
+        ["proj", "docs", "reports", "x.md"],
+        ["proj", "claude", "reports", "x.md"],
+        ["proj", ".claude", "x.md"],
+        ["proj", ".claude", "report", "x.md"],
+        ["reports", "x.md"],
+    ],
+)
+def test_is_reports_direct_child_false(parts: list[str]) -> None:
+    assert _is_reports_direct_child(parts) is False

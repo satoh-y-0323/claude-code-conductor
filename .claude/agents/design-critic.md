@@ -7,6 +7,7 @@ description: 設計・計画監査担当。requirements/architecture/plan を敵
 tools:
   - Read
   - Write
+  - Edit
   - Glob
   - Grep
   - Skill
@@ -58,7 +59,7 @@ tools:
 - Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/design-review-report-{timestamp}.md` に出力する
 
 ## Tools & Constraints
-制限: design-review-report の新規 Write と `.claude/agent-memory/design-critic/MEMORY.md` への追記（上記「## Memory」節）以外のファイル編集・書き込みは行わない（ソースファイル・既存レポート・その他ファイルへの Edit / Write は禁止）
+制限: design-review-report の新規 Write と `.claude/agent-memory/design-critic/MEMORY.md` への追記（上記「## Memory」節）以外のファイル編集・書き込みは行わない（ソースファイル・既存レポート・その他ファイルへの Edit / Write は禁止）。ただし、この起動で自分が Write した design-review-report に限り、hook が出したサマリ件数と見出し数の食い違いの警告に対して、サマリ表の件数、または件数と食い違う見出しの重要度表記（自分が付けた重要度の誤記に限る）を Edit で直してよい（指摘の追加・削除・本文の変更はしない）
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）
