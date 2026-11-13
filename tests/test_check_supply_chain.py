@@ -309,6 +309,48 @@ class TestEvaluateAuditJson:
         assert violations == []
         assert unverifiable == []
 
+    # --- aliases の型（code-review-report-review-code [CR-Q-001] High） ---
+    # 「配列でない」= キーがあって値が配列以外のものすべて（偽になる "" と 0 も含む）。
+    # キーが無い・値が null は別名が空の記録として従来どおり読む。
+
+    @pytest.mark.parametrize(
+        "aliases",
+        [5, "abc", "", 0],
+        ids=["int", "str", "empty-str", "zero"],
+    )
+    def test_non_array_aliases_is_unverifiable_not_violation(self, aliases):
+        mod = _load()
+        vuln = {"id": "PYSEC-2024-1", "fix_versions": [], "aliases": aliases}
+        text = _audit_json([_dep("pyyaml"), _dep("duckdb", vulns=[vuln])])
+        violations, unverifiable = mod.evaluate_audit_json(text, DECLARED, set())
+        assert violations == []
+        assert len(unverifiable) >= 1
+
+    def test_array_aliases_is_read_as_before(self):
+        mod = _load()
+        vuln = _vuln("PYSEC-2024-1", aliases=["CVE-2024-0001"])
+        text = _audit_json([_dep("pyyaml"), _dep("duckdb", vulns=[vuln])])
+        violations, unverifiable = mod.evaluate_audit_json(text, DECLARED, set())
+        assert len(violations) >= 1
+        assert unverifiable == []
+        allowed_v, allowed_u = mod.evaluate_audit_json(text, DECLARED, {"CVE-2024-0001"})
+        assert allowed_v == []
+        assert allowed_u == []
+
+    @pytest.mark.parametrize("present", [False, True], ids=["absent", "null"])
+    def test_absent_or_null_aliases_is_read_as_empty(self, present):
+        mod = _load()
+        vuln = {"id": "PYSEC-2024-1", "fix_versions": []}
+        if present:
+            vuln["aliases"] = None
+        text = _audit_json([_dep("pyyaml"), _dep("duckdb", vulns=[vuln])])
+        violations, unverifiable = mod.evaluate_audit_json(text, DECLARED, set())
+        assert len(violations) >= 1
+        assert unverifiable == []
+        allowed_v, allowed_u = mod.evaluate_audit_json(text, DECLARED, {"PYSEC-2024-1"})
+        assert allowed_v == []
+        assert allowed_u == []
+
 
 # ---------------------------------------------------------------------------
 # S4: requires-python の下限
@@ -724,7 +766,7 @@ class TestMain:
 
     def test_external_strings_are_printed_in_ascii_form(self, tmp_path, capsys):
         mod = _load()
-        evil_id = "PYSEC-\x1b[31mX‮"
+        evil_id = "PYSEC-\x1b[31mX\u202e"
         audit = _FakeAudit(
             _audit_json([_dep("pyyaml"), _dep("duckdb", vulns=[_vuln(evil_id)])])
         )
@@ -732,5 +774,5 @@ class TestMain:
         captured = capsys.readouterr()
         out = captured.out + captured.err
         assert "\x1b" not in out
-        assert "‮" not in out
+        assert "\u202e" not in out
         assert ascii(evil_id) in out

@@ -14,7 +14,9 @@ CI job を持ち続けることと、全 workflow の action 参照が SHA で�
    `uses:` の行はテキストとして読む。SHA が実在のコミットを指すかは静的には測らない）
 4. `scripts/check_supply_chain.py` の `vuln` と `eol` を実行する job
    （同 §3-3: permissions が `{contents: read}`・matrix の `python-version` が
-   文字列の "3.11" と "3.12" を含む）
+   文字列の "3.11" と "3.12" を含む・setup-python の step が 1 件以上あり
+   `with.python-version` が `${{ matrix.python-version }}`・job と step に
+   `continue-on-error` のキーが無い）
 
 2 の凍結項目は 4 つ（architecture 改訂 3 ADR-5 改訂 2）:
 (1) job の存在 (2) run に `--wheel` を含まない（公開等価＝実ビルド経路の凍結）
@@ -486,3 +488,51 @@ def test_supply_chain_job_matrix_has_python_311_and_312_as_strings():
         f"job '{job_name}' の matrix の python-version に文字列の {missing!r} が無い"
         f"（実際の値: {values!r}）。"
     )
+
+
+_SETUP_PYTHON_PREFIX = "actions/setup-python@"
+_MATRIX_PYTHON_VERSION = "${{ matrix.python-version }}"
+
+
+def test_supply_chain_job_setup_python_uses_matrix_version():
+    """§3-3: 検査 job が matrix の版で実際に走る（code-review-report-review-code [CR-T-001]）。
+
+    setup-python の step が 1 件以上あり、どれも `with.python-version` が
+    `${{ matrix.python-version }}` であること。版を固定すると matrix は残っても
+    片方の版の依存が検査されなくなる。
+    """
+    job_name, job_def = _require_supply_chain_job()
+
+    steps = job_def.get("steps") or []
+    setup_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("uses"), str)
+        and step["uses"].startswith(_SETUP_PYTHON_PREFIX)
+    ]
+    assert setup_steps, f"job '{job_name}' に setup-python の step が無い。"
+    versions = [
+        step["with"].get("python-version") if isinstance(step.get("with"), dict) else None
+        for step in setup_steps
+    ]
+    assert all(v == _MATRIX_PYTHON_VERSION for v in versions), (
+        f"job '{job_name}' の setup-python の with.python-version が"
+        f" {_MATRIX_PYTHON_VERSION!r} でない（実際の値: {versions!r}）。"
+    )
+
+
+def test_supply_chain_job_has_no_continue_on_error():
+    """§3-3: 検査 job の赤が CI を止める（code-review-report-review-code [CR-T-001]）。
+
+    job と各 step に `continue-on-error` のキーが無いこと（値が false でもキーがあれば赤）。
+    """
+    job_name, job_def = _require_supply_chain_job()
+
+    found = []
+    if "continue-on-error" in job_def:
+        found.append(f"job: {job_def['continue-on-error']!r}")
+    for index, step in enumerate(job_def.get("steps") or []):
+        if isinstance(step, dict) and "continue-on-error" in step:
+            found.append(f"steps[{index}]: {step['continue-on-error']!r}")
+    assert not found, f"job '{job_name}' に continue-on-error がある: {found!r}"

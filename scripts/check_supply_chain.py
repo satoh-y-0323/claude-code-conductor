@@ -210,7 +210,13 @@ def evaluate_audit_json(
             if not isinstance(vuln, dict) or not isinstance(vuln.get("id"), str):
                 unverifiable.append(f"{ascii(name)} に読めない脆弱性の記録がある: {ascii(vuln)}")
                 continue
-            aliases = vuln.get("aliases") or []
+            # キーが無い・null は別名なしとして読む。それ以外の配列でない値（偽になる "" / 0 も含む）は検証不能
+            aliases = vuln.get("aliases")
+            if aliases is None:
+                aliases = []
+            if not isinstance(aliases, list):
+                unverifiable.append(f"{ascii(name)} の aliases が配列ではない: {ascii(aliases)}")
+                continue
             ids = {vuln["id"], *(a for a in aliases if isinstance(a, str))}
             if ids & allowed_ids:
                 continue
