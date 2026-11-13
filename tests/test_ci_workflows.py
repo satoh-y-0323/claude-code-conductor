@@ -1,12 +1,20 @@
 """
 tests/test_ci_workflows.py
 
-.github/workflows/test.yml が dev script を実行する CI job を持ち続けることを守るテスト。
+.github/workflows/ の CI 定義を静的に検査するテスト。test.yml が dev script を実行する
+CI job を持ち続けることと、全 workflow の action 参照が SHA で固定されていることを守る。
 
-対象は 2 系統:
+対象は 4 系統:
 
 1. `scripts/check_deletions.py --check` を実行する job（＋ checkout の `fetch-depth: 0`）
-2. `scripts/verify_wheel.py` を実行する job（`wheel-check`。P6・**Red フェーズでは不在**）
+2. `scripts/verify_wheel.py` を実行する job（`wheel-check`。P6）
+3. 全 workflow（`*.yml`）の `uses:` が 40 桁の 16 進のコミット SHA で、行末に版のコメント
+   （`# v` に数字とドットが続く形。例 `# v5.0.1`）を持つこと
+   （architecture-report-20261114-023438 §3-1。YAML として読むとコメントが消えるため
+   `uses:` の行はテキストとして読む。SHA が実在のコミットを指すかは静的には測らない）
+4. `scripts/check_supply_chain.py` の `vuln` と `eol` を実行する job
+   （同 §3-3: permissions が `{contents: read}`・matrix の `python-version` が
+   文字列の "3.11" と "3.12" を含む）
 
 2 の凍結項目は 4 つ（architecture 改訂 3 ADR-5 改訂 2）:
 (1) job の存在 (2) run に `--wheel` を含まない（公開等価＝実ビルド経路の凍結）
@@ -59,6 +67,7 @@ YAML 1.1 のブール解決により、PyYAML の `yaml.safe_load()` は `on:` �
 差し替え可能にしてある。後段の「本テストが本当に検知力を持つか」を確かめる
 スタブ検査（壊れた test.yml を用意して本テストが red になることを確認する）が、
 本番の `.github/workflows/test.yml` を書き換えずに済むようにするための仕組み。
+系統 3（SHA 固定）は同じディレクトリ直下の `*.yml` を全部読む。
 """
 
 from __future__ import annotations
@@ -324,4 +333,156 @@ def test_wheel_check_job_declares_read_only_permissions():
     assert permissions == {"contents": "read"}, (
         f"job '{job_name}' の permissions が {{contents: read}} と一致しない"
         f"（実際の値: {permissions!r}）。"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 系統 3: 全 workflow の `uses:` の SHA 固定（architecture-report-20261114-023438 §3-1）
+#
+# YAML として読むと行末コメントが消えるため、`uses:` の行はテキストとして読む。
+# テキスト走査の取りこぼし（引用符付き・別の書式）で空の緑にならないよう、
+# YAML として読んだ `uses` の件数とテキストで拾った件数の一致も確かめる。
+# ---------------------------------------------------------------------------
+
+# `uses:` をキーに持つ行（step の `- uses:` と `uses:` の両方）。コメント行は対象外。
+_USES_LINE_RE = re.compile(r"^\s*(?:-\s+)?uses:\s*(?P<rest>.*)$")
+# 参照部分: <action>@<40 桁の 16 進> の後に空白と `# v<数字とドット>` のコメントで行が終わる。
+_PINNED_USES_RE = re.compile(
+    r"^(?P<action>[^\s@#'\"]+)@(?P<ref>[0-9a-f]{40})\s+# v[0-9][0-9.]*\s*$"
+)
+
+
+def _workflow_files() -> list[Path]:
+    return sorted(_workflow_dir().glob("*.yml"))
+
+
+def _iter_yaml_uses(node) -> list[str]:
+    """YAML として読んだ workflow から `uses` キーの値を再帰的に集める。"""
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "uses" and isinstance(value, str):
+                found.append(value)
+            else:
+                found.extend(_iter_yaml_uses(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_iter_yaml_uses(item))
+    return found
+
+
+def test_all_workflow_uses_are_pinned_to_commit_sha_with_version_comment():
+    """§3-1: 全 workflow の `uses:` が 40 桁の 16 進 SHA で、行末に `# v<版>` のコメントがある。
+
+    タグ参照（`@v5`）やブランチ参照（`@release/v1`）は参照先が書き換わりうるため不可。
+    SHA がコミットを指すか・コメントの版と一致するかはネットワークが要るので、
+    ここでは測らず確認タスクで `gh api` により確かめる（§3-1）。
+    """
+    files = _workflow_files()
+    assert files, f"workflow ディレクトリに *.yml が無い: {_workflow_dir()}"
+
+    offending: list[str] = []
+    total = 0
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        text_count = 0
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            m = _USES_LINE_RE.match(line)
+            if m is None:
+                continue
+            text_count += 1
+            rest = m.group("rest")
+            if _PINNED_USES_RE.match(rest) is None:
+                offending.append(f"{path.name}:{lineno}: {rest.strip()}")
+
+        yaml_count = len(_iter_yaml_uses(yaml.safe_load(text)))
+        assert text_count == yaml_count, (
+            f"{path.name}: テキストで拾った uses: 行 {text_count} 件と YAML 上の uses "
+            f"{yaml_count} 件が一致しない（テキスト走査の取りこぼし）。"
+        )
+        total += text_count
+
+    assert total > 0, "どの workflow にも uses: が無い（検査対象が 0 件の空の緑）。"
+    assert not offending, (
+        "SHA 固定されていない、または行末に `# v<版>` のコメントが無い uses: がある"
+        "（形: `<action>@<40 桁の SHA> # v5.0.1`）:\n" + "\n".join(offending)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 系統 4: check_supply_chain.py の vuln / eol を実行する job（同 §3-3）
+#
+# job は名前ではなく `run:` の文字列で特定する（既存の流儀）。
+# ---------------------------------------------------------------------------
+
+_SUPPLY_CHAIN_MARKER = "check_supply_chain.py"
+_VULN_RE = re.compile(r"(?<![\w-])vuln(?![\w-])")
+_EOL_RE = re.compile(r"(?<![\w-])eol(?![\w-])")
+
+
+def _require_supply_chain_job() -> tuple[str, dict]:
+    """check_supply_chain.py を実行する job を取得する。無ければ失敗させる（共通の前提）。"""
+    workflow = _load_workflow("test.yml")
+    job_name, job_def = _find_job_running_marker(workflow, _SUPPLY_CHAIN_MARKER)
+    assert job_name is not None and job_def is not None, (
+        "test.yml に 'python scripts/check_supply_chain.py vuln eol' を実行する job が"
+        " 見つからない（architecture-report-20261114-023438 §3-3）。"
+    )
+    return job_name, job_def
+
+
+def test_test_yml_has_supply_chain_job_running_vuln_and_eol():
+    """§3-3: test.yml に check_supply_chain.py の `vuln` と `eol` を実行する job がある。"""
+    job_name, job_def = _require_supply_chain_job()
+
+    runs = [run for run in _iter_step_runs(job_def) if _SUPPLY_CHAIN_MARKER in run]
+    assert any(_VULN_RE.search(run) and _EOL_RE.search(run) for run in runs), (
+        f"job '{job_name}' の check_supply_chain.py の実行に `vuln` と `eol` の両方が"
+        f" 含まれていない: {runs!r}"
+    )
+
+
+def test_supply_chain_job_declares_read_only_permissions():
+    """§3-3: 検査 job の permissions が `{contents: read}` に完全一致する。"""
+    job_name, job_def = _require_supply_chain_job()
+
+    permissions = job_def.get("permissions")
+    assert permissions == {"contents": "read"}, (
+        f"job '{job_name}' の permissions が {{contents: read}} と一致しない"
+        f"（実際の値: {permissions!r}）。"
+    )
+
+
+def test_supply_chain_job_matrix_has_python_311_and_312_as_strings():
+    """§3-3: 検査 job の matrix の `python-version` が文字列の "3.11" と "3.12" を含む。
+
+    引用符の無い `3.10` は YAML で数値 3.1 になるため、版は文字列で書く（§3-2 eol (b)）。
+    数値の 3.11 / 3.12 は文字列 "3.11" / "3.12" と等しくならないので、ここで赤になる。
+    matrix の値は `python-version` 直下（配列ならその要素）と `include[]` の値を見る。
+    """
+    job_name, job_def = _require_supply_chain_job()
+
+    strategy = job_def.get("strategy") or {}
+    matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+    assert isinstance(matrix, dict), (
+        f"job '{job_name}' に strategy.matrix が無い（実際の値: {strategy!r}）。"
+    )
+
+    values: list = []
+    direct = matrix.get("python-version")
+    if isinstance(direct, list):
+        values.extend(direct)
+    elif direct is not None:
+        values.append(direct)
+    include = matrix.get("include") or []
+    if isinstance(include, list):
+        for entry in include:
+            if isinstance(entry, dict) and "python-version" in entry:
+                values.append(entry["python-version"])
+
+    string_values = {v for v in values if isinstance(v, str)}
+    missing = [v for v in ("3.11", "3.12") if v not in string_values]
+    assert not missing, (
+        f"job '{job_name}' の matrix の python-version に文字列の {missing!r} が無い"
+        f"（実際の値: {values!r}）。"
     )

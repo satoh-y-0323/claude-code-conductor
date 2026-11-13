@@ -239,7 +239,7 @@ recall_chunker.py  →  embedding.py            →  recall_index.py
 ## 7. テスト・CI
 
 - `tests/` に約 73 ファイル・約 1300 テスト関数（unit 中心 + hook 挙動の統合テスト）。`pyproject.toml` の `addopts = "-m 'not slow'"` で重い embedding テストを既定除外。
-- CI（`.github/workflows/`）: `test.yml`（Python 3.10/3.11/3.12）、`publish.yml`（PyPI 公開）、Pages（mkdocs ドキュメント）。
+- CI（`.github/workflows/`）: `test.yml`（Python 3.11/3.12）、`publish.yml`（PyPI 公開）、Pages（mkdocs ドキュメント）。
 - **テストの穴（既知）**: hook の実ファイル e2e（多くは importlib ロードで実 subprocess 実行と乖離し得る）、worktree 並列実行の競合テストが未整備。
 
 ---

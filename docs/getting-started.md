@@ -9,7 +9,7 @@ C3 を初めて使う方向けのガイド。インストールから最初の�
 - Codex で使う場合: Codex CLI または IDE extension が利用できること
 - Cursor で使う場合: Cursor editor または `cursor-agent` が利用できること
 - OpenCode で使う場合: OpenCode が利用できること
-- Python **3.10 以上** がインストール済みであること
+- Python **3.11 以上** がインストール済みであること
 - Git が使えること
 
 ### 仮想環境（venv）の準備（推奨）

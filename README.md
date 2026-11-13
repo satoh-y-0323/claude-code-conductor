@@ -220,7 +220,7 @@ C3 の `.claude/` はプロジェクトコードに一切触れません。既�
 
 - [Claude Code](https://claude.ai/code) がインストール済みでログインしていること
 - Claude Code **2.1.295 以降**であること（C3 は安全境界の hook に `onFailure` を指定しており、この設定はこの版以降で使えます）
-- Python 3.10 以上がインストール済みであること
+- Python 3.11 以上がインストール済みであること
 
 **仮想環境（venv）の準備（推奨）**
 
@@ -431,7 +431,7 @@ settings.local.json
 
 > **アーキテクチャ移行履歴:** v1.x までは外部プロセス制御の **PO (Parallel Orchestra)** が並列実行を担っていましたが、v2.0.0 で完全撤去されました。現在は Claude Code 公式の subagent 並列起動機能に統一されており、追加プロセス・追加デーモン・追加スキーマは不要です。
 
-要件は Python ≥ 3.10、PATH に `claude` バイナリ、PyYAML（C3 の依存として自動インストール）。
+要件は Python ≥ 3.11、PATH に `claude` バイナリ、PyYAML（C3 の依存として自動インストール）。
 
 **使い方:**
 

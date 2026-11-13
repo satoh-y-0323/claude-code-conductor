@@ -9,7 +9,7 @@ Claude Code Conductor (C3) への貢献に興味を持っていただきあり�
 
 ## 開発環境のセットアップ
 
-- Python **3.10 以上**
+- Python **3.11 以上**
 - リポジトリを clone し、editable install:
 
 ```bash
