@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.85.0] - 2026-11-14
+
+### 破壊的変更
+
+- **Python 3.10 の対応を終了した**（`requires-python = ">=3.11"`）。Python 3.10 は 2026-10-01 にサポートが終わった。Python 3.10 の環境では 2.85.0 以降をインストールできない（pip は 2.84.0 までを選ぶ）。classifier・CI の 3.10 の構成・README.md・docs/getting-started.md・CONTRIBUTING.md・ARCHITECTURE.md の Python の版の記述も 3.11 にそろえた
+
+### 変更
+
+- **GitHub Actions の `uses:` をすべてコミット SHA で固定した**（行末に版のコメント。`pypa/gh-action-pypi-publish@release/v1` は v1.14.3 のコミット）。メジャー版は上げていない。全 workflow の `uses:` が 40 桁の SHA で版のコメントを持つことを `tests/test_ci_workflows.py` で検査する
+- **依存の既知の脆弱性とサポート終了の Python を CI で検出する検査を追加した**（`scripts/check_supply_chain.py`・`test.yml` の `check_supply_chain` job、Python 3.11・3.12）。`vuln` は `[project].dependencies` から解決される依存一式を pip-audit（OSV）で、`eol` は `requires-python` の下限と CI の Python の版を endoflife.date で検査する。違反は終了コード 1、情報源に届かない等で検査できないときは 3 で、どちらも CI を赤にする。修正版が無い等で通す場合は `.github/supply-chain-allowlist.toml` に理由と期限を書いて登録する（期限切れは赤）。配布元の CI だけの変更で、配布物には入らない
+
 ## [2.84.0] - 2026-10-31
 
 ### 変更
