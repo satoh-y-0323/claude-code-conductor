@@ -10,12 +10,12 @@
 
 ### --execution（必須）
 
-interviewer/architect/planner を**親 Claude ペルソナ**で採用した場合は `persona`（bandit 更新なし・イベントログのみ）、**Agent ツールでサブエージェント起動した場合は `subagent`**（bandit 更新あり）を渡す。developer/tester は dev-workflow では常に `subagent`
+interviewer/architect/planner を**親 Claude ペルソナ**で採用した場合は `persona`（bandit 更新なし・イベントログのみ）、**Agent ツールでサブエージェント起動した場合は `subagent`**（bandit 更新あり）を渡す。developer/tester/refactorer は dev-workflow では常に `subagent`
 
 ### --tier（execution 別・省略可）
 
 - `--execution persona` のブロックは `--tier {親モデルのtier名（haiku/sonnet/opus）。判別不能なら unknown}` も明記する。record_agent_outcome.py は persona 実行かつ `--tier` 省略時に常に `unknown` 固定で記録するため、実際の親モデル tier を記録に残したい場合は明示が必要（`--execution subagent` のブロックは frontmatter から自己解決するため `--tier` 不要）
-- **developer の記録ブロックは `--tier` を付けない**（tier_autoapply.py が実適用 model を `.claude/state/tier_autoapply.jsonl` に記録し、record_agent_outcome.py が applied-state を session_id 一致で読んで実適用 tier を機械解決する＝適用者=記録 SSOT。tier 値の LLM 申告を行わない。明示指定で推奨と異なる Tier を使った場合も、その実適用値が applied-state に記録されるため `--tier` の付与は不要）
+- **developer / refactorer の記録ブロックは `--tier` を付けない**（tier_autoapply.py が実適用 model を `.claude/state/tier_autoapply.jsonl` に記録し、record_agent_outcome.py が applied-state を session_id 一致で読んで実適用 tier を機械解決する＝適用者=記録 SSOT。tier 値の LLM 申告を行わない。明示指定で推奨と異なる Tier を使った場合も、その実適用値が applied-state に記録されるため `--tier` の付与は不要）
 
 ### --task（任意）
 
@@ -33,13 +33,13 @@ interviewer/architect/planner を**親 Claude ペルソナ**で採用した場�
 
 ## 機械適用（推奨 Tier の `model:` 自動注入）
 
-developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）では、PreToolUse hook（`.claude/hooks/tier_autoapply.py`）が `[tier-routing 推奨]` の推奨 Tier を Agent 呼び出しの `model:` に自動適用する（機械適用・学習データ収集中の期間も含め常に適用する。親 Claude が `model:` を転記する必要はない。fork は model 上書き不可のため対象外）。推奨と異なる Tier を使いたい場合のみ Agent 呼び出しで `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。
+developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 / D-4**）と、refactorer を起動する箇所（**D-4 / 並列では `refactor-` タスク**）では、PreToolUse hook（`.claude/hooks/tier_autoapply.py`）が `[tier-routing 推奨]` の推奨 Tier を Agent 呼び出しの `model:` に自動適用する（機械適用・学習データ収集中の期間も含め常に適用する。親 Claude が `model:` を転記する必要はない。fork は model 上書き不可のため対象外）。refactorer は developer と同じ機械適用の対象（frontmatter `model: sonnet`・`roles.refactorer` の推奨 Tier を無条件に注入）で、tier の解決順も developer と同じ（2a → 2b → 3〔`roles.refactorer`〕→ 4）。推奨と異なる Tier を使いたい場合のみ Agent 呼び出しで `model:` を明示指定する（明示指定は hook に尊重され上書きされない）。
 
 **tester は Red 起動（D-1 のマーカー付き `test-` タスク）のみ機械適用対象**（RED_APPLY_ROLES・Red 限定注入）で、D-3/D-5 等の非 Red 起動と systematic-debugger は対象外であり、agent 定義の frontmatter の `model:` で起動する。interviewer/architect/planner は親 Claude ペルソナで動かし tier レバーが無いため対象外。
 
 ### opus 固定不変則（ADR-6）
 
-機械適用（`model:` 自動注入）の対象に追加してよいのは frontmatter が `model: sonnet` の role（developer / wt_developer / tester / wt_tester）のみで、opus 5 体（architect / planner / design-critic / doc-writer / project-setup）は恒久的に注入対象外とする（強 model 固定の設計判断・機械検査で保護）。
+機械適用（`model:` 自動注入）の対象に追加してよいのは frontmatter が `model: sonnet` の role（developer / wt_developer / tester / wt_tester / refactorer / wt_refactorer）のみで、opus 5 体（architect / planner / design-critic / doc-writer / project-setup）は恒久的に注入対象外とする（強 model 固定の設計判断・機械検査で保護）。
 
 ## 推奨 Tier の SSOT
 
@@ -47,14 +47,14 @@ developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 
 
 ## 集計注記
 
-- bandit params・escalation 判定の**集計対象 gate は role 別（`BANDIT_GATES_BY_ROLE`）**である: developer 等の既定 role は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）**、**tester は D-1 のみ**（D-3/D-5 の tester 記録はイベントログとして残るが集計対象外）。E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、E-1/E-2 はどの role の集計対象 gate にも含まれないため、その成否は集計から除外される（意図どおり・read-side フィルタで実現）。
+- bandit params・escalation 判定の**集計対象 gate は role 別（`BANDIT_GATES_BY_ROLE`）**である: developer・refactorer 等の既定 role は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）**（bandit の対象は D-5 だけで、refactorer の記録の gate は D-5）、**tester は D-1 のみ**（D-3/D-5 の tester 記録はイベントログとして残るが集計対象外）。E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、E-1/E-2 はどの role の集計対象 gate にも含まれないため、その成否は集計から除外される（意図どおり・read-side フィルタで実現）。
 - **reviewer role（code-reviewer/security-reviewer・および E-gate のみの role）は BANDIT_GATES に該当 gate を持たないため、`c3 tier stats` 等の表示で当該 role の bandit は常に uniform（全 tier `(1.0,1.0,0)`・0 trials）になる**。これは設計意図の帰結であり退行ではない。tier 選択の実消費者は `select_tier`（developer role 固定）のみで、reviewer role の bandit が uniform でも tier 選択ロジックには影響しない。
 
 ## E-3 統合裁定の帰属判定共通規定
 
 ### role 判定基準
 
-CR・SR 指摘をそれぞれ分析し、各々から最上流起因 role を判定する。許容される帰属先: developer / tester / architect / planner。
+CR・SR 指摘をそれぞれ分析し、各々から最上流起因 role を判定する。許容される帰属先: developer / tester / refactorer / architect / planner / interviewer。refactorer は Refactor の差分が入れた欠陥、interviewer は要件の改訂が要る欠陥の帰属先で、記録は bandit 外の E-1 / E-2 に行う（`--execution` と `--tier` は refactorer が developer と同じ、interviewer が architect・planner と同じ）。
 
 ### 帰属根拠トークンの判定規約
 

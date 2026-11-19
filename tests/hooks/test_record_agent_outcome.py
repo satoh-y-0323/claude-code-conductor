@@ -3412,3 +3412,279 @@ class TestTaskMatchGp004DegradationFixed:
             "GP-004 劣化ケース（全行 task_id=null）で警告が誤発火した"
             "（C-3 R2 で警告発火期待は撤回済み）"
         )
+
+
+# ---------------------------------------------------------------------------
+# refactorer を tier-routing の記録側 role として扱う（Red）
+#
+# 性質の出所はタスク定義（C3_TASK_ID: test-tier-record）。行の形は既存コードから取る:
+# - applied-state の行: .claude/hooks/tier_autoapply.py L512-525（session_id /
+#   role_recorded / model_applied / task_id）
+# - tier_selection.json の roles.<role>.tier: tier_autoapply.py L277（entry.get("tier")）
+# - frontmatter の model: 行: record_agent_outcome.py の _MODEL_LINE_RE（agents/refactorer.md
+#   は別タスクが作るため、ここでは一時ディレクトリの agents を使う）
+# 解決順は developer と同じ 2a → 2b → 3 → 4。ただし優先3 は最上位 tier ではなく
+# roles.refactorer.tier を読む。--task の接頭辞による gating はしない。
+# ---------------------------------------------------------------------------
+
+
+def _refactorer_row(session_id: str, model: str, task_id: str | None = None,
+                    ts: str = "2026-11-19T08:00:00+00:00") -> dict:
+    return {
+        "ts": ts,
+        "session_id": session_id,
+        "subagent_type": "refactorer",
+        "role_recorded": "refactorer",
+        "model_applied": model,
+        "source": "injected",
+        "prompt_prefix": "",
+        "task_id": task_id,
+    }
+
+
+_REFACTORER_BASE_ARGS = [
+    "--role", "refactorer", "--outcome", "success", "--gate", "D-5",
+    "--execution", "subagent", "--complexity", "medium",
+]
+
+
+class TestRefactorerRoleAccepted:
+    """refactorer の --role が受け付けられ agent_outcomes に role=refactorer で入る。"""
+
+    def test_refactorer_role_recorded_with_explicit_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        mod = _load_hook_module("rao_refactorer_accepted")
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=tmp_path / "state" / "tier_selection_absent.json",
+            applied_state_path=tmp_path / "state" / "tier_autoapply_absent.jsonl",
+        )
+        rc = mod.main([*_REFACTORER_BASE_ARGS, "--tier", "sonnet"])
+        assert rc == 0
+        assert _count_agent_outcomes(db_path, role="refactorer") == 1, (
+            "--role refactorer が受け付けられず記録がスキップされた"
+        )
+        assert _count_agent_outcomes(
+            db_path, role="refactorer", tier="sonnet", gate="D-5",
+        ) == 1
+
+    def test_unknown_role_still_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """対照: 未知の --role は今のまま拒否される（記録 0 件・exit 0）。"""
+        mod = _load_hook_module("rao_refactorer_unknown_role")
+        _patch_common(mod, monkeypatch, db_path=db_path, agents_dir=agents_dir)
+        rc = mod.main([
+            "--role", "refactorer-x", "--outcome", "success", "--gate", "D-5",
+            "--execution", "subagent", "--complexity", "medium", "--tier", "sonnet",
+        ])
+        assert rc == 0
+        assert _count_agent_outcomes(db_path) == 0
+
+
+class TestRefactorerTierResolution:
+    """refactorer の --tier 省略時の tier 解決順（developer と同じ 2a → 2b → 3 → 4）。"""
+
+    def _run(self, mod, *extra: str) -> int:
+        return mod.main([*_REFACTORER_BASE_ARGS, *extra])
+
+    def _setup(
+        self, name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path, *,
+        selection: dict | None, applied_rows: list[dict] | None,
+        frontmatter: str | None = "model: sonnet",
+    ):
+        sel_path = tmp_path / "state" / "tier_selection.json"
+        applied_path = tmp_path / "state" / "tier_autoapply.jsonl"
+        if selection is not None:
+            _write_tier_selection(sel_path, **selection)
+        if applied_rows is not None:
+            _write_applied_state(applied_path, *applied_rows)
+        if frontmatter is not None:
+            _write_agent_frontmatter(agents_dir, "refactorer", frontmatter)
+        mod = _load_hook_module(name)
+        _patch_common(
+            mod, monkeypatch, db_path=db_path, agents_dir=agents_dir,
+            sel_path=sel_path, applied_state_path=applied_path,
+        )
+        return mod
+
+    @staticmethod
+    def _tiers(db_path: Path) -> list[str]:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            return [
+                r[0] for r in conn.execute(
+                    "SELECT tier FROM agent_outcomes WHERE role = 'refactorer' ORDER BY id"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def test_2a_task_exact_row_wins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """(2a) 並列の --task refactor-A は (session, role, task_id) 一致行の tier に
+        解決される。同じセッションのより新しい別タスク行（refactor-B）・roles・
+        frontmatter には落ちない。"""
+        mod = self._setup(
+            "rao_refactorer_2a", tmp_path, monkeypatch, db_path, agents_dir,
+            selection={
+                "session_id": "sess-rf-2a", "tier": "sonnet",
+                "roles": {"refactorer": {"tier": "sonnet", "mode": "uniform"}},
+            },
+            applied_rows=[
+                _refactorer_row("sess-rf-2a", "haiku", "refactor-A",
+                                ts="2026-11-19T08:00:00+00:00"),
+                _refactorer_row("sess-rf-2a", "opus", "refactor-B",
+                                ts="2026-11-19T08:01:00+00:00"),
+            ],
+        )
+        assert self._run(mod, "--task", "refactor-A") == 0
+        assert self._tiers(db_path) == ["haiku"]
+
+    def test_2b_session_latest_when_no_task(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """(2b) 逐次の D-4（マーカーも --task も無い）は同じセッションの refactorer の
+        最新行の tier に解決される。別セッション・別 role の行は使わない。"""
+        mod = self._setup(
+            "rao_refactorer_2b", tmp_path, monkeypatch, db_path, agents_dir,
+            selection={
+                "session_id": "sess-rf-2b", "tier": "sonnet",
+                "roles": {"refactorer": {"tier": "sonnet", "mode": "uniform"}},
+            },
+            applied_rows=[
+                _refactorer_row("sess-rf-2b", "opus", None,
+                                ts="2026-11-19T08:00:00+00:00"),
+                _refactorer_row("sess-rf-2b", "haiku", None,
+                                ts="2026-11-19T08:01:00+00:00"),
+                _refactorer_row("sess-other", "sonnet", None,
+                                ts="2026-11-19T08:02:00+00:00"),
+                {
+                    "ts": "2026-11-19T08:03:00+00:00",
+                    "session_id": "sess-rf-2b",
+                    "subagent_type": "developer",
+                    "role_recorded": "developer",
+                    "model_applied": "sonnet",
+                    "source": "injected",
+                    "prompt_prefix": "",
+                    "task_id": None,
+                },
+            ],
+        )
+        assert self._run(mod) == 0
+        assert self._tiers(db_path) == ["haiku"]
+
+    def test_2b_when_task_has_no_exact_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """(2a 不成立 → 2b) --task の一致行が無いときは同じセッションの refactorer の
+        最新行へ落ちる（developer と同じ。tester の「2a → 4」ではない）。"""
+        mod = self._setup(
+            "rao_refactorer_2a_miss", tmp_path, monkeypatch, db_path, agents_dir,
+            selection={
+                "session_id": "sess-rf-miss",
+                "roles": {"refactorer": {"tier": "sonnet", "mode": "uniform"}},
+            },
+            applied_rows=[_refactorer_row("sess-rf-miss", "haiku", "refactor-B")],
+        )
+        assert self._run(mod, "--task", "refactor-A") == 0
+        assert self._tiers(db_path) == ["haiku"]
+
+    def test_no_task_prefix_gating(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """--task の接頭辞による gating はしない: refactor- で始まらない --task でも
+        applied-state の一致行で解決される（tester の test- gating のように
+        frontmatter へ直行しない）。"""
+        mod = self._setup(
+            "rao_refactorer_no_gating", tmp_path, monkeypatch, db_path, agents_dir,
+            selection={"session_id": "sess-rf-gate"},
+            applied_rows=[_refactorer_row("sess-rf-gate", "haiku", "confirm-x")],
+        )
+        assert self._run(mod, "--task", "confirm-x") == 0
+        assert self._tiers(db_path) == ["haiku"]
+
+    def test_3_roles_refactorer_tier_not_top_level(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """(3) applied-state が無いときは tier_selection.json の roles.refactorer.tier
+        （haiku）に解決される。最上位の tier（opus）・frontmatter（sonnet）は使わない。"""
+        mod = self._setup(
+            "rao_refactorer_3", tmp_path, monkeypatch, db_path, agents_dir,
+            selection={
+                "session_id": "sess-rf-3", "tier": "opus", "suggested_model": "opus",
+                "roles": {"refactorer": {"tier": "haiku", "mode": "uniform"}},
+            },
+            applied_rows=None,
+        )
+        assert self._run(mod) == 0
+        assert self._tiers(db_path) == ["haiku"]
+
+    def test_3_used_when_applied_state_has_no_refactorer_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """(3) applied-state はあるが同じセッションの refactorer 行が無い（別セッション
+        のみ）ときも roles.refactorer.tier に解決される。"""
+        mod = self._setup(
+            "rao_refactorer_3_other_session", tmp_path, monkeypatch, db_path, agents_dir,
+            selection={
+                "session_id": "sess-rf-3b", "tier": "opus",
+                "roles": {"refactorer": {"tier": "haiku", "mode": "uniform"}},
+            },
+            applied_rows=[_refactorer_row("sess-elsewhere", "opus", None)],
+        )
+        assert self._run(mod) == 0
+        assert self._tiers(db_path) == ["haiku"]
+
+    def test_4_frontmatter_when_roles_refactorer_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """(4) roles.refactorer が無いときは frontmatter（sonnet）に解決される。
+        最上位の tier（opus）は読まない。"""
+        mod = self._setup(
+            "rao_refactorer_4_absent", tmp_path, monkeypatch, db_path, agents_dir,
+            selection={
+                "session_id": "sess-rf-4", "tier": "opus", "suggested_model": "opus",
+                "roles": {"tester": {"tier": "haiku", "mode": "uniform"}},
+            },
+            applied_rows=None,
+        )
+        assert self._run(mod) == 0
+        assert self._tiers(db_path) == ["sonnet"]
+
+    @pytest.mark.parametrize(
+        "roles_value",
+        [
+            {"refactorer": {"tier": "not-a-tier"}},
+            {"refactorer": {"tier": 123}},
+            {"refactorer": "haiku"},
+            {"refactorer": {}},
+            "broken",
+        ],
+        ids=["unknown-tier", "non-string-tier", "entry-not-dict", "no-tier-key", "roles-not-dict"],
+    )
+    def test_4_frontmatter_when_roles_refactorer_broken(
+        self, roles_value: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        db_path: Path, agents_dir: Path,
+    ) -> None:
+        """(4) roles.refactorer が壊れているときは例外にならず frontmatter（sonnet）に
+        解決される（最上位の tier=opus は読まない）。"""
+        mod = self._setup(
+            "rao_refactorer_4_broken", tmp_path, monkeypatch, db_path, agents_dir,
+            selection={"session_id": "sess-rf-4b", "tier": "opus", "roles": roles_value},
+            applied_rows=None,
+        )
+        assert self._run(mod) == 0
+        assert self._tiers(db_path) == ["sonnet"]

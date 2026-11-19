@@ -66,16 +66,19 @@ v2.0.0 以降、外部の parallel-orchestra プロセスは不要で、Claude C
 | design-critic | opus | design-review-report | Agent ツールで起動（フェーズ C 承認後の任意監査） |
 | developer | sonnet | 実装コード | Agent ツールで起動 |
 | tester | sonnet | テスト・test-report | Agent ツールで起動 |
+| refactorer | sonnet | 整理後のコード（Green の後に振る舞いを変えずに整理・`writes` 外の共通化の候補は申告） | Agent ツールで起動（D-4） |
 | code-reviewer | sonnet | code-review-report | Agent ツールで起動 |
 | security-reviewer | sonnet | security-review-report | Agent ツールで起動 |
 | doc-writer | opus | ドキュメント各種 | Agent ツールで起動 |
 | systematic-debugger | sonnet | debug-analysis-report | Agent ツールで起動（行き詰まり時） |
 | project-setup | opus | `rules/` 規約ファイル | Agent ツールで起動（`/setup` 時） |
-| wt_developer / wt_tester / wt_systematic-debugger | sonnet | task_id ベースのレポート | parallel-agents skill が isolation:worktree 付きで起動 |
+| wt_developer / wt_tester / wt_refactorer / wt_systematic-debugger | sonnet | task_id ベースのレポート | parallel-agents skill が isolation:worktree 付きで起動 |
 
 インタラクティブな対話が必要なエージェント（interviewer・architect・planner）は親 Claude がペルソナを採用して動作します。実装・検証系エージェントはサブエージェントとして起動されます。
 
-model 列は既定値です。developer / wt_developer、および v2.54.0 以降は tester / wt_tester（Red フェーズ＝起動プロンプト 1 行目の `C3_TASK_ID: test-` マーカー付き起動に限る）は、tier-routing（タスク複雑度に応じた Haiku/Sonnet/Opus の自動選択）の hook が起動時に model を自動適用するため、実際の使用 model は複雑度と学習データに応じて変わります。テスト合否を判定する確認フェーズ（D-3/D-5・confirm- タスク）は対象外で既定の sonnet のままです。
+model 列は既定値です。developer / wt_developer / refactorer / wt_refactorer、および v2.54.0 以降は tester / wt_tester（Red フェーズ＝起動プロンプト 1 行目の `C3_TASK_ID: test-` マーカー付き起動に限る）は、tier-routing（タスク複雑度に応じた Haiku/Sonnet/Opus の自動選択）の hook が起動時に model を自動適用するため、実際の使用 model は複雑度と学習データに応じて変わります。テスト合否を判定する確認フェーズ（D-3/D-5・confirm- タスク）は対象外で既定の sonnet のままです。
+
+refactorer は Green の後に振る舞いを変えずに整理する担当で、tier-routing の推奨 Tier を自動適用します。`writes` の外に共通化の候補を見つけたときは申告し、親 Claude が同じ単位に範囲を加えます。
 
 ## SKILL.md の場所
 

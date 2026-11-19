@@ -225,6 +225,6 @@ c3 run .claude/skills/init-session/scripts/session_guard.py setup-mark
   .claude/rules/coding-standards.md    — 標準コーディング規約
   .claude/rules/project-conventions.md — プロジェクト固有の規約
 
-次回から architect・developer・tester・code-reviewer・security-reviewer
+次回から architect・developer・tester・refactorer・code-reviewer・security-reviewer
 がこれらのルールを参照して作業します。
 ```

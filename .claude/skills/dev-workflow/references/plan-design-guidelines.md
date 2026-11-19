@@ -4,8 +4,8 @@
 
 | 分類 | ルール番号 | R 番号 | 自己チェックリスト項目 |
 |---|---|---|---|
-| `"0.1"`（並列実行）限定 | ルール 1・2・10・11・14・22／ルール 3・9（※直後の注記により sequential でも成果物宣言・レビュー配置の規律は満たすこと） | R5（isolation 指定が発生しない逐次では非該当） | チェーン長／同一ファイル衝突／R5／ルール 14／ルール 22 |
-| 両モード共通 | ルール 4・5・7・8・12・13・15・16・17・18・19・20・21 | R2・R3・R4・R6（planner_check hook 群は po_plan_version の値を読まないため sequential プランでも発火する） | id 一意・depends_on 参照先実在／空配列禁止／TDD 3 タスク分解／15 分粒度／R6／writes が空のタスク／レビュータスクの depends_on／ルール 15 方向検算／テスト凍結の実装責任／手順過多の契約化／一時改変の後始末方法／検知力検証の双方向／gitignored 検証パス／既存テストの扱いの指示 |
+| `"0.1"`（並列実行）限定 | ルール 1・2・10・11・14・22／ルール 3・9（※直後の注記により sequential でも成果物宣言・レビュー配置の規律は満たすこと） | R5（isolation 指定が発生しない逐次では非該当） | チェーン長／同一ファイル衝突（Refactor の例外を含む）／R5／ルール 14／ルール 22 |
+| 両モード共通 | ルール 4・5・7・8・12・13・15・16・17・18・19・20・21 | R2・R3・R4・R6（planner_check hook 群は po_plan_version の値を読まないため sequential プランでも発火する） | id 一意・depends_on 参照先実在／空配列禁止／TDD 5 タスク分解／15 分粒度／R6／writes が空のタスク／レビュータスクの depends_on／ルール 15 方向検算／テスト凍結の実装責任／手順過多の契約化／一時改変の後始末方法／検知力検証の双方向／gitignored 検証パス／既存テストの扱いの指示 |
 | 逐次では読み替え | ルール 6（Stuck Signal の契約自体は共通。wave 失敗時の 2-E 吸収は並列限定の運用であり、逐次は dev-workflow SKILL.md の D-2.5〈Stuck チェック〉で吸収する） | - | - |
 
 **注記**: 両モード共通に分類されたルール（5・R2・R4・R6 等）が `writes` や reviewer タスクの存在を前提とする場合、**その前提を作るルール（9・3）も sequential プランで満たすこと**。`"0.1"` 限定の趣旨は『並列度・worktree 取り込み衝突に関する制約』に限られ、成果物宣言・レビュー配置の規律はモードを問わない。
@@ -20,40 +20,50 @@ plan-report はこのガイドラインに従って出力する。
 ## depends_on の付け方
 
 1. **真の依存だけに絞る** — タスク B がタスク A の出力（コードのシグネチャ・型・関数名・ファイルそのもの）に**実際に依存している**ときのみ `B.depends_on: [A]` とする。「順序を守りたい」「念のため」「同じ機能だから」レベルの依存は書かない。ただしレビュータスクの依存はルール 3 で決まり、本ルールで削らない
-2. **直列化の自己チェック** — 出力直前に「`depends_on` チェーンの最大長が `タスク数 / 2` を超えていないか」を確認する。長さは**段数（最長経路上の `depends_on` の辺の数）**で数える（A→B→C は 2 段）。レビュータスクへの辺も数えるが、超えたときにレビュータスクの辺を外して縮めてはならない（ルール 3 が優先する）。N 個のタスクが N-1 段の依存チェーンになっていたら **並列度 1** で並列実行を使う意味がない
+2. **直列化の自己チェック** — 出力直前に「`depends_on` チェーンの最大長が `タスク数 / 2` を超えていないか」を確認する。長さは**段数（最長経路上の `depends_on` の辺の数）**で数える（A→B→C は 2 段）。レビュータスクへの辺も数えるが、超えたときにレビュータスクの辺を外して縮めてはならない（ルール 3 が優先する）。1 機能だけの計画は TDD の 5 段とレビューで鎖がタスク数の半分を必ず超える。このときは本文に「1 機能の TDD の鎖のため」と 1 行書く（レビューの辺は外さない）。N 個のタスクが N-1 段の依存チェーンになっていたら **並列度 1** で並列実行を使う意味がない
 3. **レビュー系タスクは末尾に集約** — `code-reviewer` / `security-reviewer` は `read_only: true` で全 dev タスクに `depends_on` を付ける（直接、または他の dev タスク経由で辿れればよい）。**dev タスク＝`read_only: false` の全タスク**であり、Red（テスト作成）・Green（実装）・文書タスクに加えて**確認タスク（Green 確認の tester）も含む**。レビューの対象は確認で Green が確かめられた状態であり、確認が失敗すると 2-E のリトライで実装が変わるため、確認タスクと並走したレビューは古い状態を読むことになる。したがってレビューを確認タスクと同じ wave に置かない。これはルール 1 の「順序を守りたい」ではなく、レビューの入力（確認済みの成果物）への真の依存である
 
-## TDD タスクは 3-wave に分解する
+## TDD タスクは 5 タスクに分解する
 
-TDD を伴う機能実装は、planner が以下の **3 タスクペア**に分解する:
+TDD を伴う機能実装は、planner が以下の **5 タスク**に分解する（逐次（`"sequential"`）の plan にも同じ 5 タスクを置く。逐次の D-4 は全 `refactor-*` のタスク定義を refactorer に 1 回で渡す）:
 
 | 役割 | agent (plan-report に書く名前) | 順序 | writes 例 |
 |---|---|---|---|
 | Red: 失敗するテストを書く | `wt_tester` | 先行 | `tests/skills/test_foo.py`, `.claude/reports/test-report-test-foo.md` |
 | Green: 最小実装でテストを通す | `wt_developer` | Red に depends_on | `src/c3/foo.py` |
 | Green 確認: 全テスト合格を確認 | `wt_tester` | Green に depends_on | `.claude/reports/test-report-confirm-foo.md` |
+| Refactor: 共通化・整理（緑のまま） | `wt_refactorer`（plan-report には `refactorer` と書いてよい。`parallel-agents` の対応表で読み替える） | Green 確認に depends_on | Green の `writes` ＋ 計画が共通化の射程として認めた周りのファイル |
+| 最終確認: Refactor 後も全テスト合格を確認 | `wt_tester` | Refactor に depends_on | `.claude/reports/test-report-final-foo.md` |
 
-> 並列実行（`parallel-agents` skill 経由）では `wt_*` プレフィックス agent を使う。`wt_tester` / `wt_developer` / `wt_systematic-debugger` は frontmatter に `permissionMode: bypassPermissions` を持ち、worktree 内で permission プロンプトをスキップする。reviewer 系（`code-reviewer` / `security-reviewer`）はそのままの名前を使用（元 agent に `permissionMode` 付き）。
+> 並列実行（`parallel-agents` skill 経由）では `wt_*` プレフィックス agent を使う。`wt_tester` / `wt_developer` / `wt_refactorer` / `wt_systematic-debugger` は frontmatter に `permissionMode: bypassPermissions` を持ち、worktree 内で permission プロンプトをスキップする。reviewer 系（`code-reviewer` / `security-reviewer`）はそのままの名前を使用（元 agent に `permissionMode` 付き）。
 >
-> 直接起動経路（`dev-workflow` フェーズ D-1〜D-5 の単発 TDD 等）では元の `tester` / `developer` / `systematic-debugger` を使う。これにより main リポジトリでの bypassPermissions を防ぐ。
+> 直接起動経路（`dev-workflow` フェーズ D-1〜D-5 の単発 TDD 等）では元の `tester` / `developer` / `refactorer` / `systematic-debugger` を使う。これにより main リポジトリでの bypassPermissions を防ぐ。
 
 これにより:
 
 - **Red 並列**: 独立機能の Red を 1 wave で並列起動（例: `auth.py` の Red と `payment.py` の Red を同時に書く）
 - **Green 並列**: 各機能の Green を 1 wave で並列起動
 - **Green 確認並列**: 確認 tester を 1 wave で並列起動
+- **Refactor 並列**: 各機能の Refactor を 1 wave で並列起動（`writes` が重なる場合はルール 10 の例外の順序付けに従う）
+- **最終確認並列**: 最終確認 tester を 1 wave で並列起動
 
-4. **TDD タスクの命名規約（推奨）** — `test-{機能}` / `impl-{機能}` / `confirm-{機能}` の 3 タスクで 1 機能を表現する。命名は強制ではないが、レポート整理と `depends_on` の見通しのために統一を推奨する
-5. **test-report ファイル名の衝突回避** — Red 用 tester と Green 確認用 tester は **別 worktree** で動くため物理衝突は起きないが、main 取り込み後の上書きを避けるため `writes` には `.claude/reports/test-report-{task_id}.md` のように **task_id ベース**のファイル名を宣言する。tester agent 内では `report-timestamp` Skill でタイムスタンプ取得 → 出力ファイル名を `writes` 宣言と一致させるよう、各 `prompt` に明記する。逐次経路では worktree を使わないが、task_id ベースの固定名により上書き・混同を同様に回避できるため、本ルールは両モード共通である
+Refactor タスクの契約:
+
+- `writes` は、Green タスクの `writes` に、計画が共通化の射程として認めた周りのファイル（architecture-report の棚卸しに挙がった類似の既存コード等）を足したものとする。呼び出しの形の修正（段 3）が見込まれるテストファイルを含めるかは計画が決める。新しいファイルを置く共通化が見込まれるなら、その新しいファイルのパスを `writes` に宣言する（宣言の無い新しいファイルは refactorer が範囲の外の候補として申告する）
+- `prompt` に「範囲の外の候補を返却報告に挙げる」「常に緑の状態で返す（refactorer.md の規則）」を書く
+- 最終確認の test-report の名前は task_id ベース（ルール 5）
+
+4. **TDD タスクの命名規約（推奨）** — `test-{機能}` / `impl-{機能}` / `confirm-{機能}` / `refactor-{機能}` / `final-{機能}` の 5 タスクで 1 機能を表現する。命名は強制ではないが、レポート整理と `depends_on` の見通しのために統一を推奨する
+5. **test-report ファイル名の衝突回避** — Red 用・Green 確認用・最終確認用の tester は **別 worktree** で動くため物理衝突は起きないが、main 取り込み後の上書きを避けるため `writes` には `.claude/reports/test-report-{task_id}.md` のように **task_id ベース**のファイル名を宣言する。tester agent 内では `report-timestamp` Skill でタイムスタンプ取得 → 出力ファイル名を `writes` 宣言と一致させるよう、各 `prompt` に明記する。逐次経路では worktree を使わないが、task_id ベースの固定名により上書き・混同を同様に回避できるため、本ルールは両モード共通である
 6. **Stuck Signal の経路** — developer が 3 回以上同じ問題で詰まった場合 `.claude/reports/debug-needed-*.md` を出力する。Green wave が失敗した場合は `parallel-agents` skill 2-E（リトライ / スキップ / 中断）で吸収する。リトライ時に親 Claude が後続 wave で `systematic-debugger` を呼ぶ運用に統一
 
-**テストに書くもの・書かないもの**: 本体の規則は `.claude/CLAUDE.md`「テストとプロダクトの関係」の「テストに書くもの・書かないもの」に従う（ここに写さない）。planner 固有の帰結として、規約・文書だけを変えるタスクには Red を置かず（3-wave に分解せず）、確認はレビュー（E）で行う。
+**テストに書くもの・書かないもの**: 本体の規則は `.claude/CLAUDE.md`「テストとプロダクトの関係」の「テストに書くもの・書かないもの」に従う（ここに写さない）。planner 固有の帰結として、規約・文書だけを変えるタスクには Red も Refactor も置かず（5 タスクに分解せず）、確認はレビュー（E）で行う。
 
 ## タスクの粒度（基本: ファイル/モジュール単位）
 
 7. **ファイル/モジュール境界で分解** — 互いに独立したファイル群を別タスクに分ける。例:
-   - `src/auth/login.py` の TDD と `src/payment/checkout.py` の TDD は独立 → 別の 3-wave ペアで並列可能
-   - `src/auth/login.py` と `src/auth/logout.py` は同じモジュール内なら 1 つの 3-wave ペアにまとめる、または別ペアで `concurrency_group` を共有
+   - `src/auth/login.py` の TDD と `src/payment/checkout.py` の TDD は独立 → 別の 5 タスクの組で並列可能
+   - `src/auth/login.py` と `src/auth/logout.py` は同じモジュール内なら 1 つの 5 タスクの組にまとめる、または別の組で `concurrency_group` を共有
 8. **粒度判断のデフォルト** — 細かすぎ（関数 1 個 = 1 タスク）でも粗すぎ（モジュール全体 = 1 タスク）でもなく、**ファイル / 機能単位**を起点に、依存と独立性を見て調整する
 
 ## writes フィールドの埋め方
@@ -62,13 +72,14 @@ TDD を伴う機能実装は、planner が以下の **3 タスクペア**に分�
 10. **同一ファイルへの書き込みは 1 タスクに集約する** — 複数タスクの `writes` で同じファイルを宣言すると、`parallel-agents` skill が各 worktree から取り込むときにどちらの版を採用すべきか決定不能になる。解消手段は実質的に以下の 2 つに限られる:
     - **(a) タスクをまとめる** — 同一ファイルを書く処理を 1 タスクに統合する
     - **(b) そのファイルを書く権限を 1 タスク専属にする** — 他のタスクの `writes` リストから除外する。先行タスクが stub / placeholder を作って後発タスクが上書きする設計は **採用しない**（取り込み時に衝突するため）
+    - **例外（Refactor タスク）**: Refactor タスクは、`depends_on` で後に順序付けた先行タスクと同じファイルを `writes` に持ってよい（順序付けは R4）。Refactor タスクの `writes` が他のタスクの `writes` と重なるときは、その相手が属する鎖の最後のタスク（TDD の機能なら `final-{Y}`、文書タスクならそのタスク）に `depends_on` を付ける。Refactor タスク同士が重なるときは 1 つにまとめるか、後のものを先のものの `final-` に依存させる。逐次は D-4 の 1 回の起動で全 Refactor タスクを扱うので順序付けは要らない
 11. **統合ファイル（エントリポイント等）は最後の wave 専属にする** — `main.js` のような「各機能を結線する統合ファイル」は、全機能 wave が出揃った後の最終 wave に専属で書かせる。先行 wave で stub を作る設計は採用しない。代わりに先行 wave は各機能ファイル（例: `calc.js` / `currency.js`）のみを書き、最終 wave がそれらを import して統合する
 
 ## タスクあたりの所要時間制約
 
 `parallel-agents` skill は **親 Claude が Agent ツールで子 Agent の返却を待つ**間ブロックされる。長時間タスクが含まれると全 wave の完了が遅延し、ユーザー体験が著しく悪化する。
 
-12. **1 タスクは 15 分以内に終わる粒度で分解する** — 3-wave 分解した各 task（Red / Green / 確認）それぞれが 15 分以内に収まるよう機能を切る。長くなりそうな機能は (a) ファイル境界でさらに分割、(b) MVP と機能拡張で別 3-wave 化、のいずれかで時間を切る
+12. **1 タスクは 15 分以内に終わる粒度で分解する** — 5 タスクに分解した各 task（Red / Green / 確認 / Refactor / 最終確認）それぞれが 15 分以内に収まるよう機能を切る。長くなりそうな機能は (a) ファイル境界でさらに分割、(b) MVP と機能拡張で別の 5 タスクの組に分ける、のいずれかで時間を切る
 
 ## YAML フロントマターの落とし穴
 
@@ -154,7 +165,7 @@ Stage 1: dev_a, dev_b, dev_c (並列)
 ## 既存テストの扱いの指示（ルール 21）
 
 21. **3 段を指し、不可侵と読ませない** — `tasks[].prompt` に「既存テストを変えない」「既存テストの期待を変えない」「既存の行に触れない」と書かない。呼び出しの形まで不可侵と読まれ、プロダクト側の設計が歪む。代わりに次の各点を満たす:
-    - **TDD の各タスクすべて**（Red / Green / 確認、および D-4 / D-5 に対応する Refactor / 最終確認を置く場合はそれらも）の `prompt` に「`.claude/CLAUDE.md`「テストとプロダクトの関係」の 3 段に従う」を 1 行書く。3 段の本文は `.claude/CLAUDE.md` が唯一の所在であり、`prompt` および本ファイルへ転記しない
+    - **TDD の各タスクすべて**（Red / Green / 確認 / Refactor / 最終確認）の `prompt` に「`.claude/CLAUDE.md`「テストとプロダクトの関係」の 3 段に従う」を 1 行書く。3 段の本文は `.claude/CLAUDE.md` が唯一の所在であり、`prompt` および本ファイルへ転記しない
     - 実装タスクの `prompt` に「段 3 に該当する修正をした場合は `.claude/CLAUDE.md` 段 3 が要求する申告を返却報告に含める」を書く（申告項目は `.claude/CLAUDE.md` 段 3 が正であり本ファイルへ列挙しない。実装タスクは `.claude/reports/` に成果物を書かないため、申告先を返却報告に確定する）
     - 凍結対象を挙げる必要がある場合は assert が測っている性質を挙げ、呼び出しの形（署名・引数の数・タプルの形・ヘルパ名・型注釈・インポート）を挙げない
 
@@ -174,11 +185,11 @@ plan-report を Write する前に以下を必ず確認する:
 
 - [ ] `depends_on` チェーンの最大長（段数＝辺の数・レビュータスクへの辺を含む）≦ タスク数 / 2 か（直列化していないか）
 - [ ] `writes` が空のタスクが残っていないか（`read_only: true` タスクは `writes` 自体を省略していること）
-- [ ] 同じファイルを書く複数タスクで衝突対策が取られているか
+- [ ] 同じファイルを書く複数タスクで衝突対策が取られているか（Refactor タスクは重なる相手の鎖の最後のタスクに `depends_on` を付けているか。Refactor 同士は 1 つにまとめるか後のものを先の `final-` に依存させているか）
 - [ ] `read_only: false` のタスク id を全部列挙し（確認タスク・文書タスクを含む）、各レビュータスクの `depends_on` から直接または推移的にその全 id に辿れるか。辿れない id が 1 件でもあれば、その id（多くはグラフ末端の確認タスク）をレビュータスクの `depends_on` に足す
 - [ ] `tasks[].id` が一意で、`depends_on` の参照先が全て存在するか
 - [ ] `depends_on` を空配列（`[]`）で書いていないか（無依存ならフィールド自体を省略）
-- [ ] TDD を伴う機能は Red tester / Green developer / 確認 tester の 3 タスクに分解しているか
+- [ ] TDD を伴う機能は Red tester / Green developer / 確認 tester / Refactor refactorer / 最終確認 tester の 5 タスクに分解しているか
 - [ ] 想定実行時間が 15 分を超えるタスクがないか
 - [ ] R5: `read_only: true` タスクに `isolation: "worktree"` を指定していないか
 - [ ] R6: タスク総数 3 件以上なら reviewer 系タスクが 1 件以上含まれているか
@@ -210,7 +221,7 @@ plan-report を Write する前に以下を必ず確認する:
 - **R3（C3 配布元のみ）(`src/c3/_template/` 直接 writes 禁止)** — どの task も `writes` に `src/c3/_template/` パスを含めない（hook が exit 2 でブロック）。
   `_template/` は `hatch_build.py` がビルド時に `.claude/` から再生成する配布物実体で、直接編集してもビルド時に消失する
 - **R4 (同一 writes パスの順序付け)** — 同じ `writes` パスを複数 task が宣言する場合は、後発 task の `depends_on` で先発 task を参照して順序付けする。
-  順序付けがないと `parallel-agents` skill の成果物取り込みでどちらの版を採用すべきか決定不能になる
+  順序付けがないと `parallel-agents` skill の成果物取り込みでどちらの版を採用すべきか決定不能になる。Refactor タスクが先行タスクと同じファイルを持てるのは、この順序付け（ルール 10 の例外）があるときに限る
 - **R5 (read_only タスクは worktree 禁止)** — `read_only: true` のレビュータスク（`agent: code-reviewer` / `security-reviewer`）は `parallel-agents` skill 実行時に **`isolation: "worktree"` を指定しない**。
   worktree 自動クリーンアップで `.claude/reports/*.md`（gitignored）が消失するため。
   parallel-agents skill 側で読み替える設計だが、`.claude/hooks/check_agent_invocation.py`（配布 PreToolUse Agent hook）が `subagent_type=code-reviewer/security-reviewer` AND `isolation=worktree` の組み合わせを **exit 2 で機械的にブロック**する

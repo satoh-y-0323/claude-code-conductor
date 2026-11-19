@@ -1860,13 +1860,29 @@ class TestAgentRolesConstant:
     """O0 群: `_db_params.AGENT_ROLES` の存在と値（v2.41.0 db-foundation）。"""
 
     def test_agent_roles_defined_and_ordered(self):
-        """O0-1: AGENT_ROLES が定義されており、要件どおりの 5 role である。"""
+        """O0-1: AGENT_ROLES が定義されており、要件どおりの 6 role である。
+
+        refactorer を tier-routing の記録側 role に加えたため 5 role → 6 role に
+        追随した（プロダクトの語彙の変更への追随・段 3）。refactorer の挿入位置は
+        決めている行が無いため位置は測らず、集合・重複なし・既存 5 role の相対順を測る。
+        """
         import c3._db_params as db_params_mod  # noqa: PLC0415
 
         assert hasattr(db_params_mod, "AGENT_ROLES"), "_db_params.AGENT_ROLES が未定義"
-        assert db_params_mod.AGENT_ROLES == (
-            "interviewer", "architect", "planner", "developer", "tester"
-        )
+        roles = db_params_mod.AGENT_ROLES
+        assert isinstance(roles, tuple)
+        assert set(roles) == {
+            "interviewer", "architect", "planner", "developer", "tester", "refactorer",
+        }
+        assert len(roles) == 6, "AGENT_ROLES に重複がある"
+        existing = [r for r in roles if r != "refactorer"]
+        assert existing == ["interviewer", "architect", "planner", "developer", "tester"]
+
+    def test_agent_roles_contains_refactorer(self):
+        """O0-2: AGENT_ROLES が "refactorer" を含む（refactorer の記録側 role 化）。"""
+        import c3._db_params as db_params_mod  # noqa: PLC0415
+
+        assert "refactorer" in db_params_mod.AGENT_ROLES
 
 
 class TestReadAgentTierParams:
@@ -2177,6 +2193,116 @@ class TestBanditGatesByRole:
         rate2, count2 = read_agent_failure_rate("tester", "medium", "sonnet", db_path=db)
         assert count2 == 5
         assert rate2 == pytest.approx(1.0)
+
+
+class TestRefactorerBanditGates:
+    """RF 群: refactorer を tier-routing の記録側 role として扱う read-side 集計。
+
+    refactorer の bandit 集計対象 gate は D-5（リファクタ後のテスト合否）のみ。
+    同じ refactorer の 2-D・2-E（worktree 起動の成否）・E-1・E-2（レビュー由来）、
+    および既定 BANDIT_GATES の他 gate（D-2.5 / D-3 / D-2.5-stuck）の記録は数えない。
+    """
+
+    # D-5 以外で refactorer の集計に入ってはならない gate。2-D・2-E・E-1・E-2 は
+    # タスク定義で明示、D-2.5 / D-3 / D-2.5-stuck は「D-5 の記録だけを数える」から導く
+    # （既定 BANDIT_GATES のままだと数えられてしまうため、これが無いと Red にならない）。
+    _NON_COUNTED_GATES = ("2-D", "2-E", "E-1", "E-2", "D-2.5", "D-3", "D-2.5-stuck")
+
+    def _seed(self, db, *, role, complexity, tier, gate, outcomes, prefix):
+        for i, success in enumerate(outcomes):
+            record_agent_outcome_event(
+                role=role, complexity=complexity, tier=tier, success=success,
+                gate=gate, session_id=f"{prefix}-{i}", db_path=db,
+            )
+
+    def test_bandit_gates_by_role_refactorer_is_d5_only(self) -> None:
+        """RF-1: `BANDIT_GATES_BY_ROLE["refactorer"] == ("D-5",)`。"""
+        from c3 import _db_params  # noqa: PLC0415
+
+        assert _db_params.BANDIT_GATES_BY_ROLE.get("refactorer") == ("D-5",)
+
+    def test_bandit_gates_for_role_refactorer(self) -> None:
+        """RF-2: `bandit_gates_for_role("refactorer")` が ("D-5",) を返す。"""
+        from c3.db import bandit_gates_for_role  # noqa: PLC0415
+
+        assert bandit_gates_for_role("refactorer") == ("D-5",)
+
+    def test_refactorer_cell_aggregates_d5_only(self, tmp_path: Path) -> None:
+        """RF-3: refactorer セルは gate=D-5 の記録だけを集計する。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        # D-5: 成功 2・失敗 1
+        self._seed(
+            db, role="refactorer", complexity="medium", tier="sonnet",
+            gate="D-5", outcomes=[True, True, False], prefix="rf-3-d5",
+        )
+        # 数えない gate: 各 gate に成功 1・失敗 1
+        for gate in self._NON_COUNTED_GATES:
+            self._seed(
+                db, role="refactorer", complexity="medium", tier="sonnet",
+                gate=gate, outcomes=[True, False], prefix=f"rf-3-{gate}",
+            )
+
+        result = read_agent_tier_params("refactorer", "medium", db_path=db)
+        assert result["sonnet"] == (3.0, 2.0, 3), (
+            "refactorer は D-5 の 3 件（成功2・失敗1）だけが集計されるはず"
+            f"（実際: {result['sonnet']}）"
+        )
+
+    def test_refactorer_non_d5_only_is_uniform(self, tmp_path: Path) -> None:
+        """RF-4: D-5 以外の gate だけを持つ refactorer セルは初期値のまま。"""
+        from c3.db import read_agent_tier_params  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        for gate in self._NON_COUNTED_GATES:
+            self._seed(
+                db, role="refactorer", complexity="medium", tier="haiku",
+                gate=gate, outcomes=[True, False], prefix=f"rf-4-{gate}",
+            )
+
+        result = read_agent_tier_params("refactorer", "medium", db_path=db)
+        assert result["haiku"] == (1.0, 1.0, 0), (
+            f"refactorer の D-5 以外の記録が集計に入っている（実際: {result['haiku']}）"
+        )
+
+    def test_failure_rate_refactorer_d5_only(self, tmp_path: Path) -> None:
+        """RF-5: read_agent_failure_rate も refactorer は D-5 だけを数える。"""
+        from c3.db import read_agent_failure_rate  # noqa: PLC0415
+        db = _make_c3_db_v004(tmp_path)
+
+        # 数えない gate の失敗を各 gate 5 件（D-5 フィルタで除外されるべき）
+        for gate in self._NON_COUNTED_GATES:
+            self._seed(
+                db, role="refactorer", complexity="medium", tier="sonnet",
+                gate=gate, outcomes=[False] * 5, prefix=f"rf-5-{gate}",
+            )
+        rate, count = read_agent_failure_rate(
+            "refactorer", "medium", "sonnet", db_path=db,
+        )
+        assert (rate, count) == (None, 0), (
+            "refactorer の D-5 以外の記録は除外され sample_count=0 のはず"
+            f"（実際: {(rate, count)}）"
+        )
+
+        # D-5: 失敗 2・成功 3 を投入すれば D-5 の 5 件だけで rate が計算される
+        self._seed(
+            db, role="refactorer", complexity="medium", tier="sonnet",
+            gate="D-5", outcomes=[False, False, True, True, True], prefix="rf-5-d5",
+        )
+        rate2, count2 = read_agent_failure_rate(
+            "refactorer", "medium", "sonnet", db_path=db,
+        )
+        assert count2 == 5
+        assert rate2 == pytest.approx(0.4)
+
+    def test_developer_and_tester_gates_unchanged(self) -> None:
+        """RF-6（対照）: refactorer 追加後も developer は既定集合・tester は D-1。"""
+        from c3 import _db_params  # noqa: PLC0415
+        from c3.db import bandit_gates_for_role  # noqa: PLC0415
+
+        assert bandit_gates_for_role("developer") == _db_params.BANDIT_GATES
+        assert bandit_gates_for_role("tester") == ("D-1",)
 
 
 class TestRecordAgentOutcomeEvent:

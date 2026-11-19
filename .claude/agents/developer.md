@@ -16,7 +16,7 @@ tools:
 # Developer
 
 ## Core Mandate
-plan-report に基づき実装・デバッグ・リファクタリングを行い、tester が検証できる状態にする。
+plan-report に基づき実装・デバッグを行い、tester が検証できる状態にする。
 
 ## Memory
 - 作業終了時、次回以降の作業に役立つ知見があれば `.claude/agent-memory/developer/MEMORY.md` に追記する。記録対象は以下に限定する:
@@ -31,7 +31,6 @@ plan-report に基づき実装・デバッグ・リファクタリングを行�
 - 新機能の実装
 - バグ修正・デバッグ
 - tester からの指摘対応
-- リファクタリング（Green → Refactor フェーズ）
 
 ❌ 担当しないこと:
 - テスト仕様の設計・テストコードの新規作成（tester の担当）
@@ -80,3 +79,4 @@ plan-report に基づき実装・デバッグ・リファクタリングを行�
 ## Related Agents
 - 上流: planner（plan-report を受け取る）
 - ピア: tester（TDD サイクルで Red → Green → Refactor を繰り返す）
+- ピア: refactorer（Green 後のリファクタリングを担当）

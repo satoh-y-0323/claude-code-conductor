@@ -9,10 +9,11 @@
 「cwd」はすべて hook プロセスの cwd（＝subprocess の cwd）を指す。hook 入力
 JSON の `cwd` フィールドは判定に使わない。
 
-1. agent_type が wt_* の 3 種 + cwd が `.claude/worktrees/<名前>` 配下 +
+1. agent_type が wt_* の 4 種（wt_developer / wt_tester / wt_systematic-debugger /
+   wt_refactorer） + cwd が `.claude/worktrees/<名前>` 配下 +
    Write/Edit の対象が worktree ルートの外 → exit 2・`[WorktreeGuard BLOCK]`
 2. 同 agent で cwd がルートのサブディレクトリでも、対象が同じルート配下なら exit 0
-3. agent_type が無い／3 種以外 → exit 0・stderr 空
+3. agent_type が無い／4 種以外（無印の refactorer を含む） → exit 0・stderr 空
 4. 対象 agent なのに cwd から worktree ルートを導けない → exit 2（fail-closed）
 5. 入れ子は最も内側の `.claude/worktrees/<名前>` をルートとする
 6. C3_WORKTREE_GUARD_DISABLE=1 なら exit 0
@@ -73,11 +74,13 @@ _TEMPLATE_HOOK = (
 _AGENTS_DIR = _REPO_ROOT / ".claude" / "agents"
 
 # ガード対象の agent_type（(9) で .claude/agents/wt_*.md と機械照合する）
-_WT_AGENTS = ("wt_developer", "wt_tester", "wt_systematic-debugger")
+_WT_AGENTS = ("wt_developer", "wt_tester", "wt_systematic-debugger", "wt_refactorer")
 _WT_AGENT = "wt_developer"
 
 # ガード対象外の agent_type（None = キー自体を入れない）
-_NON_WT_AGENTS = (None, "", "developer", "tester", "wt_unknown", "general-purpose")
+_NON_WT_AGENTS = (
+    None, "", "developer", "tester", "refactorer", "wt_unknown", "general-purpose"
+)
 
 _BLOCK_MARK = "[WorktreeGuard BLOCK]"
 

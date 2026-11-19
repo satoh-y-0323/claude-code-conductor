@@ -665,6 +665,215 @@ class TestRedApplyInjection:
         assert lines[0]["model_applied"] == "opus"
 
 
+# ---------------------------------------------------------------------------
+# TestRefactorerApplyInjection: refactorer / wt_refactorer の注入（test-tier-select・Red）。
+#
+# 明示 model: が無ければ roles.refactorer.tier を model: に注入する。C3_TASK_ID の
+# 接頭辞の条件は無い。トップレベル tier は使わない。roles.refactorer が無い・壊れて
+# いるときは注入せず記録だけする。明示 model: は尊重する。jsonl の role_recorded は
+# refactorer（wt_refactorer も refactorer へ正規化）。
+# ---------------------------------------------------------------------------
+
+def _last_jsonl_row() -> dict:
+    """applied-state の最終行を返す（行が無ければ「記録されなかった」で失敗させる）。"""
+    lines = _read_jsonl_lines()
+    assert lines, "tier_autoapply.jsonl に起動が記録されなかった"
+    return lines[-1]
+
+
+class TestRefactorerApplyInjection:
+    """refactorer / wt_refactorer の roles.refactorer 由来の注入と記録を固定する。"""
+
+    def test_refactorer_injects_from_roles_refactorer_without_marker(self) -> None:
+        """refactorer + マーカー無し + roles.refactorer.tier=sonnet → model=sonnet 注入。
+
+        トップレベル tier=haiku・roles.tester.tier=opus はどちらも注入源にならない。
+        """
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={
+                "tester": {"tier": "opus", "mode": "thompson"},
+                "refactorer": {"tier": "sonnet", "mode": "thompson"},
+            },
+        )
+        sid = _new_session_id()
+        result = _run_hook(_agent_payload("refactorer", session_id=sid))
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", "refactorer に model が注入されなかった"
+        stdout = json.loads(result.stdout)
+        updated = stdout["hookSpecificOutput"]["updatedInput"]
+        assert updated["model"] == "sonnet"
+        assert updated["subagent_type"] == "refactorer"
+        assert updated["prompt"] == "テスト用プロンプト"
+        assert "permissionDecision" not in stdout["hookSpecificOutput"]
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["subagent_type"] == "refactorer"
+        assert lines[0]["role_recorded"] == "refactorer"
+        assert lines[0]["source"] == "injected"
+        assert lines[0]["model_applied"] == "sonnet"
+        assert lines[0]["session_id"] == sid
+
+    def test_wt_refactorer_injects_and_normalizes_role(self) -> None:
+        """wt_refactorer + isolation=worktree → roles.refactorer.tier を注入し role_recorded=refactorer。"""
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"refactorer": {"tier": "opus", "mode": "thompson"}},
+        )
+        sid = _new_session_id()
+        result = _run_hook(
+            _agent_payload("wt_refactorer", isolation="worktree", session_id=sid)
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() != "", "wt_refactorer に model が注入されなかった"
+        stdout = json.loads(result.stdout)
+        updated = stdout["hookSpecificOutput"]["updatedInput"]
+        assert updated["model"] == "opus"
+        assert updated["isolation"] == "worktree"
+        assert updated["subagent_type"] == "wt_refactorer"
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["subagent_type"] == "wt_refactorer"
+        assert lines[0]["role_recorded"] == "refactorer"
+        assert lines[0]["source"] == "injected"
+        assert lines[0]["model_applied"] == "opus"
+
+    def test_refactorer_injects_regardless_of_task_id_prefix(self) -> None:
+        """C3_TASK_ID の接頭辞（test- / impl- / confirm- / その他）に関わらず注入する。"""
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"refactorer": {"tier": "sonnet", "mode": "thompson"}},
+        )
+        for task_id in ("impl-x", "confirm-x", "test-x", "refactor-x"):
+            for subagent_type in ("refactorer", "wt_refactorer"):
+                sid = _new_session_id()
+                result = _run_hook(
+                    _agent_payload(
+                        subagent_type, session_id=sid, prompt=f"C3_TASK_ID: {task_id}\n本文",
+                    )
+                )
+                assert result.returncode == 0
+                assert result.stdout.strip() != "", (
+                    f"{subagent_type} / {task_id} で注入されなかった"
+                )
+                updated = json.loads(result.stdout)["hookSpecificOutput"]["updatedInput"]
+                assert updated["model"] == "sonnet", f"{subagent_type} / {task_id}"
+                row = _last_jsonl_row()
+                assert row["task_id"] == task_id
+                assert row["role_recorded"] == "refactorer"
+                assert row["source"] == "injected"
+
+    def test_refactorer_does_not_use_top_level_tier_when_roles_missing(self) -> None:
+        """roles.refactorer が無い（トップレベル tier と roles.tester はある）→ 注入せず記録のみ。"""
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"tester": {"tier": "sonnet", "mode": "thompson"}},
+        )
+        for subagent_type in ("refactorer", "wt_refactorer"):
+            sid = _new_session_id()
+            result = _run_hook(_agent_payload(subagent_type, session_id=sid))
+            assert result.returncode == 0
+            assert result.stdout.strip() == "", (
+                f"{subagent_type}: roles.refactorer が無いのに注入された"
+            )
+            row = _last_jsonl_row()
+            assert row["session_id"] == sid, f"{subagent_type}: 起動が記録されなかった"
+            assert row["subagent_type"] == subagent_type
+            assert row["role_recorded"] == "refactorer"
+            assert row["source"] == "frontmatter-default"
+            assert row["model_applied"] in (None, "")
+
+    def test_refactorer_roles_key_absent_no_injection(self) -> None:
+        """roles キー自体が無い（トップレベル tier のみ）→ 注入せず記録のみ。"""
+        _write_tier_selection(tier="opus", suggested_model="opus", mode="thompson")
+        sid = _new_session_id()
+        result = _run_hook(_agent_payload("refactorer", session_id=sid))
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["role_recorded"] == "refactorer"
+        assert lines[0]["source"] == "frontmatter-default"
+
+    def test_refactorer_roles_broken_no_injection(self) -> None:
+        """roles / roles.refactorer の破損（非 dict・tier 欠落・非文字列・正規化不能）→ 注入せず記録のみ。"""
+        broken_variants: list[object] = [
+            "not-a-dict",
+            {"refactorer": "x"},
+            {"refactorer": {"mode": "thompson"}},
+            {"refactorer": {"tier": 123}},
+            {"refactorer": {"tier": "not-a-tier"}},
+        ]
+        for broken in broken_variants:
+            _write_tier_selection(
+                tier="haiku", suggested_model="haiku", mode="thompson", roles=broken,
+            )
+            sid = _new_session_id()
+            result = _run_hook(_agent_payload("refactorer", session_id=sid))
+            assert result.returncode == 0
+            assert result.stdout.strip() == "", f"破損 roles で注入された: {broken!r}"
+            row = _last_jsonl_row()
+            assert row["session_id"] == sid, f"破損 roles で記録されなかった: {broken!r}"
+            assert row["role_recorded"] == "refactorer", f"破損 roles: {broken!r}"
+            assert row["source"] == "frontmatter-default", f"破損 roles: {broken!r}"
+
+    def test_refactorer_tier_selection_missing_records_only(self) -> None:
+        """tier_selection.json が不在 → 注入せず記録のみ（role_recorded=refactorer）。"""
+        sid = _new_session_id()
+        result = _run_hook(_agent_payload("wt_refactorer", session_id=sid))
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""
+
+        lines = _read_jsonl_lines()
+        assert len(lines) == 1
+        assert lines[0]["role_recorded"] == "refactorer"
+        assert lines[0]["source"] == "frontmatter-default"
+
+    def test_refactorer_explicit_model_respected(self) -> None:
+        """refactorer / wt_refactorer + model 明示 → 注入せず素通り・source=explicit。"""
+        _write_tier_selection(
+            tier="haiku", suggested_model="haiku", mode="thompson",
+            roles={"refactorer": {"tier": "sonnet", "mode": "thompson"}},
+        )
+        for subagent_type in ("refactorer", "wt_refactorer"):
+            sid = _new_session_id()
+            result = _run_hook(_agent_payload(subagent_type, model="opus", session_id=sid))
+            assert result.returncode == 0
+            assert result.stdout.strip() == "", f"{subagent_type}: 明示 model が上書きされた"
+            row = _last_jsonl_row()
+            assert row["session_id"] == sid, f"{subagent_type}: 起動が記録されなかった"
+            assert row["role_recorded"] == "refactorer"
+            assert row["source"] == "explicit"
+            assert row["model_applied"] == "opus"
+
+
+class TestRoleSetPublicNames:
+    """役割の集合の公開名と型（frozenset / dict）を固定する。"""
+
+    def test_role_sets_values_and_types(self) -> None:
+        mod = _load_autoapply_module()
+        assert isinstance(mod.APPLY_ROLES, frozenset)
+        assert mod.APPLY_ROLES == frozenset(
+            {"developer", "wt_developer", "refactorer", "wt_refactorer"}
+        )
+        assert isinstance(mod.RED_APPLY_ROLES, frozenset)
+        assert mod.RED_APPLY_ROLES == frozenset({"tester", "wt_tester"})
+        assert isinstance(mod.LAUNCH_LOG_ROLES, frozenset)
+        assert mod.LAUNCH_LOG_ROLES == mod.APPLY_ROLES | mod.RED_APPLY_ROLES
+
+    def test_role_normalize_maps_wt_to_plain(self) -> None:
+        mod = _load_autoapply_module()
+        assert isinstance(mod._ROLE_NORMALIZE, dict)
+        assert mod._ROLE_NORMALIZE == {
+            "wt_developer": "developer",
+            "wt_tester": "tester",
+            "wt_refactorer": "refactorer",
+        }
+
+
 def _read_frontmatter_model(path: Path) -> str | None:
     """agent 定義 md の YAML frontmatter から model: 値を読んだ（先頭 --- ブロック）。"""
     text = path.read_text(encoding="utf-8")
@@ -689,15 +898,20 @@ class TestOpusFixedInvariant:
     """機械適用対象 role の agent frontmatter が model: sonnet であることを固定した。"""
 
     def test_all_apply_roles_have_sonnet_frontmatter(self) -> None:
-        """APPLY_ROLES ∪ RED_APPLY_ROLES の 4 role が model: sonnet であること。
+        """APPLY_ROLES ∪ RED_APPLY_ROLES の 6 role が model: sonnet であること。
 
         opus frontmatter の agent（architect / planner / design-critic /
         doc-writer / project-setup）が機械適用対象へ混入すると本テストが Red になる
         （opus 固定不変則違反の検知・ADR-6）。
+        refactorer / wt_refactorer は refactorer の Tier 自動適用の追加に伴い集合へ
+        加えた（プロダクトの変更への追随・test-tier-select）。
         """
         mod = _load_autoapply_module()
         roles = set(mod.APPLY_ROLES) | set(mod.RED_APPLY_ROLES)
-        assert roles == {"developer", "wt_developer", "tester", "wt_tester"}, (
+        assert roles == {
+            "developer", "wt_developer", "tester", "wt_tester",
+            "refactorer", "wt_refactorer",
+        }, (
             f"機械適用対象 role 集合が想定外: {roles}"
         )
         agents_dir = WORKTREE_ROOT / ".claude" / "agents"

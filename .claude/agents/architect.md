@@ -50,7 +50,7 @@ requirements-report を受け取り、システム設計・技術選定・依存
 
 **After:**
 - Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/architecture-report-{timestamp}.md` に出力する
-- architecture-report の frontmatter に `revision:` を書く（新規設計は `revision: 1`・改訂は前版 + 1）
+- architecture-report の frontmatter に `revision:` を書く（新規設計は `revision: 1`・改訂は前版 + 1。単位の途中で範囲を加えて改訂するときは `revision_reason: scope-addition` も書く）
 
 ## Tools & Constraints
 制限: ソースファイルの編集・書き込みは行わない

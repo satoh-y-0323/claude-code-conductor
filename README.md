@@ -27,6 +27,7 @@ Claude Code Conductor（C3）は「親 Claude が複数の専門エージェン�
     ├─ design-critic       ← 設計・計画の監査
     ├─ developer           ← 実装
     ├─ tester              ← テスト
+    ├─ refactorer          ← 整理（Green の後・振る舞い不変）
     ├─ code-reviewer       ← コードレビュー
     ├─ security-reviewer   ← セキュリティレビュー
     ├─ systematic-debugger ← デバッグ調査
@@ -107,7 +108,7 @@ C3 では「どのファイルをどこに置くべきか」の定義が設計�
     ↓ 承認
 フェーズ C: 計画          plan-report を生成
     ↓ 承認（任意で design-critic が設計・計画を監査 → design-review-report）
-フェーズ D: TDD           tester → developer → tester のサイクル
+フェーズ D: TDD           tester → developer → tester のサイクル → refactorer（Refactor・振る舞いを変えない整理）
     ↓ 承認（自動遷移）
 フェーズ E: レビュー      code-reviewer → security-reviewer
     ↓ 指摘あり
@@ -199,16 +200,19 @@ C3 のスラッシュコマンドはすべてスキル（`skills/{name}/SKILL.md
 | design-critic | opus | design-review-report | Agent ツールで起動（フェーズ C 承認後の任意監査） |
 | developer | sonnet | 実装コード | Agent ツールで起動 |
 | tester | sonnet | テスト・test-report | Agent ツールで起動 |
+| refactorer | sonnet | 整理後のコード（Green の後に振る舞いを変えずに整理・`writes` 外の共通化の候補は申告） | Agent ツールで起動（D-4） |
 | code-reviewer | sonnet | code-review-report | Agent ツールで起動 |
 | security-reviewer | sonnet | security-review-report | Agent ツールで起動 |
 | doc-writer | opus | ドキュメント各種 | Agent ツールで起動 |
 | systematic-debugger | sonnet | debug-analysis-report | Agent ツールで起動（行き詰まり時）|
 | project-setup | opus | rules/ 規約ファイル | Agent ツールで起動（`/setup` 時）|
-| wt_developer / wt_tester / wt_systematic-debugger | sonnet | task_id ベースのレポート | parallel-agents skill が isolation:worktree 付きで起動 |
+| wt_developer / wt_tester / wt_refactorer / wt_systematic-debugger | sonnet | task_id ベースのレポート | parallel-agents skill が isolation:worktree 付きで起動 |
 
 インタラクティブな対話が必要なエージェント（interviewer・architect・planner）は親 Claude がペルソナを採用して動作します。実装・検証系エージェントはサブエージェントとして起動されます。
 
-> **model 列は既定値です。** developer / wt_developer は tier-routing（タスク複雑度に応じた Haiku/Sonnet/Opus の自動選択・Thompson Sampling）の hook が起動時に model を自動適用するため、実際の使用 model は複雑度と学習データに応じて変わります。v2.54.0 からは tester / wt_tester も **Red フェーズ（起動プロンプト 1 行目の `C3_TASK_ID: test-` マーカー付き起動）に限り**自動適用の対象です（テスト合否を判定する確認フェーズ D-3/D-5・confirm- タスクは対象外・既定の sonnet のまま）。
+> **model 列は既定値です。** developer / wt_developer / refactorer / wt_refactorer は tier-routing（タスク複雑度に応じた Haiku/Sonnet/Opus の自動選択・Thompson Sampling）の hook が起動時に model を自動適用するため、実際の使用 model は複雑度と学習データに応じて変わります。v2.54.0 からは tester / wt_tester も **Red フェーズ（起動プロンプト 1 行目の `C3_TASK_ID: test-` マーカー付き起動）に限り**自動適用の対象です（テスト合否を判定する確認フェーズ D-3/D-5・confirm- タスクは対象外・既定の sonnet のまま）。
+
+refactorer は Green の後に振る舞いを変えずに整理する担当で、tier-routing の推奨 Tier を自動適用します。`writes` の外に共通化の候補を見つけたときは申告し、親 Claude が同じ単位に範囲を加えます。
 
 ---
 
@@ -439,7 +443,7 @@ settings.local.json
 2. `/develop` を起動 → **D-0** で plan-report のフロントマターを自動検出し `parallel-agents` skill へ切り替わる
 3. C3 が `c3 plan validate` でマニフェスト妥当性を検証、wave ごとにユーザー承認を取りながら Agent ツールで並列実行します
 
-TDD を伴う機能実装は、planner が「test- → impl- → confirm-」の 3 タスクペアに分解し、各 wave 内で独立機能間で並列起動されます。並列実行時は worktree 専用の `wt_tester` / `wt_developer` / `wt_systematic-debugger` agent が使用され、レポートは `task_id` ベースのファイル名で出力されます。
+TDD を伴う機能実装は、planner が「test- → impl- → confirm- → refactor- → final-」の 5 タスクに分解し、各 wave 内で独立機能間で並列起動されます。並列実行時は worktree 専用の `wt_tester` / `wt_developer` / `wt_refactorer` / `wt_systematic-debugger` agent が使用され、レポートは `task_id` ベースのファイル名で出力されます。
 
 ### 推奨個人設定 (`~/.claude/settings.json`)
 

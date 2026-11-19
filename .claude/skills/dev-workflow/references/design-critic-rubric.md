@@ -98,7 +98,7 @@ NNN は 3 桁の連番（001 から始める）。レンズ内で独立してカ
 - 対応物が別の記述・タスク名で含意されている場合は finding 不要
 - 棚卸し節の識別規則: architecture-report の見出しレベル `##` の見出し行にキーワードを含む節を棚卸し節とする（番号・接尾辞は自由。逐語の同一性は問わない）
 - 着眼点の「`既存機能の棚卸し` の欠落」に挙げた欠落 5 種は、いずれも finding として記録する（起因層: `B設計`）
-- 棚卸しに関する上記 2 項の適用対象は、frontmatter の `revision:` が無いか `revision: 1` の architecture-report のみとする。`revision: 2` 以上の改訂版には適用せず、前版のレポートも辿らない
+- 棚卸しに関する上記 2 項の適用対象は、frontmatter の `revision:` が無いか `revision: 1` の architecture-report のみとする。`revision: 2` 以上の改訂版には適用せず、前版のレポートも辿らない。ただし frontmatter に `revision_reason: scope-addition` がある改訂版は、加えた問題が触れる層について対象にする
 
 ---
 

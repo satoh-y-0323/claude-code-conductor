@@ -75,6 +75,6 @@ tools:
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）
-- ピア: wt_developer（TDD サイクルで Red → Green → Refactor を繰り返す）
+- ピア: wt_developer・wt_refactorer（TDD サイクルで Red → Green → Refactor を繰り返す）
 - 下流: code-reviewer・security-reviewer（test-report を受け渡す）
 - 直接起動版: `tester` (worktree なしの単発実行向け)

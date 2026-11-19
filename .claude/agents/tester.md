@@ -69,5 +69,5 @@ tools:
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）
-- ピア: developer（TDD サイクルで Red → Green → Refactor を繰り返す）
+- ピア: developer・refactorer（TDD サイクルで Red → Green → Refactor を繰り返す）
 - 下流: code-reviewer・security-reviewer（test-report を受け渡す）

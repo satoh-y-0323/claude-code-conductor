@@ -65,7 +65,7 @@ C3 の中心思想は「**親 Claude（オーケストレーター）が複数�
   ▼
 親 Claude（オーケストレーター）
   ├─ ペルソナ採用で動く（対話が必要）: interviewer / architect / planner
-  └─ Agent ツールで起動する（実装・検証）: developer / tester /
+  └─ Agent ツールで起動する（実装・検証）: developer / tester / refactorer /
         code-reviewer / security-reviewer / doc-writer / systematic-debugger
   │
   ├─ 受け渡し: reports/*.md（requirements / architecture / plan / *-review / test）
@@ -87,14 +87,14 @@ C3 の中心思想は「**親 Claude（オーケストレーター）が複数�
 ### 起動方式の使い分け
 
 - **親 Claude がペルソナ採用**（interviewer / architect / planner）: ユーザーとの対話が必要なため、サブエージェント化せず親が役を演じる。対話 skill は frontmatter に `allowed-tools` を**付けない**（絞ると `AskUserQuestion` が落ちる）。
-- **Agent ツールで起動**（developer / tester / reviewer 系 / doc-writer / systematic-debugger）: 独立スコープで動かしコンテキスト汚染を防ぐ。
-- **`wt_*` 派生**（`wt_developer` / `wt_tester` / `wt_systematic-debugger`）: `parallel-agents` skill が `isolation: "worktree"` で並列起動する専用版。`permissionMode: bypassPermissions` とレポートの task_id 命名だけが通常版と異なる。
+- **Agent ツールで起動**（developer / tester / refactorer / reviewer 系 / doc-writer / systematic-debugger）: 独立スコープで動かしコンテキスト汚染を防ぐ。
+- **`wt_*` 派生**（`wt_developer` / `wt_tester` / `wt_refactorer` / `wt_systematic-debugger`）: `parallel-agents` skill が `isolation: "worktree"` で並列起動する専用版。`permissionMode: bypassPermissions` とレポートの task_id 命名だけが通常版と異なる。
 
 ### 開発ワークフロー（dev-workflow skill）
 
 ```
 A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
-（requirements）（architecture）（plan）（tester⇄developer）（code/security-reviewer）
+（requirements）（architecture）（plan）（tester⇄developer→refactorer）（code/security-reviewer）
    各フェーズ間でユーザー承認。E で指摘が出たら C へ戻る（内部遷移）
 ```
 
@@ -113,7 +113,7 @@ A ヒアリング → B 設計 → C 計画 → D 実装(TDD) → E レビュー
 | `UserPromptSubmit` | （全て） | `select_tier.py` | 複雑度判定 → Tier ルーティング推奨（[§4](#4-知能基盤)） |
 | `UserPromptSubmit` | （全て） | `recall_inject.py` | 過去類似情報を意味検索しコンテキスト注入（[§4](#4-知能基盤)） |
 | `PreToolUse` | `Bash` | `pre_tool.py` | 破壊的コマンド（`rm -rf` 等）ブロック・secret スキャン（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
-| `PreToolUse` | `Write` / `Edit` | `worktree_guard.py` | worktree 外への書き込み禁止（hook 入力の agent_type が `wt_developer` / `wt_tester` / `wt_systematic-debugger` のとき自動で作動。worktree の外（scratchpad を含む）へは書けない。緊急無効化は `C3_WORKTREE_GUARD_DISABLE=1`）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
+| `PreToolUse` | `Write` / `Edit` | `worktree_guard.py` | worktree 外への書き込み禁止（hook 入力の agent_type が `wt_developer` / `wt_tester` / `wt_refactorer` / `wt_systematic-debugger` のとき自動で作動。worktree の外（scratchpad を含む）へは書けない。緊急無効化は `C3_WORKTREE_GUARD_DISABLE=1`）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
 | `PreToolUse` | `Write` / `Edit` | `patterns_guard.py` | patterns.json への直接編集を block（許可フラグ TTL 600 秒・C3_PATTERNS_GUARD_DISABLE=1 で無効化）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
 | `PreToolUse` | `Write` | `report_path_guard.py` | レポート 9 prefix の書き先を検査し逸脱を block（封じ込め: `.claude/reports/` 直下の二層判定 / 上書き: タイムスタンプ形式の既存ファイル / 形式: strict-4 の非タイムスタンプ命名。`C3_REPORT_GUARD_DISABLE=1` で無効化）（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |
 | `PreToolUse` | `Agent` | `check_agent_invocation.py` | エージェント起動の検査（`onFailure: "block"`: hook 自体の失敗時もブロックに倒す） |

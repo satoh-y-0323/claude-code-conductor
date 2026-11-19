@@ -2718,3 +2718,258 @@ class TestMainLamZeroE2E:
         assert data["cost_lambda"] == pytest.approx(0.0)
         # lam=0.0 → 経路 0（cost 無視）→ cost_weighted=False → キーが出ない
         assert "cost_weighted" not in data
+
+
+# ---------------------------------------------------------------------------
+# [refactorer Tier 拡張] additive roles.refactorer（test-tier-select・Red）。
+#
+# select_tier.py の main() は developer（トップレベル tier）・tester（roles.tester）
+# に加えて refactorer の推奨 Tier を roles.refactorer={tier, mode[, escalated]} として
+# tier_selection.json へ書く。算出は refactorer のセル
+# read_agent_tier_params("refactorer", complexity) から、escalation は
+# role="refactorer" の failure rate を引く。refactorer の算出を足しても、同じ乱数の
+# 種で developer（トップレベル）と roles.tester の結果は変わらない。
+# additionalContext には refactorer / wt_refactorer の推奨 Tier が出る。
+# ---------------------------------------------------------------------------
+
+
+def _skewed_params(winner: str) -> dict[str, tuple[float, float, int]]:
+    """trials>=LEARNING_THRESHOLD の Thompson 経路で ``winner`` が事実上必ず選ばれる params。"""
+    return {
+        t: ((1000.0, 1.0, 1000) if t == winner else (1.0, 1000.0, 1000))
+        for t in ("haiku", "sonnet", "opus")
+    }
+
+
+def _role_mock_c3_db(
+    params_by_role: dict[str, dict],
+    *,
+    failure_by_role: dict[str, tuple] | None = None,
+    tier_calls: list[tuple] | None = None,
+    fr_calls: list[tuple] | None = None,
+) -> types.SimpleNamespace:
+    """role ごとに異なる params / failure rate を返す c3_db モック。"""
+    failure_by_role = failure_by_role or {}
+
+    def _tier_params(role, complexity, **kw):
+        if tier_calls is not None:
+            tier_calls.append((role, complexity))
+        return params_by_role[role]
+
+    def _failure_rate(role, complexity, tier, **kw):
+        if fr_calls is not None:
+            fr_calls.append((role, complexity, tier))
+        return failure_by_role.get(role, (None, 0))
+
+    return types.SimpleNamespace(
+        read_agent_tier_params=_tier_params,
+        read_tier_cost_rate_for_complexity=lambda complexity, **kw: {},
+        read_agent_failure_rate=_failure_rate,
+    )
+
+
+def _clear_tier_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("C3_TIER_EPSILON", "C3_TIER_COST_LAMBDA", "C3_ESCALATION_THRESHOLD"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _run_main_capture(
+    mod: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    target: Path,
+    prompt: str = "テスト",
+) -> tuple[dict, str]:
+    """main() を 1 回動かし (tier_selection.json の内容, additionalContext) を返す。"""
+    monkeypatch.setattr(mod, "TIER_SELECTION_PATH", str(target))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"prompt": prompt})))
+    capsys.readouterr()
+    rc = mod.main()
+    assert rc == 0
+    out = capsys.readouterr().out
+    context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    data = json.loads(target.read_text(encoding="utf-8"))
+    return data, context
+
+
+class TestRolesRefactorerAdditive:
+    """main() が roles.refactorer を refactorer のセルから算出して書くことを検証する。"""
+
+    def test_main_writes_roles_refactorer_from_refactorer_cell(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """roles.refactorer={tier, mode} が書かれ、tier は refactorer のセルから決まる。
+
+        developer / tester のセルは haiku 勝ち、refactorer のセルだけ opus 勝ちにして、
+        roles.refactorer.tier が refactorer のセル由来であることを測る。
+        """
+        mod = _load_hook_module()
+        _clear_tier_env(monkeypatch)
+        tier_calls: list[tuple] = []
+        mock = _role_mock_c3_db(
+            {
+                "developer": _skewed_params("haiku"),
+                "tester": _skewed_params("haiku"),
+                "refactorer": _skewed_params("opus"),
+            },
+            tier_calls=tier_calls,
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock)
+
+        data, _ = _run_main_capture(mod, monkeypatch, capsys, tmp_path / "tier_selection.json")
+
+        refactorer_calls = [c for c in tier_calls if c[0] == "refactorer"]
+        assert refactorer_calls == [("refactorer", "medium")], (
+            f"read_agent_tier_params が refactorer のセルで呼ばれていない: {tier_calls}"
+        )
+        assert "refactorer" in data.get("roles", {}), f"roles.refactorer が無い: {data}"
+        assert data["roles"]["refactorer"] == {"tier": "opus", "mode": "thompson"}
+        # developer（トップレベル）と tester は各自のセルのまま
+        assert data["tier"] == "haiku"
+        assert data["roles"]["tester"]["tier"] == "haiku"
+
+    def test_refactorer_escalation_uses_refactorer_failure_rate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """refactorer の escalation は role="refactorer" の failure rate を引き、昇格時は escalated: true。
+
+        failure rate を高くするのは refactorer だけ。developer / tester は昇格しない。
+        """
+        mod = _load_hook_module()
+        _clear_tier_env(monkeypatch)
+        fr_calls: list[tuple] = []
+        mock = _role_mock_c3_db(
+            {
+                "developer": _skewed_params("haiku"),
+                "tester": _skewed_params("haiku"),
+                "refactorer": _skewed_params("haiku"),
+            },
+            failure_by_role={"refactorer": (0.9, 10)},
+            fr_calls=fr_calls,
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock)
+
+        data, _ = _run_main_capture(mod, monkeypatch, capsys, tmp_path / "tier_selection.json")
+
+        assert ("refactorer", "medium", "haiku") in fr_calls, (
+            f"refactorer の failure rate が引かれていない: {fr_calls}"
+        )
+        assert data["roles"]["refactorer"] == {
+            "tier": "sonnet", "mode": "thompson", "escalated": True,
+        }
+        # 他 role は refactorer の failure rate に引きずられない
+        assert data["tier"] == "haiku"
+        assert "escalated" not in data
+        assert data["roles"]["tester"] == {"tier": "haiku", "mode": "thompson"}
+
+    def test_refactorer_uniform_when_no_records(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """記録が無い（trials 合計 0）ときの refactorer の算出は uniform（既存と同じ）。"""
+        mod = _load_hook_module()
+        _clear_tier_env(monkeypatch)
+        zero = {t: (1.0, 1.0, 0) for t in mod.TIERS}
+        mock = _role_mock_c3_db({"developer": zero, "tester": zero, "refactorer": zero})
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock)
+
+        data, _ = _run_main_capture(mod, monkeypatch, capsys, tmp_path / "tier_selection.json")
+
+        entry = data.get("roles", {}).get("refactorer")
+        assert entry is not None, f"roles.refactorer が無い: {data}"
+        assert entry["mode"] == "uniform"
+        assert entry["tier"] in mod.TIERS
+        assert "escalated" not in entry
+
+    def test_refactorer_uniform_when_c3_db_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """c3_db が読めない環境でも roles.refactorer は uniform で書かれる（developer/tester と同じ扱い）。"""
+        mod = _load_hook_module()
+        _clear_tier_env(monkeypatch)
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: None)
+
+        data, _ = _run_main_capture(mod, monkeypatch, capsys, tmp_path / "tier_selection.json")
+
+        entry = data.get("roles", {}).get("refactorer")
+        assert entry is not None, f"roles.refactorer が無い: {data}"
+        assert entry["mode"] == "uniform"
+        assert entry["tier"] in mod.TIERS
+
+    @pytest.mark.parametrize("mode", ["uniform", "thompson"])
+    def test_developer_and_tester_unchanged_under_same_seed(
+        self, mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """同じ乱数の種で、トップレベル tier（developer）と roles.tester の結果は
+        refactorer の算出を足す前と同じ（developer → tester の順の算出結果と一致）。
+
+        期待値は developer → tester の順に select_tier_detailed を同じ種で回して作る
+        （現行の算出順）。refactorer の算出がこの 2 つの間・前に入って乱数を消費すると
+        一致しなくなる。最後に roles.refactorer が書かれていることを確かめる。
+        """
+        mod = _load_hook_module()
+        _clear_tier_env(monkeypatch)
+        if mode == "uniform":
+            params = {t: (1.0, 1.0, 0) for t in mod.TIERS}
+        else:
+            params = {t: (5.0, 5.0, 20) for t in mod.TIERS}
+        mock = _role_mock_c3_db({"developer": params, "tester": params, "refactorer": params})
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock)
+
+        from c3 import pricing
+        cost_map = {t: pricing.tier_reference_cost(t) for t in mod.TIERS}
+
+        last_data: dict = {}
+        for seed in range(30):
+            random.seed(seed)
+            expected_dev = mod.select_tier_detailed(
+                params, cost_map=cost_map, epsilon=mod.EPSILON, lam=mod.COST_LAMBDA_DEFAULT,
+            )
+            expected_tester = mod.select_tier_detailed(
+                params, cost_map=cost_map, epsilon=mod.EPSILON, lam=mod.COST_LAMBDA_DEFAULT,
+            )
+
+            random.seed(seed)
+            data, _ = _run_main_capture(
+                mod, monkeypatch, capsys, tmp_path / f"tier_selection_{seed}.json",
+            )
+            assert data["tier"] == expected_dev.tier, f"seed={seed}: developer が変わった"
+            assert data["mode"] == expected_dev.mode
+            assert data["roles"]["tester"]["tier"] == expected_tester.tier, (
+                f"seed={seed}: tester が変わった"
+            )
+            assert data["roles"]["tester"]["mode"] == expected_tester.mode
+            last_data = data
+
+        assert "refactorer" in last_data["roles"], f"roles.refactorer が無い: {last_data}"
+
+
+class TestAdditionalContextRefactorer:
+    """additionalContext に refactorer / wt_refactorer の推奨 Tier が出ることを検証する。"""
+
+    def test_context_shows_refactorer_recommended_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """refactorer のセルだけ opus 勝ちにすると、表示に refactorer / wt_refactorer と opus が出る。
+
+        developer / tester は haiku のため、表示中の opus は refactorer の推奨 Tier に由来する。
+        """
+        mod = _load_hook_module()
+        _clear_tier_env(monkeypatch)
+        mock = _role_mock_c3_db(
+            {
+                "developer": _skewed_params("haiku"),
+                "tester": _skewed_params("haiku"),
+                "refactorer": _skewed_params("opus"),
+            },
+        )
+        monkeypatch.setattr(mod, "_load_c3_db_module", lambda: mock)
+
+        data, context = _run_main_capture(
+            mod, monkeypatch, capsys, tmp_path / "tier_selection.json",
+        )
+
+        assert data["tier"] == "haiku"
+        assert "refactorer" in context
+        assert "wt_refactorer" in context
+        assert "opus" in context, f"refactorer の推奨 Tier（opus）が表示に無い: {context}"

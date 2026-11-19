@@ -456,6 +456,59 @@ def test_scaffold_adapters_opencode_requires_claude_dir(tmp_path: Path):
         scaffold_adapters(tmp_path, ("opencode",))
 
 
+def _add_agent(root: Path, name: str, description: str) -> None:
+    """一時ツリーの ``.claude/agents/<name>.md`` を用意する（実 agent ファイルに依存しない）."""
+    (root / ".claude" / "agents" / f"{name}.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nbody\n",
+        encoding="utf-8",
+    )
+
+
+def _opencode_entry_list(agents_md: str) -> str:
+    """生成された AGENTS.md から入口一覧（``## How to Use C3 with OpenCode`` 節）を切り出す."""
+    begin = agents_md.index(MANAGED_OPENCODE_BEGIN)
+    end = agents_md.index(MANAGED_OPENCODE_END)
+    block = agents_md[begin:end]
+    m = re.search(r"^## How to Use C3 with OpenCode\n(.*?)(?=^## |\Z)", block, re.M | re.S)
+    assert m is not None, "AGENTS.md の managed block に入口一覧の節が無い"
+    return m.group(1)
+
+
+@pytest.mark.parametrize("mention", ["@c3-refactorer", "@c3-design-critic"])
+def test_scaffold_adapters_opencode_agents_md_lists_refactorer_and_design_critic(
+    tmp_path: Path, mention: str
+):
+    """c3 init --platform opencode 相当の生成で、AGENTS.md の入口一覧に載る."""
+    _make_minimal_claude_tree(tmp_path)
+    _add_agent(tmp_path, "refactorer", "Refactor code")
+    _add_agent(tmp_path, "design-critic", "Critique design")
+    scaffold_adapters(tmp_path, ("opencode",))
+    agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    entries = _opencode_entry_list(agents_md)
+    # 既存の入口が一覧に残っていること（一覧の切り出しが正しいことの対照）
+    assert "`@c3-tester`" in entries
+    assert f"`{mention}`" in entries, f"入口一覧に {mention} が無い:\n{entries}"
+
+
+def test_scaffold_adapters_opencode_refactorer_agent_is_subagent(tmp_path: Path):
+    """refactorer の OpenCode agent ファイルの mode は subagent（all-purpose は対話系 3 体のみ）."""
+    _make_minimal_claude_tree(tmp_path)
+    _add_agent(tmp_path, "refactorer", "Refactor code")
+    for name in ("interviewer", "architect", "planner"):
+        _add_agent(tmp_path, name, f"{name} desc")
+    scaffold_adapters(tmp_path, ("opencode",))
+    out_dir = tmp_path / ".opencode" / "agents"
+
+    def _mode(name: str) -> str:
+        text = (out_dir / f"c3-{name}.md").read_text(encoding="utf-8")
+        fm = text.split("---\n", 2)[1]
+        return yaml.safe_load(fm)["mode"]
+
+    assert _mode("refactorer") == "subagent"
+    for name in ("interviewer", "architect", "planner"):
+        assert _mode(name) == "all-purpose", name
+
+
 # ----------------------------------------------------------------------
 # NEW: YAML validity (CR M-06 / SR-V-001)
 # ----------------------------------------------------------------------

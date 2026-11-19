@@ -23,6 +23,7 @@ Claude Code Conductor (C3) は、Claude Code を業務開発で使うときに�
     ├─ design-critic       ← 設計・計画の監査
     ├─ developer           ← 実装
     ├─ tester              ← テスト
+    ├─ refactorer          ← 整理（Green の後・振る舞い不変）
     ├─ code-reviewer       ← コードレビュー
     ├─ security-reviewer   ← セキュリティレビュー
     ├─ systematic-debugger ← デバッグ調査
@@ -48,11 +49,11 @@ C3 は **役割を分離**し、**フェーズに沿った承認フロー**を�
 
 - **11 のスキル**（`/init-session` / `/setup` / `/start` / `/develop` / `/review-phase` / `/promote-pattern` / `/pattern-status` / `/doc` / `/extract-lib` / `/recall` / `/brainstorm`）
 - **5 フェーズの開発ワークフロー**（ヒアリング → 設計 → 計画 → TDD → レビュー。計画承認後に design-critic による任意監査あり）
-- **14 専門エージェント**（interviewer / architect / planner / design-critic / developer / tester / code-reviewer / security-reviewer / doc-writer / systematic-debugger / project-setup + 並列 worktree 専用の wt_developer / wt_tester / wt_systematic-debugger）
+- **16 専門エージェント**（interviewer / architect / planner / design-critic / developer / tester / refactorer / code-reviewer / security-reviewer / doc-writer / systematic-debugger / project-setup + 並列 worktree 専用の wt_developer / wt_tester / wt_refactorer / wt_systematic-debugger）
 - **並列実行 (parallel-agents skill)**: plan-report を親 Claude の Agent ツール並列起動 + 公式 `isolation: "worktree"` で並列実行
 - **パターン昇格システム**: 観測されたパターンを信用度スコアで管理し、`rules/promoted/` または `skills/promoted-*/` に自動昇格
 - **メモリ集約 (memory-consolidation)**: 直近 7 日のドメイン知見を自動的に次セッションのコンテキストに注入
-- **Tier 自動ルーティング (tier-routing)**: タスク複雑度に応じた Haiku/Sonnet/Opus の動的選択（Thompson Sampling）。対象は developer / wt_developer と、v2.54.0 以降の tester / wt_tester（Red フェーズ限定・確認フェーズは対象外）
+- **Tier 自動ルーティング (tier-routing)**: タスク複雑度に応じた Haiku/Sonnet/Opus の動的選択（Thompson Sampling）。対象は developer / wt_developer / refactorer / wt_refactorer と、v2.54.0 以降の tester / wt_tester（Red フェーズ限定・確認フェーズは対象外）
 - **意味検索 recall (v2.10.0+)**: `.claude/memory/sessions/`・`.claude/agent-memory/`・`.claude/reports/archive/`・`.claude/memory/patterns.json` から類似情報を numpy ベクトル検索 + 多言語 embedding (`paraphrase-multilingual-MiniLM-L12-v2`) で意味検索。`UserPromptSubmit` hook で親 Claude のコンテキストに「現タスクと無関係なら無視」前置き付きで自動注入
 
 ## 次に読むページ

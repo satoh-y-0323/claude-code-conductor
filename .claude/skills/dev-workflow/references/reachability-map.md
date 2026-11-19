@@ -11,8 +11,8 @@
 |---|---|---|---|
 | .claude/CLAUDE.md | .claude/CLAUDE.md | 全 role | 自動ロード・常駐コスト有。全員に効かせたい安全境界に加え、既存の節（根本解決の原則・テストとプロダクトの関係・User Interaction Rules 等）の続きとなる全 role の原則を置く |
 | .claude/rules/ (再帰自動ロード) | — | 全 role | 再帰自動ロード。サブエージェント含む。`.claude/rules/` 配下のサブディレクトリも対象 |
-| agents/<role>.md 本文 | — | 当該 role のみ | サブエージェント起動時に frontmatter とともに載る。persona 実行 role（interviewer/architect/planner）へは dev-workflow SKILL.md 各フェーズ冒頭の Read 指示に依存して親経由で届く |
-| dev-workflow/SKILL.md | .claude/skills/dev-workflow/SKILL.md | 親 Claude のみ | worker（developer/tester）には届かない。フェーズ遷移・承認ゲートの定義・手順 |
+| agents/<role>.md 本文 | — | 当該 role のみ（developer / tester / refactorer など worker を含む） | サブエージェント起動時に frontmatter とともに載る。persona 実行 role（interviewer/architect/planner）へは dev-workflow SKILL.md 各フェーズ冒頭の Read 指示に依存して親経由で届く |
+| dev-workflow/SKILL.md | .claude/skills/dev-workflow/SKILL.md | 親 Claude のみ | worker（developer/tester/refactorer）には届かない。フェーズ遷移・承認ゲートの定義・手順 |
 | references/*.md (導線経由) | — | 導線を持つ role のみ | 導線が無ければ誰にも届かない。SKILL.md 各フェーズから Read 指示で参照される |
 | plan-report タスク prompt | — | 当該タスクの worker のみ | worker へ届く唯一の動的経路。planner が転記した内容のみ有効 |
 | 起動プロンプト（E-0 等） | — | 起動された agent のみ | E-0 の枠付けが正例。データ/指示の明確な区分 |
@@ -21,7 +21,7 @@
 | interview-rubric.md | .claude/skills/dev-workflow/references/interview-rubric.md | interviewer（A-1〜A-3） | フェーズ A 冒頭で Read 指示される |
 | design-rubric.md | .claude/skills/dev-workflow/references/design-rubric.md | architect（B-1〜B-2） | フェーズ B 冒頭で Read 指示される |
 | plan-design-guidelines.md | .claude/skills/dev-workflow/references/plan-design-guidelines.md | planner（C-2） | フェーズ C 計画作成時に参照・守るべき規約 |
-| record-protocol.md | .claude/skills/dev-workflow/references/record-protocol.md | 親 Claude のみ（記録対象 role である developer/tester/architect/planner の agent 定義からは参照されない） | 各ゲートの record bash ブロック exec 時に Read 指示される。機械適用・帰属判定共通規定含む |
+| record-protocol.md | .claude/skills/dev-workflow/references/record-protocol.md | 親 Claude のみ（記録対象 role である developer/tester/refactorer/architect/planner の agent 定義からは参照されない） | 各ゲートの record bash ブロック exec 時に Read 指示される。機械適用・帰属判定共通規定含む |
 | judgment-principles.md | .claude/rules/judgment-principles.md | 全 role | 判定・検証の規律（rules 再帰自動ロード） |
 | working-principles.md | .claude/rules/working-principles.md | 全 role | 作業の進め方の原則（rules 再帰自動ロード） |
 

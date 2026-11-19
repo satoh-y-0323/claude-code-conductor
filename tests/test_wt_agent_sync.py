@@ -63,7 +63,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_DIR = REPO_ROOT / ".claude" / "agents"
 
 #: 本体 agent（stem）と wt_* バリアントの対応。wt 側は "wt_" + stem。
-BASE_AGENTS: tuple[str, ...] = ("developer", "systematic-debugger", "tester")
+BASE_AGENTS: tuple[str, ...] = ("developer", "refactorer", "systematic-debugger", "tester")
 
 CATEGORY_NAMES: dict[int, str] = {
     1: "frontmatter name の wt_ プレフィックス",
@@ -366,7 +366,7 @@ class TestFixtureSanity:
     """検査対象そのものの番兵。glob 書き損じ・ファイル欠落で空の緑にならないようにする。"""
 
     def test_all_agent_pairs_exist_and_are_non_empty(self):
-        assert len(BASE_AGENTS) == 3, "検査対象は本体 3 本 / wt_* 3 本の想定"
+        assert len(BASE_AGENTS) == 4, "検査対象は本体 4 本 / wt_* 4 本の想定"
         for base in BASE_AGENTS:
             base_path, wt_path = _pair_paths(base)
             assert base_path.is_file(), f"{base_path} が存在しない"
