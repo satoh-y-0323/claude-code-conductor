@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.87.0] - 2026-11-19
+
+### 破壊的変更
+
+- **逐次 TDD の Refactor（D-4）の担当を developer から refactorer に変えた**: `.claude/agents/developer.md`（と `wt_developer.md`）にあった Refactor の記述は、新しい `.claude/agents/refactorer.md`（と `wt_refactorer.md`）に移した。ファイルの削除は無い。developer.md をカスタムして Refactor の振る舞いを変えていた利用先は、その変更を refactorer.md の側で見直す
+
+### 変更
+
+- **リファクタリング専用エージェント `refactorer` / `wt_refactorer` を追加した**。Green が確かめられた後に、振る舞いを変えずにコードを整理し、重複・分散を共通化する。基準点は Green のコミットで、常に緑のまま返す。範囲の外で見つけた候補は自分で直さず親へ返す
+  - tier-routing の対象にした（`tier_selection.json` に `roles.refactorer` が増え、起動時に tier_autoapply hook が推奨 Tier を `model:` に適用する）。bandit の集計の対象は D-5（Refactor の後も緑か）
+  - `worktree_guard` の作動対象に `wt_refactorer` を足した
+- **TDD の分解を 5 タスクにした**（plan-design-guidelines）: `test-` → `impl-` → `confirm-` → `refactor-` → `final-`。逐次の D-4 は refactorer が行い、D-4 の前に Green をコミットする。plan-report の無い逐次の単位（bug-fix など）は D-4 を行わない
+- **単位の途中で範囲を加える経路を足した**（dev-workflow の節「単位の途中で範囲を加える」が唯一の所在）。worker の申告・refactorer の範囲の外の候補・親が見つけた別の問題は、一緒に解けるなら同じ単位で解く。控えは `.claude/reports/scope-additions.md` に書き、フェーズ D の入口と E-3 で確かめ、要件（A）から戻る。戻るときの `現在地:` には `（範囲の追加）` を付ける。C-3・E の指摘は範囲の追加にしない
+  - `.claude/CLAUDE.md`「根本解決の原則」に「単位の途中で見つけた別の問題は、一緒に解けるなら同じ単位で解く」を足した
+- **E-3 で「直す」と裁いた指摘の戻り先を起因層にした**（直すのに書き換えが要る最も上流の成果物: requirements-report → A・architecture-report → B・plan-report とコード・テスト → C）
+- **OpenCode の `AGENTS.md` の入口一覧に `@c3-refactorer` と `@c3-design-critic` を足した**
+- **`.claude/CLAUDE.md` の Platform Compatibility の記述を実装に合わせた**: 本ファイルを読むのは Claude Code で、OpenCode では adapter が `AGENTS.md` に埋め込む。Codex / Cursor の生成物には写像されない（Claude Opus 5.5 基準のプロンプト監査で見つかった食い違い）
+
 ## [2.86.0] - 2026-11-19
 
 ### 変更
