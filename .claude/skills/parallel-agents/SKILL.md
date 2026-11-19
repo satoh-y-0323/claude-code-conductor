@@ -236,7 +236,7 @@ worktree path は Agent ツール返り値の `<worktree><worktreePath>...</work
 
 **tier-routing 結果記録（失敗タスク）**: 選択肢に関わらず、この wave で失敗した各タスクのうち `wt_developer`/`wt_tester`/`wt_refactorer` で起動したものについて、1 タスク = 1 記録で failure を記録する（`wt_developer`→`--role developer`、`wt_tester`→`--role tester`、`wt_refactorer`→`--role refactorer`。`--execution subagent`）。`code-reviewer`/`security-reviewer`/`wt_systematic-debugger` のタスクは記録対象外。この記録は親 Claude が **main リポジトリ（2-F-0 の `cd <ROOT>` 後）で実行**する。**「スキップして次の wave へ」を選んだ場合も、次の wave に進む前に必ずこの記録を済ませること**（`--complexity` は dev-workflow 開始時の `[tier-routing 推奨]` 表示の複雑度をそのまま渡す。「リトライ」を選び再実行が成功した場合は 1 タスク 1 記録の原則により 2-F-4 で改めて success を記録する＝リトライ結果は新たな別記録になる）。
 
-**gate の split（Red 成否 4 条件の parallel 写像・逐次 D-1〜D-3 と同一意味論に統一）**: 3-wave（test-X → impl-X → confirm-X）は逐次の D-1 → D-2 → D-3 と同型のため、失敗記録の gate を task_id プレフィックスで分岐する:
+**gate の split（Red 成否 4 条件の parallel 写像・逐次 D-1〜D-3 と同一意味論に統一）**: 5 タスク（test-X → impl-X → confirm-X → refactor-X → final-X）のうち test-X → impl-X → confirm-X は逐次の D-1 → D-2 → D-3 と同型のため、失敗記録の gate を task_id プレフィックスで分岐する:
 - **test- タスク（wt_tester Red）の失敗** → `--gate D-1`（Red 成果物への帰属・条件 1/2/3）。failed した test-X タスクそのものに加え、**条件 3**（impl-X のテスト修正は writes 専属性により取り込み時に破棄され、confirm-X が旧テストで失敗して wave 失敗として顕在化する）で所在判定＝テストコード欠陥のときは対応する test-X へ `--gate D-1 failure --task test-{X}` を帰属する。
   - **除外境界（条件 3）**: テスト側修正を「仕様変更追随」として failure 記録から除外できるのは、**その裁定がセッションファイルに記録されている場合のみ**（裁定記録が無ければ既定で failure を記録する）。
   - **所在判定チェック観点（条件 3）**: impl- が誤アサーションへ source を over-fit させた場合 confirm- が pass し条件 3 が検知されない残余がある（本設計は逐次 D-3 と同一意味論の統一までを保証し over-fit 検知は保証しない・E フェーズが下流網）。所在判定では source が誤アサーションへ追従（over-fit）していないかを併せて確認する。

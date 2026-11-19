@@ -83,6 +83,6 @@ plan-report に基づき実装・デバッグを行い、tester が検証でき�
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）
-- ピア: wt_tester（TDD サイクルで Red → Green → Refactor を繰り返す）
+- ピア: wt_tester（TDD サイクルで Red → Green を担う。Refactor は wt_refactorer）
 - ピア: wt_refactorer（Green 後のリファクタリングを担当）
 - 直接起動版: `developer` (worktree なしの単発実行向け)

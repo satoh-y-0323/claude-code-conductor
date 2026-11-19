@@ -78,5 +78,5 @@ plan-report に基づき実装・デバッグを行い、tester が検証でき�
 
 ## Related Agents
 - 上流: planner（plan-report を受け取る）
-- ピア: tester（TDD サイクルで Red → Green → Refactor を繰り返す）
+- ピア: tester（TDD サイクルで Red → Green を担う。Refactor は refactorer）
 - ピア: refactorer（Green 後のリファクタリングを担当）

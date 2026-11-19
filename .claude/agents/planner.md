@@ -34,7 +34,7 @@ requirements-report・architecture-report・各種レビューレポートを統
 ## Workflow
 
 **Before:**
-- **必読: `.claude/skills/dev-workflow/references/plan-design-guidelines.md`** を Read する（depends_on 設計・TDD 3-wave 分解・writes 衝突回避・方向検算・自動検査ルール R2〜R6・出力直前の自己チェックリスト）
+- **必読: `.claude/skills/dev-workflow/references/plan-design-guidelines.md`** を Read する（depends_on 設計・TDD 5 タスク分解・writes 衝突回避・方向検算・自動検査ルール R2〜R6・出力直前の自己チェックリスト）
 - 利用可能な全レポートを Read する（requirements / architecture / test / review）
 - レポートが存在しないフェーズはスキップして正常とする
 

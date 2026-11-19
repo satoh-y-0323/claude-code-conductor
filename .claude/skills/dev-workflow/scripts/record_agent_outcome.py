@@ -21,10 +21,10 @@ Usage:
     | 優先 | ソース                                            | 対象                          |
     |----|--------------------------------------------------|-------------------------------|
     | 1  | --tier（明示・TIERS 検証）                        | 全 role（escape hatch・優先1 存続） |
-    | 2a | applied-state（session_id + role + task_id 全一致の最新行） | soft-apply 適格（developer は無条件／tester は --task が test- 開始）かつ --task 指定時（並列経路の task 突合） |
-    | 2b | applied-state（session_id + role 一致の最新行）     | 同上・2a が 0 件 or --task 未指定時（現行の優先2＝呼称のみ細分化） |
-    | 3  | tier_selection.json（developer のみ・トップ tier→suggested_model） | soft-apply 適格 developer・優先2 不成立時（フォールバック A 互換）。tester は使わない（「2a → 4」の2段・L48-54 参照） |
-    | 4  | agents/{role}.md frontmatter model:               | soft-apply 非適格 role（tester の非 test- 記録含む）、および 2・3 が不成立の developer |
+    | 2a | applied-state（session_id + role + task_id 全一致の最新行） | soft-apply 適格（developer・refactorer は無条件／tester は --task が test- 開始）かつ --task 指定時（並列経路の task 突合） |
+    | 2b | applied-state（session_id + role 一致の最新行）     | soft-apply 適格の developer・refactorer で 2a が 0 件 or --task 未指定時（現行の優先2＝呼称のみ細分化）。tester は使わない |
+    | 3  | tier_selection.json（role 別の値。_selection_tier_for_role が決める: developer は最上位 tier→suggested_model、refactorer は roles.refactorer.tier） | soft-apply 適格の developer・refactorer で優先2 不成立時（フォールバック A 互換）。tester は使わない（「2a → 4」の2段・下記参照） |
+    | 4  | agents/{role}.md frontmatter model:               | soft-apply 非適格 role（tester の非 test- 記録含む）、2・3 が不成立の developer・refactorer、2a が不成立の tester |
     | 5  | 解決不能                                          | 記録スキップ（stderr 警告 + exit 0） |
 
   T8（architecture §5）: 並列経路（wt_developer→developer）は起動プロンプトの
@@ -36,16 +36,19 @@ Usage:
   session/role に task_id 非 null 行が存在するとき（マーカー運用中の突合失敗）は record が
   stderr へ 1 行警告する（§5-7・戻り値/exit code 不変の「警告のみ」）。
 
-  --execution=subagent かつ role が _SOFT_APPLY_ROLES に含まれる場合（現状
-  developer のみ）、--tier 省略時はまず applied-state を読む（優先2）。
+  --execution=subagent かつ soft-apply 適格（_SOFT_APPLY_ROLES＝developer・tester・
+  refactorer。tester は --task が test- のときだけ）の場合、--tier 省略時はまず
+  applied-state を読む（優先2）。
   フェーズ3で PreToolUse hook（tier_autoapply.py）が Agent 起動時の実適用
   tier を session_id・role_recorded 付きで tier_autoapply.jsonl に追記する
   ため、record はそれを session_id 一致の最新行で読む（＝適用者=記録 SSOT）。
   applied-state が不在／session_id 不一致／kill-switch で行が無い等で優先2 が
-  不成立のとき、developer は優先3 として tier_selection.json（select_tier.py が
-  UserPromptSubmit で書く推奨/実効 tier の SSOT）のトップレベル `tier`（無ければ
-  `suggested_model`）を ``pricing.resolve_tier`` で正規化し採用する
-  （フォールバック A 互換のため温存・削除しない）。**tester は優先3/優先2b を
+  不成立のとき、developer と refactorer は優先3 として tier_selection.json
+  （select_tier.py が UserPromptSubmit で書く推奨/実効 tier の SSOT）の role 別の値
+  （developer はトップレベル `tier`〔無ければ `suggested_model`〕、refactorer は
+  `roles.refactorer.tier`。_selection_tier_for_role が決める）を
+  ``pricing.resolve_tier`` で正規化し採用する（フォールバック A 互換のため温存・
+  削除しない）。developer と refactorer は「2a → 2b → 3 → 4」で解決する。**tester は優先3/優先2b を
   使わず「2a → 4」の 2 段**（§2-5 改訂 6/7・CR-Medium2）: roles.tester＝記録時点の
   最新推奨値は launch 時点の注入値と一致する保証が無く、優先2b は同一セッションの
   別タスク注入 tier を誤帰属するため、tester は優先2a 不成立時に決定的で検証可能な
@@ -58,7 +61,7 @@ Usage:
   並列（worktree isolation）経路は wt_developer→developer の記録を親 Claude
   が main リポジトリで実行するが、T8 以降は --tier を明示せず C3_TASK_ID:
   マーカー由来の task_id を --task と (session_id, role, task_id) 突合して
-  優先2a で機械解決する（上記 L27-37 の新記述に一本化。ADR-AS-4 解消済み）。
+  優先2a で機械解決する（上記 T8 段落の記述に一本化。ADR-AS-4 解消済み）。
   --execution=persona は --tier 省略時、frontmatter へも tier_selection.json
   へも fallback せず常に tier="unknown" 固定でイベントログのみ記録する
   （frontmatter/tier_selection は subagent の実使用 tier であり、persona の
@@ -279,8 +282,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tier", default=None,
-        help="省略時は developer は tier_selection.json（soft-apply・逸脱時は "
-        "frontmatter fallback）、それ以外は agents/{role}.md の model: を"
+        help="省略時、soft-apply 対象（developer・refactorer、および --task が "
+        "test- の tester）は applied-state（tier_autoapply.jsonl）を読み、"
+        "developer・refactorer は次いで tier_selection.json の role 別の値を読む。"
+        "解決できないとき・それ以外の role は agents/{role}.md の model: を"
         "自己解決する",
     )
     parser.add_argument("--note", default=None, help="帰属理由等の自由記述")
@@ -377,7 +382,7 @@ def _soft_apply_eligible(role: str, task: str | None) -> bool:
     """--tier 省略時に soft-apply（applied-state 優先2 / tier_selection 優先3）を
     試みてよい (role, task) の組かを返す（§2-5 改訂 3・親起因の是正）。
 
-    - developer: 全起動が注入対象のため task に依らず True（現行どおり）。
+    - developer・refactorer: 全起動が注入対象のため task に依らず True。
     - tester（_RED_GATED_SOFT_APPLY_ROLES）: Red 起動＝--task が ``test-``
       プレフィックスの記録に限定して True。非 test-/--task 無しの tester 記録は
       False で優先4（frontmatter 自己解決）へ直行する（優先2b session-latest
@@ -852,8 +857,8 @@ def main(argv: list[str] | None = None) -> int:
         tier = "unknown"
     else:
         tier = None
-        # soft-apply 適格判定（§2-5 改訂 3・親起因の是正）: developer は全起動が
-        # 対象（無条件）。tester（RED gated）は --task が test- プレフィックスの
+        # soft-apply 適格判定（§2-5 改訂 3・親起因の是正）: developer・refactorer は
+        # 全起動が対象（無条件）。tester（RED gated）は --task が test- プレフィックスの
         # 記録に限定する（routing キーは --task 値であってフェーズ名ではない）。
         # 非 test-/--task 無しの tester 記録は優先2/3 を迂回し優先4（frontmatter
         # 自己解決）へ直行する（優先2b session-latest フォールバックが直近の
@@ -868,8 +873,9 @@ def main(argv: list[str] | None = None) -> int:
             # T8: 切り詰め済み task を突合キーとして配線（優先2a）。task=None の
             # 従来呼び出し・逐次経路（マーカー未注入）は優先2b で従来どおり解決。
             tier = _read_applied_tier(session_id, role, c3_pricing, task=task)
-        # 優先 3（降格・旧優先2）: soft-apply 適格なら tier_selection.json の tier
-        # （developer=トップ tier→suggested_model）を resolve_tier で正規化し、
+        # 優先 3（降格・旧優先2）: soft-apply 適格なら tier_selection.json の role 別の
+        # 値（developer=トップ tier→suggested_model、refactorer=roles.refactorer.tier。
+        # _selection_tier_for_role が決める）を resolve_tier で正規化し、
         # _VALID_TIERS に含まれれば採用する。
         # 優先2（applied-state）が不成立のとき（applied-state 不在／session_id
         # 不一致／kill-switch で jsonl に行が無い等）のフォールバック A 互換。
@@ -893,7 +899,7 @@ def main(argv: list[str] | None = None) -> int:
             # suggested_model が非文字列（int/list/dict 等）だと AttributeError
             # が未捕捉で伝播し、全エラー exit 0 不変を破る。_read_selection() が
             # dict 型を弾くのと同じ防御思想でフィールド型も検証し、非文字列は
-            # soft-apply を採らず優先3（frontmatter fallback）へ落とす。
+            # soft-apply を採らず優先4（frontmatter fallback）へ落とす。
             if (
                 isinstance(soft_apply_raw, str)
                 and c3_pricing is not None
@@ -902,8 +908,8 @@ def main(argv: list[str] | None = None) -> int:
                 if resolved in _VALID_TIERS:
                     tier = resolved
         if tier is None:
-            # 優先 4: frontmatter 自己解決（非対象 role、または優先2・3 が
-            # 不成立だった developer の fallback）。
+            # 優先 4: frontmatter 自己解決（非対象 role、優先2・3 が不成立だった
+            # developer・refactorer、優先2a が不成立だった tester の fallback）。
             tier = _resolve_tier_from_frontmatter(role, c3_pricing)
         if tier is None:
             print(
