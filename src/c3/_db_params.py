@@ -44,7 +44,11 @@ COST_LAMBDA_MAX = 5.0
 # tier-routing 学習シグナルの記録対象 role（v2.41.0 db-foundation）。
 # agent_tier_bandit / agent_outcomes の role 列で許容される値の SSOT。
 # record_agent_outcome.py の --role 検証・cli_tier.py の role 別表示グルーピングが参照する。
-AGENT_ROLES: tuple[str, ...] = ("interviewer", "architect", "planner", "developer", "tester")
+# refactorer は Refactor 段（refactor- タスク・逐次の D-4）の記録側 role（wt_refactorer は
+# 既存規約どおり --role refactorer へ正規化されるため wt_* は置かない）。
+AGENT_ROLES: tuple[str, ...] = (
+    "interviewer", "architect", "planner", "developer", "tester", "refactorer",
+)
 
 # bandit 集計・escalation failure_rate でカウントする客観 gate の SSOT（フェーズ2.5・ADR-25-1）。
 # D-2.5=実装完了 / D-3・D-5=テスト合否（「動く実装」の直接測定） / D-2.5-stuck=自力完走不能。
@@ -63,8 +67,11 @@ BANDIT_GATES: tuple[str, ...] = ("D-2.5", "D-3", "D-5", "D-2.5-stuck")
 # parallel 経路の wt_tester 記録は既存規約どおり --role tester へ正規化され tester
 # セルへ自動合流するため、bandit_gates_for_role("wt_tester") が呼ばれる経路自体が
 # 存在しない（AGENT_ROLES にも wt_* は含まれない）。
+# refactorer はリファクタ後のテスト合否 "D-5" に限定する（2-D・2-E＝worktree 起動の
+# 成否や E-1/E-2 は集計に入れない）。"wt_refactorer" キーも同じ理由で置かない。
 BANDIT_GATES_BY_ROLE: dict[str, tuple[str, ...]] = {
     "tester": ("D-1",),
+    "refactorer": ("D-5",),
 }
 
 

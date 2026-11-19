@@ -2,8 +2,8 @@
 """PreToolUse hook: worktree boundary guardrail.
 
 作動条件: hook 入力 JSON の `agent_type` が WT_AGENT_TYPES（wt_developer /
-wt_tester / wt_systematic-debugger）に含まれること。Claude Code は subagent 内の
-tool 呼び出しの hook 入力に `agent_type` を載せるため、parallel-agents skill が
+wt_tester / wt_systematic-debugger / wt_refactorer）に含まれること。Claude Code は
+subagent 内の tool 呼び出しの hook 入力に `agent_type` を載せるため、parallel-agents skill が
 isolation:"worktree" 付きで起動する wt_* agent だけがガード対象になる。
 旧作動条件の環境変数 PO_WORKTREE_GUARD は hook のプロセスに届く経路が無く、
 ガードが一度も作動していなかったため廃止した（現在は読まない）。
@@ -52,7 +52,9 @@ _WORKTREES_PARENT = ".claude"
 _WORKTREES_COMPONENT = "worktrees"
 
 # ガード対象の agent_type（.claude/agents/wt_*.md の name: と一致させる）。
-WT_AGENT_TYPES = frozenset({"wt_developer", "wt_tester", "wt_systematic-debugger"})
+WT_AGENT_TYPES = frozenset(
+    {"wt_developer", "wt_tester", "wt_systematic-debugger", "wt_refactorer"}
+)
 
 
 def decide_containment(resolved, cwd, same_entity=os.path.samefile, path_exists=os.path.exists):

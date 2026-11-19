@@ -16,12 +16,17 @@ tier-routing MVP: タスクの複雑度を簡易ヒューリスティックで�
   キーとして tier_selection.json に併記する。tester / wt_tester は test- タスク
   （Red フェーズ）に限り tier_autoapply が機械適用する（D-3/D-5 等の非 Red 起動は
   従来どおり frontmatter 任せ）。
-- **やらない**: developer / wt_developer / tester(Red) 以外の role への適用、
-  フォールバック（Haiku 失敗→Sonnet 自動昇格）
+- **やる**: refactorer の推奨を additive な ``roles.refactorer`` キーとして
+  tier_selection.json に併記する（算出は tester(Red) と同じやり方で refactorer の
+  セルから）。refactorer / wt_refactorer は起動フェーズを問わず tier_autoapply が
+  機械適用する。
+- **やらない**: developer / tester(Red) / refactorer とその wt_* 以外の role への
+  適用、フォールバック（Haiku 失敗→Sonnet 自動昇格）
 
 【opus 固定不変則（ADR-6）】機械適用（APPLY_ROLES / RED_APPLY_ROLES）に追加できるのは
-frontmatter ``model: sonnet`` の role のみ。opus frontmatter の agent（architect /
-planner / design-critic / doc-writer / project-setup）は tier レバーを持たず恒久対象外。
+frontmatter ``model: sonnet`` の role のみ（developer / tester / refactorer とその wt_*）。
+opus frontmatter の agent（architect / planner / design-critic / doc-writer /
+project-setup）は tier レバーを持たず恒久対象外。
 
 学習データ（帰属機械化・フェーズ3）:
 - 結果は ``.claude/state/tier_selection.json`` に直近 1 件のみ書き込む
@@ -567,7 +572,8 @@ def write_tier_selection(
     None のときはキー自体を省略する（env 未設定時の後方互換）。
 
     ``roles`` を任意で含める（ADR-3・additive role 別推奨）。
-    ``{"tester": {"tier": <実効 tier>, "mode": <mode>, "escalated"?: True}}`` の形。
+    ``{"tester": {"tier": <実効 tier>, "mode": <mode>, "escalated"?: True},
+    "refactorer": {...同形...}}`` の形。
     None（渡されない）のときはキー自体を省略する（session_id / cost_tiebreak と
     同じ additive-omit パターン＝トップレベルの bit 一致を保つ後方互換の核心）。
     トップレベルの ``tier`` / ``mode`` は現行どおり developer 推奨を書き、
@@ -620,6 +626,7 @@ def build_additional_context(
     cost_tiebreak: bool = False,
     cost_weighted: bool = False,
     tester_tier: str | None = None,
+    refactorer_tier: str | None = None,
 ) -> str:
     """親 Claude に追加注入する文字列を組み立てる。
 
@@ -634,6 +641,10 @@ def build_additional_context(
     None（既定）のときは併記行を省略する（build_additional_context を直接呼ぶ
     既存テストの後方互換）。tester / wt_tester は test- タスク（Red）に限り機械適用
     対象であることを対象説明に明記する。
+
+    ``refactorer_tier`` が渡された場合、refactorer の推奨 Tier を併記する
+    （refactorer / wt_refactorer は無条件に機械適用対象）。None（既定）のときは
+    併記を省略する（直接呼ぶ既存テストの後方互換）。
     """
     trials = sum(p[2] for p in params.values())
     if mode == "uniform":
@@ -656,6 +667,13 @@ def build_additional_context(
     if tester_tier is not None:
         tester_note = f" tester(Red) 推奨 Tier: {tester_tier}。"
 
+    refactorer_note = ""
+    if refactorer_tier is not None:
+        refactorer_note = (
+            f" refactorer 推奨 Tier: {refactorer_tier}"
+            f"（refactorer / wt_refactorer の起動時に tier_autoapply が model: に自動適用します）。"
+        )
+
     return (
         f"[tier-routing 推奨] 複雑度: {complexity} / 推奨 Tier: {tier}（{confidence}・developer 基準）。"
         f" developer / wt_developer を Agent ツールで起動する際は、PreToolUse hook"
@@ -666,7 +684,7 @@ def build_additional_context(
         f"{tester_note}"
         f" tester / wt_tester は test- タスク（Red フェーズ）に限り機械適用対象です"
         f"（C3_TASK_ID: test-... マーカー付き起動のみ・D-3/D-5 等の非 Red 起動は"
-        f" agent frontmatter の model: で動きます）。親 Claude ペルソナで動かす role"
+        f" agent frontmatter の model: で動きます）。{refactorer_note}親 Claude ペルソナで動かす role"
         f"（interviewer / architect / planner）は tier レバーが無いため対象外です。"
         f"{suffix}"
     )
@@ -793,6 +811,38 @@ def _resolve_cost_lambda() -> float | None:
     return x
 
 
+# roles.<role> に additive に書く role（算出順＝rng の消費順。順序を変えると
+# 同じ種での roles.tester の結果が変わるため、追加は末尾に限る）。
+_ADDITIVE_ROLES: tuple[str, ...] = ("tester", "refactorer")
+
+
+def _recommend_role_entry(
+    role: str,
+    c3_db,
+    complexity: str,
+    *,
+    cost_map: dict[str, float] | None,
+    epsilon: float,
+    lam: float | None,
+    threshold: float,
+) -> dict[str, object]:
+    """``roles.<role>`` に書く ``{tier, mode[, escalated]}`` を算出する。
+
+    params は ``read_agent_tier_params(role, complexity)``（c3_db が無ければ uniform 用の
+    0 試行）、escalation は ``role`` のセルの failure rate を引く。
+    """
+    if c3_db is None:
+        params = {t: (1.0, 1.0, 0) for t in TIERS}
+    else:
+        params = c3_db.read_agent_tier_params(role, complexity)
+    result = select_tier_detailed(params, cost_map=cost_map, epsilon=epsilon, lam=lam)
+    effective, _reason = maybe_escalate(complexity, result.tier, threshold=threshold, role=role)
+    entry: dict[str, object] = {"tier": effective, "mode": result.mode}
+    if effective != result.tier:
+        entry["escalated"] = True
+    return entry
+
+
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read())
@@ -858,24 +908,17 @@ def main() -> int:
     effective_tier, escalation_reason = maybe_escalate(complexity, tier, threshold=esc_thr)
     escalated = effective_tier != tier
 
-    # ADR-3/ADR-4/ADR-5: tester(Red) 推奨を additive に算出する。complexity /
-    # cost_map / epsilon / lam は developer と同一解決値を使う（per-prompt 分類・
-    # DC-AS-001）。escalation は role="tester" で tester セルの failure rate を引く。
-    # developer 推奨を先に確定してから算出するため、tester 側の rng 消費は
-    # developer の結果に影響しない（トップレベル bit 一致の後方互換を保つ）。
-    if c3_db is None:
-        tester_params = {t: (1.0, 1.0, 0) for t in TIERS}
-    else:
-        tester_params = c3_db.read_agent_tier_params("tester", complexity)
-    tester_result = select_tier_detailed(tester_params, cost_map=cost_map, epsilon=eps, lam=lam)
-    tester_effective, _tester_esc_reason = maybe_escalate(
-        complexity, tester_result.tier, threshold=esc_thr, role="tester",
-    )
-    tester_escalated = tester_effective != tester_result.tier
-    tester_entry: dict[str, object] = {"tier": tester_effective, "mode": tester_result.mode}
-    if tester_escalated:
-        tester_entry["escalated"] = True
-    roles = {"tester": tester_entry}
+    # ADR-3/ADR-4/ADR-5: tester(Red)・refactorer の推奨を additive に算出する。
+    # complexity / cost_map / epsilon / lam は developer と同一解決値を使う（per-prompt
+    # 分類・DC-AS-001）。escalation は各 role のセルの failure rate を引く。
+    # developer → tester → refactorer の順に算出するため、後段の rng 消費は前段の
+    # 結果に影響しない（トップレベルと roles.tester の bit 一致の後方互換を保つ）。
+    roles = {
+        role: _recommend_role_entry(
+            role, c3_db, complexity, cost_map=cost_map, epsilon=eps, lam=lam, threshold=esc_thr,
+        )
+        for role in _ADDITIVE_ROLES
+    }
 
     write_tier_selection(
         complexity, effective_tier, mode,
@@ -895,7 +938,8 @@ def main() -> int:
         complexity_source=complexity_source,
         cost_tiebreak=cost_tiebreak,
         cost_weighted=result.cost_weighted,
-        tester_tier=tester_effective,
+        tester_tier=roles["tester"]["tier"],
+        refactorer_tier=roles["refactorer"]["tier"],
     )
     output = {
         "hookSpecificOutput": {

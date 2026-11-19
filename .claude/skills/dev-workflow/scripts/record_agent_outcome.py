@@ -141,7 +141,10 @@ _VALID_TIERS = ("haiku", "sonnet", "opus")
 # Red 限定注入（tier_autoapply.py の RED_APPLY_ROLES）に対応する記録側 role で、
 # soft-apply の適格判定を --task の test- プレフィックスで gating する
 # （_RED_GATED_SOFT_APPLY_ROLES・_soft_apply_eligible 参照）。
-_SOFT_APPLY_ROLES = ("developer", "tester")
+# refactorer 追加: Refactor 段（refactor- タスク・逐次の D-4）の記録側 role。developer と
+# 同じ「2a → 2b → 3 → 4」で解決し、--task の接頭辞による gating はしない（RED gated
+# ではない）。優先3 で読む値は _selection_tier_for_role が role ごとに決める。
+_SOFT_APPLY_ROLES = ("developer", "tester", "refactorer")
 # soft-apply 対象のうち、--tier 省略時の soft-apply（applied-state 優先2 /
 # tier_selection 優先3）を --task が test- プレフィックスの記録に限定する role。
 # developer は全起動が注入対象（無条件 soft-apply）だが、tester は Red 起動
@@ -395,20 +398,30 @@ def _soft_apply_eligible(role: str, task: str | None) -> bool:
 def _selection_tier_for_role(role: str, selection: dict):
     """優先3（tier_selection.json）で読む tier 値を role 別に返す（ADR-3・CR-Q-005）。
 
-    developer のみがこの関数を呼び出す（呼び出し側でガード・L874-879）。
-    tester は優先 3 を使わず「2a → 4」の 2 段直行のため、この関数に到達しない
-    （red-gated role の除外は呼び出し側ガードと本関数の両層で防御・
-    外側ガード削除時の退行防止）。
+    優先3 の取り出し先は role ごとにこの関数 1 か所で決める:
 
-    developer の正規呼び出し元: トップレベル ``tier``（無ければ
-    ``suggested_model``）を返す。
+    - developer: トップレベル ``tier``（無ければ ``suggested_model``）。
+    - refactorer: ``roles.refactorer.tier``。最上位の ``tier`` は developer 向けの
+      推奨値のため読まない。``roles`` / エントリが dict でない・``tier`` キーが無い
+      ときは None（呼び出し側で優先4＝frontmatter へ落ちる）。
+    - tester（_RED_GATED_SOFT_APPLY_ROLES）: 優先 3 を使わず「2a → 4」の 2 段直行。
+      呼び出し側ガードで到達しないが、外側ガード削除時の退行防止に本関数でも
+      None を返す（両層で防御）。
 
     Returns:
-        tier 候補（未検証の生値。呼び出し側で resolve_tier + _VALID_TIERS 検証）、
-        または解決不能なら None。
+        tier 候補（未検証の生値。呼び出し側で非文字列ガード + resolve_tier +
+        _VALID_TIERS 検証）、または解決不能なら None。
     """
-    # tester は呼び出し側ガード（role not in _RED_GATED_SOFT_APPLY_ROLES）で
-    # 到達不能。developer のみがこの関数に到達する（§2-5 改訂 6/7・CR-Q-005）。
+    if role in _RED_GATED_SOFT_APPLY_ROLES:
+        return None
+    if role == "refactorer":
+        roles = selection.get("roles")
+        if not isinstance(roles, dict):
+            return None
+        entry = roles.get(role)
+        if not isinstance(entry, dict):
+            return None
+        return entry.get("tier")
     return selection.get("tier") or selection.get("suggested_model")
 
 

@@ -6,20 +6,26 @@ architecture-report-20260707-065043.md §3 の確定仕様を実装した本 hoo
 両 hook の作用 role は集合として排他（本 hook は LAUNCH_LOG_ROLES のみ・
 check_agent は reviewer 系のみ）のため実行順序に依存しない（§1）。
 
-## 動作（§3-2 ロール分岐表）
+## 動作（§3-2 ロール分岐表 `_ROLE_POLICIES`）
 
-- `APPLY_ROLES = {developer, wt_developer}` かつ `model` 無指定かつ
-  tier_selection.json から有効 tier を解決できたとき、`updatedInput` で
-  `model:{推奨tier}` を注入した（source=injected・permissionDecision は
-  T0 実測により省略形を正とした）。
-- `RED_APPLY_ROLES = {tester, wt_tester}` かつ `model` 無指定かつ
-  `C3_TASK_ID:` マーカーが `test-` で始まりかつ `roles.tester.tier` を解決できた
-  ときのみ注入した（Red 限定・ADR-2）。confirm-/impl-/マーカー無し・roles 欠落は
-  注入せず記録のみ（frontmatter の既定が実効・fail-safe）。
+role ごとの扱いは表 `_ROLE_POLICIES` 1 つで表し、公開名の集合
+（`APPLY_ROLES` / `RED_APPLY_ROLES` / `LAUNCH_LOG_ROLES` / `_ROLE_NORMALIZE`）は
+表から導く。
+
+| role | 記録する role | tier の取り出し先 | 注入の条件 |
+|---|---|---|---|
+| developer / wt_developer | developer | トップレベル `tier` | 無条件 |
+| tester / wt_tester | tester | `roles.tester.tier` | `C3_TASK_ID` が `test-` のときだけ（Red 限定・ADR-2） |
+| refactorer / wt_refactorer | refactorer | `roles.refactorer.tier` | 無条件 |
+
+- `model` 無指定かつ注入の条件を満たし取り出し先から有効 tier を解決できたとき、
+  `updatedInput` で `model:{推奨tier}` を注入した（source=injected・permissionDecision
+  は T0 実測により省略形を正とした）。
 - 明示 `model` 指定時は素通り（source=explicit・明示尊重）。
-- tier_selection 不在/破損/非文字列 tier のときは注入せず素通り
+- 注入の条件を満たさない（tester 系の confirm-/impl-/マーカー無し）・tier_selection
+  不在/破損/非文字列 tier・`roles.<role>` 欠落/破損のときは注入せず記録のみ
   （source=frontmatter-default・frontmatter の sonnet が実効するため）。
-- `LAUNCH_LOG_ROLES = {developer, wt_developer, tester, wt_tester}` は
+- 表の全 role（`LAUNCH_LOG_ROLES`）は
   注入有無に関わらず applied-state（tier_autoapply.jsonl）へ 1 行追記した
   （ロックを取得できない場合のみ追記を断念する。注入は断念に影響されない・
   `_append_applied_state` 参照）。
@@ -53,6 +59,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 try:
     sys.stdin.reconfigure(encoding="utf-8")
@@ -89,23 +96,54 @@ TIER_SELECTION_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_selection.json")
 APPLIED_STATE_PATH = os.path.join(_CLAUDE_DIR, "state", "tier_autoapply.jsonl")
 LOCK_FILE_PATH = APPLIED_STATE_PATH + ".lock"
 
-# §3-2 ロール分岐表の定数。
-# APPLY_ROLES: 無条件 APPLY（起動フェーズを問わず tier_selection.json のトップレベル
-#   tier を機械適用する）role 集合。
-# RED_APPLY_ROLES: Red フェーズ（test- タスク）限定で機械適用する role 集合（ADR-2）。
-#   注入条件は「role ∈ RED_APPLY_ROLES かつ C3_TASK_ID マーカーが test- 開始かつ
-#   roles.tester.tier 解決可」の 3 条件全成立時のみ。D-3/D-5 等の非 Red 起動には
-#   test- マーカーを付与しない運用不変則（dev-workflow SKILL）と組で NF-2 を守る。
+class _RolePolicy(NamedTuple):
+    """1 role の扱い（§3-2 ロール分岐表の 1 行）。
+
+    recorded_role: applied-state に記録する role（wt_* は無印へ正規化・record 側
+        role 語彙・agent_outcomes.role と一致・§0-4）。
+    selection_key: tier_selection.json の取り出し先。None はトップレベル ``tier``
+        （無ければ ``suggested_model``）、文字列は ``roles.<selection_key>.tier``。
+    red_only: True なら C3_TASK_ID マーカーが ``test-`` で始まるときだけ注入する
+        （Red 限定・ADR-2）。False なら無条件に注入する。
+    """
+
+    recorded_role: str
+    selection_key: str | None
+    red_only: bool
+
+
+# §3-2 ロール分岐表（role ごとの扱いの唯一の出所）。公開名の集合はこの表から導く。
+# - developer 系: トップレベル tier を無条件に注入する。
+# - tester 系: roles.tester.tier を test- タスク（Red）に限り注入する。D-3/D-5 等の
+#   非 Red 起動には test- マーカーを付与しない運用不変則（dev-workflow SKILL）と組で
+#   NF-2 を守る。
+# - refactorer 系: roles.refactorer.tier を無条件に注入する（C3_TASK_ID の接頭辞の
+#   条件は無い。トップレベル tier は使わない）。
 #
-# 【opus 固定不変則（ADR-6）】APPLY_ROLES / RED_APPLY_ROLES に追加できるのは
-# frontmatter model: sonnet の role のみ。opus frontmatter の agent（architect /
-# planner / design-critic / doc-writer / project-setup）は tier レバーを持たず
-# 恒久対象外（機械検査テストで frontmatter が sonnet であることを CI 回帰網に固定）。
-APPLY_ROLES = frozenset({"developer", "wt_developer"})
-RED_APPLY_ROLES = frozenset({"tester", "wt_tester"})
-LAUNCH_LOG_ROLES = frozenset({"developer", "wt_developer", "tester", "wt_tester"})
-# wt_* → 無印への正規化（record 側 role 語彙・agent_outcomes.role と一致・§0-4）。
-_ROLE_NORMALIZE = {"wt_developer": "developer", "wt_tester": "tester"}
+# 【opus 固定不変則（ADR-6）】この表（APPLY_ROLES / RED_APPLY_ROLES）に追加できるのは
+# frontmatter model: sonnet の role のみ（developer / tester / refactorer とその wt_*）。
+# opus frontmatter の agent（architect / planner / design-critic / doc-writer /
+# project-setup）は tier レバーを持たず恒久対象外（機械検査テストで frontmatter が
+# sonnet であることを CI 回帰網に固定）。
+_ROLE_POLICIES: dict[str, _RolePolicy] = {
+    "developer": _RolePolicy("developer", None, False),
+    "wt_developer": _RolePolicy("developer", None, False),
+    "tester": _RolePolicy("tester", "tester", True),
+    "wt_tester": _RolePolicy("tester", "tester", True),
+    "refactorer": _RolePolicy("refactorer", "refactorer", False),
+    "wt_refactorer": _RolePolicy("refactorer", "refactorer", False),
+}
+
+# APPLY_ROLES: 無条件に注入する role 集合。
+APPLY_ROLES = frozenset(r for r, p in _ROLE_POLICIES.items() if not p.red_only)
+# RED_APPLY_ROLES: Red フェーズ（test- タスク）限定で注入する role 集合（ADR-2）。
+RED_APPLY_ROLES = frozenset(r for r, p in _ROLE_POLICIES.items() if p.red_only)
+# LAUNCH_LOG_ROLES: 注入有無に関わらず applied-state へ記録する role 集合。
+LAUNCH_LOG_ROLES = frozenset(_ROLE_POLICIES)
+# wt_* → 無印への正規化（記録する role が subagent_type と異なる行だけ）。
+_ROLE_NORMALIZE = {
+    r: p.recorded_role for r, p in _ROLE_POLICIES.items() if r != p.recorded_role
+}
 
 _VALID_TIERS = ("haiku", "sonnet", "opus")
 
@@ -454,11 +492,12 @@ def main() -> None:
     if not isinstance(subagent_type, str):
         subagent_type = ""
 
-    # LAUNCH_LOG_ROLES 以外（reviewer 系・その他）は記録も注入もせず素通りした。
-    if subagent_type not in LAUNCH_LOG_ROLES:
+    # 表に無い role（reviewer 系・その他）は記録も注入もせず素通りした。
+    policy = _ROLE_POLICIES.get(subagent_type)
+    if policy is None:
         sys.exit(0)
 
-    role_recorded = _ROLE_NORMALIZE.get(subagent_type, subagent_type)
+    role_recorded = policy.recorded_role
     session_id = payload.get("session_id")
     if not isinstance(session_id, str):
         session_id = None
@@ -472,42 +511,29 @@ def main() -> None:
     task_id = _extract_task_id(prompt)
 
     inject = False
+    model_applied: str | None = None
     if has_explicit_model:
-        # 明示尊重: 注入せず素通りし explicit で記録した（RED_APPLY_ROLES でも不変）。
+        # 明示尊重: 注入せず素通りし explicit で記録した（全 role で不変）。
         source = "explicit"
-        model_applied: str | None = model_val
-    elif subagent_type in APPLY_ROLES:
+        model_applied = model_val
+    elif policy.red_only and not (isinstance(task_id, str) and task_id.startswith("test-")):
+        # Red 限定の role（tester 系・ADR-2）で test- 以外（confirm-/impl-/マーカー無し）:
+        # 注入せず記録のみ（frontmatter の既定が実効）。
+        source = "frontmatter-default"
+    else:
         c3_pricing = _load_pricing_module()
-        tier = _resolve_selection_tier(c3_pricing)
+        if policy.selection_key is None:
+            tier = _resolve_selection_tier(c3_pricing)
+        else:
+            tier = _resolve_roles_tier(c3_pricing, policy.selection_key)
         if tier is not None:
             inject = True
             source = "injected"
             model_applied = tier
         else:
-            # tier_selection 不在/破損/非文字列: frontmatter の既定が実効するため記録のみ。
+            # tier_selection 不在/破損/非文字列・roles.<key> 欠落/破損: frontmatter の
+            # 既定が実効するため記録のみ（fail-safe が安全側に一致）。
             source = "frontmatter-default"
-            model_applied = None
-    elif subagent_type in RED_APPLY_ROLES:
-        # tester/wt_tester: Red 限定注入（ADR-2）。C3_TASK_ID マーカーが test- 開始
-        # かつ roles.tester.tier が解決可のときのみ注入。confirm-/impl-/マーカー無し・
-        # roles 欠落/破損は注入せず記録のみ（frontmatter の既定が実効・fail-safe 一致）。
-        if isinstance(task_id, str) and task_id.startswith("test-"):
-            c3_pricing = _load_pricing_module()
-            tier = _resolve_roles_tier(c3_pricing, role_recorded)
-            if tier is not None:
-                inject = True
-                source = "injected"
-                model_applied = tier
-            else:
-                source = "frontmatter-default"
-                model_applied = None
-        else:
-            source = "frontmatter-default"
-            model_applied = None
-    else:
-        # LAUNCH_LOG_ROLES のうち上記いずれにも該当しない role（現状なし・防御）。
-        source = "frontmatter-default"
-        model_applied = None
 
     row = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),

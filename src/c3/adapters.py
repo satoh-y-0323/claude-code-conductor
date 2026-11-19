@@ -445,8 +445,10 @@ kept under `.claude/`; OpenCode adapter files are generated from that source.
 
 - `@c3-interviewer` - Start a requirements interview
 - `@c3-architect` - Generate architecture design
+- `@c3-design-critic` - Critique a design or plan
 - `@c3-planner` - Create a task plan
 - `@c3-developer` - Implement code (TDD)
+- `@c3-refactorer` - Refactor code after Green
 - `@c3-tester` - Write and run tests
 - `@c3-code-reviewer` - Review code quality
 - `@c3-security-reviewer` - Security review
