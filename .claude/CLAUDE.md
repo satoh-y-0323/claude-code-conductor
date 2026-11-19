@@ -116,7 +116,7 @@ C3 は、業務アプリケーション開発で製品としての品質を保�
 
 ## Platform Compatibility
 
-このファイルは Claude Code / Codex / Cursor / OpenCode から canonical source として読まれる。
+このファイルは Claude Code が読み、OpenCode では adapter が `AGENTS.md` に埋め込む。Codex / Cursor の生成物（`AGENTS.md`・`.cursor/rules/c3-core.mdc`）には本ファイルの内容は写像されない（adapter が出すのは固定の利用手順のみ）。
 他プラットフォームでの動作差分は以下の通り:
 
 - **`AskUserQuestion`** への参照は、Codex/Cursor では MCP tool `c3_ask_user_question` に読み替える（MCP elicitation 非対応時の fallback は `c3 ask --file <json>`）。OpenCode では MCP を生成しないため、`AGENTS.md` の指示に従ってユーザーへ直接確認する（`multiSelect: true` は複数選択の質問として維持）
