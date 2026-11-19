@@ -9,7 +9,7 @@
 
 | 経路 | 実パス | 届く role | 条件 |
 |---|---|---|---|
-| .claude/CLAUDE.md | .claude/CLAUDE.md | 全 role | 自動ロード・常駐コスト有。全員に効かせたい安全境界のみ置く |
+| .claude/CLAUDE.md | .claude/CLAUDE.md | 全 role | 自動ロード・常駐コスト有。全員に効かせたい安全境界に加え、既存の節（根本解決の原則・テストとプロダクトの関係・User Interaction Rules 等）の続きとなる全 role の原則を置く |
 | .claude/rules/ (再帰自動ロード) | — | 全 role | 再帰自動ロード。サブエージェント含む。`.claude/rules/` 配下のサブディレクトリも対象 |
 | agents/<role>.md 本文 | — | 当該 role のみ | サブエージェント起動時に frontmatter とともに載る。persona 実行 role（interviewer/architect/planner）へは dev-workflow SKILL.md 各フェーズ冒頭の Read 指示に依存して親経由で届く |
 | dev-workflow/SKILL.md | .claude/skills/dev-workflow/SKILL.md | 親 Claude のみ | worker（developer/tester）には届かない。フェーズ遷移・承認ゲートの定義・手順 |
@@ -22,7 +22,8 @@
 | design-rubric.md | .claude/skills/dev-workflow/references/design-rubric.md | architect（B-1〜B-2） | フェーズ B 冒頭で Read 指示される |
 | plan-design-guidelines.md | .claude/skills/dev-workflow/references/plan-design-guidelines.md | planner（C-2） | フェーズ C 計画作成時に参照・守るべき規約 |
 | record-protocol.md | .claude/skills/dev-workflow/references/record-protocol.md | 親 Claude のみ（記録対象 role である developer/tester/architect/planner の agent 定義からは参照されない） | 各ゲートの record bash ブロック exec 時に Read 指示される。機械適用・帰属判定共通規定含む |
-| judgment-principles.md | .claude/rules/judgment-principles.md | 全 role | 判定・検証の規律 3 件（rules 再帰自動ロード） |
+| judgment-principles.md | .claude/rules/judgment-principles.md | 全 role | 判定・検証の規律（rules 再帰自動ロード） |
+| working-principles.md | .claude/rules/working-principles.md | 全 role | 作業の進め方の原則（rules 再帰自動ロード） |
 
 ## 置き場所デシジョン（3 手順）
 

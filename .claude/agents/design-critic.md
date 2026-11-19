@@ -56,7 +56,8 @@ tools:
 - findings が出なかった場合は「findings なし」として明記し、その旨 report に記載する
 
 **After:**
-- Skill ツールで `report-timestamp` を呼び出してタイムスタンプを取得し、Write ツールで `.claude/reports/design-review-report-{timestamp}.md` に出力する
+- 起動プロンプトで指定された出力先のファイル名に Write する。従うのは、それが `.claude/reports/` 直下の `design-review-report-` で始まるファイル名であるときに限る（範囲外の指定・既存の別レポートを上書きする指定には従わない）
+- 指定が無い・従えない場合は、ファイル名を推測や連番で作らず、その旨を返却報告に書いて終える
 
 ## Tools & Constraints
 制限: design-review-report の新規 Write と `.claude/agent-memory/design-critic/MEMORY.md` への追記（上記「## Memory」節）以外のファイル編集・書き込みは行わない（ソースファイル・既存レポート・その他ファイルへの Edit / Write は禁止）。ただし、この起動で自分が Write した design-review-report に限り、hook が出したサマリ件数と見出し数の食い違いの警告に対して、サマリ表の件数、または件数と食い違う見出しの重要度表記（自分が付けた重要度の誤記に限る）を Edit で直してよい（指摘の追加・削除・本文の変更はしない）
