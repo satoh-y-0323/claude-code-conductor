@@ -47,7 +47,7 @@ developer を Agent ツールで起動する箇所（**D-2 / D-2.5 の再実行 
 
 ## 集計注記
 
-- bandit params・escalation 判定の**集計対象 gate は role 別（`BANDIT_GATES_BY_ROLE`）**である: `BANDIT_GATES_BY_ROLE` に role 別の gate を持たない既定の role（developer 等）は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）**、role 別の gate を持つ role は `BANDIT_GATES_BY_ROLE` の値で、**tester は D-1 のみ**（D-3/D-5 の tester 記録はイベントログとして残るが集計対象外）、**refactorer は D-5 のみ**（refactorer の記録の gate は D-5）。E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、E-1/E-2 はどの role の集計対象 gate にも含まれないため、その成否は集計から除外される（意図どおり・read-side フィルタで実現）。
+- bandit params・escalation 判定の**集計対象 gate は role 別（`BANDIT_GATES_BY_ROLE`）**である: `BANDIT_GATES_BY_ROLE` に role 別の gate を持たない既定の role（developer 等）は **BANDIT_GATES（D-2.5/D-3/D-5/D-2.5-stuck）**、role 別の gate を持つ role は `BANDIT_GATES_BY_ROLE` の値で、**tester は D-1 のみ**（D-3/D-5 の tester 記録はイベントログとして残るが集計対象外）、**refactorer は D-5 のみ**（refactorer の記録は 2-D・2-E〔並列のイベント〕と D-5 に入るが、集計対象 gate は D-5 だけ）。E-1/E-2（レビュー指摘由来）のイベントは全 gate 不可逆に記録するが、E-1/E-2 はどの role の集計対象 gate にも含まれないため、その成否は集計から除外される（意図どおり・read-side フィルタで実現）。
 - **reviewer role（code-reviewer/security-reviewer・および E-gate のみの role）は BANDIT_GATES に該当 gate を持たないため、`c3 tier stats` 等の表示で当該 role の bandit は常に uniform（全 tier `(1.0,1.0,0)`・0 trials）になる**。これは設計意図の帰結であり退行ではない。tier 選択の実消費者は `select_tier` のみで、developer の推奨（`tier_selection.json` の最上位 `tier`）に加えて tester と refactorer の推奨（`roles.tester` / `roles.refactorer`）を各 role の bandit から算出して書く。reviewer role は算出対象に含まれないため、reviewer role の bandit が uniform でも tier 選択ロジックには影響しない。
 
 ## E-3 統合裁定の帰属判定共通規定
